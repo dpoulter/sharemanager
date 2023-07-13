@@ -1,0 +1,361 @@
+Asofdate=2016-01-29
+Array
+(
+    [indicator_id] => 8
+    [name] => peg
+)
+Array
+(
+    [indicator_id] => 9
+    [name] => pe
+)
+Array
+(
+    [indicator_id] => 11
+    [name] => ask
+)
+Array
+(
+    [indicator_id] => 12
+    [name] => bid
+)
+Array
+(
+    [indicator_id] => 13
+    [name] => book_value
+)
+Array
+(
+    [indicator_id] => 14
+    [name] => change
+)
+Array
+(
+    [indicator_id] => 15
+    [name] => after_hours_change
+)
+Array
+(
+    [indicator_id] => 16
+    [name] => trade_date
+)
+Array
+(
+    [indicator_id] => 17
+    [name] => eps_est_current_year
+)
+Array
+(
+    [indicator_id] => 18
+    [name] => float_shares
+)
+Array
+(
+    [indicator_id] => 19
+    [name] => 52_week_low
+)
+Array
+(
+    [indicator_id] => 20
+    [name] => annualized_gains
+)
+Array
+(
+    [indicator_id] => 21
+    [name] => holdings_gain
+)
+Array
+(
+    [indicator_id] => 22
+    [name] => market_capitalisation
+)
+Array
+(
+    [indicator_id] => 23
+    [name] => change_52_week_low
+)
+Array
+(
+    [indicator_id] => 24
+    [name] => change_percent
+)
+Array
+(
+    [indicator_id] => 25
+    [name] => percent_change_52_high
+)
+Array
+(
+    [indicator_id] => 26
+    [name] => high_limit
+)
+Array
+(
+    [indicator_id] => 27
+    [name] => days_range
+)
+Array
+(
+    [indicator_id] => 28
+    [name] => change_200_avg
+)
+Array
+(
+    [indicator_id] => 29
+    [name] => percent_change_50_day_avg
+)
+Array
+(
+    [indicator_id] => 30
+    [name] => open
+)
+Array
+(
+    [indicator_id] => 31
+    [name] => change_percent
+)
+Array
+(
+    [indicator_id] => 32
+    [name] => exdividend_date
+)
+Array
+(
+    [indicator_id] => 33
+    [name] => pe_ratio
+)
+Array
+(
+    [indicator_id] => 34
+    [name] => price_eps_est_nxt_yr
+)
+Array
+(
+    [indicator_id] => 35
+    [name] => short_ratio
+)
+Array
+(
+    [indicator_id] => 36
+    [name] => ticker_trend
+)
+Array
+(
+    [indicator_id] => 37
+    [name] => holdings_value
+)
+Array
+(
+    [indicator_id] => 38
+    [name] => days_value_change
+)
+Array
+(
+    [indicator_id] => 39
+    [name] => dividend_yield
+)
+Array
+(
+    [indicator_id] => 40
+    [name] => avg_daily_vol
+)
+Array
+(
+    [indicator_id] => 41
+    [name] => ask_real_time
+)
+Array
+(
+    [indicator_id] => 42
+    [name] => biz_size
+)
+Array
+(
+    [indicator_id] => 43
+    [name] => commission
+)
+Array
+(
+    [indicator_id] => 45
+    [name] => earnings_share
+)
+Array
+(
+    [indicator_id] => 49
+    [name] => days_low
+)
+Array
+(
+    [indicator_id] => 50
+    [name] => 52_week_high
+)
+Array
+(
+    [indicator_id] => 52
+    [name] => more_info
+)
+Array
+(
+    [indicator_id] => 53
+    [name] => market_cap_real_time
+)
+Array
+(
+    [indicator_id] => 54
+    [name] => perc_chg_52_week_low
+)
+Array
+(
+    [indicator_id] => 55
+    [name] => last_trade_size
+)
+Array
+(
+    [indicator_id] => 56
+    [name] => last_trade
+)
+Array
+(
+    [indicator_id] => 57
+    [name] => low_limit
+)
+Array
+(
+    [indicator_id] => 58
+    [name] => 50_day_moving_avg
+)
+Array
+(
+    [indicator_id] => 59
+    [name] => perc_change_from_200_day_avg
+)
+Array
+(
+    [indicator_id] => 60
+    [name] => name
+)
+Array
+(
+    [indicator_id] => 61
+    [name] => previous_close
+)
+Array
+(
+    [indicator_id] => 62
+    [name] => price_sales_ratio
+)
+Array
+(
+    [indicator_id] => 63
+    [name] => last_trade_time
+)
+Array
+(
+    [indicator_id] => 64
+    [name] => 1_yr_target_price
+)
+Array
+(
+    [indicator_id] => 66
+    [name] => day_value_change
+)
+Array
+(
+    [indicator_id] => 67
+    [name] => ask_size
+)
+Array
+(
+    [indicator_id] => 69
+    [name] => change_perc_change
+)
+Array
+(
+    [indicator_id] => 71
+    [name] => last_trade_date
+)
+Array
+(
+    [indicator_id] => 72
+    [name] => error
+)
+Array
+(
+    [indicator_id] => 73
+    [name] => eps_next_qtr
+)
+Array
+(
+    [indicator_id] => 74
+    [name] => days_high
+)
+Array
+(
+    [indicator_id] => 75
+    [name] => holdings_gain_percent
+)
+Array
+(
+    [indicator_id] => 76
+    [name] => holding_gain_perc_real_time
+)
+Array
+(
+    [indicator_id] => 77
+    [name] => order_book
+)
+Array
+(
+    [indicator_id] => 78
+    [name] => ebitda
+)
+Array
+(
+    [indicator_id] => 79
+    [name] => last_trade_with_time
+)
+Array
+(
+    [indicator_id] => 80
+    [name] => change_52_week_high
+)
+Array
+(
+    [indicator_id] => 81
+    [name] => last_trade
+)
+Array
+(
+    [indicator_id] => 82
+    [name] => days_range
+)
+Array
+(
+    [indicator_id] => 83
+    [name] => 200_day_mvg_avg
+)
+Array
+(
+    [indicator_id] => 84
+    [name] => change_from_50_day_avg
+)
+Array
+(
+    [indicator_id] => 85
+    [name] => notes
+)
+Array
+(
+    [indicator_id] => 86
+    [name] => price_paid
+)
+Array
+(
+    [indicator_id] => 87
+    [name] => dividend_pay_date
+)
+Array
+(
+    [indicator_id] => 88
+    [name] => price_eps_ratio_curr_year
+)

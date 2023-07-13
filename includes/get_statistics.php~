@@ -1,0 +1,33 @@
+<?php
+
+  require_once("constants.php");
+         include("functions.php");
+         include("share_functions.php");
+
+	$asOfDate=new DateTime();
+    $asOfDate->sub(new DateInterval('P1D'));
+	print_r( "Asofdate=".date_format($asOfDate,'Y-m-d')."\r\n");
+	
+	
+    //Get statistics to calculate
+	$indicators=get_stats_indicators();
+	foreach ($indicators as $indicator){
+		print_r( $indicator);
+		//Get statistics for each symbol
+		indicator_stats(date_format($asOfDate,'Y-m-d'),$indicator["name"],null);
+		
+	}	
+	
+    // Clear all Average statistics for the current date
+	query("delete from statistic_averages where date=?",date_format($asOfDate,'Y-m-d'));
+		
+	//Calculate Statistics averages
+	$indicators=query("select indicator from statistics where date=?",date_format($asOfDate,'Y-m-d'));
+	foreach ($indicators as $indicator){
+		$avg = query("SELECT x.indicator, x.value from statistics x, statistics y 
+			where x.date=? and x.indicator=? and x.date=y.date and x.indicator=y.indicator and x.value!=0 and y.value!=0
+			GROUP BY x.indicator,x.value HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5
+			LIMIT 1",date_format($asOfDate,'Y-m-d'),$indicator['indicator']);
+		query("insert into statistic_averages (date, category, indicator,type, value) values (?,?,?,?,?)",date_format($asOfDate,'Y-m-d'),'MARKET',$avg[0]['indicator'],'MEDIAN',$avg[0]['value']);
+	}
+ ?>

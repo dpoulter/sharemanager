@@ -1,0 +1,887 @@
+symbol=BKG.LDOMNodeList Object
+(
+    [length] => 4
+)
+2015-04-302014-04-302013-04-302012-04-30period idArray
+(
+    [0] => 7
+    [1] => 16
+    [2] => 17
+    [3] => 18
+)
+Get valuess for item :Total Revenueitem=Total Revenuevalue=2120000 
+value=1621000 
+value=1373000 
+value=1041000 
+Array
+(
+    [0] => 2120000
+    [1] => 1621000
+    [2] => 1373000
+    [3] => 1041000
+)
+Get valuess for item :Cost of Revenueitem=Cost of Revenuevalue=1403000 
+value=1112000 
+value=969000 
+value=746000 
+Array
+(
+    [0] => 1403000
+    [1] => 1112000
+    [2] => 969000
+    [3] => 746000
+)
+Get valuess for item :Research Developmentitem=Research Developmentvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Selling General and Administrativeitem=Selling General and Administrativevalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Non Recurringitem=Non Recurringvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Total Operating Expensesitem=Total Operating Expensesvalue=1596000 
+value=1246000 
+value=1093000 
+value=845000 
+Array
+(
+    [0] => 1596000
+    [1] => 1246000
+    [2] => 1093000
+    [3] => 845000
+)
+Get valuess for item :Operating Income or Lossitem=Operating Income or Lossvalue=524000 
+value=375000 
+value=280000 
+value=196000 
+Array
+(
+    [0] => 524000
+    [1] => 375000
+    [2] => 280000
+    [3] => 196000
+)
+Get valuess for item :Total Other Income/Expenses Netitem=Total Other Income/Expenses Netvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Earnings Before Interest And Taxesitem=Earnings Before Interest And Taxesvalue=524000 
+value=375000 
+value=280000 
+value=196000 
+Array
+(
+    [0] => 524000
+    [1] => 375000
+    [2] => 280000
+    [3] => 196000
+)
+Get valuess for item :Interest Expenseitem=Interest Expensevalue=(11000) 
+value=(6000) 
+value=(6000) 
+value=(5000) 
+Array
+(
+    [0] => (11000)
+    [1] => (6000)
+    [2] => (6000)
+    [3] => (5000)
+)
+Get valuess for item :Income Before Taxitem=Income Before Taxvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Income Tax Expenseitem=Income Tax Expensevalue=116000 
+value=87000 
+value=61000 
+value=57000 
+Array
+(
+    [0] => 116000
+    [1] => 87000
+    [2] => 61000
+    [3] => 57000
+)
+Get valuess for item :Minority Interestitem=Minority Interestvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Net Income From Continuing Opsitem=Net Income From Continuing Opsvalue=424000 
+value=293000 
+value=210000 
+value=158000 
+Array
+(
+    [0] => 424000
+    [1] => 293000
+    [2] => 210000
+    [3] => 158000
+)
+Get valuess for item :Discontinued Operationsitem=Discontinued Operationsvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Effect Of Accounting Changesitem=Effect Of Accounting Changesvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Other Itemsitem=Other Itemsvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Net Incomeitem=Net Incomevalue=424000 
+value=293000 
+value=210000 
+value=159000 
+Array
+(
+    [0] => 424000
+    [1] => 293000
+    [2] => 210000
+    [3] => 159000
+)
+Get valuess for item :Preferred Stock And Other Adjustmentsitem=Preferred Stock And Other Adjustmentsvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Net Income Applicable To Common Sharesitem=Net Income Applicable To Common Sharesvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+symbol=BKG.LDOMNodeList Object
+(
+    [length] => 4
+)
+2015-04-302014-04-302013-04-302012-04-30period idArray
+(
+    [0] => 7
+    [1] => 16
+    [2] => 17
+    [3] => 18
+)
+Get valuess for item :Cash And Cash Equivalentsitem=Cash And Cash Equivalentsvalue=431000 
+value=130000 
+value=67000 
+value=3000 
+Array
+(
+    [0] => 431000
+    [1] => 130000
+    [2] => 67000
+    [3] => 3000
+)
+Get valuess for item :Short Term Investmentsitem=Short Term Investmentsvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Net Receivablesitem=Net Receivablesvalue=138000 
+value=149000 
+value=118000 
+value=112000 
+Array
+(
+    [0] => 138000
+    [1] => 149000
+    [2] => 118000
+    [3] => 112000
+)
+Get valuess for item :Inventoryitem=Inventoryvalue=2654000 
+value=2481000 
+value=2067000 
+value=1852000 
+Array
+(
+    [0] => 2654000
+    [1] => 2481000
+    [2] => 2067000
+    [3] => 1852000
+)
+Get valuess for item :Other Current Assetsitem=Other Current Assetsvalue=
+             
+value=
+             
+value=76000 
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 76000
+    [3] => 
+            
+)
+Get valuess for item :Total Current Assetsitem=Total Current Assetsvalue=3231000 
+value=2770000 
+value=2336000 
+value=1970000 
+Array
+(
+    [0] => 3231000
+    [1] => 2770000
+    [2] => 2336000
+    [3] => 1970000
+)
+Get valuess for item :Long Term Investmentsitem=Long Term Investmentsvalue=62000 
+value=72000 
+value=44000 
+value=47000 
+Array
+(
+    [0] => 62000
+    [1] => 72000
+    [2] => 44000
+    [3] => 47000
+)
+Get valuess for item :Property Plant and Equipmentitem=Property Plant and Equipmentvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Goodwillitem=Goodwillvalue=17000 
+value=17000 
+value=17000 
+value=17000 
+Array
+(
+    [0] => 17000
+    [1] => 17000
+    [2] => 17000
+    [3] => 17000
+)
+Get valuess for item :Property Plant and Equipmentitem=Property Plant and Equipmentvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Goodwillitem=Goodwillvalue=17000 
+value=17000 
+value=17000 
+value=17000 
+Array
+(
+    [0] => 17000
+    [1] => 17000
+    [2] => 17000
+    [3] => 17000
+)
+Get valuess for item :Intangible Assetsitem=Intangible Assetsvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Other Assetsitem=Other Assetsvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Deferred Long Term Asset Chargesitem=Deferred Long Term Asset Chargesvalue=73000 
+value=61000 
+value=57000 
+value=25000 
+Array
+(
+    [0] => 73000
+    [1] => 61000
+    [2] => 57000
+    [3] => 25000
+)
+Get valuess for item :Total Assetsitem=Total Assetsvalue=3406000 
+value=2950000 
+value=2497000 
+value=2153000 
+Array
+(
+    [0] => 3406000
+    [1] => 2950000
+    [2] => 2497000
+    [3] => 2153000
+)
+Get valuess for item :Accounts Payableitem=Accounts Payablevalue=392000 
+value=347000 
+value=381000 
+value=370000 
+Array
+(
+    [0] => 392000
+    [1] => 347000
+    [2] => 381000
+    [3] => 370000
+)
+Get valuess for item :Short/Current Long Term Debtitem=Short/Current Long Term Debtvalue=
+             
+value=1000 
+value=22000 
+value=61000 
+Array
+(
+    [0] => 
+            
+    [1] => 1000
+    [2] => 22000
+    [3] => 61000
+)
+Get valuess for item :Short/Current Long Term Debtitem=Short/Current Long Term Debtvalue=
+             
+value=1000 
+value=22000 
+value=61000 
+Array
+(
+    [0] => 
+            
+    [1] => 1000
+    [2] => 22000
+    [3] => 61000
+)
+Get valuess for item :Total Current Liabilitiesitem=Total Current Liabilitiesvalue=1576000 
+value=1312000 
+value=1031000 
+value=1011000 
+Array
+(
+    [0] => 1576000
+    [1] => 1312000
+    [2] => 1031000
+    [3] => 1011000
+)
+Get valuess for item :Long Term Debtitem=Long Term Debtvalue=
+             
+value=
+             
+value=
+             
+value=13000 
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 13000
+)
+Get valuess for item :Other Liabilitiesitem=Other Liabilitiesvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Deferred Long Term Liability Chargesitem=Deferred Long Term Liability Chargesvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Minority Interestitem=Minority Interestvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Negative Goodwillitem=Negative Goodwillvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Total Liabilitiesitem=Total Liabilitiesvalue=1768000 
+value=1509000 
+value=1175000 
+value=1054000 
+Array
+(
+    [0] => 1768000
+    [1] => 1509000
+    [2] => 1175000
+    [3] => 1054000
+)
+Get valuess for item :Misc Stocks Options Warrantsitem=Misc Stocks Options Warrantsvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Redeemable Preferred Stockitem=Redeemable Preferred Stockvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Preferred Stockitem=Preferred Stockvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Common Stockitem=Common Stockvalue=56000 
+value=56000 
+value=56000 
+value=56000 
+Array
+(
+    [0] => 56000
+    [1] => 56000
+    [2] => 56000
+    [3] => 56000
+)
+Get valuess for item :Retained Earningsitem=Retained Earningsvalue=2518000 
+value=2318000 
+value=2199000 
+value=1977000 
+Array
+(
+    [0] => 2518000
+    [1] => 2318000
+    [2] => 2199000
+    [3] => 1977000
+)
+Get valuess for item :Treasury Stockitem=Treasury Stockvalue=(937000) 
+value=(933000) 
+value=(933000) 
+value=(933000) 
+Array
+(
+    [0] => (937000)
+    [1] => (933000)
+    [2] => (933000)
+    [3] => (933000)
+)
+Get valuess for item :Capital Surplusitem=Capital Surplusvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Other Stockholder Equityitem=Other Stockholder Equityvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Total Stockholder Equityitem=Total Stockholder Equityvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+Get valuess for item :Net Tangible Assetsitem=Net Tangible Assetsvalue=
+             
+value=
+             
+value=
+             
+value=
+             
+Array
+(
+    [0] => 
+            
+    [1] => 
+            
+    [2] => 
+            
+    [3] => 
+            
+)
+symbol=BKG.L 
+DOMNodeList Object
+(
+    [length] => 28
+)
+item=Year Ago EPSvalue=N/A 
+value=N/A 
+value=263.60 
+value=245.16 
+item=Avg. Estimatevalue=N/A 
+value=N/A 
+value=245.16 
+value=369.68 
+Array
+(
+    [0] => Array
+        (
+            [indicator] => last_eps
+            [value] => 263.60
+        )
+
+    [1] => Array
+        (
+            [indicator] => eps_est_nxt_year
+            [value] => 369.68
+        )
+
+)
