@@ -1,0 +1,1094 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+  
+  <style type="text/css">
+    	.badge-danger {
+		  background-color: #d43f3a;
+		}
+		
+		.badge-warning {
+		background-color: #d58512;
+		}
+		
+		.badge-success {
+		background-color: #398439;
+		}
+		
+		.badge-info {
+		background-color: #269abc;
+		}
+    	</style>
+   
+    	
+		
+        <title><?=$title?></title>
+        
+        <script>
+			$(document).ready(function(){
+    			$('[data-toggle="tooltip"]').tooltip();
+			});
+		</script>
+		<script type="text/javascript">
+			function load_piotroski_modal(){
+				$('#PiotroskiModal').modal('show');
+			}
+		</script>
+		<script type="text/javascript">
+			function load_altman_modal(){
+				$('#AltmanModal').modal('show');
+			}
+		</script>
+		<script type="text/javascript">
+			function load_altman_nonman_modal(){
+				$('#Altman2Modal').modal('show');
+			}
+		</script>
+		<script type="text/javascript">	
+			function load_relative_sector_modal(){
+				$('#RelativeSectorModal').modal('show');
+			}
+		</script>
+		<script type="text/javascript">	
+			function load_relative_industry_modal(){
+				$('#RelativeIndustryModal').modal('show');
+			}
+		</script>
+		<script>	
+			function load_momentum_modal(){
+				document.getElementById('demo').innerHTML = Date()
+
+				
+				$('#MomentumModal').modal('show');
+			}
+		</script>
+		<script type="text/javascript">	
+			function load_value_modal(){
+				$('#ValueModal').modal('show');
+			}
+		</script>
+		<script type="text/javascript">	
+			function load_quality_modal(){
+				$('#QualityModal').modal('show');
+			}
+		</script>
+    </head>
+
+	
+    <body>
+    
+    <div class="container">
+  <h2>Modal Login Example</h2>
+  <!-- Trigger the modal with a button -->
+  <button type="button" class="btn btn-default btn-lg" id="myBtn">Login</button>
+
+  <!-- Modal -->
+  <div class="modal fade" id="myModal" role="dialog">
+    <div class="modal-dialog">
+    
+      <!-- Modal content-->
+      <div class="modal-content">
+        <div class="modal-header" style="padding:35px 50px;">
+          <button type="button" class="close" data-dismiss="modal">&times;</button>
+          <h4><span class="glyphicon glyphicon-lock"></span> Login</h4>
+        </div>
+        <div class="modal-body" style="padding:40px 50px;">
+          <form role="form">
+            <div class="form-group">
+              <label for="usrname"><span class="glyphicon glyphicon-user"></span> Username</label>
+              <input type="text" class="form-control" id="usrname" placeholder="Enter email">
+            </div>
+            <div class="form-group">
+              <label for="psw"><span class="glyphicon glyphicon-eye-open"></span> Password</label>
+              <input type="text" class="form-control" id="psw" placeholder="Enter password">
+            </div>
+            <div class="checkbox">
+              <label><input type="checkbox" value="" checked>Remember me</label>
+            </div>
+              <button type="submit" class="btn btn-success btn-block"><span class="glyphicon glyphicon-off"></span> Login</button>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-danger btn-default pull-left" data-dismiss="modal"><span class="glyphicon glyphicon-remove"></span> Cancel</button>
+          <p>Not a member? <a href="#">Sign Up</a></p>
+          <p>Forgot <a href="#">Password?</a></p>
+        </div>
+      </div>
+      
+    </div>
+  </div> 
+</div>
+    
+		<div class="container">
+		
+			<div class="row">
+			    <div class="col-md-7">
+			     <h3><?=$share_info["name"]?> (<?=$title?>)</h3> 
+			    </div>
+			    <div class="col-md-5">
+			    	<form role="form" action="quote.php" method="post">
+	 					<div class="form-group col-md-9" id="search">
+							<input  class="form-control typeahead"  type="text" name="symbol" placeholder="Enter Symbol"/>
+						</div>
+						<div class="form-group">
+							<button type="submit" class="btn btn-default">Lookup</button>
+			
+        				</div>
+        				
+					</form>
+			    </div>
+			</div>
+			<div class="row">
+			    <div class="col-md-6">
+			    	<?php if ($share_info["change"]>0)
+							$arrow='/img/16px-Green-Up-Arrow.svg.png';
+						elseif ($share_info["change"]<0) 
+							$arrow='/img/16px-RedDownArrow.svg.png';
+						else $arrow='';
+					?>
+			     <h4> <?=$share_info["price"]?> (<?=$share_info["change"]?>)  <img src="<?php print($arrow)?>"></img></h4>
+			    </div>
+			 </div>
+		</div>
+      	<div class="container">
+      		<div class="row">
+      			<div class="col-md-8">
+      				<div class="row">
+      				<div class="panel panel-default">
+						<div class="panel-body">
+	      					<div class="row">
+						      	<div class="col-md-3">
+								     <b>Symbol</b>
+							    </div>
+							    <div class="col-md-3">
+							     <?=$title?>
+							    </div>
+							    <div class="col-md-3">
+							     <b>Mkt cap</b>
+							    </div>
+							    <div class="col-md-3">
+							     <?=$share_info["capital"]?>
+							    </div>
+							</div>
+						    <div class="row">
+						      	<div class="col-md-3">
+								     <b>Price</b>
+							    </div>
+							    <div class="col-md-3">
+							     <?=$share_info["price"]?>
+							    </div>
+							    <div class="col-md-3">
+							     <b>Shares</b>
+							    </div>
+							    <div class="col-md-3">
+							     <?=$share_info["shares"]?>
+							    </div>
+						    </div>
+						    <div class="row">
+					      		<div class="col-md-3">
+							     <b>52 Wk Low</b>
+							    </div>
+							    <div class="col-md-3">
+							     <?=$share_info["52w_low"]?>
+							    </div>
+							    <div class="col-md-3">
+							     <b>52 Wk High</b>
+							    </div>
+							    <div class="col-md-3">
+							     <?=$share_info["52w_high"]?>
+							    </div>
+						    </div>
+						</div>
+					</div>
+					</div>
+					<div class="row">
+						<div class="panel panel-default">
+							<div class="panel-body">
+								<img src="stockgraph.php?symbol=<?=$symbol?>&timespan=<?=$timespan?>"></img>
+							</div>
+							<form action="quote.php">
+							 <input type="hidden" value="<?=$symbol?>" name="symbol"></input>
+								<table>
+									<thead>
+										
+										<tr>
+											<td><small>Timespan</small></td>
+											<td>
+												<select name="timespan" value="1d">
+												  <option <?php if ($timespan=='1m'): ?>selected="selected" <?php endif?> value="1m">1 Month</option>
+												  <option <?php if ($timespan=='3m'): ?>selected="selected" <?php endif?>value="3m">3 Months</option>
+												  <option <?php if ($timespan=='6m'): ?>selected="selected" <?php endif?>value="6m">6 Months</option>
+												  <option <?php if ($timespan=='1y'): ?>selected="selected" <?php endif?>value="1y">1 Year</option>
+												  <option <?php if ($timespan=='2y'): ?>selected="selected" <?php endif?>value="2y">2 Years</option>
+												  <option <?php if ($timespan=='5y'): ?>selected="selected" <?php endif?>value="5y">5 Years</option>
+												  <option <?php if ($timespan=='10y'): ?>selected="selected" <?php endif?>value="10y">10 Years</option>
+												</select> 
+											</td>
+											<td><small>   Type</small></td>
+											<td>
+												<select name="type" value="l">
+												  <option value="l">Line</option>
+												  <option value="b">Bar</option>
+												  <option value="c">Candle</option>
+												</select> 
+											</td>
+											<td>
+												<input type="submit" class="btn btn-link" value="Go">
+											</td>
+										</tr>
+									</thead>
+								</table>	
+									
+							</form>
+						</div>
+						
+					</div>
+				</div>
+				<div class="col-md-4">
+						
+					<div class="panel panel-default">
+					
+  						<div class="panel-body">
+  							
+								
+  						
+  							<ul class="list-group">
+	  							<?php if ($scores['momentum'] <= 25)
+										 $badge_color='badge-danger';
+									  elseif ($scores['momentum'] <= 50)
+									  	$badge_color='badge-warning';
+									  elseif ($scores['momentum'] <= 75)
+									  	$badge_color='badge-info';
+									  elseif ($scores['momentum'] <= 100)
+									  	$badge_color='badge-success';
+								?>
+  								<li class="list-group-item">
+    								<span class="badge <?php print($badge_color)?>"><?php print(round($scores['momentum'],0))?></span>
+    								<a href="#momentum" onclick="load_momentum_modal()">Momentum</a>
+    							</li>
+    							<?php if ($scores['value'] <= 25)
+										 $badge_color='badge-danger';
+									  elseif ($scores['value'] <= 50)
+									  	$badge_color='badge-warning';
+									  elseif ($scores['value'] <= 75)
+									  	$badge_color='badge-info';
+									  elseif ($scores['value'] <= 100)
+									  	$badge_color='badge-success';
+								?>
+								<p id="demo"></p>
+	  							<li class="list-group-item">
+	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['value'],0))?></span>
+	    							<a href="#value" onclick="load_value_modal()">Value</a>
+	  							</li>
+						
+	  							<?php if ($scores['quality'] <= 25)
+										 $badge_color='badge-danger';
+									  elseif ($scores['quality'] <= 50)
+									  	$badge_color='badge-warning';
+									  elseif ($scores['quality'] <= 75)
+									  	$badge_color='badge-info';
+									  elseif ($scores['quality'] <= 100)
+									  	$badge_color='badge-success';
+								?>
+								<li class="list-group-item">
+	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['quality'],0))?></span>
+	    							<a href="#quality" onclick="load_quality_modal()">Quality</a>
+	  							</li>
+							</ul>
+		  				</div>
+		  		
+		  		
+  						<div class="panel-footer">
+	  						<?php if ($scores['overall'] <= 25)
+										 $badge_color='badge-danger';
+									  elseif ($scores['overall'] <= 50)
+									  	$badge_color='badge-warning';
+									  elseif ($scores['overall'] <= 75)
+									  	$badge_color='badge-info';
+									  elseif ($scores['overall'] <= 100)
+									  	$badge_color='badge-success';
+								?>
+	  						<ul class="list-group">
+	  							<li class="list-group-item">
+	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['overall'],0))?></span>
+	    							ShareRank
+	  							</li>
+							</ul>
+  						
+  						</div>
+					</div>
+				
+				<!--
+					<div class="panel panel-default">
+						<div class="panel-heading">
+							Health Indicators
+						</div>
+		  				<div class="panel-body">
+		  					<table class="table">
+		  						<tr>
+		  							<td width="80%"><a href="#Piotroski" onclick="load_piotroski_modal()">Piotroski F-Score</a></td>
+		  							
+		  							<td style="text-align:right">
+		  							<?php if ($piotroski_fscore <= 2)
+											 $state='label-danger';
+										  elseif ($piotroski_fscore <= 5)
+										  	$state='label-warning';
+										  elseif ($piotroski_fscore <= 7)
+										  	$state='label-info';
+										  elseif ($piotroski_fscore <= 9)
+										  	$state='label-success';
+									?>
+									
+									<span class="label <?php print($state)?>"><?php print($piotroski_fscore)?>	</span>
+		  							</td>
+		  						</tr>
+		  						<tr>
+		  						<td width="80%"><a href="#Altman" onclick="load_altman_modal()">Altman Z-Score (manufacturing)</a></td>	
+		  						<td style="text-align:right">
+		  						<?php if ($altman_zscore < 1.81)
+											 $state='label-danger';
+										  elseif ($altman_zscore < 2.675)
+										  	$state='label-warning';
+										  elseif ($altman_zscore <= 2.99)
+										  	$state='label-info';
+										  elseif ($altman_zscore >= 3.0)
+										  	$state='label-success';
+									?>
+									
+									<span class="label <?php print($state)?>"><?php print($altman_zscore)?>	</span>
+									
+		  						</td>
+		  						</tr>
+		  						<tr>
+		  						<td width="80%"><a href="#AltmanNonman" onclick="load_altman_nonman_modal()">Altman Z-Score (non manufacturing)</a></td>	
+		  						<td style="text-align:right">
+		  						<?php if ($altman_zscore_nonman < 1.2)
+											 $state='label-danger';
+										  elseif ($altman_zscore_nonman <= 2.6)
+										  	$state='label-info';
+										  elseif ($altman_zscore_nonman > 2.6)
+										  	$state='label-success';
+									?>
+									
+									<span class="label <?php print($state)?>"><?php print($altman_zscore_nonman)?>	</span>
+									
+		  						</td>
+		  						</tr>
+		  						
+		  					</table>
+		  					
+		  					
+		    						
+		  				</div>
+	  				</div>
+	  				
+				-->
+				
+					
+	  				
+	  				<div class="panel panel-default">
+	  					<div class="panel-heading">
+							Price Valuation
+						</div>
+						<div class="panel-body">
+							<table class="table">
+							<tr>
+								<?php 
+									if ($valuation['ratio'] <= 25)
+							 			$label_color='label-danger';
+						  	  		elseif ($valuation['ratio'] <= 50)
+						  				$label_color='label-warning';
+						  	  		elseif ($valuation['ratio'] <= 100)
+						  				$label_color='label-info';
+						  	  		elseif ($valuation['ratio'] > 100)
+						  				$label_color='label-success';
+					 				
+									 $ratio=$valuation['ratio'];
+					 			?>
+								<td width="80%">
+									<a href="#RelativeSector" onclick="load_relative_sector_modal()">Relative to Sector</a>  <?php $valuation['ratio']?>
+								</td>	
+		  						<td style="text-align:right">
+		  							<span data-toggle="tooltip" title="<?php print($ratio)?>%" class="label <?php print($label_color)?>"><?php print($valuation["value"])?></span>
+								</td>
+							</tr>
+							<tr>
+								
+								<?php 
+									if ($industry_valuation['ratio'] <= 25)
+							 			$label_color='label-danger';
+						  	  		elseif ($industry_valuation['ratio'] <= 50)
+						  				$label_color='label-warning';
+						  	  		elseif ($industry_valuation['ratio'] <= 100)
+						  				$label_color='label-info';
+						  	  		elseif ($industry_valuation['ratio'] > 100)
+						  				$label_color='label-success';
+					 				
+									 $ratio=$industry_valuation['ratio'];
+					 			?>
+								<td width="80%">
+									<a href="#RelativeIndustry" onclick="load_relative_industry_modal()">Relative to Industry</a>  <?php $industry_valuation['ratio']?>
+								</td>	
+		  						<td style="text-align:right">
+		  							<span data-toggle="tooltip" title="<?php print($ratio)?>%" class="label <?php print($label_color)?>"><?php print($industry_valuation["value"])?></span>
+								</td>
+							</tr>
+							</table>
+	  					</div>
+	  				</div>
+	  				
+	  			
+	  				
+	  				
+				</div>
+			</div>
+		</div>
+		</br>
+		<div class="container">
+			<div class="row">
+				<ul class="nav nav-tabs" id="myTab" data-tabs="tabs">
+				    <li role="presentation" class="active"><a data-toggle="tab" href="#profile">Profile</a></li>
+					<li role="presentation"><a data-toggle="tab" href="#news">News</a></li>
+					<li role="presentation"><a data-toggle="tab" href="#statistics">Ratios</a></li>
+				<!--	<li role="presentation" ><a data-toggle="tab" href="#financials">Financial Statements</a></li>
+				-->
+				
+		   		</ul>
+	    		<div class="tab-content">
+   	 				<div class="tab-pane active" id="profile">
+   	 					<?php $profile=get_profile($symbol); ?>
+   	 					<div class="container">
+	 						<div class="col-md-6">
+					 			<table  class="table">
+						 			<tr>
+						 				<td><b>Business Summary</b></td>
+						 			</tr>
+					 				<tr>
+											<td><?php print($profile['description']) ?><td>
+									</tr>
+									
+								</table>
+   	    		
+	 						</div>
+					 		<div class="col-md-6">
+					 			<table  class="table">
+						 			<tr>
+						 				<td><b>Sector</b></td><td><a href="<?php print("sector_companies.php?sector=".$share_info["sector"])?>"><?php print($share_info["sector"])?></td>
+						 			</tr>
+						 			<tr>
+						 				<td><b>Industry Group</b></td><td><?php print($share_info["industry_group"])?></td>
+						 			</tr>
+						 			<tr>
+						 				<td><b>Industry</b></td><td><?php print($share_info["industry"])?></td>
+						 			</tr>
+					 				<tr>
+											<td><b>Website</b></td><td><?php if($profile['website']!='N/A') print('<a target="_blank" href="'.$profile['website'].'">'.$profile['website'].'</a>'); else print('N/A');?></td>
+									</tr>
+									<tr>
+											<td><b>Employees</b></td><td><?php print($profile['employees']) ?></td>
+									</tr>
+									<tr>
+											<td><b>Directors</b></td><td><?php print($profile['directors']) ?></td>
+									</tr>
+									<tr>
+											<td></td><td><?php print('<img alt="" src="'.$profile['logo'].'"></img>') ?> </td><td></td>
+									</tr>
+								</table>
+								
+					 			
+					 		</div>
+	 
+	 					</div>
+	 				</div>
+					<div class="tab-pane" id="news">
+					
+					 	
+					    <?php $articles=get_articles($symbol);
+						foreach($articles as $article):?>
+						 	<div class="container">
+			      				<div class="row">
+			      					<?php print ($article["description"]); ?>
+				      			</div>
+			         		</div>
+			         	<?php endforeach?>
+			      	</div>
+					<div class="tab-pane" id="statistics" >
+						
+						<?php $i=0; foreach ($quote as $category_indicator): ?>
+							
+								<?php if (($i % 2) == 0): ?>
+									<div class="row">
+				  				<?php endif?>	
+				  				
+				  				<?php if ($category_indicator["category"]["name"]!='other'): ?>
+								
+										<div class="col-md-6">
+											<div class="panel panel-default">
+							  					<div class="panel-heading"><?= $category_indicator["category"]["description"]?></div>
+							  					<div class="panel-body">
+							  						<table class="table table-striped table-bordered table-condensed">
+											    
+														<thead>
+														<tr><th width="20%"></th><th width="20%">Share</th><th width="20%">Sector</th><th width="20%">Market</th ><th width="20%">Rank</th></tr>
+														</thead>
+														<tbody>
+														<?php foreach ($category_indicator["indicators"] as $indicator): ?>
+															
+															<tr><td width="20%"><?php print($indicator["description"]);?></td><td width="20%"> <?php print ($indicator["value"] ); ?> </td><td width="20%"><?php print($indicator["sector_average"]);?></td>
+																
+																	<td width="20%">
+																		<?php print($indicator["market_average"]);?>
+																	</td>
+																	<td width="20%">	
+																		<div class="progress">
+																			<?php if ($indicator["percentile"] <= 25)
+																			 	$progress_bar='progress-bar-danger';
+																		  	  elseif ($indicator["percentile"] <= 50)
+																		  		$progress_bar='progress-bar-warning';
+																		  	  elseif ($indicator["percentile"] <= 75)
+																		  		$progress_bar='progress-bar-info';
+																		  	  elseif ($indicator["percentile"] <= 100)
+																		  		$progress_bar='progress-bar-success';
+																	 		?>
+																			<div class="progress-bar <?php print ($progress_bar); ?>" role="progressbar" aria-valuenow="<?php print($indicator["percentile"]);?>" aria-valuemin="0" aria-valuemax="100" style="width:<?php print($indicator["percentile"]);?>%"><?php print($indicator["percentile"]);?>
+																			</div>
+																		</div>
+																		
+																	</td>
+														
+															</tr>
+														<?php endforeach?>
+														</tbody>
+												
+							                 		</table>
+							                 	</div>
+											</div>
+										</div>
+										
+								<?php endif?>
+								
+								<?php if (($i % 2) == 1): ?>
+									</div>
+				  				<?php endif?>	
+								
+						<?php $i++; endforeach; ?>
+						
+						<?php if (($i % 2) == 1): ?>
+									</div>
+				  		<?php endif?>	
+						
+			        </div>
+  
+		<div class="tab-pane" id="financials" >
+			<ul class="nav nav-pills">
+				<li class="active"><a data-toggle="pill" href="#incomestatement">Income Statement</a></li>
+				<li><a data-toggle="pill" href="#balancesheet">Balance Sheet</a></li>
+				<li><a data-toggle="pill" href="#cashflowstatement">Cash Flow Statement</a></li>
+			</ul>
+			<div class="tab-content">
+				<div class="tab-pane active" id="incomestatement">
+						<table class="table table-striped table-bordered">
+							<tr><td>Numbers in millions</td></tr>
+							<tr><td></td><?php for ($i=0; $i<count($incomestatement['periods']);$i++): ?><td> <strong><?php print($incomestatement['periods'][$i]["end_date"])?></strong></td><?php endfor?></tr>
+							<?php foreach ($incomestatement["period_items"] as $period_item ): ?>
+								<tr><td><?php print($period_item['description'])?></td><?php for ($i=0; $i<count($period_item['values']);$i++): ?><td><?php print($period_item['values'][$i])?></td><?php endfor?></tr>
+							<?php endforeach?>
+							<tr><td></td></tr>
+						 </table>
+				</div>
+				<div class="tab-pane" id="balancesheet">
+						<table class="table table-striped table-bordered">
+							<tr><td>Numbers in millions</td></tr>
+							<tr><td></td><?php for ($i=0; $i<count($balancesheet['periods']);$i++): ?><td> <strong><?php print($balancesheet['periods'][$i]["end_date"])?></strong></td><?php endfor?></tr>
+							<?php foreach ($balancesheet["period_items"] as $period_item ): ?>
+								<tr><td><?php  print($period_item['description'])?></td><?php for ($i=0; $i<count($period_item['values']);$i++): ?><td><?php print($period_item['values'][$i])?></td><?php endfor?></tr>
+							<?php endforeach?>
+							<tr><td></td></tr>
+						 </table>
+				</div>
+				<div class="tab-pane" id="cashflowstatement">
+						<table class="table table-striped table-bordered">
+							<tr><td>Numbers in millions</td></tr>
+							<tr><td></td><?php for ($i=0; $i<count($cashflowstatement['periods']);$i++): ?><td> <strong><?php print($cashflowstatement['periods'][$i]["end_date"])?></strong></td><?php endfor?></tr>
+							<?php foreach ($cashflowstatement["period_items"] as $period_item ): ?>
+								<tr><td><?php  print($period_item['description'])?></td><?php for ($i=0; $i<count($period_item['values']);$i++): ?><td><?php print($period_item['values'][$i])?></td><?php endfor?></tr>
+							<?php endforeach?>
+							<tr><td></td></tr>
+						 </table>
+				</div>
+			</div>
+		
+		</div>
+		<div class="tab-pane" id="ratings" >
+			
+			<table class="table table-striped table-bordered">
+				<tr><th>Rating</th><th>Value out of 5</th></tr>
+				<tr><td>Momentum Rating</td><td><?=$ratings["momentum_rating"]?></td></tr>
+				<tr><td>Growth Rating</td><td><?=$ratings["growth_rating"]?></td></tr>
+				<tr><td>Value Rating</td><td><?=$ratings["value_rating"]?></td></tr>
+				<tr><td>Quality Rating</td><td><?=$ratings["quality_rating"]?></td></tr>
+				<tr><td><b>Overall Rating</b></td><td><b><?=$ratings["overall_rating"]?></b></td></tr>
+			</table>
+			<table class="table table-striped table-bordered">
+				<tr>
+				<td>
+				<table class="table table-striped table-bordered">
+				<tr><th>Momentum Statistics</th><th></th></tr>
+				<?php foreach($momentum_statistics as $momentum): ?><tr> <td><?php print($momentum["description"])?></td><td><?php print($momentum["value"])?></td></tr><?php endforeach?>
+				</table>
+				</td>
+				<td>
+				<table class="table table-striped table-bordered">
+				<tr><th>Growth Statistics</th><th></th></tr>
+				<?php foreach($growth_statistics as $growth): ?><tr> <td><?php print($growth["description"])?></td><td><?php print($growth["value"])?></td></tr><?php endforeach?>
+				</table>
+				</td>
+				</tr>
+				<tr>
+				<td>
+				<table class="table table-striped table-bordered">
+				<tr><th>Value Statistics</th><th></th></tr>
+				<?php foreach($value_statistics as $value): ?><tr> <td><?php print($value["description"])?></td><td><?php print($value["value"])?></td></tr><?php endforeach?>
+				</table>
+				</td>
+				<td>
+				<table class="table table-striped table-bordered">
+				<tr><th>Quality Statistics</th><th></th></tr>
+				<?php foreach($quality_statistics as $quality): ?><tr> <td><?php print($quality["description"])?></td><td><?php print($quality["value"])?></td></tr><?php endforeach?>
+				</table>
+				</td>
+				</tr>
+			</table>
+		
+			
+		</div>
+		
+		
+        
+        <div id="QualityModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="QualityModal" aria-hidden="true">
+			  <div class="modal-dialog modal-lg">
+			  	
+			    <div class="modal-content">
+			    	<div class="modal-header">
+          				<h4 class="modal-title">Quality</h4>
+        			</div>
+					<div class="modal-body">
+						<table class="table borderless">
+			    
+						<thead>
+						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market</th><th width="25%">Rank</th></tr>
+						</thead>
+						<tbody>
+							<?php foreach($qualityranks as $qualityrank): ?>
+							<tr>
+								<td width="25%"><?php print($qualityrank["description"]);?></td>
+								<td width="25%"> <?php print ($qualityrank["share_value"] ); ?> </td>
+								<td width="25%"><?php print($qualityrank["market_value"]);?></td>
+								<td width="25%">
+									<div class="progress">
+										<?php if ($qualityrank["percentile"] <= 25)
+												 $progress_bar='progress-bar-danger';
+											  elseif ($qualityrank["percentile"] <= 50)
+											  	$progress_bar='progress-bar-warning';
+											  elseif ($qualityrank["percentile"] <= 75)
+											  	$progress_bar='progress-bar-info';
+											  elseif ($qualityrank["percentile"] <= 100)
+											  	$progress_bar='progress-bar-success';
+										 ?>
+										<div class="progress-bar <?php print ($progress_bar); ?>" role="progressbar" aria-valuenow="<?php print($qualityrank["percentile"]);?>" aria-valuemin="0" aria-valuemax="100" style="width:<?php print($qualityrank["percentile"]);?>%"><?php print($qualityrank["percentile"]);?></div>
+									</d
+							</tr>
+							<?php endforeach?>
+						</tbody>
+		
+                 		</table>
+                 </div>
+                 
+                 
+		        <div class="modal-footer">
+          			<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        		</div>         		
+		 				
+			    </div>
+			    
+			  </div>
+		
+			</div>
+			
+			
+			
+        <div id="MomentumModal" class="modal fade" tabindex="-1" role="dialog" >
+			  <div class="modal-dialog">
+			  	
+			    <div class="modal-content">
+			    	<div class="modal-header">
+          				<h4 class="modal-title">Momentum</h4>
+        			</div>
+					<div class="modal-body">
+						<table class="table borderless">
+			    
+						<thead>
+						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market</th><th width="25%">Rank</th></tr>
+						</thead>
+						<tbody>
+							<?php foreach($momentumranks as $momentumrank): ?>
+							<tr>
+								<td width="25%"><?php print($momentumrank["description"]);?></td>
+								<td width="25%"> <?php print ($momentumrank["share_value"] ); ?> </td>
+								<td width="25%"><?php print($momentumrank["market_value"]);?></td>
+								<td width="25%">
+									<div class="progress">
+										<?php if ($momentumrank["percentile"] <= 25)
+												 $progress_bar='progress-bar-danger';
+											  elseif ($momentumrank["percentile"] <= 50)
+											  	$progress_bar='progress-bar-warning';
+											  elseif ($momentumrank["percentile"] <= 75)
+											  	$progress_bar='progress-bar-info';
+											  elseif ($momentumrank["percentile"] <= 100)
+											  	$progress_bar='progress-bar-success';
+										 ?>
+										<div class="progress-bar <?php print ($progress_bar); ?>" role="progressbar" aria-valuenow="<?php print($momentumrank["percentile"]);?>" aria-valuemin="0" aria-valuemax="100" style="width:<?php print($momentumrank["percentile"]);?>%"><?php print($momentumrank["percentile"]);?></div>
+									</div>
+								</td>
+							</tr>
+							<?php endforeach?>
+						</tbody>
+		
+                 		</table>
+                 </div>
+		        <div class="modal-footer">
+          			<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        		</div>         		
+		 				
+			    </div>
+			    
+			  </div>
+		
+			</div>
+			
+			<div id="ValueModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="ValueModal" aria-hidden="true">
+			  <div class="modal-dialog modal-lg">
+			  	
+			    <div class="modal-content">
+			    	<div class="modal-header">
+          				<h4 class="modal-title">Value</h4>
+        			</div>
+					<div class="modal-body">
+						<table class="table borderless">
+			    
+						<thead>
+						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market</th><th width="25%">Rank</th></tr>
+						</thead>
+						<tbody>
+							<?php foreach($valueranks as $valuerank): ?>
+							<tr>
+								<td width="25%"><?php print($valuerank["description"]);?></td>
+								<td width="25%"> <?php print ($valuerank["share_value"] ); ?> </td>
+								<td width="25%"><?php print($valuerank["market_value"]);?></td>
+								<td width="25%">
+									<div class="progress">
+										<?php if ($valuerank["percentile"] <= 25)
+												 $progress_bar='progress-bar-danger';
+											  elseif ($valuerank["percentile"] <= 50)
+											  	$progress_bar='progress-bar-warning';
+											  elseif ($valuerank["percentile"] <= 75)
+											  	$progress_bar='progress-bar-info';
+											  elseif ($valuerank["percentile"] <= 100)
+											  	$progress_bar='progress-bar-success';
+										 ?>
+										<div class="progress-bar <?php print ($progress_bar); ?>" role="progressbar" aria-valuenow="<?php print($valuerank["percentile"]);?>" aria-valuemin="0" aria-valuemax="100" style="width:<?php print($valuerank["percentile"]);?>%"><?php print($valuerank["percentile"]);?></div>
+									</div>
+								</td>
+							</tr>
+							<?php endforeach?>
+						</tbody>
+		
+                 		</table>
+                  </div>
+		        <div class="modal-footer">
+          			<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        		</div>         		
+		 				
+			    </div>
+			    
+			  </div>
+		
+			</div>
+                 
+                 
+			
+         <div id="RelativeSectorModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="RelativeSectorModal" aria-hidden="true">
+			  <div class="modal-dialog modal-lg">
+			  	
+			    <div class="modal-content">
+			    	<div class="modal-header">
+          				<h4 class="modal-title">Relative to Sector</h4>
+        			</div>
+					<div class="modal-body">
+						<table class="table borderless">
+			    
+						<th>Ratio</th><th>Share</th><th>Sector</th><th>Price</th>
+						<tbody>
+							<?php foreach($relative_sector_valuations as $sector_valuation): ?>
+							<tr>
+								<td width="25%"><?php print($sector_valuation["indicator"]);?></td>
+								<td width="25%"> <?php print ($sector_valuation["share_stat"] ); ?> </td>
+								<td width="25%"> <?php print ($sector_valuation["sector_stat"] ); ?> </td>
+								<td width="25%"> <?php print ($sector_valuation["value"] ); ?> </td>
+							</tr>
+							
+							<?php endforeach?>
+							<tr>
+								<td width="25%"><h5>Average</h5></td>
+								<td width="25%">  </td>
+								<td width="25%">  </td>
+								<td width="25%"> <h5><?php print ($valuation["value"] ); ?></h5> </td>
+							</tr>
+						</tbody>
+		
+                 		</table>
+                 </div>
+		        <div class="modal-footer">
+          			<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        		</div>         		
+		 				
+			    </div>
+			    
+			  </div>
+		
+			</div>
+        
+         <div id="RelativeIndustryModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="RelativeIndustryModal" aria-hidden="true">
+			  <div class="modal-dialog modal-lg">
+			  	
+			    <div class="modal-content">
+			    	<div class="modal-header">
+          				<h4 class="modal-title">Relative to Industry</h4>
+        			</div>
+					<div class="modal-body">
+						<table class="table borderless">
+			    
+						<th>Ratio</th><th>Share</th><th>Industry</th><th>Price</th>
+						<tbody>
+							<?php foreach($relative_industry_valuations as $valuation): ?>
+							<tr>
+								<td width="25%"><?php print($valuation["indicator"]);?></td>
+								<td width="25%"> <?php print ($valuation["share_stat"] ); ?> </td>
+								<td width="25%"> <?php print ($valuation["industry_stat"] ); ?> </td>
+								<td width="25%"> <?php print ($valuation["value"] ); ?> </td>
+							</tr>
+							
+							<?php endforeach?>
+							<tr>
+								<td width="25%"><h5>Average</h5></td>
+								<td width="25%">  </td>
+								<td width="25%">  </td>
+								<td width="25%"> <h5><?php print ($industry_valuation["value"] ); ?></h5> </td>
+							</tr>
+						</tbody>
+		
+                 		</table>
+                 </div>
+		        <div class="modal-footer">
+          			<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        		</div>         		
+		 				
+			    </div>
+			    
+			  </div>
+		
+			</div>
+
+			
+			<div id="PiotroskiModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="PiotroskiModal" aria-hidden="true">
+			  <div class="modal-dialog modal-lg">
+			  	
+			    <div class="modal-content">
+			    	<div class="modal-header">
+          				<h4 class="modal-title">Piotroski F-Score Criteria</h4>
+        			</div>
+					<div class="modal-body">
+						The F-Score was designed by Joseph Piotroski, a professor in accounting at Stanford University, and is used to identify companies for which the prospects are improving. It's the sum of 9 binary scores based on profitability, funding and operational efficiency. It looks at simple things such as: 'has the company made more profit compared to last year?' (+1 point) but also: 'is the company cooking the books by adjusting accruals?' (0 points). By using 9 points he was able to get enough signals to determine whether the company is really improving or not.
+						<i>MFIE Capital</i>. Retrieved 12:17, September 11, 2016, from <a class="external free" href="https://www.valuesignals.com/Glossary/Details/Piotroski_F_Score">https://www.valuesignals.com/Glossary/Details/Piotroski_F_Score</a>
+						<table class="table borderless">
+			    
+						
+						<tbody>
+							<?php foreach($piotroski_variables as $variable): ?>
+								
+								<?php if ($variable["value"] == 1){
+										$label='label-success';
+										$label_text='PASS';
+								}
+									  else{
+									  	$label='label-danger';	
+									    $label_text='FAIL ';
+									  }
+								?>
+
+							<tr>
+								<td width="90%"> <?php print ($variable["variable"] ); ?> </td>
+								<td width="10%"><span class="label <?= $label ?>"><?php print ($label_text); ?> </span> </td>
+								
+							</tr>
+							
+							<?php endforeach?>
+							
+						</tbody>
+		
+                 		</table>
+                 </div>
+		        <div class="modal-footer">
+          			<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        		</div>         		
+		 				
+			    </div>
+			    
+			  </div>
+			  
+			</div>
+			
+			<div id="AltmanModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="AltmanModal" aria-hidden="true">
+			  <div class="modal-dialog modal-lg">
+			  	
+			    <div class="modal-content">
+			    	<div class="modal-header">
+          				<h4 class="modal-title">Altman Z-Score</h4>
+        			</div>
+					<div class="modal-body">
+						<p>The Z-score formula for predicting bankruptcy was published in 1968 by Edward I. Altman, who was, at the time, an Assistant Professor of Finance at New York University. The formula may be used to predict the probability that a firm will go into bankruptcy within two years. Z-scores are used to predict corporate defaults and an easy-to-calculate control measure for the financial distress status of companies in academic studies. The Z-score uses multiple corporate income and balance sheet values to measure the financial health of a company.
+						<i>Wikipedia, The Free Encyclopedia</i>. Retrieved 12:17, September 11, 2016, from <a class="external free" href="https://en.wikipedia.org/w/index.php?title=Altman_Z-score&amp;oldid=737490093">https://en.wikipedia.org/w/index.php?title=Altman_Z-score&amp;oldid=737490093</a>
+						</p>
+						<p><b>Z' Score bankruptcy Model:</b></p>
+						<table class="table borderless">
+			    
+						
+						<tbody>
+							<?php foreach($altman_variables as $variable): ?>
+
+							<tr>
+								<td width="90%"> <?php print ($variable["variable"] ); ?> </td>
+								<td width="10%"><?php print ($variable["value"]); ?>  </td>
+								
+							</tr>
+							
+							<?php endforeach?>
+							
+						</tbody>
+		
+                 		</table>
+                 		
+                 		<p>Z' = 0.717*X1 + 0.847*X2 + 3.107*X3 + 0.420*X4 + 0.998*X5 = <?php print($altman_zscore) ?> </p>
+                 		<p><b>Zones of Discrimination:</b></p>
+                 		<p>Z' &gt; 2.9 - Safe Zone</p>
+                 		<p>1.23 &lt; Z' &lt; 2.9 - Grey Zone</p>
+                 		<p>Z' &lt; 1.23 - Distress Zone</p>
+                 		
+                 </div>
+		        <div class="modal-footer">
+          			<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        		</div>         		
+		 				
+			    </div>
+			    
+			  </div>
+			  
+			</div>
+			
+			<!-- Modal -->
+  <div class="modal fade" id="myModal" role="dialog">
+    <div class="modal-dialog">
+    
+      <!-- Modal content-->
+      <div class="modal-content">
+        <div class="modal-header">
+          <button type="button" class="close" data-dismiss="modal">&times;</button>
+          <h4 class="modal-title">Modal Header</h4>
+        </div>
+        <div class="modal-body">
+          <p>Some text in the modal.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        </div>
+      </div>
+      
+    </div>
+  </div>
+			
+			<div id="Altman2Modal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="Altman2Modal" aria-hidden="true">
+			  <div class="modal-dialog modal-lg">
+			  	
+			    <div class="modal-content">
+			    	<div class="modal-header">
+          				<h4 class="modal-title">Altman Z-Score (non manufacturing)</h4>
+        			</div>
+					<div class="modal-body">
+						<p>The Z-score formula for predicting bankruptcy was published in 1968 by Edward I. Altman, who was, at the time, an Assistant Professor of Finance at New York University. The formula may be used to predict the probability that a firm will go into bankruptcy within two years. Z-scores are used to predict corporate defaults and an easy-to-calculate control measure for the financial distress status of companies in academic studies. The Z-score uses multiple corporate income and balance sheet values to measure the financial health of a company.
+						<i>Wikipedia, The Free Encyclopedia</i>. Retrieved 12:17, September 11, 2016, from <a class="external free" href="https://en.wikipedia.org/w/index.php?title=Altman_Z-score&amp;oldid=737490093">https://en.wikipedia.org/w/index.php?title=Altman_Z-score&amp;oldid=737490093</a>
+						</p>
+						<p><b>Z' Score bankruptcy Model:</b></p>
+						<table class="table borderless">
+			    
+						
+						<tbody>
+							<?php foreach($altman_nonman_variables as $variable): ?>
+
+							<tr>
+								<td width="90%"> <?php print ($variable["variable"] ); ?> </td>
+								<td width="10%"><?php print ($variable["value"]); ?>  </td>
+								
+							</tr>
+							
+							<?php endforeach?>
+							
+						</tbody>
+		
+                 		</table>
+                 		
+                 		<p>Z = 6.56*X1 + 3.26*X2 + 6.72*X3 + 1.05*X4 = <?php print($altman_zscore_nonman) ?> </p>
+                 		<p><b>Zones of Discrimination:</b></p>
+                 		<p>Z' &gt; 2.6 - Safe Zone</p>
+                 		<p>1.1 &lt; Z' &lt; 2.6 - Grey Zone</p>
+                 		<p>Z' &lt; 1.1 - Distress Zone</p>
+                 		
+                 </div>
+		        <div class="modal-footer">
+          			<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        		</div>         		
+		 				
+			    </div>
+			    
+			  </div>
+			  
+			</div>
+			 
+
+		
+		<?php if (isset($screen_id)): ?>
+			<FORM action="screen_list.php" METHOD="POST" NAME="myForm">
+			<INPUT TYPE="HIDDEN" NAME="btnRun" VALUE="Y">
+			<INPUT TYPE="hidden" NAME="screen" VALUE=<?=$screen_id?>>
+			<A HREF="#" onClick="document.myForm.submit();return false">Back</A>
+			</FORM>
+		<?php else: ?>
+			<a href="javascript:history.go(-1);">Back</a></br>
+		<?php endif ?>
+	</div>	
+	</div>	
+	
+	<script>
+$(document).ready(function(){
+    $("#myBtn").click(function(){
+        $("#myModal").modal();
+    });
+});
+</script>
+	</body>
+
+

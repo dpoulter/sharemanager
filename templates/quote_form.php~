@@ -1,0 +1,19 @@
+<head>
+<script>
+
+</script>
+</head>
+<form role="form" action="quote.php" method="post">
+	 <div class="form-group col-md-4" id="search">
+				<input  class="form-control typeahead"  type="text" name="symbol" placeholder="Enter Symbol"/>
+		</div>
+		<div class="form-group">
+				<button type="submit" class="btn btn-default">Lookup</button>
+        </div>
+	
+</form>
+	<div>
+	<!-- copy and paste. Modify height and width if desired. -->
+	<iframe class="tscplayer_inline embeddedObject" name="tsc_player" scrolling="no" frameborder="0" type="text/html" style="overflow:hidden;" src="http://www.screencast.com/users/DaleP73/folders/Default/media/900b7d24-3deb-494c-a8ed-69021bf9e4f2/embed" height="480" width="686" webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe> 
+	</div>
+
