@@ -1,0 +1,89 @@
+<?php
+
+    // configuration
+    require("../includes/config.php"); 
+
+	
+	// if form was submitted
+    if ($_SERVER["REQUEST_METHOD"] == "POST")
+    {
+        // validate submission
+        if (empty($_POST["symbol"]))
+        {
+            apologize("You must enter a symbol.");
+        }
+		else
+			//symbol
+			$symbol=$_POST["symbol"];
+			//timespan
+			if (isset($_POST["timespan"]))
+				$timespan=$_POST["timespan"];
+			else
+				$timespan="1d";
+				
+			if (isset($_POST["type"]))
+				$type=$_POST["type"];
+			else
+				$type="l";
+	}
+	
+	//Check if symbol was passed to form
+	else
+	
+		if (isset($_GET["symbol"]))
+			$symbol=$_GET["symbol"];
+			
+		if (isset($_GET["screen_id"]))
+			$screen_id=$_GET["screen_id"];
+			
+		if (isset($_GET["timespan"]))
+			$timespan=$_GET["timespan"];
+		else
+			$timespan="6m";
+			
+		if (isset($_GET["type"]))
+			$type=$_GET["type"];
+		else
+			$type="l";
+			
+	
+	if (isset($symbol)){
+        //Get Stock Quote
+           
+		$chart="http://chart.finance.yahoo.com/z?s=$symbol&t=$timespan&q=$type&l=on&z=l&p=m20,m50,m100,m200";
+		$share_info = get_share_info($symbol);
+		$quote = share_lookup($symbol);
+		$income_statement=income_statement($symbol);
+		$balance_sheet=balance_sheet($symbol);
+		$ratings=ratings($symbol);
+		$momentum_statistics=get_momentum_statistics($symbol);
+		$growth_statistics=get_growth_statistics($symbol);
+		$value_statistics=get_value_statistics($symbol);
+		$quality_statistics=get_quality_statistics($symbol);
+		
+		if ($quote!==false) 
+		{
+			 // else render form
+			 if(isset($screen_id))
+				render("quote.php", ["title" => $symbol,"symbol"=>$symbol,"share_info"=> $share_info, "quote" => $quote,"chart"=>$chart,"screen_id"=>$screen_id,"incomestatement"=>$income_statement,"balancesheet"=>$balance_sheet,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics]);
+			 else
+				render("quote.php", ["title" => $symbol,"symbol"=>$symbol,"share_info"=> $share_info, "quote" => $quote,"chart"=>$chart,"incomestatement"=>$income_statement,"balancesheet"=>$balance_sheet,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics]);
+		
+		}
+		else
+			apologize("Invalid Symbol.");
+        
+        
+        
+
+       
+    }
+
+	else
+    {   //get stock symbols
+        $stock_symbols = query("SELECT symbol, description FROM stock_symbols where enabled='Y'");
+        // else render form
+        render("quote_form.php", ["title" => "Stock Quote","symbols" => $stock_symbols]);
+    }
+
+?>

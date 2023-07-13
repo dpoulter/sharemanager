@@ -1,0 +1,499 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+ "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en"
+ lang="en" dir="ltr">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <title>
+    BIP - Bursting    | GerardNico.com (BI, OBIEE, OWB, DataWarehouse)
+  </title>
+
+  <link rel="alternate" type="application/rss+xml" title="GerardNico.com Weblog RSS Feed" href="http://gerardnico.com/weblog/feed/" />
+  <link rel="alternate" type="application/atom+xml" title="GerardNico.com Weblog Atom Feed" href="http://gerardnico.com/weblog/feed/atom/" />
+  <meta name="generator" content="DokuWiki"/>
+<meta name="robots" content="index,follow"/>
+<meta name="date" content="2013-02-13T10:36:34+0100"/>
+<meta name="keywords" content="bip,bursting"/>
+<link rel="search" type="application/opensearchdescription+xml" href="http://gerardnico.com/wiki/lib/exe/opensearch.php" title="WikiNote"/>
+<link rel="start" href="http://gerardnico.com/wiki/"/>
+<link rel="contents" href="http://gerardnico.com/wiki/bip/bursting?do=index" title="Sitemap"/>
+<link rel="alternate" type="application/rss+xml" title="Recent Changes" href="http://gerardnico.com/wiki/feed.php"/>
+<link rel="alternate" type="application/rss+xml" title="Current Namespace" href="http://gerardnico.com/wiki/feed.php?mode=list&amp;ns=bip"/>
+<link rel="alternate" type="text/html" title="Plain HTML" href="http://gerardnico.com/wiki/_export/xhtml/bip/bursting"/>
+<link rel="canonical" href="http://gerardnico.com/wiki/bip/bursting"/>
+<link rel="stylesheet" media="screen" type="text/css" href="http://gerardnico.com/wiki/lib/exe/css.php?t=gerardnico&amp;tseed=1430080351"/>
+<link rel="stylesheet" media="all" type="text/css" href="http://gerardnico.com/wiki/lib/exe/css.php?s=all&amp;t=gerardnico&amp;tseed=1430080351"/>
+<link rel="stylesheet" media="print" type="text/css" href="http://gerardnico.com/wiki/lib/exe/css.php?s=print&amp;t=gerardnico&amp;tseed=1430080351"/>
+<script type="text/javascript"><!--//--><![CDATA[//><!--
+var NS='bip';var JSINFO = {"id":"bip:bursting","namespace":"bip"};
+//--><!]]></script>
+<script type="text/javascript" charset="utf-8" src="http://gerardnico.com/wiki/lib/exe/js.php?tseed=1430080351"></script>
+<script type="text/x-mathjax-config"><!--//--><![CDATA[//><!--
+MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [ ["<math>","</math>"]],
+        displayMath: [["<MATH>","</MATH>"]],
+        processEscapes: true,
+        scale:120
+    }
+});
+//--><!]]></script>
+<script type="text/javascript" charset="utf-8" src="http://gerardnico.com/mathjax/MathJax.js?config=TeX-AMS_HTML"></script>
+
+  <link rel="shortcut icon" href="http://gerardnico.com/wiki/lib/tpl/gerardnico/images/favicon.ico" />
+  
+  <script type="text/javascript">
+      window.heap=window.heap||[],heap.load=function(t,e){window.heap.appid=t,window.heap.config=e;var a=document.createElement("script");a.type="text/javascript",a.async=!0,a.src=("https:"===document.location.protocol?"https:":"http:")+"//cdn.heapanalytics.com/js/heap-"+t+".js";var n=document.getElementsByTagName("script")[0];n.parentNode.insertBefore(a,n);for(var o=function(t){return function(){heap.push([t].concat(Array.prototype.slice.call(arguments,0)))}},p=["clearEventProperties","identify","setEventProperties","track","unsetEventProperty"],c=0;c<p.length;c++)heap[p[c]]=o(p[c])};
+      heap.load("719211807");
+  </script>
+
+</head>
+
+<body>
+
+
+<div id="header">
+      <div class="description">
+		Thanks for stopping by. You are on a website of a passionately curious Business Intelligence Consultant of <a href="http://www.hotitem.nl/oracle_bi_expertcenter.shtml?tm=2&sm=5" title="Hot ITem" >Hot ITem</a> (the <b>Business</b> Consultancy Company from Netherland). 
+		You will find on this website two tools, a <a href="http://gerardnico.com/weblog/" title="Wordpress" >blog</a> where you can <a href="http://gerardnico.com/weblog/feed/">subscribe </a> and a <a href="http://gerardnico.com/wiki/" title="Dokuwiki" >wiki</a> where I write articles as short notes.
+		Kind regards and good day, <a href="http://gerardnico.com/wiki/gerard_nicolas"?DokuWiki=crkl28pd0fkrigicq8ojvsci81 title="About Me" >Nico</a>
+		</div>
+		<div class="search"><form action="http://gerardnico.com/wiki/" accept-charset="utf-8" class="search" id="dw__search" method="get"><input type="hidden" name="DokuWiki" value="crkl28pd0fkrigicq8ojvsci81" /><div class="no"><input type="hidden" name="do" value="search" /><input type="text" id="qsearch__in" accesskey="f" name="id" class="edit" title="[F]" /><input type="submit" value="Search" class="button" title="Search" /><div id="qsearch__out" class="ajax_qsearch JSpopup"></div></div></form></div>
+		<div class="feed"><a href="http://gerardnico.com/weblog/feed/">Entries (RSS)</a> - <a href="http://gerardnico.com/weblog/feed/atom/">Comments (RSS)</a></div>
+</div>
+	  
+<div id="content">
+<div class="dokuwiki">
+  
+
+  <div class="stylehead">
+
+    
+
+
+    <div class="bar" id="bar__top">
+      <div class="bar-left" id="bar__topleft">
+                <form class="button btn_revs" method="get" action="http://gerardnico.com/wiki/bip/bursting"><div class="no"><input type="hidden" name="do" value="revisions" /><input type="submit" value="Old revisions" class="button" accesskey="o" title="Old revisions [O]" /></div></form>	<form class="button btn_backlink" method="get" action="http://gerardnico.com/wiki/bip/bursting"><div class="no"><input type="hidden" name="do" value="backlink" /><input type="submit" value="Backlinks" class="button" title="Backlinks" /></div></form>      </div>
+
+      <div class="bar-right" id="bar__topright">
+              </div>
+
+      <div class="clearer"></div>
+    </div>
+
+        <div class="breadcrumbs">
+      <span class="bchead">Trace:</span> <span class="bcsep">&bull;</span> <span class="curid"><a href="http://gerardnico.com/wiki/bip/bursting"  class="breadcrumbs" title="bip:bursting">BIP - Bursting</a></span>          </div>
+    
+        <div class="breadcrumbs">
+      <span class="bchead">You are here: </span><a href="http://gerardnico.com/wiki/start" class="wikilink1" title="start">Home</a> &raquo; <a href="http://gerardnico.com/wiki/bip/bip" class="wikilink1" title="bip:bip">Business Intelligence Publisher</a> &raquo; <span class="curid"><a href="http://gerardnico.com/wiki/bip/bursting" class="wikilink1" title="bip:bursting">BIP - Bursting</a></span>    </div>
+    
+  </div>
+  
+  <div class="page">
+    <!-- wikipage start -->
+    <!-- TOC START -->
+<div class="toc">
+<div class="tocheader toctoggle" id="toc__header">Table of Contents</div>
+<div id="toc__inside">
+
+<ul class="toc">
+<li class="level1"><div class="li"><span class="li"><a href="#about" class="toc">About</a></span></div></li>
+<li class="level1"><div class="li"><span class="li"><a href="#articles_related" class="toc">Articles Related</a></span></div></li>
+<li class="level1"><div class="li"><span class="li"><a href="#properties" class="toc">Properties</a></span></div>
+<ul class="toc">
+<li class="level2"><div class="li"><span class="li"><a href="#query" class="toc">Query</a></span></div></li>
+</ul>
+</li>
+<li class="level1"><div class="li"><span class="li"><a href="#support" class="toc">Support</a></span></div>
+<ul class="toc">
+<li class="level2"><div class="li"><span class="li"><a href="#javalangnullpointerexception" class="toc">java.lang.NullPointerException</a></span></div></li>
+<li class="level2"><div class="li"><span class="li"><a href="#can_not_find_the_delivery_details" class="toc">Can not find the delivery details</a></span></div></li>
+<li class="level2"><div class="li"><span class="li"><a href="#oracleappsxdoxdoexceptionora-00911invalid_character" class="toc">oracle.apps.xdo.XDOException: ORA-00911: invalid character</a></span></div></li>
+<li class="level2"><div class="li"><span class="li"><a href="#javautilnosuchelementexception" class="toc">java.util.NoSuchElementException</a></span></div></li>
+<li class="level2"><div class="li"><span class="li"><a href="#missing_or_invalid_template" class="toc">Missing or invalid Template</a></span></div></li>
+<li class="level2"><div class="li"><span class="li"><a href="#job_execution_failed_because_the_user_who_scheduled_this_job_has_no_more_permission_or_priviledge_to_run_the_job" class="toc">Job execution failed because the user who scheduled this job has no more permission or priviledge to run the job</a></span></div></li>
+<li class="level2"><div class="li"><span class="li"><a href="#invalid_parameters_requested" class="toc">Invalid parameters requested</a></span></div></li>
+</ul>
+</li>
+<li class="level1"><div class="li"><span class="li"><a href="#documentation_reference" class="toc">Documentation / Reference</a></span></div></li></ul>
+</div>
+</div>
+<!-- TOC END -->
+
+<h1 class="sectionedit1"><a name="bip_-_bursting" id="bip_-_bursting">BIP - Bursting</a></h1>
+<div class="level1">
+
+</div>
+
+<h2 class="sectionedit2"><a name="about" id="about">About</a></h2>
+<div class="level2">
+
+<p>
+To burst in BIP, you just need to fill the Bursting Properties.
+</p>
+
+<p>
+<a href="http://gerardnico.com/wiki/_detail/bip/bip_bursting_properties.jpg?id=bip%3Abursting" class="media" title="bip:bip_bursting_properties.jpg"><img src="http://gerardnico.com/wiki/_media/bip/bip_bursting_properties.jpg" class="media" alt="" /></a>
+</p>
+
+<p>
+The <acronym title="Structured Query Language">SQL</acronym> Query of the Bursting property defines the bursting properties.
+</p>
+<div class="wrap_round wrap_tip">When you schedule a bursting, You can use a <a href="http://gerardnico.com/wiki/bip/parameter" class="wikilink1" title="bip:parameter">parameter</a>:<ul>
+<li class="level1"><div class="li"> in the <acronym title="Structured Query Language">SQL</acronym> Query of the data set</div>
+</li>
+<li class="level1"><div class="li"> but also in the <acronym title="Structured Query Language">SQL</acronym> Query of the Bursting properties.</div>
+</li>
+</ul>
+</div>
+</div>
+
+<h2 class="sectionedit3"><a name="articles_related" id="articles_related">Articles Related</a></h2>
+<div class="level2">
+<div id="plugin__backlinks">
+<ul class="idx"><li><div class="li"><a href="http://gerardnico.com/wiki/bip/bip" class="wikilink1" title="bip:bip">Business Intelligence Publisher</a></div></li></ul></div>
+
+</div>
+
+<h2 class="sectionedit4"><a name="properties" id="properties">Properties</a></h2>
+<div class="level2">
+
+</div>
+
+<h3 class="sectionedit5"><a name="query" id="query">Query</a></h3>
+<div class="level3">
+
+<p>
+For each key (Deliver by) in the original report, you must have a key in the <acronym title="Structured Query Language">SQL</acronym> Query of the Bursting properties.
+</p>
+
+<p>
+If you want to filter and not burst on every key, you need to burst to a bin (directory, mail, …).
+</p>
+
+<p>
+Syntax:
+</p>
+<pre class="code sql"><span class="kw1">SELECT</span>
+<span class="kw1">KEY</span><span class="sy0">,</span>
+TEMPLATE<span class="sy0">,</span>
+TEMPLATE_FORMAT<span class="sy0">,</span>
+LOCALE<span class="sy0">,</span>
+OUTPUT_FORMAT<span class="sy0">,</span>
+DEL_CHANNEL<span class="sy0">,</span>
+PARAMETER1<span class="sy0">,</span>
+PARAMETER2<span class="sy0">,</span>
+PARAMETER3<span class="sy0">,</span>
+PARAMETER4<span class="sy0">,</span>
+PARAMETER5<span class="sy0">,</span>
+PARAMETER6<span class="sy0">,</span>
+PARAMETER7
+<span class="kw1">FROM</span> 
+myTable</pre>
+
+<p>
+where:
+</p>
+<ul>
+<li class="level1"><div class="li"> Key is the “delivered by” Key</div>
+</li>
+<li class="level1"><div class="li"> TEMPLATE is the name of the template used (<span class="wrap_warning">Lowercase and Uppercase are important</span></div>
+</li>
+<li class="level1"><div class="li"> TEMPLATE_FORMAT is the template format. (<acronym title="Rich Text File">RTF</acronym>, …)</div>
+</li>
+<li class="level1"><div class="li"> LOCALE is the <a href="http://gerardnico.com/wiki/application/locale" class="wikilink1" title="application:locale">locale</a> (&#039;en-US&#039;, …)</div>
+</li>
+<li class="level1"><div class="li"> OUTPUT_FORMAT is the report format (<acronym title="Portable Document Format">PDF</acronym>, <acronym title="HyperText Markup Language">HTML</acronym>, …)</div>
+</li>
+<li class="level1"><div class="li"> DEL_CHANNEL is one of the following channel with the list of parameters attached:</div>
+</li>
+</ul>
+<div class="table sectionedit6"><table class="inline">
+	<tr class="row0">
+		<th class="col0 leftalign"> Channel  </th><th class="col1 leftalign"> Email  </th><th class="col2 leftalign"> Printer  </th><th class="col3"> Fax </th><th class="col4"> WEBDAV </th><th class="col5"> File </th><th class="col6"> <acronym title="File Transfer Protocol">FTP</acronym> </th>
+	</tr>
+	<tr class="row1">
+		<td class="col0 leftalign"> Parameter1  </td><td class="col1 leftalign"> Email address  </td><td class="col2"> Printer Group </td><td class="col3"> Fax server Name </td><td class="col4"> Server Name </td><td class="col5"> Directory </td><td class="col6"> Server Name </td>
+	</tr>
+	<tr class="row2">
+		<td class="col0 leftalign"> Parameter2  </td><td class="col1"> cc </td><td class="col2 leftalign"> Printer  </td><td class="col3"> Fax Number </td><td class="col4"> Username </td><td class="col5"> File Name </td><td class="col6"> Username </td>
+	</tr>
+	<tr class="row3">
+		<td class="col0 leftalign"> Parameter3  </td><td class="col1 leftalign"> From  </td><td class="col2"> Number of copies </td><td class="col3 leftalign">  </td><td class="col4"> Password </td><td class="col5 leftalign">  </td><td class="col6"> Password </td>
+	</tr>
+	<tr class="row4">
+		<td class="col0 leftalign"> Parameter4  </td><td class="col1 leftalign"> Subject  </td><td class="col2 leftalign"> Sides  </td><td class="col3 leftalign">  </td><td class="col4"> Remote Directory </td><td class="col5 leftalign">  </td><td class="col6"> Remote Directory </td>
+	</tr>
+	<tr class="row5">
+		<td class="col0 leftalign"> Parameter5  </td><td class="col1"> Message Body </td><td class="col2"> Tray </td><td class="col3 leftalign">  </td><td class="col4"> Remote File Name </td><td class="col5 leftalign">  </td><td class="col6"> Remote File Name </td>
+	</tr>
+	<tr class="row6">
+		<td class="col0 leftalign"> Parameter6  </td><td class="col1 leftalign"> Attachment (true/false) <br/>
+Pdf = true  </td><td class="col2 leftalign">  </td><td class="col3 leftalign">  </td><td class="col4 leftalign">  </td><td class="col5 leftalign">  </td><td class="col6 leftalign">  </td>
+	</tr>
+	<tr class="row7">
+		<td class="col0 leftalign"> Parameter7  </td><td class="col1"> Reply-To </td><td class="col2 leftalign">  </td><td class="col3 leftalign">  </td><td class="col4 leftalign">  </td><td class="col5 leftalign">  </td><td class="col6 leftalign">  </td>
+	</tr>
+</table></div>
+
+<p>
+<span class="wrap_important">For the email channel in case of a list of email, they must be separated by a comma.</span>
+</p>
+
+</div>
+
+<h2 class="sectionedit7"><a name="support" id="support">Support</a></h2>
+<div class="level2">
+
+</div>
+
+<h3 class="sectionedit8"><a name="javalangnullpointerexception" id="javalangnullpointerexception">java.lang.NullPointerException</a></h3>
+<div class="level3">
+
+<p>
+If you schedule a bursting rapportage that failed and that you checked the application server (OC4j) log file and that you get the following error:
+</p>
+<pre class="file">[061512_041107407][][EXCEPTION] java.lang.NullPointerException
+	at oracle.apps.xdo.batch.bursting.ProcessEnterpriseDocument.processLayout(Unknown Source)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.addDocument2Queue(Unknown Source)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.createBurstingDocument(Unknown Source)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.endDocument(Unknown Source)
+	at oracle.xml.parser.v2.XMLContentHandler.endDocument(XMLContentHandler.java:119)
+	at oracle.xml.parser.v2.NonValidatingParser.parseDocument(NonValidatingParser.java:311)
+	at oracle.xml.parser.v2.XMLParser.parse(XMLParser.java:263)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.burstingRequest(Unknown Source)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.process(Unknown Source)
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.runBurstingReport(XDOJob.java:2008)
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.execute(XDOJob.java:358)
+	at org.quartz.core.JobRunShell.run(JobRunShell.java:195)
+	at org.quartz.simpl.SimpleThreadPool$WorkerThread.run(SimpleThreadPool.java:520)</pre>
+
+<p>
+Pay attention to the name of the template in your bursting <acronym title="Structured Query Language">SQL</acronym> Query property.
+</p>
+<pre class="code sql"><span class="kw1">SELECT</span> 
+     myKey <span class="kw1">KEY</span><span class="sy0">,</span>
+     <span class="st0">'standard'</span> TEMPLATE
+<span class="kw1">FROM</span> 
+     myTable</pre>
+
+<p>
+is not the same than
+</p>
+<pre class="code sql"><span class="kw1">SELECT</span> 
+     myKey <span class="kw1">KEY</span><span class="sy0">,</span>
+     <span class="st0">'Standard'</span> TEMPLATE
+<span class="kw1">FROM</span> 
+     myTable</pre>
+
+</div>
+
+<h3 class="sectionedit9"><a name="can_not_find_the_delivery_details" id="can_not_find_the_delivery_details">Can not find the delivery details</a></h3>
+<div class="level3">
+
+<p>
+Obviously, you can filter the content but not the delivery details. One solution is to send the bursted report to a bin directory.
+</p>
+<pre class="file">Delivery Key   : Nico Gerard
+Delivery Type  : 		
+Status	       : Failed
+System Message : Error!! Can not find the delivery details for the delivery Id :Nico Gerard</pre>
+
+</div>
+
+<h3 class="sectionedit10"><a name="oracleappsxdoxdoexceptionora-00911invalid_character" id="oracleappsxdoxdoexceptionora-00911invalid_character">oracle.apps.xdo.XDOException: ORA-00911: invalid character</a></h3>
+<div class="level3">
+
+<p>
+If you get this:
+</p>
+<pre class="file">oracle.apps.xdo.servlet.scheduler.ProcessingException: oracle.apps.xdo.XDOException: ORA-00911: invalid character
+
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.runBurstingReport(XDOJob.java:2116)
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.execute(XDOJob.java:358)
+	at org.quartz.core.JobRunShell.run(JobRunShell.java:195)
+	at org.quartz.simpl.SimpleThreadPool$WorkerThread.run(SimpleThreadPool.java:520)
+Caused by: oracle.apps.xdo.XDOException: ORA-00911: invalid character
+
+	at oracle.apps.xdo.servlet.ReportException.fillInStackTrace(ReportException.java:124)
+	at oracle.apps.xdo.servlet.data.DataException.fillInStackTrace(DataException.java:127)
+	at java.lang.Throwable.&lt;init&gt;(Throwable.java:181)
+	at java.lang.Exception.&lt;init&gt;(Exception.java:29)
+	at oracle.apps.xdo.servlet.ReportException.&lt;init&gt;(ReportException.java:40)
+	at oracle.apps.xdo.servlet.data.DataException.&lt;init&gt;(DataException.java:44)
+	at oracle.apps.xdo.servlet.BurstingDefinitionImpl.getControlXML(BurstingDefinitionImpl.java:83)
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.runBurstingReport(XDOJob.java:1886)
+	... 3 more</pre>
+
+<p>
+verify first that you don&#039;t have a semicolon at the end of the Bursting <acronym title="Structured Query Language">SQL</acronym>.
+</p>
+
+</div>
+
+<h3 class="sectionedit11"><a name="javautilnosuchelementexception" id="javautilnosuchelementexception">java.util.NoSuchElementException</a></h3>
+<div class="level3">
+<pre class="file">oracle.apps.xdo.servlet.scheduler.ProcessingException: java.util.NoSuchElementException
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.runBurstingReport(XDOJob.java:2116)
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.execute(XDOJob.java:358)
+	at org.quartz.core.JobRunShell.run(JobRunShell.java:195)
+	at org.quartz.simpl.SimpleThreadPool$WorkerThread.run(SimpleThreadPool.java:520)
+Caused by: java.util.NoSuchElementException
+	at java.util.Vector.lastElement(Vector.java:456)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.removeEndPath(Unknown Source)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.globalDataEndElement(Unknown Source)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.endElement(Unknown Source)
+	at oracle.xml.parser.v2.XMLContentHandler.endElement(XMLContentHandler.java:210)
+	at oracle.xml.parser.v2.NonValidatingParser.parseElement(NonValidatingParser.java:1318)
+	at oracle.xml.parser.v2.NonValidatingParser.parseRootElement(NonValidatingParser.java:336)
+	at oracle.xml.parser.v2.NonValidatingParser.parseDocument(NonValidatingParser.java:303)
+	at oracle.xml.parser.v2.XMLParser.parse(XMLParser.java:263)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.burstingRequest(Unknown Source)
+	at oracle.apps.xdo.batch.BurstingProcessorEngine.process(Unknown Source)
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.runBurstingReport(XDOJob.java:2008)
+	... 3 more</pre>
+
+<p>
+Verify the bursting key.
+</p>
+
+</div>
+
+<h3 class="sectionedit12"><a name="missing_or_invalid_template" id="missing_or_invalid_template">Missing or invalid Template</a></h3>
+<div class="level3">
+<pre class="file">Delivery 1 :
+Delivery Key 		6154
+Delivery Type 		
+Status		Failed
+System Message	MyTemplateName: Missing or invalid Template ....</pre>
+
+<p>
+The name of the template in the <a href="#query" title="bip:bursting &crarr;" class="wikilink1">bursting query</a> is not found in the report.
+</p>
+
+</div>
+
+<h3 class="sectionedit13"><a name="job_execution_failed_because_the_user_who_scheduled_this_job_has_no_more_permission_or_priviledge_to_run_the_job" id="job_execution_failed_because_the_user_who_scheduled_this_job_has_no_more_permission_or_priviledge_to_run_the_job">Job execution failed because the user who scheduled this job has no more permission or priviledge to run the job</a></h3>
+<div class="level3">
+<pre class="file">oracle.apps.xdo.servlet.scheduler.ProcessingException: Job execution failed because the user who scheduled this job has no more permission or priviledge to run the job. [REPORT_URL]=[/Team Barometer/Bursting/Team Barometer Bursting Non-respons/Team Barometer Bursting Non-respons.xdo], [USERNAME]=[gerar600]
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.execute(XDOJob.java:356)
+	at org.quartz.core.JobRunShell.run(JobRunShell.java:195)
+	at org.quartz.simpl.SimpleThreadPool$WorkerThread.run(SimpleThreadPool.java:520)</pre>
+
+<p>
+With the BI Server security model, BIP uses a <a href="http://gerardnico.com/wiki/application/proxy_authentication" class="wikilink1" title="application:proxy_authentication">proxy authentication</a> then be sure that the proxy user (often the administrator) has also the right to access the report (ie the Admin right, ie that he is a member of the XMLP_ADMIN group).
+</p>
+
+</div>
+
+<h3 class="sectionedit14"><a name="invalid_parameters_requested" id="invalid_parameters_requested">Invalid parameters requested</a></h3>
+<div class="level3">
+
+<p>
+If you script the burst, you may get this error:
+</p>
+<pre class="file">oracle.apps.xdo.servlet.scheduler.ProcessingException: oracle.apps.xdo.servlet.data.DataException: Invalid parameters requested.
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.runBurstingReport(XDOJob.java:2169)
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.execute(XDOJob.java:372)
+	at org.quartz.core.JobRunShell.run(JobRunShell.java:195)
+	at org.quartz.simpl.SimpleThreadPool$WorkerThread.run(SimpleThreadPool.java:520)
+Caused by: oracle.apps.xdo.servlet.data.DataException: Invalid parameters requested.
+	at oracle.apps.xdo.servlet.ReportException.fillInStackTrace(ReportException.java:124)
+	at oracle.apps.xdo.servlet.data.DataException.fillInStackTrace(DataException.java:127)
+	at java.lang.Throwable.&lt;init&gt;(Throwable.java:196)
+	at java.lang.Exception.&lt;init&gt;(Exception.java:41)
+	at oracle.apps.xdo.servlet.ReportException.&lt;init&gt;(ReportException.java:36)
+	at oracle.apps.xdo.servlet.data.DataException.&lt;init&gt;(DataException.java:39)
+	at oracle.apps.xdo.servlet.ReportImpl.renderReportXML(ReportImpl.java:287)
+	at oracle.apps.xdo.servlet.scheduler.XDOJob.runBurstingReport(XDOJob.java:1929)
+	... 3 more</pre>
+
+<p>
+It just means that the parameter is not in the available list of value (for a menu).
+</p>
+
+</div>
+
+<h2 class="sectionedit15"><a name="documentation_reference" id="documentation_reference">Documentation / Reference</a></h2>
+<div class="level2">
+<ul>
+<li class="level1"><div class="li"> <a href="http://docs.oracle.com/cd/E10415_01/doc/bi.1013/e12187/T518230T518233.htm#4512015" class="urlextern" target="_blank" title="http://docs.oracle.com/cd/E10415_01/doc/bi.1013/e12187/T518230T518233.htm#4512015">Enabling Bursting</a></div>
+</li>
+</ul>
+
+</div>
+<ul class="bookmarkme">
+<li><a href="http://del.icio.us/post?title=BIP+-+Bursting&amp;url=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/delicious.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at del.icio.us" title="Bookmark &quot;BIP - Bursting&quot; at del.icio.us" /></a></li>
+<li><a href="http://digg.com/submit?phase=2&amp;title=BIP+-+Bursting&amp;url=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/digg.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Digg" title="Bookmark &quot;BIP - Bursting&quot; at Digg" /></a></li>
+<li><a href="http://myjeeves.ask.com/mysearch/BookmarkIt?v=1.2&amp;t=webpages&amp;title=BIP+-+Bursting&amp;url=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/ask.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Ask" title="Bookmark &quot;BIP - Bursting&quot; at Ask" /></a></li>
+<li><a href="http://www.google.com/bookmarks/mark?op=add&amp;title=BIP+-+Bursting&amp;bkmk=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/google.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Google" title="Bookmark &quot;BIP - Bursting&quot; at Google" /></a></li>
+<li><a href="http://www.stumbleupon.com/submit?title=BIP+-+Bursting&amp;url=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/stumbleupon.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at StumbleUpon" title="Bookmark &quot;BIP - Bursting&quot; at StumbleUpon" /></a></li>
+<li><a href="http://www.technorati.com/faves?add=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/technorati.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Technorati" title="Bookmark &quot;BIP - Bursting&quot; at Technorati" /></a></li>
+<li><a href="https://favorites.live.com/quickadd.aspx?marklet=1&amp;mkt=en-us&amp;title=BIP+-+Bursting&amp;url=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting&amp;top=1" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/live_bookmarks.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Live Bookmarks" title="Bookmark &quot;BIP - Bursting&quot; at Live Bookmarks" /></a></li>
+<li><a href="http://myweb2.search.yahoo.com/myresults/bookmarklet?title=BIP+-+Bursting&amp;popup=true&amp;u=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/yahoo!_myweb.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Yahoo! Myweb" title="Bookmark &quot;BIP - Bursting&quot; at Yahoo! Myweb" /></a></li>
+<li><a href="http://www.facebook.com/sharer.php?u=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting&amp;t=BIP+-+Bursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/facebook.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Facebook" title="Bookmark &quot;BIP - Bursting&quot; at Facebook" /></a></li>
+<li><a href="http://bookmarks.yahoo.com/toolbar/savebm?opener=tb&amp;u=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting&t=BIP+-+Bursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/yahoo!_bookmarks.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Yahoo! Bookmarks" title="Bookmark &quot;BIP - Bursting&quot; at Yahoo! Bookmarks" /></a></li>
+<li><a href="http://twitter.com/home?status=BIP+-+Bursting:http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/twitter.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at Twitter" title="Bookmark &quot;BIP - Bursting&quot; at Twitter" /></a></li>
+<li><a href="http://favorites.my.aol.com/ffclient/AddBookmark?url=http%3A%2F%2Fgerardnico.com%2Fwiki%2Fbip%2Fbursting&amp;title=BIP+-+Bursting&amp;favelet=true" target="_blank"><img src="http://gerardnico.com/wiki/lib/plugins/bookmarkme/img/myaol.gif" width="16" height="16" alt="Bookmark &quot;BIP - Bursting&quot; at myAOL" title="Bookmark &quot;BIP - Bursting&quot; at myAOL" /></a></li>
+</ul>
+    <!-- wikipage stop -->
+  </div>
+
+  <div class="clearer">&nbsp;</div>
+
+  
+  <div class="stylefoot">
+
+    <div class="meta">
+      <div class="user">
+              </div>
+      <div class="doc">
+        bip/bursting.txt &middot; Last modified: 2013/02/13 10:36 by gerardnico      </div>
+    </div>
+
+
+    <div class="bar" id="bar__bottom">
+      <div class="bar-left" id="bar__bottomleft">
+                <form class="button btn_revs" method="get" action="http://gerardnico.com/wiki/bip/bursting"><div class="no"><input type="hidden" name="do" value="revisions" /><input type="submit" value="Old revisions" class="button" accesskey="o" title="Old revisions [O]" /></div></form>      </div>
+      <div class="bar-right" id="bar__bottomright">
+                                <form class="button btn_login" method="get" action="http://gerardnico.com/wiki/bip/bursting"><div class="no"><input type="hidden" name="do" value="login" /><input type="hidden" name="sectok" value="3bdbe4046c615576f7cd7341810a5cb0" /><input type="submit" value="Login" class="button" title="Login" /></div></form>        <form class="button btn_index" method="get" action="http://gerardnico.com/wiki/bip/bursting"><div class="no"><input type="hidden" name="do" value="index" /><input type="submit" value="Sitemap" class="button" accesskey="x" title="Sitemap [X]" /></div></form>        <a class="nolink" href="#dokuwiki__top"><input type="button" class="button" value="Back to top" onclick="window.scrollTo(0, 0)" title="Back to top" /></a>&nbsp;
+      </div>
+      <div class="clearer"></div>
+    </div>
+
+  </div>
+
+</div>
+</div>
+<div id="footer">
+	<p>
+	     
+		GerardNico.com is proudly powered by
+		<a href="http://gerardnico.com/wiki/communication_system/dokuwiki/start">DokuWiki</a> and
+		<a href="http://gerardnico.com/wiki/communication_system/wordpress/start">WordPress</a>  
+		<br /><a href="http://gerardnico.com/weblog/feed/">Entries (RSS)</a> and <a href="http://gerardnico.com/weblog/feed/atom/">Comments (RSS)</a>
+		<br /> 
+		Copirat <a href="http://gerardnico.com/wiki/gerard_nicolas">Nicolas GERARD</a> | 2008 - 2009
+		| <a href="http://validator.w3.org/check/referer" title="This page validates as XHTML 1.0 Transitional">Valid <abbr title="eXtensible HyperText Markup Language">XHTML</abbr></a>
+		 |	<a href="http://gmpg.org/xfn/"><abbr title="XHTML Friends Network">XFN</abbr></a> 
+	</p>
+</div>
+<div class="no"><img src="http://gerardnico.com/wiki/lib/exe/indexer.php?id=bip%3Abursting&amp;1430214049" width="2" height="1" alt="" /></div>
+
+<script type="text/javascript">
+
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-6493290-1']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+
+</script>
+
+
+</body>
+</html>

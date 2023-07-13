@@ -1,0 +1,16 @@
+<html>
+
+<div class="tab-pane" id="news">
+					
+					 	
+					    <?php $articles=get_articles($symbol);
+						foreach($articles as $article):?>
+						 	<div class="container">
+			      				<div class="row">
+			      					<?php print ($article["description"]); ?>
+				      			</div>
+			         		</div>
+			         	<?php endforeach?>
+			      	</div>
+			      	
+</html>

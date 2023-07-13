@@ -1,0 +1,125 @@
+<?php
+
+    // configuration
+    require("../includes/config.php");
+  
+
+    // if form was submitted
+    if ($_SERVER["REQUEST_METHOD"] == "POST")
+    {
+		if(isset($_POST['month']))
+				$month=$_POST['month'];
+		else
+			$month=trim(date('m'));
+
+		if(isset($_POST['year']))
+			$year=$_POST['year'];
+		else
+			$year=date('Y');
+        
+		if (isset($_POST["btnSubmit"])){
+		   if (isset($_POST['dividend_id']))
+				$dividend_id=$_POST['dividend_id'];
+			if (isset($_POST['symbol']))
+           $symbol=$_POST['symbol'];
+         if (isset($_POST['dividend_date']))
+           $dividend_date=$_POST['dividend_date'];
+         if (isset($_POST['amount']))
+           $amount=$_POST['amount'];
+           $errors='';
+		   //echo "No of input: ".count($symbol);
+           for ($i=0;$i<count($symbol);$i++){
+           //validate submission
+           if (empty($symbol[$i])) {
+             $errors=$errors . "Symbol must be entered <br/>";
+            }
+            else
+            {
+             $quote = lookup($symbol[$i]);
+
+            if ($quote==false){
+              $errors=$errors . "Invalid Symbol: " . $symbol[$i] . "<br/>";
+             };
+            };
+           if (empty($dividend_date[$i])) {
+             $errors=$errors . "Dividend Date must be entered<br />";
+            };
+           if (empty ($amount[$i])) {
+             $errors=$errors . "Amount must be entered. <br/>";
+ 
+            };
+          
+          };
+          if (strlen($errors)>0) {
+              echo "<b>Errors</b> </br>" . $errors ;
+              echo "<a href='javascript:history.go(-1);'>Back</a>";
+          }
+          else
+          {
+           //Update Dividends
+            for ($i=0;$i<count($symbol);$i++) {
+				if (isset($dividend_id[$i])){
+				    echo "update id=".$dividend_id[$i];
+					query("update dividends set session_id=?,symbol=?,dividend_date=?,amount=? where dividend_id=?",$_SESSION["id"],$symbol[$i],$dividend_date[$i],$amount[$i],$dividend_id[$i]);
+				 }
+				 else {
+				        //echo "insert id=".$dividend_id[$i];
+				
+		       		query("INSERT into dividends (session_id,symbol,dividend_date,amount) VALUES(?,?,?,?)", $_SESSION["id"],$symbol[$i],$dividend_date[$i],$amount[$i] );
+				}
+			};
+			//query dividends 
+			$rows= query("SELECT dividend_id,symbol,dividend_date,amount from dividends where  session_id = ?", $_SESSION["id"]);
+			// render edit Dividends form without editable rows
+			render("edit_dividends.php", ["title" => "Edit Dividends", "dividends" => $rows,"month" => $month, "year"=>$year]);
+			
+			}
+		}
+		elseif (isset($_POST["btnEdit"])){
+				//query dividends 
+				$rows= query("SELECT dividend_id,symbol,dividend_date,amount from dividends where  session_id = ?", $_SESSION["id"]);
+				// render edit Dividends form with editable rows
+				render("edit_dividends.php", ["title" => "Edit Dividends", "dividends" => $rows,"edits"=>$_POST["edit"],"month" => $month, "year"=>$year]);
+		}
+		else {
+			
+			//query dividends 
+			$rows= query("SELECT dividend_id,symbol,dividend_date,amount from dividends where  session_id = ? and month(dividend_date)=? and year(dividend_date)=?", $_SESSION["id"],$month,$year);
+			// render edit Dividends form with editable rows
+			render("edit_dividends.php", ["title" => "Edit Dividends", "dividends" => $rows,"month" => $month, "year"=>$year]);		
+		}
+    }
+	elseif ($_SERVER["REQUEST_METHOD"] == "GET"){
+		
+		if (isset($_GET["dividend_id"])){
+			$dividend_id=$_GET["dividend_id"];
+			write_log("dividends.php","dividend_id=".$dividend_id);
+		}
+		if (isset($_GET["action"])) {
+			$action=$_GET["action"];
+			if ($action=="delete"){
+			    write_log("dividends.php","action1=delete");
+				query("delete from dividends where dividend_id=?",$dividend_id);
+				//query dividends
+				$rows= query("SELECT dividend_id,symbol,dividend_date,amount from dividends where  session_id = ?", $_SESSION["id"]);
+				// render edit Dividends form without editable rows
+				render("edit_dividends.php", ["title" => "Edit Dividends", "dividends" => $rows,"month" => date('m'), "year"=>date('Y')]);
+			}
+		}
+	
+		else
+		{
+			//query dividends 
+			$rows= query("SELECT dividend_id,symbol,dividend_date,amount from dividends where  session_id = ? and month(dividend_date)=? and year(dividend_date)=?", $_SESSION["id"], trim(date('m')), date('Y'));
+			// render edit Dividends form without editable rows
+			render("edit_dividends.php", ["title" => "Edit Dividends", "dividends" => $rows, "month" => date('m'), "year"=>date('Y')]);
+		}
+	}
+	else
+		{
+			//query dividends 
+			$rows= query("SELECT dividend_id,symbol,dividend_date,amount from dividends where  session_id = ?", $_SESSION["id"]);
+			// render edit Dividends form without editable rows
+			render("edit_dividends.php", ["title" => "Edit Dividends", "dividends" => $rows,"month" => date('m'), "year"=>date('Y')]);
+		}
+?>
