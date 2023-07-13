@@ -6,7 +6,6 @@ Share Portfolio Manager written using LAMP stack. It uses the Yahoo Finance API'
 
 This script, refresh_all.sh, should be scheduled to run periodically to refresh all data. Contents are as follows:
 
-# php /var/www/includes/scrape_fin_stmts.php
 
 php /var/www/includes/get_share_prices.php
 
