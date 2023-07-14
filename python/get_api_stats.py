@@ -40,17 +40,7 @@ for row in rows:
 
     print ("Symbol="+symbol)
     
-    share_info = get_key_ratios(session,exchange, symbol+".L")
-    
-    if share_info:
-        print(share_info)
+    indicator_stats = query("select sti.symbol, sti.attribute, sti.value from screen_indicators sci, stock_info sti where sci.enabled='Y' and sci.name = sti.attribute and sti.symbol='"+symbol+"' and sti.asofdate = '"+date+"' order by order_number")
         
-        indicators = query("select name, description from screen_indicators where enabled='Y' order by order_number")
-        
-        if indicators:
-            for indicator in indicators:
-                if indicator[1] in share_info:
-                    value = share_info[indicator[1]]
-                    if value:
-                    
-                        insert_statistic(symbol, exchange, indicator[0], date, value)
+    for stat in indicator_stats:
+        insert_statistic(stat[0], exchange, stat[1],date, stat[2])

@@ -88,7 +88,7 @@
 //Get Altman Z-score
 
 //Get Active Companies
-//function get_active_stocks($exchange)
+//function get_active_stocks($exchange) 
 
 //Get Key Ratios
 function get_key_ratios($symbol,$exchange) {

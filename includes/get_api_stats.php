@@ -22,9 +22,10 @@
 	//Get symbols
 	$rows = query("select symbol from stock_symbols where enabled='Y' and exchange=?  order by symbol",$_SESSION["exchange"]);
 			
-	foreach($rows as $row) {
+	foreach($rows as $row) { 
 			
 		$symbol=$row['symbol'];
+		
 		
 		//remove .L from symbol
 		if (strpos($symbol,'.')>0){
