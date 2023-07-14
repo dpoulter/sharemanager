@@ -102,10 +102,44 @@
 		
 	    $indicators=query("select name ,if(rank_order='','DESC',rank_order) rank_order from screen_indicators where enabled='Y' and calc_rank='Y'");
 	    foreach ($indicators as $indicator){
-		 	$sql1      =   "SELECT symbol, if(value=0,if(rank_zero='N',if(rank_order='DESC',0,@rownum),rank),rank) rank,round(100-(if(value=0,if(rank_zero='N',@rownum,rank),rank)/@rownum*100)) percentile FROM (".
-	                      "SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS rank, value, symbol, rank_zero,rank_order FROM (select * from (select value,symbol,si.rank_zero,si.rank_order".
-	                    " FROM statistics s, screen_indicators si where s.indicator=si.name and date= '".date_format($asOfDate,'Y-m-d')."' and indicator='".$indicator['name']."' ) s, (SELECT @rownum := 0,@prev_value := NULL) r  ORDER BY value ".$indicator['rank_order'].
-	                    ") as st ) as result ";
+		 	$sql1 = "SELECT
+			 symbol,
+			 IF(value = 0, IF(rank_zero = 'N', IF(rank_order = 'DESC', 0, @rownum), `rank`), `rank`) AS `rank`,
+			 ROUND(100 - (IF(value = 0, IF(rank_zero = 'N', @rownum, `rank`), `rank`) / @rownum * 100)) AS percentile
+		  FROM
+			 (
+				SELECT
+				   CASE WHEN @prev_value = value THEN @rownum
+						WHEN @prev_value := value THEN @rownum := @rownum + 1
+						ELSE @rownum := @rownum + 1
+				   END AS `rank`,
+				   value,
+				   symbol,
+				   rank_zero,
+				   rank_order
+				FROM
+				   (
+					  SELECT
+						 *
+					  FROM
+						 (
+							SELECT
+							   value,
+							   symbol,
+							   si.rank_zero,
+							   si.rank_order
+							FROM
+							   statistics s,
+							   screen_indicators si
+							WHERE
+							   s.indicator = si.name
+							   AND date = '".date_format($asOfDate, 'Y-m-d')."'
+							   AND indicator = '".$indicator['name']."'
+						 ) s,
+						 (SELECT @rownum := 0, @prev_value := NULL) r
+					  ORDER BY ".$indicator['rank_order']."
+				   ) AS st
+			 ) AS result";
 	     
 	     	write_log("get_statistics.php","query=$sql1");
 	     
@@ -115,7 +149,7 @@
 	        	foreach($ranks as $rank){
 	        	
 	        		//query("insert into ranks(symbol,indicator,rank,percentile) values(?,?,?,?,?)",$rank['symbol'],$indicator['name'],$rank['rank'],$rank['percentile']);	
-					query("update statistics set rank=?, percentile=? where symbol=? and indicator=? and date=? ",$rank['rank'],$rank['percentile'],$rank['symbol'],$indicator['name'],date_format($asOfDate,'Y-m-d'));	
+					query("update statistics set stat_rank=?, percentile=? where symbol=? and indicator=? and date=? ",$rank['rank'],$rank['percentile'],$rank['symbol'],$indicator['name'],date_format($asOfDate,'Y-m-d'));	
 	        	}
 	        }
 	        
