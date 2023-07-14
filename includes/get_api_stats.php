@@ -15,23 +15,24 @@
 	//Set exchange
 	$_SESSION["exchange"]='LON';
 	
-	//write_log("get_statistics.php","Get statistics to calculate");
+	write_log("get_statistics.php","Get statistics to calculate");
 	
 	$from_time = strtotime('now');
 	
 	//Get symbols
 	$rows = query("select symbol from stock_symbols where enabled='Y' and exchange=?  order by symbol",$_SESSION["exchange"]);
 			
-	foreach($rows as $row) {
+	foreach($rows as $row) { 
 			
 		$symbol=$row['symbol'];
+		
 		
 		//remove .L from symbol
 		if (strpos($symbol,'.')>0){
 			$symbol=substr($symbol,0,strpos($symbol,'.'));
 		};
 		
-	//	write_log("get_api_stats","symbol: ".$symbol);
+		write_log("get_api_stats","symbol: ".$symbol);
 			
 		$share_info=get_key_ratios('X'.$_SESSION["exchange"],$symbol);
 		
@@ -44,13 +45,13 @@
 			if(count($indicators)>0) {
 				foreach($indicators as $indicator ){
 					
-					//write_log("get_api_stats","indicator: ".$indicator["name"]);
+					write_log("get_api_stats","indicator: ".$indicator["name"]);
 					
 					if (is_array($share_info) && array_key_exists($indicator["description"], $share_info))	{
 							
 						$value=convert_number($share_info[$indicator["description"]]);
 						
-						//write_log("get_api_stats","value: ".$value);
+						write_log("get_api_stats","value: ".$value);
 						
 						$statistic = new Statistic();
 						
@@ -62,7 +63,7 @@
 		
 		}
 		$to_time = strtotime('now');
-			//write_log("indicator_stats","Time taken: ".round(abs($to_time - $from_time),2). " seconds");
+			write_log("indicator_stats","Time taken: ".round(abs($to_time - $from_time),2). " seconds");
 	}
 	
 	

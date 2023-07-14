@@ -141,6 +141,7 @@
 		FROM statistics r where date=? and indicator in ('shareholder_yield','pe','price_sales_ratio','price_book_ratio','enterprise_value_to_ebitda','price_free_cash_flow_per_share') 
 		group by symbol";
 	*/
+	
 		$scores = query($sql,date_format($asOfDate,'Y-m-d'),$_SESSION['exchange']);
 		foreach($scores as $score){
 				query("insert into statistics (symbol,date, indicator,value,exchange) values (?,?,?,?,?)",$score['symbol'],date_format($asOfDate,'Y-m-d'),'value_score',$score['percentile'],$_SESSION['exchange']);

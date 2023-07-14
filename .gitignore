@@ -6,7 +6,3 @@ fonts
 img
 jpgraph-4.2.0
 js
-sql/Dump20230711.sql
-python/__pycache__/functions.cpython-38.pyc
-python/__pycache__/share_functions.cpython-38.pyc
-python/yfinance.cache

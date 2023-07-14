@@ -3,6 +3,21 @@ Share Portfolio Manager written using LAMP stack. It uses the Yahoo Finance API'
 
 
 
+Python modules to install
+--------------------------------
+sudo apt-get install python3.8-dev
+python3.8 -m pip install versioneer
+sudo apt-get install numpty
+pip3 install yfinance
+pip3 install mysql-connector-python
+pip3 install requests-cache
+pip3 install requests-ratelimiter
+pip3 install pyrate-limiter
+
+
+
+
+
 
 This script, refresh_all.sh, should be scheduled to run periodically to refresh all data. Contents are as follows:
 
