@@ -145,7 +145,7 @@
 	     
 	        $ranks = query($sql1);
 	        
-	        if (count($ranks>0)){
+	        if (is_array($ranks)&&$ranks instanceof Countable){
 	        	foreach($ranks as $rank){
 	        	
 	        		//query("insert into ranks(symbol,indicator,rank,percentile) values(?,?,?,?,?)",$rank['symbol'],$indicator['name'],$rank['rank'],$rank['percentile']);	
