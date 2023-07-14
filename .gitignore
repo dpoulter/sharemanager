@@ -6,3 +6,8 @@ fonts
 img
 jpgraph-4.2.0
 js
+includes/constants.php
+python/__pycache__
+*.cache
+Dump20230711.sql
+
