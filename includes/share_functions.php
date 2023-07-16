@@ -228,7 +228,7 @@ function get_key_ratios($symbol,$exchange) {
 					$symbol=$symbol.",".$symbols[$i]['symbol'].".".$exchange;		
 				}
 			
-			if ($counter==1??($i+1)==count($symbols)){
+			if ($counter<=100??($i+1)==count($symbols)){
 
 										// open connection to World Trade Data
 									$url="https://api.marketstack.com/v1/eod?symbols=".$symbol."&exchange=XLON&access_key=b0ac70e8c036442832769c69fbc619cb"."&date_from=".$start_date."&date_to=".$end_date."&limit=1000&sort=ASC";
@@ -359,7 +359,7 @@ function time_to_decimal($time) {
 		
 				//$from_time = strtotime('now');
 	
-				if ($indicator[0]["function"]!=''){
+				if ($indicator[0]["screen_function"]!=''){
 					
 		   		//Get symbols
 					if (isset($symbol))
@@ -371,7 +371,7 @@ function time_to_decimal($time) {
 						
 						$symbol=$row['symbol'];
 
-						$function=$indicator[0]["function"] ;
+						$function=$indicator[0]["screen_function"] ;
 					//	write_log("indicator_stats","function=".$function);
 						call_user_func($function,$asOfDate,$symbol );
 					}
@@ -387,7 +387,7 @@ function time_to_decimal($time) {
 	
 	//Calculate 3mnth Momentum
     function calc_momentum_3mnth($asOfDate,$symbol){
-		//write_log("calc_momentum_3mnth","Call calc_momentum");
+		write_log("calc_momentum_3mnth","Call calc_momentum");
 		calc_momentum($asOfDate,3,$symbol);
 	}
 	
@@ -403,6 +403,9 @@ function time_to_decimal($time) {
 
      //Calculate Price Momentum
 	function calc_momentum($asOfDate,$mnth,$symbol ){
+
+		write_log("calc_momentum", "As of Date= $asOfDate");
+
 		 //Get symbols
 			if (isset($symbol))
 				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
@@ -418,6 +421,8 @@ function time_to_decimal($time) {
 					$min_date_price=null;
 					
                $symbol=$symbols[$i]['symbol'];
+
+			   write_log("calc_momentum", "Symbol= $symbol");
 					
 					//write_log("calc_momentum", "Symbol: $symbol, As of Date: $asOfDate , Months: $mnth");
 					//write_log("calc_momentum", "SELECT DATE_SUB($asOfDate, INTERVAL $mnth MONTH) min_date, date max_date FROM historical_prices WHERE symbol=$symbol and date =$asOfDate");
@@ -426,39 +431,47 @@ function time_to_decimal($time) {
     			//$dates = query("SELECT min( date ) min_date, max( date ) max_date FROM historical_prices WHERE symbol=? and date >= DATE_SUB(STR_TO_DATE(?, '%d-%m-%Y'), INTERVAL ? MONTH)",$symbol,$asOfDate,$mnth);
 				//$dates = query("SELECT min( date ) min_date, max( date ) max_date FROM historical_prices WHERE symbol=? and date >= DATE_SUB(?, INTERVAL ? MONTH) and date <= ?" ,$symbol,$asOfDate,$mnth,$asOfDate);
 				$date= query("select max(hp1.date) max_date from historical_prices hp1 where hp1.symbol=? and hp1.exchange=? and hp1.date<=?",$symbol,$_SESSION["exchange"],$asOfDate);
-				$dates = query("SELECT DATE_SUB(?, INTERVAL ? MONTH) min_date, date max_date FROM historical_prices hp WHERE symbol=? and hp.exchange=? and date =?",$asOfDate,$mnth,$symbol,$_SESSION["exchange"],$date[0]['max_date']);    			
-    			if (count($dates>0)&&isset($dates[0]['min_date'])&&isset($dates[0]['max_date'])){
-			//foreach ($dates as $date){
+				
+				$sql="SELECT DATE_SUB(?, INTERVAL ? MONTH) min_date, date max_date FROM historical_prices hp WHERE symbol=? and hp.exchange=? and date =?";
+
+				write_log("calc_momentum", "Query= $sql");
+
+				$dates = query($sql,$asOfDate,$mnth,$symbol,$_SESSION["exchange"],$date[0]['max_date']);    	
+
+    			if (is_array($dates)&&count($dates)>0&&isset($dates[0]['min_date'])&&isset($dates[0]['max_date'])){
+					//foreach ($dates as $date){
       				$min_date = $dates[0]['min_date'];
       				$max_date = $dates[0]['max_date'];
-      				 //write_log("calc_momentum", " Min date: " . $min_date . "</br>");
-				       //write_log("calc_momentum", " Max date: " . $max_date . "</br>");
+      				
+					write_log("calc_momentum", " Min date: " . $min_date . "</br>");
+				    write_log("calc_momentum", " Max date: " . $max_date . "</br>");
     			
 			
-    			//get price at min and max date
-    			while((date_create_from_format('Y-m-d', $min_date)< date_create_from_format('Y-m-d', $max_date))&&((count($max_date_prices)==0)||(count($min_date_prices)==0))) {
+					//get price at min and max date
+					while((date_create_from_format('Y-m-d', $min_date)< date_create_from_format('Y-m-d', $max_date))&&((is_array($max_date_prices)&&count($max_date_prices)==0)||(is_array($min_date_prices)&&count($min_date_prices)==0))) {
+						
+    				write_log("calc_momentum"," Count max date prices: " .count($max_date_prices));
     				
-    				//write_log("calc_momentum"," Count max date prices: " .count($max_date_prices));
-    				//write_log("calc_momentum"," Count Min date prices: " .count($min_date_prices));
+					write_log("calc_momentum"," Count Min date prices: " .count($min_date_prices));
     				
     				
-    				//write_log("calc_momentum"," Max Date : " . $max_date);
+    				write_log("calc_momentum"," Max Date : " . $max_date);
     			
     				$max_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,$_SESSION["exchange"],$max_date);
     				
     				foreach ($max_date_prices as $price){
-      				$max_date_price=$price['price'];
-				  		//write_log("calc_momentum"," Max Date Price: " . $max_date_price . "</br>");
+      					$max_date_price=$price['price'];
+				  		write_log("calc_momentum"," Max Date Price: " . $max_date_price . "</br>");
     				}
     				
-					//$min_date=date_create_from_format('Y-m-d', $max_date);  
+					$min_date=date_create_from_format('Y-m-d', $max_date);  
 					
 					
 
 					$min_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,$_SESSION["exchange"],$min_date);
     				foreach ($min_date_prices as $price){
-      				$min_date_price=$price['price'];
-      				 //write_log("calc_momentum", " Min Price: " . $min_date_price . "</br>");
+      					$min_date_price=$price['price'];
+      				 	write_log("calc_momentum", " Min Price: " . $min_date_price . "</br>");
     				}
     			
     				if ((count($max_date_prices)==0)||(count($min_date_prices)==0)){
@@ -471,7 +484,7 @@ function time_to_decimal($time) {
 						$interval="P1D";				
 	    				$min_date->add(new DateInterval($interval));
 	    				$min_date=date_format($min_date, 'Y-m-d');
-						//write_log("calc_momentum"," Min Date : " . $min_date);
+						write_log("calc_momentum"," Min Date : " . $min_date);
 					
 					}
 					
@@ -486,7 +499,7 @@ function time_to_decimal($time) {
 			else {
 				$perc_change=0;
 			}
-    			 //write_log("calc_momentum", "Perc change: " . $perc_change . "</br>");
+    			 write_log("calc_momentum", "Perc change: " . $perc_change . "</br>");
 
     			//update price momentum
 				 //write_log("calc_momentum", "update price momentum");
