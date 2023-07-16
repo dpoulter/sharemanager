@@ -15,23 +15,41 @@ pip3 install requests-ratelimiter
 pip3 install pyrate-limiter
 
 
+Other Installation
+--------------------------
+Apache2:  
+
+sudo apt update
+sudo apt-get install apache2
+sudo apt install libapache2-mod-php
 
 
+Edit hosts file: sudo nano /etc/hostst
+Add this entry: 127.0.0.1       shares.localhost
+
+cd /etc/apache2/sites-available
+sudo cp 000-default.conf shares.localhost.conf
+
+Add lines: 
+ServerName shares.localhost
+DirectoryIndex index.php index.html index.cgi index.pl index.php index.xhtml index.htm
+
+Change Document Root entry: DocumentRoot /var/www/shares
+
+sudo a2ensite shares.localhost.conf 
+sudo service apache2 restart
 
 
+Refresh_all.sh
+------------------------------
 This script, refresh_all.sh, should be scheduled to run periodically to refresh all data. Contents are as follows:
 
 
-php /var/www/includes/get_share_prices.php
-
-php /var/www/includes/scrape_key_statistics.php
-
---> Replaced: php /var/www/includes/get_api_stats.php with
-
+python3 get_stock_info.py
 python3 get_api_stats.py
-
+php /var/www/includes/get_share_prices.php
+php /var/www/includes/get_momentum_statistics.php
 php /var/www/includes/get_statistics.php
-
 php /var/www/includes/performance_function.php
 
 
@@ -63,3 +81,10 @@ New Python function to get all share info using YFinance
 ----------------------------------------------------------
 pyhton/stock_info.sql  - mysql table creation script
 python/fetch_stock_info.sql - calls Yfinance ticker api to get stock info for all stock symbols
+
+
+
+
+Initial setup for data
+-------------------------------
+Run initial_data.sql in the database to popoulate data in tables for the first time

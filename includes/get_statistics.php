@@ -11,7 +11,7 @@
 	print_r( "Asofdate=".date_format($asOfDate,'Y-m-d')."\r\n");
 	
 	//Set Exchanges
-	$exchanges = array("XLON", "JSE");
+	$exchanges = array("XLON");
 	
 	foreach ($exchanges as $exchange){
 	    
@@ -101,6 +101,7 @@
 		write_log("get_statistics.php","Calculate Rank for each statistic");
 		
 	    $indicators=query("select name ,if(rank_order='','DESC',rank_order) rank_order from screen_indicators where enabled='Y' and calc_rank='Y'");
+
 	    foreach ($indicators as $indicator){
 		 	$sql1 = "SELECT
 			 symbol,
@@ -142,11 +143,17 @@
 			 ) AS result";
 	     
 	     	write_log("get_statistics.php","query=$sql1");
+
+			write_log("get_statistics.php","Execute Query for ".$indicator['name']." and AsofDate=".date_format($asOfDate, 'Y-m-d'));
 	     
 	        $ranks = query($sql1);
+
+			write_log("get_statistics.php","Query executed...");
 	        
-	        if (is_array($ranks)&&$ranks instanceof Countable){
+	        if (is_array($ranks)){
 	        	foreach($ranks as $rank){
+
+					write_log("get_statistics.php","Update statistics...");
 	        	
 	        		//query("insert into ranks(symbol,indicator,rank,percentile) values(?,?,?,?,?)",$rank['symbol'],$indicator['name'],$rank['rank'],$rank['percentile']);	
 					query("update statistics set stat_rank=?, percentile=? where symbol=? and indicator=? and date=? ",$rank['rank'],$rank['percentile'],$rank['symbol'],$indicator['name'],date_format($asOfDate,'Y-m-d'));	
@@ -159,9 +166,18 @@
 		write_log("get_statistics.php","Calculate Momentum Rank for each share");
 		
 		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and indicator in ('3mnth','6mnth','12mnth') and s.exchange=? group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
-																
-		$scores = query($sql,date_format($asOfDate,'Y-m-d'),$_SESSION['exchange']);
+
+	    write_log("get_statistics.php","Query= ".$sql);
+
+		$scores=query($sql,date_format($asOfDate,'Y-m-d'),$_SESSION['exchange']);
+
+		write_log("get_statistics.php","Asof Date= ".date_format($asOfDate,'Y-m-d').", exchange=".$_SESSION['exchange']);
+		write_log("get_statistics.php","No of rows returned= ".count($scores));
+
 		foreach($scores as $score){
+
+			write_log("get_statistics.php","insert into statistics...symbol=".$score['symbol'].", value=".$score['percentile']);
+
 			query("insert into statistics (symbol,date, indicator,value,exchange) values (?,?,?,?,?)",$score['symbol'],date_format($asOfDate,'Y-m-d'),'momentum_score',$score['percentile'],$_SESSION['exchange']);
 		}
 		
