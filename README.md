@@ -40,6 +40,12 @@ sudo a2ensite shares.localhost.conf
 sudo service apache2 restart
 
 
+Initial Setup
+-------------
+Run in mysql: intial_data.sql
+Setup historical data for at least 3 months: php /var/www/includes/get_share_prices.php 2023-04-01 2023-07-16
+
+
 Refresh_all.sh
 ------------------------------
 This script, refresh_all.sh, should be scheduled to run periodically to refresh all data. Contents are as follows:

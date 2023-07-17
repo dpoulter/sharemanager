@@ -184,7 +184,7 @@ function get_key_ratios($symbol,$exchange) {
         require_once("constants.php");
 		
 		//Truncate historical_prices
-		$result = query("truncate table historical_prices");
+		//$result = query("truncate table historical_prices");
 		
 	    //Set exchange
 	    $exchange=$_SESSION["exchange"];
@@ -310,7 +310,7 @@ function get_key_ratios($symbol,$exchange) {
 														$sym = substr($line['symbol'],0,strpos($line['symbol'],"."));
 														write_log("get_historical_prices","delete prices for ".$sym);
 
-														query("delete from historical_prices where symbol=? and exchange=? and date >= ? and date <=?",$sym,$_SESSION["exchange"],$date,$date);
+														query("delete from historical_prices where symbol=? and exchange=? and date = ?",$sym,$_SESSION["exchange"],$date);
 													
 														//insert prices
 														write_log("get_historical_prices","insert prices=".$line['adj_close']);
@@ -439,12 +439,16 @@ function time_to_decimal($time) {
 				$dates = query($sql,$asOfDate,$mnth,$symbol,$_SESSION["exchange"],$date[0]['max_date']);    	
 
     			if (is_array($dates)&&count($dates)>0&&isset($dates[0]['min_date'])&&isset($dates[0]['max_date'])){
-					//foreach ($dates as $date){
+					
+					$min_date_prices = [];
+					$max_date_prices = [];
+
       				$min_date = $dates[0]['min_date'];
       				$max_date = $dates[0]['max_date'];
       				
 					write_log("calc_momentum", " Min date: " . $min_date . "</br>");
 				    write_log("calc_momentum", " Max date: " . $max_date . "</br>");
+
     			
 			
 					//get price at min and max date
@@ -464,7 +468,7 @@ function time_to_decimal($time) {
 				  		write_log("calc_momentum"," Max Date Price: " . $max_date_price . "</br>");
     				}
     				
-					$min_date=date_create_from_format('Y-m-d', $max_date);  
+					//$min_date=date_format(date_create_from_format('Y-m-d', $max_date), 'Y-m-d');  
 					
 					
 
@@ -1128,7 +1132,7 @@ function time_to_decimal($time) {
 	
 
 	//get stats pulled from yahoo
-		$indicators=query("select indicator_id, name from screen_indicators where enabled='Y' and length(yahoo_code)>0 order by order_number asc");
+		$indicators=query("select indicator_id, name from screen_indicators where enabled='Y' and screen_function is null order by order_number asc");
 			for ($i=0;$i<count($indicators);$i++)
 				array_push($stats_indicators,$indicators[$i]);
 	
