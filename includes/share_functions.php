@@ -461,7 +461,8 @@ function time_to_decimal($time) {
     				
     				write_log("calc_momentum"," Max Date : " . $max_date);
     			
-    				$max_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,$_SESSION["exchange"],$max_date);
+    				//$max_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,$_SESSION["exchange"],$max_date);
+					$max_date_prices=get_pric,$symbol,$_SESSION["exchange"],$max_date);
     				
     				foreach ($max_date_prices as $price){
       					$max_date_price=$price['price'];
@@ -473,6 +474,7 @@ function time_to_decimal($time) {
 					
 
 					$min_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,$_SESSION["exchange"],$min_date);
+					
     				foreach ($min_date_prices as $price){
       					$min_date_price=$price['price'];
       				 	write_log("calc_momentum", " Min Price: " . $min_date_price . "</br>");
@@ -3531,5 +3533,6 @@ function get_active_stocks($exchange){
         // return stock as an associative array
         return $share_info;
     }
+
 
 ?>
