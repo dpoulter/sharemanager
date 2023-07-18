@@ -51,12 +51,12 @@ Refresh_all.sh
 This script, refresh_all.sh, should be scheduled to run periodically to refresh all data. Contents are as follows:
 
 
-python3 get_stock_info.py
-python3 get_api_stats.py
-php /var/www/includes/get_share_prices.php
-php /var/www/includes/get_momentum_statistics.php
-php /var/www/includes/get_statistics.php
-php /var/www/includes/performance_function.php
+python3 /var/www/shares/python/fetch_stock_info.py
+python3 /var/www/shares/python/get_api_stats.py
+php /var/www/shares/includes/get_share_prices.php
+#php /var/www/shares/includes/get_momentum_statistics.php
+php /var/www/shares/includes/get_statistics.php
+php /var/www/shares/includes/performance_function.php
 
 
 get_share_prices.php
