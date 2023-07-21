@@ -1635,7 +1635,7 @@ function get_quality_statistics($symbol){
 
 
 //Get Job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics'");
 $job_date=$rows[0]['job_date'];
 
 $rows = query("SELECT si.description, s.value,order_number
@@ -3299,7 +3299,7 @@ function calc_implied_valuation ($date,$symbol){
 function get_momentum_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
@@ -3311,7 +3311,7 @@ function get_momentum_topten(){
 function get_value_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
@@ -3323,7 +3323,7 @@ function get_value_topten(){
 function get_quality_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
