@@ -501,6 +501,7 @@
 
     //Log job
     function log_job ($job_name){
-        $result=query("insert into jobs (job_name) values (?)",$job_name);
+        $current_date_time = date('Y-m-d H:i:s'); // Get the current date and time    
+        $result=query("insert into jobs (job_name, job_date) values (?,?)",$job_name,$current_date_time);
     } 
 ?>
