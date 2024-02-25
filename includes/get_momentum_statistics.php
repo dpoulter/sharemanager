@@ -4,6 +4,9 @@
   include("functions.php");
   include("share_functions.php");
 
+  //Set Exchange Session variable
+  $_SESSION["exchange"]='LON';
+
 	//Get parameters
 // 	$start_date=date_create_from_format('Y-m-d',$argv[1]);
 // 	$end_date=date_create_from_format('Y-m-d',$argv[2]);
