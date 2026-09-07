@@ -502,7 +502,7 @@
     
     //Get Last Update
     function get_last_update(){
-        $data = query("SELECT job_date FROM jobs where job_name='get_statistics' and job_date=(select max(job_date) from jobs where job_name='get_statistics')");
+        $data = query("SELECT job_date FROM jobs where job_name='get_statistics_asof' and job_date=(select max(job_date) from jobs where job_name='get_statistics_asof')");
         return $data[0]['job_date'];
     }
 

@@ -232,9 +232,12 @@
 		}
 		
 	
-		//insert record into jobs
+		//Record the date the statistics are current as of. This is a separate
+		//marker from the log_job("get_statistics") row above, which records when
+		//the job ran: log_job writes NOW, this writes the as of date, and the
+		//pages that display statistics need the as of date.
 		write_log("get_statistics.php","insert record into jobs");
 		
-		query("insert into jobs (job_name, job_date) values (?,?)",'get_statistics',date_format($asOfDate,'Y-m-d H:i:s'));
+		query("insert into jobs (job_name, job_date) values (?,?)",'get_statistics_asof',date_format($asOfDate,'Y-m-d H:i:s'));
 	}
  ?>

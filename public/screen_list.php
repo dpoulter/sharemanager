@@ -33,7 +33,7 @@
 				$date=date_format($asOfDate,'Y-m-d');
 				
 				//get the maximum date of statistics
-				$date_row=query("select date(max(date_sub(job_date,INTERVAL 1 DAY))) max_date from jobs where job_name = 'get_statistics'");
+				$date_row=query("select date(max(date_sub(job_date,INTERVAL 1 DAY))) max_date from jobs where job_name='get_statistics_asof'");
 				$date=$date_row[0]["max_date"];
 				
 				

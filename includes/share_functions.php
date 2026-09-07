@@ -1189,7 +1189,7 @@ function time_to_decimal($time) {
 	*/		
 	
 			//Get latest statistics job date
-			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 			$job_date=$rows[0]['job_date'];
 			
 			//initialize
@@ -1242,7 +1242,7 @@ function time_to_decimal($time) {
 		if(count($share_query)>0){
 			
 			//Get Job date
-			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 			$job_date=$rows[0]['job_date'];
 			//echo "jobdate=".$job_date;
 			
@@ -1506,7 +1506,7 @@ function get_momentum_statistics($symbol){
 //$asOfDate=date_format($asOfDate,'Y-m-d');
 
 //Get Job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 $job_date=$rows[0]['job_date'];
 
 //write_log("ratings.php","job_date=job_date");
@@ -1553,7 +1553,7 @@ function get_growth_statistics($symbol){
 
 
 //Get Job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 $job_date=$rows[0]['job_date'];
 
 
@@ -1594,7 +1594,7 @@ function get_value_statistics($symbol){
 
 
 //Get Job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 $job_date=$rows[0]['job_date'];
 
 $rows = query("SELECT si.description, s.value,order_number
@@ -1635,7 +1635,7 @@ function get_quality_statistics($symbol){
 
 
 //Get Job date
-$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 $job_date=$rows[0]['job_date'];
 
 $rows = query("SELECT si.description, s.value,order_number
@@ -1695,7 +1695,7 @@ $asOfDate->sub(new DateInterval('P1D'));
 $asOfDate=date_format($asOfDate,'Y-m-d');
 
 //Get latest statistics job date
-			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 			$asOfDate=$rows[0]['job_date'];
 
 //write_log("get_scores.php","asOfDate=$asOfDate");
@@ -1721,7 +1721,7 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 
 //write_log("get_scores.php","asOfDate=$asOfDate");
 //Get latest statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$asOfDate=$rows[0]['job_date'];
 
 
@@ -1745,7 +1745,7 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 
 //write_log("get_scores.php","asOfDate=$asOfDate");
 //Get latest statistics job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 $asOfDate=$rows[0]['job_date'];
 
 
@@ -2111,7 +2111,7 @@ function get_industry_valuation($symbol){
 //Get Price valuation indicators for Relative to Sector
 function get_relative_to_sector($symbol){
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select si.description indicator, share_stat,sector_stat,value from price_valuation pv, screen_indicators si where si.name=pv.indicator and type='relative_sector' and symbol=? and date=?",$symbol,$job_date);
@@ -2122,7 +2122,7 @@ function get_relative_to_sector($symbol){
 //Get Price valuation indicators for Relative to Industry
 function get_relative_to_industry($symbol){
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select si.description indicator, share_stat,industry_stat,value from price_valuation pv, screen_indicators si where si.name=pv.indicator and type='relative_industry' and symbol=? and date=?",$symbol,$job_date);
@@ -2133,7 +2133,7 @@ function get_relative_to_industry($symbol){
 //Get Piotroski variables
 function get_piotroski_variables($symbol){
 		
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='piotroski_fscore'",$symbol,$job_date);
@@ -2145,7 +2145,7 @@ function get_piotroski_variables($symbol){
 //Get Altman Z-score variables
 function get_altman_variables($symbol){
 		
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='altman_zscore'",$symbol,$job_date);
@@ -2157,7 +2157,7 @@ function get_altman_variables($symbol){
 //Get Altman Z-score (non manufacturing) variables
 function get_altman_nonman_variables($symbol){
 		
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='altman_zscore_nonman'",$symbol,$job_date);
@@ -3299,7 +3299,7 @@ function calc_implied_valuation ($date,$symbol){
 function get_momentum_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
@@ -3311,7 +3311,7 @@ function get_momentum_topten(){
 function get_value_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
@@ -3323,7 +3323,7 @@ function get_value_topten(){
 function get_quality_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
@@ -3335,7 +3335,7 @@ function get_quality_topten(){
 function get_overall_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
@@ -3346,7 +3346,7 @@ function get_overall_topten(){
 
 function get_sector_companies($sector){
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get companies
