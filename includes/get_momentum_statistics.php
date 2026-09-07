@@ -13,24 +13,30 @@
 	//is calculated, so the nightly run in refresh_all.sh stays incremental. Pass a
 	//start and end date (Y-m-d) to recalculate a wider range, e.g.
 	//    php get_momentum_statistics.php 2015-01-01 2025-12-31
-	$range_start=isset($argv[1])?date_create_from_format('Y-m-d',$argv[1]):false;
-	$range_end=isset($argv[2])?date_create_from_format('Y-m-d',$argv[2]):false;
 
-	if (isset($argv[1])&&$range_start===false){
-		exit("Invalid start date '".$argv[1]."', expected Y-m-d\r\n");
-	}
-	if (isset($argv[2])&&$range_end===false){
-		exit("Invalid end date '".$argv[2]."', expected Y-m-d\r\n");
+	//date_create_from_format rolls out of range values over rather than failing,
+	//so 2024-13-45 would quietly become 2025-02-14. Round trip the result to
+	//reject anything that was not a real date to begin with.
+	function parse_date_arg($value,$label){
+		$date=date_create_from_format('Y-m-d',$value);
+		if ($date===false||date_format($date,'Y-m-d')!==$value){
+			exit("Invalid ".$label." '".$value."', expected Y-m-d\r\n");
+		}
+		return date_format($date,'Y-m-d');
 	}
 
-	$from=($range_start===false)?null:date_format($range_start,'Y-m-d');
-	$to=($range_end===false)?null:date_format($range_end,'Y-m-d');
+	$from=isset($argv[1])?parse_date_arg($argv[1],'start date'):null;
+	$to=isset($argv[2])?parse_date_arg($argv[2],'end date'):null;
 	$incremental=($from===null&&$to===null);
+
+	if ($from!==null&&$to!==null&&$from>$to){
+		exit("Start date ".$from." is after end date ".$to."\r\n");
+	}
 
 	$interval=new DateInterval('P1M');
 
 	$symbol_count=0;
-	$date_count=0;
+	$calc_count=0;
 
 	$rows=query("select symbol, min(date) min_date, max(date) max_date from historical_prices where exchange=? group by symbol",$_SESSION["exchange"]);
 	foreach($rows as $row){
@@ -81,10 +87,10 @@
 			indicator_stats($as_of_date,'6mnth',$symbol);
 			indicator_stats($as_of_date,'12mnth',$symbol);
 
-			$date_count++;
+			$calc_count++;
 		}
 	}
 
 	write_log("get_momentum_statistics",($incremental?"Incremental run":"Backfill ".$from." to ".$to).
-		", ".$symbol_count." symbols, ".$date_count." as of dates");
+		", ".$symbol_count." symbols, ".$calc_count." symbol/date calculations");
 ?>
