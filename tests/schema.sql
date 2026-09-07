@@ -12,7 +12,8 @@
 
 drop table if exists historical_prices, stock_symbols, screen_indicators,
   statistics, statistic_averages, message_log, jobs, users, indicator_category,
-  stock_info;
+  stock_info, strategy_orders, strategy_targets, strategy_positions,
+  strategy_accounts;
 
 -- Daily prices, loaded by get_share_prices.php via share_functions.php:319.
 -- The exchange column is written from $_SESSION["exchange"] ('XLON').
@@ -125,4 +126,60 @@ create table stock_info (
   attribute varchar(50),
   value    varchar(255),
   key (symbol, asofdate, attribute)
+);
+
+-- Paper execution layer. See sql/paper_trading.sql for the annotated original;
+-- these definitions must stay in step with it.
+create table strategy_accounts (
+  strategy varchar(50) not null primary key,
+  cash decimal(20,4) not null,
+  currency char(3) not null default 'GBP',
+  mode varchar(10) not null default 'PAPER',
+  enabled char(1) not null default 'Y',
+  created_at datetime not null,
+  note varchar(255)
+);
+
+create table strategy_targets (
+  strategy varchar(50) not null,
+  as_of_date date not null,
+  symbol varchar(50) not null,
+  exchange varchar(10) not null,
+  target_weight decimal(9,6) not null,
+  score decimal(20,6),
+  created_at datetime not null,
+  primary key (strategy, as_of_date, symbol)
+);
+
+create table strategy_positions (
+  strategy varchar(50) not null,
+  symbol varchar(50) not null,
+  exchange varchar(10) not null,
+  quantity int not null,
+  avg_price decimal(14,4) not null,
+  updated_at datetime not null,
+  primary key (strategy, symbol)
+);
+
+create table strategy_orders (
+  client_order_id varchar(100) not null primary key,
+  strategy varchar(50) not null,
+  as_of_date date not null,
+  symbol varchar(50) not null,
+  exchange varchar(10) not null,
+  side varchar(4) not null,
+  quantity int not null,
+  status varchar(10) not null,
+  fill_date date,
+  fill_price decimal(14,4),
+  consideration decimal(20,4),
+  commission decimal(14,4) default 0,
+  stamp_duty decimal(14,4) default 0,
+  slippage decimal(14,4) default 0,
+  total_cost decimal(20,4),
+  created_at datetime not null,
+  filled_at datetime,
+  note varchar(255),
+  key (strategy, as_of_date),
+  key (strategy, status)
 );

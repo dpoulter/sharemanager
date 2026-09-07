@@ -280,6 +280,191 @@
     check('matching on name alone would miss the mapped indicators (regression guard)',
           count($old_way) === 1, 'got ' . count($old_way) . ' rows, expected only shareholder_yield');
 
+    echo "\n--- paper execution: sizing and costs ---\n";
+
+    require_once($INCLUDES . '/strategy_functions.php');
+
+    $STRATEGY = 'test_top5';
+    $ASOF     = null;   // set below to a date the seeded price history covers
+
+    function paper_reset($cash = 100000) {
+        global $STRATEGY;
+        db()->exec("delete from strategy_orders where strategy='$STRATEGY'");
+        db()->exec("delete from strategy_positions where strategy='$STRATEGY'");
+        db()->exec("delete from strategy_targets where strategy='$STRATEGY'");
+        db()->exec("delete from strategy_accounts where strategy='$STRATEGY'");
+        db()->exec("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                    values ('$STRATEGY',$cash,'GBP','PAPER','Y',now())");
+    }
+    function paper_targets($as_of, $symbols) {
+        global $STRATEGY;
+        db()->exec("delete from strategy_targets where strategy='$STRATEGY' and as_of_date='$as_of'");
+        $weight = round(1.0 / count($symbols), 6);
+        foreach ($symbols as $symbol) {
+            db()->exec("insert into strategy_targets (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                        values ('$STRATEGY','$as_of','$symbol','XLON',$weight,now())");
+        }
+    }
+    function paper_run($as_of, $env = []) {
+        global $STRATEGY;
+        return run_script('run_paper_execution.php', [$STRATEGY, $as_of], $env);
+    }
+
+    /* Pick a date with at least one further session after it, so fills have a
+       next price to use. */
+    /* DISTINCT matters: there is one row per symbol per day, so without it an
+       offset walks rows of the same date and lands on the last session, which
+       has nothing after it to fill against. */
+    $ASOF = scalar("select distinct date from historical_prices where exchange='XLON'
+                    order by date desc limit 1 offset 5");
+    $SYMBOLS = ['AAA','BBB','CCC','DDD','EEE'];
+
+    paper_reset();
+    paper_targets($ASOF, $SYMBOLS);
+    paper_run($ASOF);
+
+    $filled = (int)scalar("select count(*) from strategy_orders where strategy=? and status='FILLED'", [$STRATEGY]);
+    $rejected = (int)scalar("select count(*) from strategy_orders where strategy=? and status='REJECTED'", [$STRATEGY]);
+    /* Sizing must reserve dealing costs. Sizing five positions at a full 20%
+       of the account leaves nothing for stamp duty, spread and commission, so
+       the last order is rejected for want of cash and the book silently runs
+       one name short. */
+    check('an all-cash rebalance fills every target', $filled === 5 && $rejected === 0,
+          "filled=$filled rejected=$rejected");
+    check('cash after a full rebalance is small but not negative',
+          (float)scalar("select cash from strategy_accounts where strategy=?", [$STRATEGY]) >= 0);
+
+    /* Buys pay stamp duty, sells do not. */
+    $buy = rows("select stamp_duty, commission, slippage, consideration, total_cost
+                 from strategy_orders where strategy=? and side='BUY' and status='FILLED' limit 1", [$STRATEGY])[0];
+    check('a buy pays 0.5% stamp duty',
+          abs((float)$buy['stamp_duty'] - (float)$buy['consideration'] * 0.005) < 0.01);
+    check('a buy costs more than its consideration',
+          (float)$buy['total_cost'] < 0 && abs((float)$buy['total_cost']) > (float)$buy['consideration']);
+
+    $costs = strategy_costs('SELL', 100, 10.0);
+    check('a sell pays no stamp duty', (float)$costs['stamp_duty'] === 0.0);
+    check('a sell returns less than its consideration',
+          $costs['total_cost'] > 0 && $costs['total_cost'] < $costs['consideration']);
+
+    /* An order decided on the as-of date cannot transact at that date's close. */
+    $fill_dates = rows("select distinct fill_date from strategy_orders where strategy=? and status='FILLED'", [$STRATEGY]);
+    check('fills happen after the as-of date, never at it',
+          count($fill_dates) > 0 && $fill_dates[0]['fill_date'] > $ASOF,
+          "as_of=$ASOF fill={$fill_dates[0]['fill_date']}");
+
+    echo "\n--- paper execution: idempotency and crash recovery ---\n";
+
+    $cash_before = scalar("select cash from strategy_accounts where strategy=?", [$STRATEGY]);
+    $orders_before = (int)scalar("select count(*) from strategy_orders where strategy=?", [$STRATEGY]);
+    paper_run($ASOF);
+    $cash_after = scalar("select cash from strategy_accounts where strategy=?", [$STRATEGY]);
+    $orders_after = (int)scalar("select count(*) from strategy_orders where strategy=?", [$STRATEGY]);
+    /* Re-running values the account after costs, so targets come out a share or
+       two lower and the correction is a SELL. If the order id included the
+       side that SELL would be a new key and the re-run would quietly trade
+       again, paying commission and stamp to shave a share off each holding. */
+    check('re-running the same rebalance places no new orders', $orders_before === $orders_after,
+          "$orders_before -> $orders_after");
+    check('re-running the same rebalance does not move cash', $cash_before === $cash_after,
+          "$cash_before -> $cash_after");
+
+    /* The idempotency check above passes even with side back in the order id,
+       because the minimum order value independently suppresses the one or two
+       share correction. So test the invariant directly: one order per symbol
+       per rebalance, whichever way it points. Without this, lowering
+       STRATEGY_MIN_ORDER_VALUE would silently bring the double-trade back. */
+    paper_reset();
+    $first  = strategy_record_order($STRATEGY, $ASOF, ['symbol'=>'AAA','exchange'=>'XLON','side'=>'BUY','quantity'=>10]);
+    $second = strategy_record_order($STRATEGY, $ASOF, ['symbol'=>'AAA','exchange'=>'XLON','side'=>'SELL','quantity'=>3]);
+    check('one order per symbol per rebalance, regardless of side',
+          $first !== null && $second === null,
+          "first=" . var_export($first, true) . " second=" . var_export($second, true));
+    check('the refused order left no second row',
+          (int)scalar("select count(*) from strategy_orders where strategy=? and symbol='AAA'", [$STRATEGY]) === 1);
+
+    paper_reset();
+    paper_targets($ASOF, $SYMBOLS);
+    paper_run($ASOF);
+    $orders_after = (int)scalar("select count(*) from strategy_orders where strategy=?", [$STRATEGY]);
+
+    /* Simulate dying after the order was recorded but before it was filled.
+       That means the fill never happened at all, so the cash it consumed must
+       be given back as well as the position removed - otherwise the resume is
+       correctly refused for want of cash and the test proves nothing.
+       total_cost is negative for a buy, so subtracting it restores the cash. */
+    db()->exec("update strategy_accounts a, strategy_orders o
+                   set a.cash = a.cash - o.total_cost
+                 where a.strategy = o.strategy and o.strategy='$STRATEGY'
+                   and o.symbol='CCC' and o.status='FILLED'");
+    db()->exec("update strategy_orders set status='PENDING', fill_date=null, fill_price=null, total_cost=null
+                where strategy='$STRATEGY' and symbol='CCC'");
+    db()->exec("update strategy_positions set quantity=0 where strategy='$STRATEGY' and symbol='CCC'");
+    paper_run($ASOF);
+    check('a pending order left by a crashed run is resumed',
+          scalar("select status from strategy_orders where strategy=? and symbol='CCC'", [$STRATEGY]) === 'FILLED');
+    check('resuming does not create a duplicate order',
+          (int)scalar("select count(*) from strategy_orders where strategy=?", [$STRATEGY]) === $orders_after);
+    check('the resumed order restores the position',
+          (int)scalar("select quantity from strategy_positions where strategy=? and symbol='CCC'", [$STRATEGY]) > 0);
+
+    echo "\n--- paper execution: refusing to trade ---\n";
+
+    $switch = sys_get_temp_dir() . '/sharemanager_test_stop_trading';
+    touch($switch);
+    [$out] = paper_run($ASOF, ['STRATEGY_KILL_SWITCH_FILE' => $switch]);
+    unlink($switch);
+    check('the kill switch halts the run', stripos($out, 'HALTED') !== false, $out);
+
+    db()->exec("update strategy_positions set quantity=-5 where strategy='$STRATEGY' and symbol='AAA'");
+    [$out] = paper_run($ASOF);
+    check('a negative position blocks trading', stripos($out, 'RECONCILIATION FAILED') !== false, $out);
+    db()->exec("update strategy_positions set quantity=1 where strategy='$STRATEGY' and symbol='AAA'");
+
+    /* A weight over the cap must abort the whole rebalance, not be trimmed. */
+    paper_reset();
+    db()->exec("insert into strategy_targets (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                values ('$STRATEGY','$ASOF','AAA','XLON',0.9,now())");
+    [$out] = paper_run($ASOF);
+    check('a target over the position limit is refused',
+          stripos($out, 'exceeds the') !== false
+          && (int)scalar("select count(*) from strategy_orders where strategy=?", [$STRATEGY]) === 0, $out);
+
+    /* Deploying idle cash is all buys and no sells. Measuring turnover as gross
+       traded value would score that 100% and block every new account; the
+       standard min(buys,sells) scores it zero. */
+    paper_reset();
+    paper_targets($ASOF, $SYMBOLS);
+    $plan = strategy_plan_orders($STRATEGY, $ASOF);
+    check('deploying cash is not blocked by the turnover limit',
+          count($plan['orders']) === 5 && count($plan['errors']) === 0,
+          json_encode($plan['errors']));
+
+    /* Adjustments too small to be worth the dealing costs are skipped. */
+    paper_run($ASOF);
+    $before = (int)scalar("select count(*) from strategy_orders where strategy=?", [$STRATEGY]);
+    db()->exec("update strategy_positions set quantity=quantity-1 where strategy='$STRATEGY' and symbol='AAA'");
+    paper_targets($ASOF . '', $SYMBOLS);
+    $plan = strategy_plan_orders($STRATEGY, $ASOF);
+    $tiny = 0;
+    foreach ($plan['orders'] as $o) { if ($o['quantity'] * $o['reference_price'] < 250) { $tiny++; } }
+    check('orders below the minimum value are not planned', $tiny === 0,
+          json_encode($plan['orders']));
+
+    /* Long-only: the paper broker must never go short. */
+    paper_reset();
+    db()->exec("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,created_at)
+                values ('short-test','$STRATEGY','$ASOF','AAA','XLON','SELL',999,'PENDING',now())");
+    strategy_fill_order('short-test');
+    check('selling more than is held is rejected, not shorted',
+          scalar("select status from strategy_orders where client_order_id='short-test'") === 'REJECTED'
+          && (int)scalar("select ifnull(sum(quantity),0) from strategy_positions where strategy=?", [$STRATEGY]) === 0);
+
+    db()->exec("delete from strategy_orders where strategy='$STRATEGY'");
+    db()->exec("delete from strategy_positions where strategy='$STRATEGY'");
+    db()->exec("delete from strategy_targets where strategy='$STRATEGY'");
+    db()->exec("delete from strategy_accounts where strategy='$STRATEGY'");
+
     printf("\n%s  %d passed, %d failed\n\n",
            $failed === 0 ? "\033[32mALL PASSED\033[0m" : "\033[31mFAILURES\033[0m", $passed, $failed);
     if ($failed > 0) { echo "  failed: " . implode("\n          ", $failures) . "\n\n"; }
