@@ -32,8 +32,11 @@
 	//site_url
 	define ("SITE_URL","https://shares.duckdns.org");
 
-    //Debug Flag
-    define ("ENABLE_DEBUG","Y");
+    //Debug Flag. Set to "Y" to have debug_log() write per row tracing to
+    //message_log. Leave off for normal running: the batch jobs generate tens of
+    //thousands of rows per run with it enabled. Anything worth keeping should
+    //use write_log(), which is never gated.
+    define ("DEBUG_LOG","N");
 
 	
 

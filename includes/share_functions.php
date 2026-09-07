@@ -387,7 +387,7 @@ function time_to_decimal($time) {
 	
 	//Calculate 3mnth Momentum
     function calc_momentum_3mnth($asOfDate,$symbol){
-		write_log("calc_momentum_3mnth","Call calc_momentum");
+		debug_log("calc_momentum_3mnth","Call calc_momentum");
 		calc_momentum($asOfDate,3,$symbol);
 	}
 	
@@ -404,7 +404,7 @@ function time_to_decimal($time) {
      //Calculate Price Momentum
 	function calc_momentum($asOfDate,$mnth,$symbol ){
 
-		write_log("calc_momentum", "As of Date= $asOfDate");
+		debug_log("calc_momentum", "As of Date= $asOfDate");
 
 		 //Get symbols
 			if (isset($symbol))
@@ -422,7 +422,7 @@ function time_to_decimal($time) {
 					
                $symbol=$symbols[$i]['symbol'];
 
-			   write_log("calc_momentum", "Symbol= $symbol");
+			   debug_log("calc_momentum", "Symbol= $symbol");
 					
 					//write_log("calc_momentum", "Symbol: $symbol, As of Date: $asOfDate , Months: $mnth");
 					//write_log("calc_momentum", "SELECT DATE_SUB($asOfDate, INTERVAL $mnth MONTH) min_date, date max_date FROM historical_prices WHERE symbol=$symbol and date =$asOfDate");
@@ -434,7 +434,7 @@ function time_to_decimal($time) {
 				
 				$sql="SELECT DATE_SUB(?, INTERVAL ? MONTH) min_date, date max_date FROM historical_prices hp WHERE symbol=? and hp.exchange=? and date =?";
 
-				write_log("calc_momentum", "Query= $sql");
+				debug_log("calc_momentum", "Query= $sql");
 
 				$dates = query($sql,$asOfDate,$mnth,$symbol,$_SESSION["exchange"],$date[0]['max_date']);    	
 
@@ -446,26 +446,26 @@ function time_to_decimal($time) {
       				$min_date = $dates[0]['min_date'];
       				$max_date = $dates[0]['max_date'];
       				
-					write_log("calc_momentum", " Min date: " . $min_date . "</br>");
-				    write_log("calc_momentum", " Max date: " . $max_date . "</br>");
+					debug_log("calc_momentum", " Min date: " . $min_date . "</br>");
+				    debug_log("calc_momentum", " Max date: " . $max_date . "</br>");
 
     			
 			
 					//get price at min and max date
 					while((date_create_from_format('Y-m-d', $min_date)< date_create_from_format('Y-m-d', $max_date))&&((is_array($max_date_prices)&&count($max_date_prices)==0)||(is_array($min_date_prices)&&count($min_date_prices)==0))) {
 						
-    				write_log("calc_momentum"," Count max date prices: " .count($max_date_prices));
+    				debug_log("calc_momentum"," Count max date prices: " .count($max_date_prices));
     				
-					write_log("calc_momentum"," Count Min date prices: " .count($min_date_prices));
+					debug_log("calc_momentum"," Count Min date prices: " .count($min_date_prices));
     				
     				
-    				write_log("calc_momentum"," Max Date : " . $max_date);
+    				debug_log("calc_momentum"," Max Date : " . $max_date);
     			
     				$max_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,$_SESSION["exchange"],$max_date);
 					
     				foreach ($max_date_prices as $price){
       					$max_date_price=$price['price'];
-				  		write_log("calc_momentum"," Max Date Price: " . $max_date_price . "</br>");
+				  		debug_log("calc_momentum"," Max Date Price: " . $max_date_price . "</br>");
     				}
     				
 					//$min_date=date_format(date_create_from_format('Y-m-d', $max_date), 'Y-m-d');  
@@ -476,7 +476,7 @@ function time_to_decimal($time) {
 					
     				foreach ($min_date_prices as $price){
       					$min_date_price=$price['price'];
-      				 	write_log("calc_momentum", " Min Price: " . $min_date_price . "</br>");
+      				 	debug_log("calc_momentum", " Min Price: " . $min_date_price . "</br>");
     				}
     			
     				if ((count($max_date_prices)==0)||(count($min_date_prices)==0)){
@@ -489,7 +489,7 @@ function time_to_decimal($time) {
 						$interval="P1D";				
 	    				$min_date->add(new DateInterval($interval));
 	    				$min_date=date_format($min_date, 'Y-m-d');
-						write_log("calc_momentum"," Min Date : " . $min_date);
+						debug_log("calc_momentum"," Min Date : " . $min_date);
 					
 					}
 					
@@ -504,7 +504,7 @@ function time_to_decimal($time) {
 			else {
 				$perc_change=0;
 			}
-    			 write_log("calc_momentum", "Perc change: " . $perc_change . "</br>");
+    			 debug_log("calc_momentum", "Perc change: " . $perc_change . "</br>");
 
     			//update price momentum
 				 //write_log("calc_momentum", "update price momentum");

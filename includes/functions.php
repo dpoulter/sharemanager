@@ -380,9 +380,16 @@
 	* Insert message into log table
 	*/
 	function write_log($module,$text){
-        if (TRUE){
-		    query("insert into message_log(module,message_text,timestamp) values (?,?,?)",$module,substr($text,0,4000),date_format(new DateTime(),'Y-m-d H:i:s'));
-        }
+		query("insert into message_log(module,message_text,timestamp) values (?,?,?)",$module,substr($text,0,4000),date_format(new DateTime(),'Y-m-d H:i:s'));
+	}
+
+	//Per row tracing. Off unless DEBUG_LOG is explicitly enabled in constants.php,
+	//so a deployment carrying an older constants.php stays quiet rather than
+	//filling message_log. Use write_log() for anything worth keeping.
+	function debug_log($module,$text){
+		if (defined('DEBUG_LOG')&&DEBUG_LOG==='Y'){
+			write_log($module,$text);
+		}
 	}
 	
 	//Update Password

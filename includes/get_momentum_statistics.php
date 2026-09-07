@@ -29,13 +29,16 @@
 
 	$interval=new DateInterval('P1M');
 
+	$symbol_count=0;
+	$date_count=0;
+
 	$rows=query("select symbol, min(date) min_date, max(date) max_date from historical_prices where exchange=? group by symbol",$_SESSION["exchange"]);
 	foreach($rows as $row){
 
 		$symbol=$row['symbol'];
 
-		write_log("get_momentum_statistics", "min_date=".$row['min_date']);
-		write_log("get_momentum_statistics", "max_date=".$row['max_date']);
+		debug_log("get_momentum_statistics", "min_date=".$row['min_date']);
+		debug_log("get_momentum_statistics", "max_date=".$row['max_date']);
 
 		$asOfDate=date_create($row['min_date']);
 		$end_date=date_create($row['max_date']);
@@ -68,13 +71,20 @@
 			});
 		}
 
+		$symbol_count++;
+
 		foreach($as_of_dates as $as_of_date){
 
-			write_log("get_momentum_statistics", "Asofdate=".$as_of_date."\r\n");
+			debug_log("get_momentum_statistics", "Asofdate=".$as_of_date."\r\n");
 
 			indicator_stats($as_of_date,'3mnth',$symbol);
 			indicator_stats($as_of_date,'6mnth',$symbol);
 			indicator_stats($as_of_date,'12mnth',$symbol);
+
+			$date_count++;
 		}
 	}
+
+	write_log("get_momentum_statistics",($incremental?"Incremental run":"Backfill ".$from." to ".$to).
+		", ".$symbol_count." symbols, ".$date_count." as of dates");
 ?>
