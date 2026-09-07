@@ -492,13 +492,63 @@
 	}
 	
 	//Call Stock API
+	/**
+	 * Latest quote for one symbol, from EODHD.
+	 *
+	 * Returns the response normalised into the {"data":[{...}]} envelope the
+	 * previous provider used, so lookup() is unchanged. EODHD returns a flat
+	 * object keyed on "code" rather than a list.
+	 */
 	function call_stock_api($symbol) {
-		
-		write_log ('call_stock_api',"symbol=$symbol"); 
-		$string = file_get_contents("http://api.marketstack.com/v1/eod/latest?symbols=$symbol&access_key=b0ac70e8c036442832769c69fbc619cb");
-        write_log("call_stock_api",$string);
-		return $string;
-    }
+
+		write_log('call_stock_api',"symbol=$symbol");
+
+		if (EODHD_API_KEY===''){
+			write_log('call_stock_api','EODHD_API_KEY is not set');
+			return json_encode(["data" => []]);
+		}
+
+		//stock_symbols holds the bare code; EODHD wants CODE.LSE
+		$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.EODHD_EXCHANGE : $symbol;
+
+		//Never log the URL: it carries the API key.
+		$url="https://eodhd.com/api/real-time/".rawurlencode($eodhd_symbol)
+		    ."?fmt=json&api_token=".rawurlencode(EODHD_API_KEY);
+
+		$body=@file_get_contents($url);
+		if ($body===false){
+			write_log('call_stock_api',"request failed for $eodhd_symbol");
+			return json_encode(["data" => []]);
+		}
+
+		return json_encode(["data" => eodhd_quote_to_rows(json_decode($body,true),$symbol)]);
+	}
+
+	/**
+	 * Normalise an EODHD real-time quote into the rows lookup() reads.
+	 *
+	 * Separated from the HTTP call so the mapping can be tested without a key.
+	 * EODHD reports "NA" for a field it has no value for, which must not be
+	 * mistaken for a price.
+	 */
+	function eodhd_quote_to_rows($quote,$symbol) {
+
+		if (!is_array($quote)||!isset($quote['close'])){
+			return [];
+		}
+
+		$close=$quote['close'];
+		if ($close===null||$close===''||$close==='NA'||!is_numeric($close)){
+			return [];
+		}
+
+		return [[
+			"symbol" => $symbol,
+			"close"  => $close,
+			"date"   => isset($quote['timestamp'])&&is_numeric($quote['timestamp'])
+			            ? date('Y-m-d',(int)$quote['timestamp']) : null,
+		]];
+	}
     
     //Get Last Update
     function get_last_update(){

@@ -56,5 +56,11 @@ INCLUDE_PATH="$TESTS_DIR/fixtures:$REPO_DIR/includes"
 echo "seeding"
 php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/seed.php" || exit 1
 
+echo "running EODHD client tests (offline, no key needed)"
+python3 "$TESTS_DIR/test_eodhd.py" || PY_FAILED=1
+
 echo "running tests"
-php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/tests.php"
+php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/tests.php" || PHP_FAILED=1
+
+[ "${PY_FAILED:-0}" = 1 ] || [ "${PHP_FAILED:-0}" = 1 ] && exit 1
+exit 0

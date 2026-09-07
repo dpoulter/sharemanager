@@ -11,7 +11,8 @@
 -- exercise is absent.
 
 drop table if exists historical_prices, stock_symbols, screen_indicators,
-  statistics, statistic_averages, message_log, jobs, users, indicator_category;
+  statistics, statistic_averages, message_log, jobs, users, indicator_category,
+  stock_info;
 
 -- Daily prices, loaded by get_share_prices.php via share_functions.php:319.
 -- The exchange column is written from $_SESSION["exchange"] ('XLON').
@@ -38,9 +39,13 @@ create table stock_symbols (
 -- Indicator definitions. screen_function names the PHP function indicator_stats
 -- dispatches to. rank_order is an ORDER BY expression, not a direction:
 -- get_statistics.php interpolates it directly, so 'DESC' alone is a syntax error.
+-- name is the application's own key (written to statistics.indicator and hard
+-- coded in the scoring SQL); provider_field is the data provider's name for the
+-- same number, so changing provider is data rather than code.
 create table screen_indicators (
   indicator_id    int auto_increment primary key,
   name            varchar(50),
+  provider_field  varchar(100),
   description     varchar(255),
   enabled         char(1),
   order_number    int,
@@ -109,4 +114,15 @@ create table indicator_category (
   name        varchar(50),
   description varchar(255),
   `order`     int
+);
+
+-- Flat landing table for fundamentals, written by the provider loader and read
+-- by get_api_stats.py, which joins stock_info.attribute against
+-- screen_indicators.provider_field (falling back to name).
+create table stock_info (
+  symbol   varchar(50),
+  asofdate date,
+  attribute varchar(50),
+  value    varchar(255),
+  key (symbol, asofdate, attribute)
 );

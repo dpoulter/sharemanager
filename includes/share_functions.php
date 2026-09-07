@@ -179,156 +179,95 @@ function get_key_ratios($symbol,$exchange) {
  
  function get_historical_prices($start_date,$end_date){
 
-	   write_log("get_historical_prices", "Start Date= " . $start_date . "End Date=".$end_date);
+	   write_log("get_historical_prices", "Start Date= " . $start_date . " End Date=".$end_date);
 
         require_once("constants.php");
-		
-		//Truncate historical_prices
-		//$result = query("truncate table historical_prices");
-		
-	    //Set exchange
+
+	    //Set exchange. This is the MIC the application keys on (XLON) and is
+	    //what gets written to historical_prices; EODHD addresses the same
+	    //market as CODE.LSE, so the request suffix is EODHD_EXCHANGE.
 	    $exchange=$_SESSION["exchange"];
+
+	    if (EODHD_API_KEY===''){
+	    	write_log("get_historical_prices","EODHD_API_KEY is not set, cannot fetch prices");
+	    	return;
+	    }
 
 	    //Get symbols
         $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? ",$exchange);
 
-		//Initialise symbol
-		$symbol="";
-		
 		write_log("get_historical_prices", "Number of symbols = " .count($symbols));
 
-		//Set counter
-		$counter=0;
+		$loaded=0; $empty=0; $failed=0;
 
-		//Loop through all symbols
-        for ($i=0;$i<count($symbols);$i++ )
-        {
-                /*	
-                if ($exchange=='LON'){
-                	$symbol=substr($symbols[$i]['symbol'],0,strpos($symbols[$i]['symbol'],'.')) ;
-				}
-				else{
-					$symbol=$symbols[$i]['symbol'];
-				}*/
-			//increment counter
-			$counter++;
-				write_log("get_historical_prices", "i=" .$i );	
-                
-			write_log("get_historical_prices", "Add symbol " . $symbols[$i]['symbol'] );	
+		//EODHD's end of day endpoint is one symbol per request, so there is no
+		//batching to do. The previous provider allowed 100 symbols per call but
+		//the batching condition used ?? instead of ||, so it never accumulated
+		//and issued one request per symbol anyway.
+		foreach ($symbols as $row){
 
-			write_log("get_historical_prices", "Counter= " .$counter);	
+			$symbol=$row['symbol'];
 
+			//stock_symbols holds the bare code; EODHD wants CODE.LSE
+			$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.EODHD_EXCHANGE : $symbol;
 
+			$url="https://eodhd.com/api/eod/".rawurlencode($eodhd_symbol)
+			    ."?from=".rawurlencode($start_date)
+			    ."&to=".rawurlencode($end_date)
+			    ."&period=d&order=a&fmt=json"
+			    ."&api_token=".rawurlencode(EODHD_API_KEY);
 
-			//Need to call max of 100 symbols per API Call so split calls 
-			if ($counter== 1){
-					$symbol=$symbols[$i]['symbol'].".".$exchange;
-				}
-			else{
-					$symbol=$symbol.",".$symbols[$i]['symbol'].".".$exchange;		
-				}
-			
-			if ($counter<=100??($i+1)==count($symbols)){
+			//Never log the URL: it carries the API key.
+			debug_log("get_historical_prices", "fetch ".$eodhd_symbol." ".$start_date." to ".$end_date);
 
-										// open connection to World Trade Data
-									$url="https://api.marketstack.com/v1/eod?symbols=".$symbol."&exchange=XLON&access_key=b0ac70e8c036442832769c69fbc619cb"."&date_from=".$start_date."&date_to=".$end_date."&limit=1000&sort=ASC";
-								
-									write_log("get_historical_prices", "URL: " . $url);
-
-									
-									
-								
-									$handle = @fopen($url,"r");
-
-
-									if ($handle === false){
-											// trigger (big, orange) error
-											write_log("get_historical_prices", "Could not connect to Yahoo! for symbol " . $symbol);
-								
-									}
-									else{
-
-										//Clear out symbols
-										$symbol="";
-										
-										/*if ($_SESSION["exchange"]==='LON'){	
-														$symbol=$symbol.".L";
-										} 
-										*/
-										// download first line of CSV file
-										
-										//convert json to array
-										$arrJson = json_decode(stream_get_contents($handle), true);
-										$data = $arrJson["data"];
-										print_r($arrJson);
-										//$data = fgetcsv($handle);
-										/*if ($data === false || count($data) == 1){
-												write_log("get_historical_prices", "No data for symbol " . $symbol . "<br>");
-										}
-										else{
-												
-											
-											
-											/$history=array();
-											while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
-												
-													//write_log("get_historical_prices",'date='.date_format(date_create_from_format('d-M-y',$data[0]),'d-m-Y')." price=".$data[4]);
-													//echo 'date='.$data[0];
-													
-													array_push($history, ["symbol" => $symbol,
-																			"date" => date_format(date_create_from_format('Y-m-d',$data[0]),'Y-m-d'),
-																			"price" => $data[2]]);
-											}    
-										}
-										
-
-										// close connection to Google
-										
-										write_log("get_historical_prices","close connection to Google");
-										*/
-										fclose($handle);
-											
-										//!isset($arrJson["data"][0]["symbol"]
-
-										if (count($arrJson["data"]) === 0){
-												write_log("get_historical_prices", "No data for symbol " . $symbol);
-										}
-										else {
-												
-												
-												foreach ($arrJson["data"] as $line){
-
-													if (isset($line)&&$line['symbol']!=''){
-														//Get Date	
-														write_log("get_historical_prices", "Symbol=".$line['symbol']." Raw Date=" .$line['date']);
-														$date=date_format(date_create_from_format('Y-m-d',substr($line['date'],0,10)),'Y-m-d');
-														write_log("get_historical_prices", "Formatted Date=" .$date);
-														
-														//delete prices
-														
-
-														$sym = substr($line['symbol'],0,strpos($line['symbol'],"."));
-														write_log("get_historical_prices","delete prices for ".$sym);
-
-														query("delete from historical_prices where symbol=? and exchange=? and date = ?",$sym,$_SESSION["exchange"],$date);
-													
-														//insert prices
-														write_log("get_historical_prices","insert prices=".$line['adj_close']);
-
-														
-														query("insert into historical_prices(symbol,exchange, date,price) values (?,?,?,?)",$sym,$_SESSION["exchange"],$date, $line['adj_close']);
-													}
-												}
-										}
-
-										//resset counter
-										$counter=0;
-									}
-								
-
+			$body=@file_get_contents($url);
+			if ($body===false){
+				write_log("get_historical_prices","request failed for ".$eodhd_symbol);
+				$failed++;
+				continue;
 			}
+
+			$prices=json_decode($body,true);
+			if (!is_array($prices)){
+				write_log("get_historical_prices","unreadable response for ".$eodhd_symbol);
+				$failed++;
+				continue;
+			}
+			if (count($prices)===0){
+				debug_log("get_historical_prices","no prices for ".$eodhd_symbol);
+				$empty++;
+				continue;
+			}
+
+			foreach ($prices as $line){
+
+				if (!isset($line['date'])){
+					continue;
+				}
+
+				//Prefer the adjusted close, which is what the momentum
+				//calculations assume; fall back to the close if the plan does
+				//not return it.
+				$price=isset($line['adjusted_close']) ? $line['adjusted_close']
+				      : (isset($line['close']) ? $line['close'] : null);
+				if ($price===null||$price===''){
+					continue;
+				}
+
+				$date=substr($line['date'],0,10);
+
+				//Replace rather than append so a re-run for the same range is
+				//idempotent.
+				query("delete from historical_prices where symbol=? and exchange=? and date=?",$symbol,$exchange,$date);
+				query("insert into historical_prices(symbol,exchange,date,price) values (?,?,?,?)",$symbol,$exchange,$date,$price);
+			}
+
+			$loaded++;
 		}
-			
+
+		write_log("get_historical_prices",
+			"EODHD ".$start_date." to ".$end_date.": ".$loaded." symbols loaded, "
+			.$empty." without prices, ".$failed." failed");
  	}
  
  /**

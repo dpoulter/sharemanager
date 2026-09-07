@@ -40,7 +40,7 @@ for row in rows:
 
     print ("Symbol="+symbol)
     
-    indicator_stats = query("select sti.symbol, sti.attribute, sti.value from screen_indicators sci, stock_info sti where sci.enabled='Y' and sci.name = sti.attribute and sti.symbol='"+symbol+"' and sti.asofdate = '"+date+"' order by order_number")
+    indicator_stats = query("select sti.symbol, sci.name, sti.value from screen_indicators sci, stock_info sti where sci.enabled='Y' and sti.attribute = coalesce(nullif(sci.provider_field,''), sci.name) and sti.symbol='"+symbol+"' and sti.asofdate = '"+date+"' order by order_number")
         
     for stat in indicator_stats:
         insert_statistic(stat[0], exchange, stat[1],date, stat[2])

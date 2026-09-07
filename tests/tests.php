@@ -215,6 +215,71 @@
         check("$label top ten resolves the same as of date and returns rows", count($fn()) > 0);
     }
 
+    echo "\n--- EODHD quote adapter ---\n";
+
+    /* lookup() reads $json["data"][0]["close"], so the adapter has to produce
+       that envelope from EODHD's flat quote object. */
+    $rows = eodhd_quote_to_rows(['code' => 'VOD.LSE', 'close' => 72.5, 'timestamp' => 1757260800], 'VOD');
+    check('a valid quote maps to the envelope lookup expects',
+          count($rows) === 1 && $rows[0]['symbol'] === 'VOD' && (float)$rows[0]['close'] === 72.5);
+
+    /* EODHD reports "NA" rather than null for a field it has no value for.
+       Treating that as a price would write the string into historical_prices. */
+    check('a close of "NA" is rejected rather than treated as a price',
+          eodhd_quote_to_rows(['code' => 'XXX.LSE', 'close' => 'NA'], 'XXX') === []);
+    check('a quote with no close is rejected', eodhd_quote_to_rows(['code' => 'XXX.LSE'], 'XXX') === []);
+    check('a non-array response is rejected', eodhd_quote_to_rows(null, 'XXX') === []);
+    check('an empty-string close is rejected', eodhd_quote_to_rows(['close' => ''], 'XXX') === []);
+
+    echo "\n--- provider_field indicator mapping ---\n";
+
+    db()->exec("truncate stock_info");
+    db()->exec("delete from screen_indicators where name in ('pe','roe_ttm','shareholder_yield')");
+    db()->exec("insert into screen_indicators (name,provider_field,description,enabled,order_number) values
+        ('pe','Valuation.TrailingPE','pe','Y',1),
+        ('roe_ttm','Highlights.ReturnOnEquityTTM','roe_ttm','Y',2),
+        ('shareholder_yield',null,'shareholder_yield','Y',3)");
+    db()->exec("insert into stock_info (symbol,asofdate,attribute,value) values
+        ('AAA','2026-01-01','Valuation.TrailingPE','12.5'),
+        ('AAA','2026-01-01','Highlights.ReturnOnEquityTTM','0.185'),
+        ('AAA','2026-01-01','shareholder_yield','0.04'),
+        ('AAA','2026-01-01','Valuation.PriceSalesTTM','1.9')");
+
+    /* The query get_api_stats.py runs. It must return the application's own key
+       from screen_indicators.name, never the provider's field name, because the
+       result is written to statistics.indicator and the scoring SQL in
+       get_statistics.php matches on those names. */
+    $mapped = rows("select sti.symbol, sci.name, sti.value
+                    from screen_indicators sci, stock_info sti
+                    where sci.enabled='Y'
+                      and sti.attribute = coalesce(nullif(sci.provider_field,''), sci.name)
+                      and sti.symbol='AAA' and sti.asofdate='2026-01-01'
+                    order by order_number");
+    $by_name = [];
+    foreach ($mapped as $r) { $by_name[$r['name']] = $r['value']; }
+
+    check('a provider field maps to the application indicator name',
+          isset($by_name['pe']) && (float)$by_name['pe'] === 12.5,
+          json_encode($by_name));
+    check('a second provider field maps correctly',
+          isset($by_name['roe_ttm']) && (float)$by_name['roe_ttm'] === 0.185);
+    check('an indicator with no provider_field still matches on name',
+          isset($by_name['shareholder_yield']) && (float)$by_name['shareholder_yield'] === 0.04);
+    check('the provider field name is never returned as the indicator',
+          !isset($by_name['Valuation.TrailingPE']) && !isset($by_name['Highlights.ReturnOnEquityTTM']));
+    check('an unmapped attribute is ignored',
+          !in_array('Valuation.PriceSalesTTM', array_keys($by_name), true) && count($by_name) === 3,
+          json_encode(array_keys($by_name)));
+
+    /* The regression this guards: matching on name alone, as the loader did
+       before provider_field existed, finds nothing once the provider's field
+       names differ from the application's. */
+    $old_way = rows("select sci.name from screen_indicators sci, stock_info sti
+                     where sci.enabled='Y' and sci.name = sti.attribute
+                       and sti.symbol='AAA' and sti.asofdate='2026-01-01'");
+    check('matching on name alone would miss the mapped indicators (regression guard)',
+          count($old_way) === 1, 'got ' . count($old_way) . ' rows, expected only shareholder_yield');
+
     printf("\n%s  %d passed, %d failed\n\n",
            $failed === 0 ? "\033[32mALL PASSED\033[0m" : "\033[31mFAILURES\033[0m", $passed, $failed);
     if ($failed > 0) { echo "  failed: " . implode("\n          ", $failures) . "\n\n"; }
