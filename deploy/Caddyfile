@@ -45,6 +45,11 @@ sharemanager.advancepost.net {
 		-Server
 	}
 
+	# Caddy runs as the caddy user, so the directory has to be writable by it:
+	#   sudo install -d -o caddy -g caddy -m 750 /var/log/caddy
+	# Without that the service exits at startup with "permission denied", even
+	# though the config validates. Delete this block to log to the journal
+	# instead, which needs no directory at all.
 	log {
 		output file /var/log/caddy/sharemanager.log
 	}

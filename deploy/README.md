@@ -134,6 +134,13 @@ sudo ss -ltnp | grep -E ':80 |:443 '
 sudo systemctl disable --now apache2 nginx 2>/dev/null
 ```
 
+The Caddyfile writes an access log, and Caddy runs as the `caddy` user, so
+that directory has to belong to it or the service exits at startup:
+
+```sh
+sudo install -d -o caddy -g caddy -m 750 /var/log/caddy
+```
+
 ```sh
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
 sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
