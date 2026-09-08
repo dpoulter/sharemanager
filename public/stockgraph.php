@@ -1,8 +1,14 @@
 <?php // content="text/plain; charset=utf-8"
-require_once ('jpgraph-4.2.0/src/jpgraph.php');
-require_once ('jpgraph-4.2.0/src/jpgraph_line.php');
-require_once ('jpgraph-4.2.0/src/jpgraph_bar.php');
-require_once( "jpgraph-4.2.0/src/jpgraph_date.php" );
+require_once ('../includes/simple_graph.php');
+//jpgraph is a third-party library that is not vendored in this repository.
+//Without it these requires fatal and the <img> renders as a broken icon, so
+//fall back to the small GD renderer when the library is not installed.
+if (jpgraph_available()) {
+	require_once ('jpgraph-4.2.0/src/jpgraph.php');
+	require_once ('jpgraph-4.2.0/src/jpgraph_line.php');
+	require_once ('jpgraph-4.2.0/src/jpgraph_bar.php');
+	require_once( "jpgraph-4.2.0/src/jpgraph_date.php" );
+}
 require_once ('../includes/Prices.php');
 
 function creategraph($symbol,$timespan){
@@ -59,6 +65,11 @@ function creategraph($symbol,$timespan){
 	//print_r($xdata);
 	$ydata = $graphprices->graphvalues;
 	//print_r($ydata);
+	
+	if (!jpgraph_available()) {
+		simple_line_png($dates,$ydata);
+		return;
+	}
 	
 	 
 	 // Width and height of the graph

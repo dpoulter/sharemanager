@@ -214,21 +214,23 @@
         }
     
         
+        $fundamentals = share_fundamentals($symbol);
+
         $share_info=[
             "symbol" => $symbol,
             "name" => [],//$name,
             "price" => convert_value($price),
-            "shares" => [],//convert_value($arrJson["shares"]),
+            "shares" => $fundamentals["shares"],//convert_value($arrJson["shares"]),
             "change" => [],//convert_value($change),
             "day_range" => [],
-            "52w_low" => [],//convert_value($fifty_two_week_low),
-            "52w_high" => [],//convert_value($fifty_two_week_high),
-            "pe" => [],//$arrJson["pe"],
-            "profit_margin" => [],//convert_value($net_profit_margin),
-            "operating_margin"=>[],//convert_value($operating_margin),
-            "roa"=>[],//convert_value($roa),
-            "roe_ttm"=>[],//convert_value($roe_ttm)
-            "market_cap"=>[],//change_number($market_cap)
+            "52w_low" => $fundamentals["52w_low"],//convert_value($fifty_two_week_low),
+            "52w_high" => $fundamentals["52w_high"],//convert_value($fifty_two_week_high),
+            "pe" => $fundamentals["pe"],//$arrJson["pe"],
+            "profit_margin" => $fundamentals["profit_margin"],//convert_value($net_profit_margin),
+            "operating_margin"=>$fundamentals["operating_margin"],//convert_value($operating_margin),
+            "roa"=>$fundamentals["roa"],//convert_value($roa),
+            "roe_ttm"=>$fundamentals["roe_ttm"],//convert_value($roe_ttm)
+            "market_cap"=>$fundamentals["market_cap"],//change_number($market_cap)
         ];
         
 
@@ -572,6 +574,59 @@
 			"date"   => $rows[0]["date"],
 			"stale"  => true,
 		]];
+	}
+
+	/**
+	 * Format a number for display, or nothing at all when it is absent.
+	 *
+	 * number_format(null) renders "0", which reads as a real value of zero
+	 * rather than as a figure the provider did not supply.
+	 */
+	function number_or_blank($value, $decimals = 0) {
+		if ($value === null || $value === "" || $value === [] || !is_numeric($value)) {
+			return "";
+		}
+		return number_format((float)$value, $decimals);
+	}
+
+	/**
+	 * Fundamentals for one symbol, from the flat store the provider loader fills.
+	 *
+	 * The quote page has labelled cells for market cap, shares in issue and the
+	 * 52 week range that were never connected to anything: lookup() returned an
+	 * empty array for each. The values are in stock_info under the provider's
+	 * own field names, so read them from there.
+	 *
+	 * Anything absent comes back as an empty string, so a symbol without
+	 * fundamentals shows a blank cell rather than a warning.
+	 */
+	function share_fundamentals($symbol) {
+
+		$wanted = [
+			"market_cap"       => "Highlights.MarketCapitalization",
+			"shares"           => "SharesStats.SharesOutstanding",
+			"52w_high"         => "Technicals.52WeekHigh",
+			"52w_low"          => "Technicals.52WeekLow",
+			"pe"               => "Valuation.TrailingPE",
+			"roe_ttm"          => "Highlights.ReturnOnEquityTTM",
+			"profit_margin"    => "Highlights.ProfitMargin",
+			"operating_margin" => "Highlights.OperatingMarginTTM",
+			"roa"              => "Highlights.ReturnOnAssetsTTM",
+			"description"      => "General.Description",
+		];
+
+		$rows = query("select attribute, value from stock_info
+		               where symbol=? and asofdate=(select max(asofdate) from stock_info where symbol=?)",
+		              $symbol, $symbol);
+
+		$found = [];
+		foreach ($rows as $row) { $found[$row["attribute"]] = $row["value"]; }
+
+		$out = [];
+		foreach ($wanted as $key => $attribute) {
+			$out[$key] = isset($found[$attribute]) ? $found[$attribute] : "";
+		}
+		return $out;
 	}
 
 	function call_stock_api($symbol) {

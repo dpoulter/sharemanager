@@ -79,8 +79,10 @@ Pre-seeding those rows would mask a genuine failure, so they live in
 - `opcache.enable` applies under the `cli-server` SAPI that `php -S` runs, not
   `opcache.enable_cli`. The script disables it, without which your edits are
   served stale and you will chase changes that appear not to take effect.
-- The four chart pages need `phpChart_Lite/`, which is not in the repository, so
-  they will not render here.
+- `stockgraph.php` and `performance_graph.php` fall back to a small GD renderer
+  when the jpgraph library is absent, which it is here, so the price and
+  performance charts do render. `chart.php` and `jpgraph.php` still need
+  `phpChart_Lite/` and do not.
 - No EODHD key is set, so live quotes and price fetches degrade to empty rather
   than erroring. Everything the sandbox shows comes from the generated data.
 

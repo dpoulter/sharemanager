@@ -32,13 +32,13 @@
 						
 							<table class="table table-sm table-borderless ">
 						      	<tr>
-								     <td><b>Symbol</b></td><td><?=$title?></td><td><b>Mkt cap</b></td><td></td>
+								     <td><b>Symbol</b></td><td><?=$title?></td><td><b>Mkt cap</b></td><td><?=number_or_blank($share_info["capital"])?></td>
 							    </tr>
 								<tr>
-								     <td><b>Price</b></td><td><?=$share_info["price"]?></td><td><b>Shares</b></td><td><?=$share_info["shares"]?></td>
+								     <td><b>Price</b></td><td><?=$share_info["price"]?></td><td><b>Shares</b></td><td><?=number_or_blank($share_info["shares"])?></td>
 							    </tr>
 								<tr>
-								     <td><b>52 Wk Low</b></td><td></td><td><b>52 Wk High</b></td><td></td>
+								     <td><b>52 Wk Low</b></td><td><?=number_or_blank($share_info["52w_low"])?></td><td><b>52 Wk High</b></td><td><?=number_or_blank($share_info["52w_high"])?></td>
 							    </tr>
 							</table>
 						
@@ -341,7 +341,7 @@
 												<td><b>Directors</b></td><td><?php print($profile['directors']) ?></td>
 										</tr>
 										<tr>
-												<td></td><td><?php print('<img alt="" src="'.$profile['logo'].'"></img>') ?> </td><td></td>
+												<td></td><td><?php if (!empty($profile['logo'])) { print('<img alt="'.htmlspecialchars($profile['name'] ?? '').' logo" src="'.htmlspecialchars($profile['logo']).'">'); } ?></td><td></td>
 										</tr>
 									</table>
 									

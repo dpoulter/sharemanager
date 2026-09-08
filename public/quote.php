@@ -75,21 +75,17 @@
 			//templates/quote.php has a Ratings tab reading $ratings, which
 			//neither this page nor index.php passed, so the tab rendered
 			//undefined once the page got far enough to reach it.
-			$ratings=ratings($symbol);
 			write_log("quote.php","7");
-			//$ratings=ratings($symbol);
-			$ratings=null;
+			$ratings=ratings($symbol);
 			$valuation=get_valuation($symbol);
 			$industry_valuation=get_industry_valuation($symbol);
 			write_log("quote.php","8");
 			$momentum_statistics=get_momentum_statistics($symbol);
 			//$momentum_statistics=null;
 			write_log("quote.php","9");
-			//$growth_statistics=get_growth_statistics($symbol);
-			$growth_statistics=null;
+			$growth_statistics=get_growth_statistics($symbol);
 			write_log("quote.php","10");
-			//$value_statistics=get_value_statistics($symbol);
-			$value_statistics=null;
+			$value_statistics=get_value_statistics($symbol);
 			write_log("quote.php","11");
 			$quality_statistics=get_quality_statistics($symbol);
 			//$quality_statistics=null;
@@ -106,20 +102,14 @@
 			$qualityranks=get_quality_rank($symbol);
 			//$qualityranks=null;
 			write_log("quote.php","16");
-			//$piotroski_fscore=get_piotroski_fscore($symbol);
-			$piotroski_fscore=null;
-			//$piotroski_variables=get_piotroski_variables($symbol);
-			$piotroski_variables=null;
+			$piotroski_fscore=get_piotroski_fscore($symbol);
+			$piotroski_variables=get_piotroski_variables($symbol);
 			write_log("quote.php","17");
-			//$altman_zscore=get_altman_zscore($symbol);
-			$altman_zscore=null;
+			$altman_zscore=get_altman_zscore($symbol);
 			
-			//$altman_variables=get_altman_variables($symbol);
-			$altman_variables=null;
-			//$altman_nonman_variables=get_altman_nonman_variables($symbol);
-			$altman_nonman_variables=null;
-			//$altman_zscore_nonman=get_altman_zscore_nonman($symbol);
-			$altman_zscore_nonman=null;
+			$altman_variables=get_altman_variables($symbol);
+			$altman_nonman_variables=get_altman_nonman_variables($symbol);
+			$altman_zscore_nonman=get_altman_zscore_nonman($symbol);
 
 			write_log("quote.php","Get relative_sector_valuations");
 			$relative_sector_valuations=get_relative_to_sector($symbol); 

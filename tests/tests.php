@@ -190,12 +190,28 @@
     /* The regression this guards: readers must resolve the as of marker, not the
        run row. Resolving the run row lands a day ahead of the data and empties
        the dashboard. */
-    $resolved   = scalar("select date(date_sub(max(job_date),INTERVAL 0 DAY)) from jobs where job_name='get_statistics_asof'");
+    $resolved   = scalar("select date(max(job_date)) from jobs where job_name='get_statistics_asof'");
     $score_date = scalar("select max(date) from statistics where indicator='momentum_score'");
     check('the as of marker matches the date the scores were written at',
           $resolved !== false && $resolved === $score_date, "resolved=$resolved scores=$score_date");
-    $wrong = scalar("select date(date_sub(max(job_date),INTERVAL 0 DAY)) from jobs where job_name='get_statistics'");
+    $wrong = scalar("select date(max(job_date)) from jobs where job_name='get_statistics'");
     check('resolving the run row instead would miss the scores (regression guard)', $wrong !== $score_date);
+
+    /* get_statistics_asof carries the as of date itself, so subtracting a day
+       from it lands a day before the statistics and returns nothing. The quote
+       page's momentum, growth and value panels, the relative valuation tables
+       and the Piotroski and Altman variables all did that. */
+    $offset = [];
+    foreach (glob(dirname(__DIR__) . '/{includes,public}/*.php', GLOB_BRACE) as $file) {
+        foreach (explode("\n", (string)file_get_contents($file)) as $n => $line) {
+            if (strpos($line, 'get_statistics_asof') !== false
+                && preg_match('/INTERVAL\s+[1-9]\d*\s+DAY/i', $line)) {
+                $offset[] = basename($file) . ':' . ($n + 1);
+            }
+        }
+    }
+    check('nothing offsets the as of marker by a day', count($offset) === 0,
+          implode(', ', $offset));
 
     // The dashboard reads through $_SESSION["exchange"], set from users.default_exchange at login.
     $_SESSION['exchange'] = scalar("select default_exchange from users where username='tester'");
@@ -610,7 +626,11 @@
         foreach (['AAA', 'HHH', 'LLL'] as $sym) {
             $body = (string)$curl("$base/quote.php?symbol=$sym&page=quote_form.php");
             if (preg_match('/(Fatal error|Parse error)/i', $body)) { $quote_fatal[] = $sym; }
-            if (preg_match('/Warning:/i', $body))                  { $quote_warn[]  = $sym; }
+            /* PHP renders these as "<b>Warning</b>:  ...", so a pattern of
+                   "Warning:" never matches and the check passes whatever the
+                   page does. Match both forms, and cover "Undefined array key",
+                   which is a different message from "Undefined variable". */
+                if (preg_match('/(Warning<\/b>|Warning:|Deprecated<\/b>|Deprecated:|Undefined array key)/i', $body)) { $quote_warn[] = $sym; }
             /* print_r output has a distinctive shape and should never reach the
                browser; the log is where it belongs. */
             if (preg_match('/Array\s*\(\s*\[/', $body))         { $quote_dump[]  = $sym; }
@@ -635,11 +655,30 @@
         check('the quote page is substantial, not a stub', strlen($q) > 20000,
               strlen($q) . ' bytes');
 
+        /* The chart on the quote page is an <img> pointing at stockgraph.php,
+           which required the jpgraph library unconditionally. jpgraph is not
+           vendored here, so the require fatalled and the browser showed a broken
+           image. Both graph endpoints must return a PNG whether or not the
+           library is installed. */
+        foreach (['stockgraph.php?symbol=AAA&timespan=6m'      => 'price chart',
+                  'performance_graph.php?session_id=1&timespan=1y' => 'performance chart'] as $u => $what) {
+            $png = (string)$curl("$base/$u");
+            check("the $what endpoint returns a PNG",
+                  strncmp($png, "\x89PNG", 4) === 0,
+                  substr(strip_tags($png), 0, 120));
+        }
+
+        /* ratings() returned null for a symbol the ratings job had not reached,
+           and the Ratings tab then read five offsets off it. */
+        check('a symbol with no rating row still returns the rating keys',
+              array_keys(ratings('ZZZZ')) ===
+              ['momentum_rating','growth_rating','value_rating','quality_rating','overall_rating']);
+
         /* An unknown symbol takes the lookup()-returns-false path, which is what
            the misplaced log line tripped over. */
         $unknown = (string)$curl("$base/quote.php?symbol=ZZZZ&page=quote_form.php");
         check('an unknown symbol is handled without a warning or fatal',
-              !preg_match('/(Fatal error|Parse error|Warning:)/i', $unknown),
+              !preg_match('/(Fatal error|Parse error|Warning<\/b>|Warning:|Undefined array key)/i', $unknown),
               substr(strip_tags($unknown), 0, 150));
 
         /* quote.php used to fall back to rendering quote_form.php, which is the
@@ -658,11 +697,11 @@
         $undef = [];
         foreach ($pages as $page) {
             $body = (string)$curl("$base/$page");
-            if (preg_match('/Undefined variable/i', $body)) { $undef[] = $page; }
+            if (preg_match('/Undefined (variable|array key)/i', $body)) { $undef[] = $page; }
         }
         foreach (['quote.php', 'quote.php?symbol=AAA', 'quote.php?symbol=ZZZZ'] as $u) {
             $body = (string)$curl("$base/$u");
-            if (preg_match('/Undefined variable/i', $body)) { $undef[] = $u; }
+            if (preg_match('/Undefined (variable|array key)/i', $body)) { $undef[] = $u; }
         }
         /* screening.php renders templates/screen.php with MomentumList, TrendList
            and EarningsGrowth, but that template belongs to screen_list.php and

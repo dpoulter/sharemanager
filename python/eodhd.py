@@ -99,7 +99,17 @@ def flatten_fundamentals(document, sections=SCALAR_SECTIONS):
             if value is None or value == "":
                 continue
             attribute = "{}.{}".format(section, field)
-            if len(attribute) <= 50:
-                flat[attribute] = value
+            if len(attribute) > 50:
+                continue
+
+            # stock_info.value is varchar(255). General.Description in
+            # particular runs to hundreds of characters, so an unbounded value
+            # fails the insert under strict mode and truncates silently
+            # otherwise. Only long values are touched, so numbers keep their
+            # own type rather than all becoming strings.
+            if isinstance(value, str) and len(value) > 255:
+                value = value[:252] + "..."
+
+            flat[attribute] = value
 
     return flat

@@ -380,8 +380,9 @@ mysql -e "DROP DATABASE sharemanager_sandbox; DROP USER 'sandbox'@'localhost';"
 
 ## What will not work, and that is expected
 
-- **Charts.** `chart.php`, `stockgraph.php`, `performance_graph.php` and
-  `jpgraph.php` need `phpChart_Lite/`, which is not in the repository.
+- **Charts.** `chart.php` and `jpgraph.php` need `phpChart_Lite/`, which is not
+  in the repository. `stockgraph.php` and `performance_graph.php` do render:
+  they use jpgraph when it is installed and a small GD line chart otherwise.
 - **Live quotes and price fetches.** No `EODHD_API_KEY` is set, so these return
   empty rather than erroring. Everything on screen comes from generated data.
 - **Email.** No SMTP is configured, so password reset cannot send.

@@ -113,7 +113,9 @@ create table message_log (
 --   job_name = '<script>'            written by log_job(), job_date = run time
 --   job_name = 'get_statistics_asof' written by get_statistics.php, the as of
 --                                    date the statistics were calculated for
--- Pages that display statistics must resolve the as of marker, not the run row.
+-- Pages that display statistics must resolve the as of marker, not the run row,
+-- and must use its date as it stands: the marker already carries the as of
+-- date, so subtracting a day from it lands before the statistics.
 create table jobs (
   id       int auto_increment primary key,
   job_name varchar(100),
@@ -360,6 +362,9 @@ create table strategy_shares (
 create table backtest_results (
   id                 int auto_increment primary key,
   strategy_id        int,
+  -- templates/backtest_results.php shows a Run Date column and no writer sets
+  -- it, so the column carries its own default.
+  run_date           timestamp not null default current_timestamp,
   start_date         date,
   end_date           date,
   parameter1_name    varchar(50), parameter1_value varchar(50),

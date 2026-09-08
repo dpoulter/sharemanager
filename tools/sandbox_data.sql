@@ -61,22 +61,6 @@ insert into strategy_accounts (strategy, cash, currency, mode, enabled, created_
 
 set @asof = date(date_sub(now(), interval 1 day));
 
--- Per indicator valuation, share against industry.
-delete from price_valuation;
-insert into price_valuation (symbol, date, indicator, share_stat, sector_stat, industry_stat, type, value)
-select ss.symbol, @asof, i.indicator,
-       round(8 + mod(ascii(substring(ss.symbol,1,1)) * i.k, 23), 2),
-       round(9 + mod(ascii(substring(ss.symbol,1,1)) * i.k, 19), 2),
-       round(9 + mod(ascii(substring(ss.symbol,1,1)) * i.k, 17), 2),
-       i.type,
-       round(100 + mod(ascii(substring(ss.symbol,1,1)) * i.k, 90), 2)
-  from stock_symbols ss,
-       (select 'pe' indicator, 3 k, 'VALUE' type union all
-        select 'price_sales_ratio',  5, 'VALUE' union all
-        select 'price_book_ratio',   7, 'VALUE' union all
-        select 'roe_ttm',           11, 'QUALITY') i
- where ss.exchange = 'XLON' and ss.enabled = 'Y';
-
 -- Piotroski and Altman inputs. The quote page shows the score and its parts.
 delete from variables;
 insert into variables (name, text) values
@@ -131,3 +115,151 @@ update stock_symbols
        website   = concat('https://www.', lower(symbol), '-test.example.com'),
        directors = concat('A. Director (CEO), B. Director (CFO), C. Director (Chair) - ', symbol)
  where exchange = 'XLON';
+
+-- ---------------------------------------------------------------------------
+-- Fundamentals, in the shape fetch_eodhd_fundamentals.py produces: one row per
+-- Section.Field. These fill the market cap, shares, 52 week range and business
+-- summary on the quote page, which read stock_info through share_fundamentals().
+-- ---------------------------------------------------------------------------
+
+delete from stock_info;
+
+insert into stock_info (symbol, asofdate, attribute, value)
+select ss.symbol, date(date_sub(now(), interval 1 day)), a.attribute,
+       case a.attribute
+         when 'Highlights.MarketCapitalization' then
+              cast(round(last.price * (18000000 + (ascii(substring(ss.symbol,1,1)) - 65) * 4200000) / 100) as char)
+         when 'SharesStats.SharesOutstanding' then
+              cast(18000000 + (ascii(substring(ss.symbol,1,1)) - 65) * 4200000 as char)
+         when 'Technicals.52WeekHigh' then cast(round(hi.high, 2) as char)
+         when 'Technicals.52WeekLow'  then cast(round(lo.low,  2) as char)
+         when 'Valuation.TrailingPE'  then cast(round(9 + mod(ascii(substring(ss.symbol,1,1)) * 3, 19), 2) as char)
+         when 'Highlights.ReturnOnEquityTTM'   then cast(round(0.06 + mod(ascii(substring(ss.symbol,1,1)), 22) / 100, 4) as char)
+         when 'Highlights.ProfitMargin'        then cast(round(0.04 + mod(ascii(substring(ss.symbol,1,1)), 18) / 100, 4) as char)
+         when 'Highlights.OperatingMarginTTM'  then cast(round(0.07 + mod(ascii(substring(ss.symbol,1,1)), 15) / 100, 4) as char)
+         when 'Highlights.ReturnOnAssetsTTM'   then cast(round(0.03 + mod(ascii(substring(ss.symbol,1,1)), 11) / 100, 4) as char)
+         -- stock_info.value is varchar(255), so this stays inside it. Real
+         -- EODHD descriptions are longer and the loader truncates them.
+         when 'General.Description' then left(concat(
+              ss.name, ' is generated data for exercising this application, in the ',
+              ss.industry, ' industry, ', ss.sector, ' sector, listed on the ', ss.market,
+              '. Not a real business: prices, statements and ratios are synthetic.'), 255)
+         when 'General.CurrencyCode' then 'GBX'
+         when 'General.CountryName'  then 'United Kingdom'
+       end
+  from stock_symbols ss
+  join (select symbol, price from historical_prices hp
+         where hp.date = (select max(date) from historical_prices h2 where h2.symbol = hp.symbol)) last
+    on last.symbol = ss.symbol
+  join (select symbol, max(price) high from historical_prices
+         where date >= date_sub(curdate(), interval 1 year) group by symbol) hi on hi.symbol = ss.symbol
+  join (select symbol, min(price) low  from historical_prices
+         where date >= date_sub(curdate(), interval 1 year) group by symbol) lo on lo.symbol = ss.symbol,
+       (select 'Highlights.MarketCapitalization' attribute union all
+        select 'SharesStats.SharesOutstanding'   union all
+        select 'Technicals.52WeekHigh'           union all
+        select 'Technicals.52WeekLow'            union all
+        select 'Valuation.TrailingPE'            union all
+        select 'Highlights.ReturnOnEquityTTM'    union all
+        select 'Highlights.ProfitMargin'         union all
+        select 'Highlights.OperatingMarginTTM'   union all
+        select 'Highlights.ReturnOnAssetsTTM'    union all
+        select 'General.Description'             union all
+        select 'General.CurrencyCode'            union all
+        select 'General.CountryName') a
+ where ss.exchange = 'XLON' and ss.enabled = 'Y';
+
+-- The business summary shown on the profile tab reads stock_symbols.description.
+update stock_symbols ss
+   set description = (select value from stock_info si
+                       where si.symbol = ss.symbol and si.attribute = 'General.Description' limit 1)
+ where ss.exchange = 'XLON';
+
+-- ---------------------------------------------------------------------------
+-- Rating panels. The quote page groups indicators into Momentum, Growth, Value
+-- and Quality by joining screen_indicators to screen_criteria/screen_build for
+-- the first three and to indicator_category for the fourth. tests/seed.php only
+-- creates the three momentum indicators the pipeline actually calculates, so
+-- the other three panels had nothing to describe.
+--
+-- These are enabled='N' with no screen_function, so get_statistics.php still
+-- skips them; they exist to give the joins a description to show.
+-- ---------------------------------------------------------------------------
+
+delete from screen_build where screen_id between 3 and 17;
+delete from screen_criteria where indicator_id in
+  (select indicator_id from screen_indicators
+    where name in ('3mnth','6mnth','12mnth','earnings_growth','pe',
+                   'price_sales_ratio','price_book_ratio','roe_ttm'));
+delete from screen_indicators where name in
+  ('earnings_growth','pe','price_sales_ratio','price_book_ratio','roe_ttm');
+
+insert into screen_indicators
+  (name, description, enabled, order_number, screen_function, calc_rank, rank_zero, rank_order, category)
+values
+  ('earnings_growth',  'Earnings growth %',      'N', 1, '', 'N', 'N', 'value DESC', null),
+  ('pe',               'Price / earnings',       'N', 1, '', 'N', 'N', 'value ASC',  null),
+  ('price_sales_ratio','Price / sales',          'N', 2, '', 'N', 'N', 'value ASC',  null),
+  ('price_book_ratio', 'Price / book',           'N', 3, '', 'N', 'N', 'value ASC',  null),
+  ('roe_ttm',          'Return on equity (TTM)', 'N', 1, '', 'N', 'N', 'value DESC', 10);
+
+-- One criterion per indicator, then a screen_build row placing it in the group
+-- the quote page reads: 3-7 momentum, 8-12 growth, 13-17 value.
+insert into screen_criteria (indicator_id, description, operator, first_operand, second_operand)
+select si.indicator_id, si.description, '>', si.name, null
+  from screen_indicators si
+ where si.name in ('3mnth','6mnth','12mnth','earnings_growth','pe',
+                   'price_sales_ratio','price_book_ratio','roe_ttm');
+
+insert into screen_build (screen_id, criteria_id)
+select case si.name
+         when '3mnth' then 3 when '6mnth' then 4 when '12mnth' then 5
+         when 'earnings_growth' then 8
+         when 'pe' then 13 when 'price_sales_ratio' then 14
+         when 'price_book_ratio' then 15
+         else 16
+       end,
+       sc.id
+  from screen_criteria sc
+  join screen_indicators si on si.indicator_id = sc.indicator_id
+ where si.name in ('3mnth','6mnth','12mnth','earnings_growth','pe',
+                   'price_sales_ratio','price_book_ratio','roe_ttm');
+
+-- ---------------------------------------------------------------------------
+-- Relative valuation. get_relative_to_sector() and get_relative_to_industry()
+-- select price_valuation rows by type='relative_sector' / 'relative_industry'
+-- and join screen_indicators on the indicator name, so the earlier VALUE and
+-- QUALITY types matched nothing. Write one row of each type per indicator.
+-- ---------------------------------------------------------------------------
+
+delete from price_valuation;
+insert into price_valuation (symbol, date, indicator, share_stat, sector_stat, industry_stat, type, value)
+select ss.symbol, @asof, i.indicator,
+       round(8 + mod(ascii(substring(ss.symbol,1,1)) * i.k, 23), 2),
+       round(9 + mod(ascii(substring(ss.symbol,1,1)) * i.k, 19), 2),
+       round(9 + mod(ascii(substring(ss.symbol,1,1)) * i.k, 17), 2),
+       t.type,
+       round(100 + mod(ascii(substring(ss.symbol,1,1)) * i.k, 90), 2)
+  from stock_symbols ss,
+       (select 'pe' indicator, 3 k union all
+        select 'price_sales_ratio',  5 union all
+        select 'price_book_ratio',   7 union all
+        select 'roe_ttm',           11) i,
+       (select 'relative_sector' type union all select 'relative_industry') t
+ where ss.exchange = 'XLON' and ss.enabled = 'Y';
+
+-- The two Price Valuation badges on the quote page divide these indicators by
+-- the share price, so they need a value in statistics rather than in
+-- price_valuation. Without them get_valuation() returned null and
+-- get_industry_valuation() fell back to zero, which is the "0" badge.
+delete from statistics where indicator in ('relative_valuation','relative_industry_valuation');
+insert into statistics (symbol, date, indicator, value, exchange)
+select ss.symbol, @asof, i.indicator,
+       round(hp.price * i.factor, 4), ss.exchange
+  from stock_symbols ss
+  join (select symbol, price from historical_prices hp
+         where hp.date = (select max(date) from historical_prices h2 where h2.symbol = hp.symbol)) hp
+    on hp.symbol = ss.symbol,
+       (select 'relative_valuation' indicator, 1.12 factor union all
+        select 'relative_industry_valuation', 0.93) i
+ where ss.exchange = 'XLON' and ss.enabled = 'Y';

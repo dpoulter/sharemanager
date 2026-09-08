@@ -1,8 +1,14 @@
 <?php // content="text/plain; charset=utf-8"
-require_once ('jpgraph-4.2.0/src/jpgraph.php');
-require_once ('jpgraph-4.2.0/src/jpgraph_line.php');
-require_once ('jpgraph-4.2.0/src/jpgraph_bar.php');
-require_once( "jpgraph-4.2.0/src/jpgraph_date.php" );
+require_once ('../includes/simple_graph.php');
+//jpgraph is a third-party library that is not vendored in this repository.
+//Without it these requires fatal and the <img> renders as a broken icon, so
+//fall back to the small GD renderer when the library is not installed.
+if (jpgraph_available()) {
+	require_once ('jpgraph-4.2.0/src/jpgraph.php');
+	require_once ('jpgraph-4.2.0/src/jpgraph_line.php');
+	require_once ('jpgraph-4.2.0/src/jpgraph_bar.php');
+	require_once( "jpgraph-4.2.0/src/jpgraph_date.php" );
+}
 require_once ('../includes/Prices.php');
 
 function creategraph($session_id,$timespan){
@@ -48,6 +54,18 @@ function creategraph($session_id,$timespan){
 	
 	 // Width and height of the graph
 	$width = 800; $height = 400;
+	
+	if (!jpgraph_available()) {
+		$profit=new Prices();
+		$profit->performance($session_id,$startdate,$enddate);
+		$holding=new Prices();
+		$holding->total_holding($session_id,$startdate,$enddate);
+		simple_multi_line_png(array(
+			array("label"=>"Profit","dates"=>$profit->graphdates,"values"=>$profit->graphvalues),
+			array("label"=>"Total","dates"=>$holding->graphdates,"values"=>$holding->graphvalues)
+		),$width,$height);
+		return;
+	}
 	 
 	// Create a graph instance
 	$graph = new Graph($width,$height);
