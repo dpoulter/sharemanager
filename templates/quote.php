@@ -98,44 +98,44 @@
   						
   							<ul class="list-group">
 	  							<?php if ($scores['momentum'] <= 25)
-										 $badge_color='badge-danger';
+										 $badge_color='text-bg-danger';
 									  elseif ($scores['momentum'] <= 50)
-									  	$badge_color='badge-warning';
+									  	$badge_color='text-bg-warning';
 									  elseif ($scores['momentum'] <= 75)
-									  	$badge_color='badge-info';
+									  	$badge_color='text-bg-info';
 									  elseif ($scores['momentum'] <= 100)
-									  	$badge_color='badge-success';
+									  	$badge_color='text-bg-success';
 								?>
   								<li class="list-group-item">
     								<span class="badge <?php print($badge_color)?>"><?php print(round($scores['momentum'],0))?></span>
-    								<a data-toggle="modal" href="#MomentumModal" >Momentum</a>
+    								<a data-bs-toggle="modal" href="#MomentumModal" >Momentum</a>
     							</li>
     							<?php if ($scores['value'] <= 25)
-										 $badge_color='badge-danger';
+										 $badge_color='text-bg-danger';
 									  elseif ($scores['value'] <= 50)
-									  	$badge_color='badge-warning';
+									  	$badge_color='text-bg-warning';
 									  elseif ($scores['value'] <= 75)
-									  	$badge_color='badge-info';
+									  	$badge_color='text-bg-info';
 									  elseif ($scores['value'] <= 100)
-									  	$badge_color='badge-success';
+									  	$badge_color='text-bg-success';
 								?>
 	  							<li class="list-group-item">
 	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['value'],0))?></span>
-	    							<a data-toggle="modal" href="#ValueModal" >Value</a>
+	    							<a data-bs-toggle="modal" href="#ValueModal" >Value</a>
 	  							</li>
 						
 	  							<?php if ($scores['quality'] <= 25)
-										 $badge_color='badge-danger';
+										 $badge_color='text-bg-danger';
 									  elseif ($scores['quality'] <= 50)
-									  	$badge_color='badge-warning';
+									  	$badge_color='text-bg-warning';
 									  elseif ($scores['quality'] <= 75)
-									  	$badge_color='badge-info';
+									  	$badge_color='text-bg-info';
 									  elseif ($scores['quality'] <= 100)
-									  	$badge_color='badge-success';
+									  	$badge_color='text-bg-success';
 								?>
 								<li class="list-group-item">
 	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['quality'],0))?></span>
-	    							<a data-toggle="modal" href="#QualityModal" >Quality</a>
+	    							<a data-bs-toggle="modal" href="#QualityModal" >Quality</a>
 	  							</li>
 							</ul>
 		  				</div>
@@ -143,13 +143,13 @@
 		  		
   						<div class="card-footer">
 	  						<?php if ($scores['overall'] <= 25)
-										 $badge_color='badge-danger';
+										 $badge_color='text-bg-danger';
 									  elseif ($scores['overall'] <= 50)
-									  	$badge_color='badge-warning';
+									  	$badge_color='text-bg-warning';
 									  elseif ($scores['overall'] <= 75)
-									  	$badge_color='badge-info';
+									  	$badge_color='text-bg-info';
 									  elseif ($scores['overall'] <= 100)
-									  	$badge_color='badge-success';
+									  	$badge_color='text-bg-success';
 								?>
 	  						<ul class="list-group">
 	  							<li class="list-group-item">
@@ -238,42 +238,42 @@
 							<tr>
 								<?php 
 									if ($valuation['ratio'] <= 25)
-							 			$label_color='badge-danger';
+							 			$label_color='text-bg-danger';
 						  	  		elseif ($valuation['ratio'] <= 50)
-						  				$label_color='badge-warning';
+						  				$label_color='text-bg-warning';
 						  	  		elseif ($valuation['ratio'] <= 100)
-						  				$label_color='badge-info';
+						  				$label_color='text-bg-info';
 						  	  		elseif ($valuation['ratio'] > 100)
-						  				$label_color='badge-success';
+						  				$label_color='text-bg-success';
 					 				
 									 $ratio=$valuation['ratio'];
 					 			?>
 								<td width="80%">
-									<a data-toggle="modal" href="#RelativeSectorModal" >Relative to Sector</a>  <?php $valuation['ratio']?>
+									<a data-bs-toggle="modal" href="#RelativeSectorModal" >Relative to Sector</a>  <?php $valuation['ratio']?>
 								</td>	
 		  						<td style="text-align:right">
-		  							<span data-toggle="tooltip" title="<?php print($ratio)?>%" class="badge <?php print($label_color)?>"><?php print($valuation["value"])?></span>
+		  							<span data-bs-toggle="tooltip" title="<?php print($ratio)?>%" class="badge <?php print($label_color)?>"><?php print($valuation["value"])?></span>
 								</td>
 							</tr>
 							<tr>
 								
 								<?php 
 									if ($industry_valuation['ratio'] <= 25)
-							 			$label_color='badge-danger';
+							 			$label_color='text-bg-danger';
 						  	  		elseif ($industry_valuation['ratio'] <= 50)
-						  				$label_color='badge-warning';
+						  				$label_color='text-bg-warning';
 						  	  		elseif ($industry_valuation['ratio'] <= 100)
-						  				$label_color='badge-info';
+						  				$label_color='text-bg-info';
 						  	  		elseif ($industry_valuation['ratio'] > 100)
-						  				$label_color='badge-success';
+						  				$label_color='text-bg-success';
 					 				
 									 $ratio=$industry_valuation['ratio'];
 					 			?>
 								<td width="80%">
-									<a data-toggle="modal" href="#RelativeIndustryModal" >Relative to Industry</a>  <?php $industry_valuation['ratio']?>
+									<a data-bs-toggle="modal" href="#RelativeIndustryModal" >Relative to Industry</a>  <?php $industry_valuation['ratio']?>
 								</td>	
 		  						<td style="text-align:right">
-		  							<span data-toggle="tooltip" title="<?php print($ratio)?>%" class="badge <?php print($label_color)?>"><?php print($industry_valuation["value"])?></span>
+		  							<span data-bs-toggle="tooltip" title="<?php print($ratio)?>%" class="badge <?php print($label_color)?>"><?php print($industry_valuation["value"])?></span>
 								</td>
 							</tr>
 							</table>
@@ -295,10 +295,10 @@
 			<div class="row">
 			
 				<ul class="nav nav-tabs" id="myTab" role="tabList">
-				    <li class="nav-item"><a class="nav-link active" id="profile-tab" data-toggle="tab" role="tab" aria-controls="profile" aria-selected="true" href="#profile">Profile</a></li>
-					<li class="nav-item"><a class="nav-link" data-toggle="tab" role="tab" href="#news">News</a></li>
-					<li class="nav-item"><a class="nav-link" data-toggle="tab" role="tab" href="#statistics">Ratios</a></li>
-				<!--	<li role="presentation" ><a data-toggle="tab" href="#financials">Financial Statements</a></li>-->
+				    <li class="nav-item"><a class="nav-link active" id="profile-tab" data-bs-toggle="tab" role="tab" aria-controls="profile" aria-selected="true" href="#profile">Profile</a></li>
+					<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" role="tab" href="#news">News</a></li>
+					<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" role="tab" href="#statistics">Ratios</a></li>
+				<!--	<li role="presentation" ><a data-bs-toggle="tab" href="#financials">Financial Statements</a></li>-->
 		   		</ul>
 		   		
 	    		<div class="tab-content">
@@ -383,7 +383,7 @@
 											<div class="card card-default">
 							  					<div class="card-header"><?= $category_indicator["category"]["description"]?></div>
 							  					<div class="card-body">
-							  						<table class="table table-striped table-bordered table-condensed">
+							  						<table class="table table-striped table-bordered table-sm">
 											    
 														<thead>
 														<tr><th width="20%"></th><th width="20%">Share</th><th width="20%">Sector</th><th width="20%">Market</th ><th width="20%">Rank</th></tr>
@@ -438,9 +438,9 @@
 				  <?php write_log ("quote.php","12")?>
 		<div class="tab-pane" id="financials" >
 			<ul class="nav nav-pills">
-				<li class="active"><a data-toggle="pill" href="#incomestatement">Income Statement</a></li>
-				<li><a data-toggle="pill" href="#balancesheet">Balance Sheet</a></li>
-				<li><a data-toggle="pill" href="#cashflowstatement">Cash Flow Statement</a></li>
+				<li class="active"><a data-bs-toggle="pill" href="#incomestatement">Income Statement</a></li>
+				<li><a data-bs-toggle="pill" href="#balancesheet">Balance Sheet</a></li>
+				<li><a data-bs-toggle="pill" href="#cashflowstatement">Cash Flow Statement</a></li>
 			</ul>
 			<div class="tab-content">
 				<div class="tab-pane active" id="incomestatement">
@@ -577,7 +577,7 @@
                  		</table>
                  </div>
 		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-dismiss="modal">Close</button>
+          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
         		</div>         		
 		 				
 			    </div>
@@ -628,7 +628,7 @@
                  
                  
 		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-dismiss="modal">Close</button>
+          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
         		</div>         		
 		 				
 			    </div>
@@ -680,7 +680,7 @@
                  		</table>
                   </div>
 		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-dismiss="modal">Close</button>
+          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
         		</div>         		
 		 				
 			    </div>
@@ -723,7 +723,7 @@
                  		</table>
                  </div>
 		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-dismiss="modal">Close</button>
+          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
         		</div>         		
 		 				
 			    </div>
@@ -764,7 +764,7 @@
                  		</table>
                  </div>
 		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-dismiss="modal">Close</button>
+          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
         		</div>         		
 		 				
 			    </div>
@@ -813,7 +813,7 @@
                  		</table>
                  </div>
 		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-dismiss="modal">Close</button>
+          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
         		</div>         		
 		 				
 			    </div>
@@ -860,7 +860,7 @@
                  		
                  </div>
 		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-dismiss="modal">Close</button>
+          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
         		</div>         		
 		 				
 			    </div>
@@ -909,7 +909,7 @@
                  		
                  </div>
 		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-dismiss="modal">Close</button>
+          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
         		</div>         		
 		 				
 				<?php write_log ("quote.php","22")?>

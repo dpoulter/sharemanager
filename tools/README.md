@@ -88,6 +88,20 @@ Pre-seeding those rows would mask a genuine failure, so they live in
 - No EODHD key is set, so live quotes and price fetches degrade to empty rather
   than erroring. Everything the sandbox shows comes from the generated data.
 
+## fetch_assets.sh and Bootstrap 5
+
+The pages are on Bootstrap 5.3, jQuery 3.7 and Font Awesome 6. Bootstrap no
+longer needs jQuery, but typeahead.js and `templates/scripts.js` still do, so
+jQuery stays.
+
+`css/`, `js/`, `img/`, `fonts/` and `webfonts/` are gitignored, so run
+`tools/fetch_assets.sh` after a fresh clone or every page is unstyled. It pulls
+from cdnjs; on a network that blocks it, use `--from` against a machine that
+already has the files.
+
+`css/styles1.css` is this application's own stylesheet and is on no CDN. The
+script writes a placeholder; `--from` is the only way to get the real one.
+
 ## eodhd_stub.php
 
 A stand-in for the EODHD API, so the sandbox exercises the real request path

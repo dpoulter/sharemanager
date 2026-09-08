@@ -107,7 +107,7 @@ $('#symbolInput .typeahead').typeahead({
             <div id="middle" class="navigation">
               <ul class="nav nav-pills">
                  <li role="presentation" class="active"><a href="index.php">Home</a></li>
-                <li class="dropdown"><a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false">Portfolio<span class="caret"></span></a>
+                <li class="dropdown"><a href="#" class="dropdown-toggle" data-bs-toggle="dropdown" role="button" aria-expanded="false">Portfolio<span class="caret"></span></a>
 			<ul class="dropdown-menu" role="menu">
 				<li><a href="performance.php">Overview</a></li>
 				<li><a href="edit.php">Transactions</a></li>
@@ -115,7 +115,7 @@ $('#symbolInput .typeahead').typeahead({
 				<li><a href="topup.php">Deposit Cash</a></li>
 			</ul>
 		</li>
-		<li class="dropdown"><a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false">Screens<span class="caret"></span></a>
+		<li class="dropdown"><a href="#" class="dropdown-toggle" data-bs-toggle="dropdown" role="button" aria-expanded="false">Screens<span class="caret"></span></a>
           		<ul class="dropdown-menu" role="menu">
 				<li><a href="screen_list.php">List Screens</a></li>
 				</ul>
@@ -128,10 +128,10 @@ $('#symbolInput .typeahead').typeahead({
             </p>
 
 <form role="form" action="quote.php" method="post">
-	 <div class="form-group col-md-4" id="search1">
+	 <div class="mb-3 col-md-4" id="search1">
 				<input  class="form-control typeahead"  type="text" name="symbol" placeholder="Enter Symbol"/>
 		</div>
-		<div class="form-group">
+		<div class="mb-3">
 				<button type="submit" class="btn btn-default">Lookup</button>
         </div>
         <div class="CustomTemplate">

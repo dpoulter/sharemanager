@@ -7,7 +7,7 @@
       label{float:left;}
     </style>
 <fieldset>
-		 <div class="form-group col-md-4" id="search">
+		 <div class="mb-3 col-md-4" id="search">
 		   <ul>
           <li><label>Symbol</label><input autofocus class="form-control typeahead" name="symbol[]" placeholder="Symbol" type="text"/></li>
 			 <li><label>Transaction Type</label>	<select id="trx_type" class="form-control" name="trx_type[]" placeholder="Transaction Type" ><option value="SELL">SELL</option><option value="BUY">BUY</option></select></li>

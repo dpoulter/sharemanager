@@ -7,7 +7,7 @@
       label{float:left;}
     </style>
 <fieldset>
-		 <div class="form-group col-md-4" id="search">
+		 <div class="mb-3 col-md-4" id="search">
 		   <ul>
 		    <li><input type="hidden" value="<?= $dividends["dividend_id"] ?>" name="dividend_id[]"></input></li>
 		    <li><label>Symbol</label>	<input type="text" class="form-control typeahead" id="search" name="symbol[]" placeholder="Symbol" value="<?= $dividends["symbol"]?>"></input></li>

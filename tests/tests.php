@@ -979,6 +979,54 @@
         check('the session id is regenerated when the session gains privilege',
               strpos($login_src, 'session_regenerate_id(true)') !== false);
 
+        /* ---------------------------------------------------------------
+           Bootstrap 5. The upgrade from 4 renamed every behavioural data
+           attribute and several classes, and a leftover renames to nothing -
+           the element simply stops working, silently, with no error anywhere.
+           --------------------------------------------------------------- */
+        $markup = [];
+        foreach (array_merge(glob(dirname(__DIR__) . '/templates/*.php'),
+                             glob(dirname(__DIR__) . '/public/*.php')) as $f) {
+            if (strpos(basename($f), 'bootstrap') !== false) { continue; }
+            $markup[$f] = (string)file_get_contents($f);
+        }
+        $all = implode("\n", $markup);
+
+        $stale = [];
+        foreach (['data-toggle=', 'data-dismiss=', 'data-target=', 'data-parent='] as $attr) {
+            foreach ($markup as $f => $src) {
+                if (strpos($src, $attr) !== false) { $stale[] = basename($f) . ':' . rtrim($attr, '='); }
+            }
+        }
+        check('no Bootstrap 4 data attributes survive the upgrade', count($stale) === 0,
+              implode(', ', array_unique($stale)));
+
+        $dropped = [];
+        foreach (['badge-success', 'badge-danger', 'badge-warning', 'badge-info',
+                  'sr-only', 'form-group', 'jumbotron', 'table-condensed',
+                  'form-inline', 'class="close"'] as $cls) {
+            if (strpos($all, $cls) !== false) { $dropped[] = $cls; }
+        }
+        check('no classes Bootstrap 5 removed survive the upgrade', count($dropped) === 0,
+              implode(', ', $dropped));
+
+        /* The navbar collapses on small screens and had no button to reopen it,
+           so the whole navigation was unreachable on a phone. */
+        $header = $markup[dirname(__DIR__) . '/templates/header.php'] ?? '';
+        check('the navbar has a toggler, so it is usable on a phone',
+              strpos($header, 'navbar-toggler') !== false
+              && strpos($header, 'data-bs-target="#navbarNavDropdown"') !== false);
+
+        /* Tooltips are opt-in in both 4 and 5: the quote page marks them up and
+           nothing initialised them, so they never worked. */
+        $js = (string)file_get_contents(dirname(__DIR__) . '/templates/scripts.js');
+        check('tooltips are initialised, not just marked up',
+              strpos($js, 'bootstrap.Tooltip') !== false);
+
+        check('the asset fetcher pulls Bootstrap 5',
+              preg_match('#/bootstrap/5\.#',
+                         (string)file_get_contents(dirname(__DIR__) . '/tools/fetch_assets.sh')) === 1);
+
         check('no served page interpolates request data into SQL',
               count($interpolating) === 0, implode(', ', $interpolating));
 

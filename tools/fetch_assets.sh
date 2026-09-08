@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-mkdir -p "$PUBLIC/css" "$PUBLIC/js" "$PUBLIC/img" "$PUBLIC/fonts"
+mkdir -p "$PUBLIC/css" "$PUBLIC/js" "$PUBLIC/img" "$PUBLIC/fonts" "$PUBLIC/webfonts"
 
 # scripts.js is in the repository, just not where header.php looks for it.
 cp "$REPO_DIR/templates/scripts.js" "$PUBLIC/js/scripts.js"
@@ -67,14 +67,23 @@ fetch() {                       # fetch <url> <destination> <minimum bytes>
 CDN=https://cdnjs.cloudflare.com/ajax/libs
 failed=0
 
-fetch "$CDN/twitter-bootstrap/4.1.3/css/bootstrap.min.css"        "$PUBLIC/css/bootstrap.min.css"       100000 || failed=1
-fetch "$CDN/twitter-bootstrap/4.1.3/js/bootstrap.bundle.min.js"   "$PUBLIC/js/bootstrap.bundle.min.js"   50000 || failed=1
-fetch "$CDN/jquery/3.3.1/jquery.min.js"                           "$PUBLIC/js/jquery-3.3.1.min.js"       50000 || failed=1
+# Bootstrap 5. The bundle carries Popper, so there is no separate popper file,
+# and Bootstrap itself no longer needs jQuery - but typeahead.js and
+# templates/scripts.js still do, so jQuery stays.
+fetch "$CDN/bootstrap/5.3.3/css/bootstrap.min.css"                "$PUBLIC/css/bootstrap.min.css"       100000 || failed=1
+fetch "$CDN/bootstrap/5.3.3/js/bootstrap.bundle.min.js"           "$PUBLIC/js/bootstrap.bundle.min.js"   50000 || failed=1
+fetch "$CDN/jquery/3.7.1/jquery.min.js"                           "$PUBLIC/js/jquery-3.3.1.min.js"       50000 || failed=1
 fetch "$CDN/typeahead.js/0.11.1/bloodhound.min.js"                "$PUBLIC/js/bloodhound.min.js"          5000 || failed=1
 fetch "$CDN/typeahead.js/0.11.1/typeahead.jquery.min.js"          "$PUBLIC/js/typeahead.jquery.js"        5000 || failed=1
+# Font Awesome 6. header.php loads this locally now rather than from the
+# fontawesome CDN, so the page needs nothing at request time from a third party.
+fetch "$CDN/font-awesome/6.5.2/css/all.min.css"                   "$PUBLIC/css/fontawesome.min.css"      20000 || failed=1
+for f in fa-solid-900 fa-regular-400 fa-brands-400; do
+  fetch "$CDN/font-awesome/6.5.2/webfonts/$f.woff2"               "$PUBLIC/webfonts/$f.woff2"             5000 || failed=1
+done
 
-# header.php also loads bootstrap-theme.min.css. That is Bootstrap 3 and does
-# not exist for 4.x, so an empty file keeps the page from 404ing on it.
+# header.php also loads bootstrap-theme.min.css. That is Bootstrap 3 and exists
+# for neither 4.x nor 5.x, so an empty file keeps the page from 404ing on it.
 [ -f "$PUBLIC/css/bootstrap-theme.min.css" ] || \
   echo "/* Bootstrap 3 theme, absent from Bootstrap 4. Placeholder. */" > "$PUBLIC/css/bootstrap-theme.min.css"
 

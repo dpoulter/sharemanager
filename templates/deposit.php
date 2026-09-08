@@ -11,7 +11,7 @@
     <h3>Deposit/Withdraw Cash</h3>
     <form action="topup.php" method="post">
     <fieldset>
-        <div class="form-group col-md-4">
+        <div class="mb-3 col-md-4">
         	<ul>
             
              <li><label>Date</label>	<input autofocus type="date" class="form-control" name="date" placeholder="YYYY-MM-DD"></input></li>

@@ -16,7 +16,7 @@
 			if (isset($screen_id)):?>
 				<input name="screen_id"  value="<?=$screen_id?>" type="hidden"/>
 		<?php endif ?>
-		<div class="form-group">
+		<div class="mb-3">
 		<input name="id" <?php if(isset($criteria["id"])): ?> value="<?=$criteria["id"]?>" <?php endif?> type="hidden"/>
 		<input autofocus class="form-control" name="description" <?php if(isset($criteria["description"])): ?> value="<?= $criteria["description"] ?>" <?php endif?>  placeholder="Description" width="50%" type="text"/>
 		<table class="table">
@@ -53,7 +53,7 @@
 		</tr>
 		</table>
             </div>
-            <div class="form-group">
+            <div class="mb-3">
                 <button type="submit" name="create" class="btn btn-outline-primary">Submit</button>
 		<button type="submit" name="cancel" class="btn btn-outline-primary">Cancel</button>
             </div>
