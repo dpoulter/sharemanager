@@ -194,14 +194,31 @@ delete from screen_criteria where indicator_id in
 delete from screen_indicators where name in
   ('earnings_growth','pe','price_sales_ratio','price_book_ratio','roe_ttm');
 
+-- The Ratios tab groups by indicator_category, so each indicator needs one.
+-- get_quality_statistics() selects categories 10 and 11, so the value ratios
+-- stay out of those two.
+insert into indicator_category (category_id, name, description, `order`) values
+  (12, 'Value',    'Value',    2),
+  (13, 'Momentum', 'Momentum', 3),
+  (14, 'Growth',   'Growth',   4)
+  on duplicate key update description = values(description);
+
+-- enabled='Y' because share_lookup() filters on it. get_statistics.php does not
+-- call screen_function; it rolls up whatever statistics rows exist, so an
+-- indicator with no function is included in the medians and left alone.
 insert into screen_indicators
   (name, description, enabled, order_number, screen_function, calc_rank, rank_zero, rank_order, category)
 values
-  ('earnings_growth',  'Earnings growth %',      'N', 1, '', 'N', 'N', 'value DESC', null),
-  ('pe',               'Price / earnings',       'N', 1, '', 'N', 'N', 'value ASC',  null),
-  ('price_sales_ratio','Price / sales',          'N', 2, '', 'N', 'N', 'value ASC',  null),
-  ('price_book_ratio', 'Price / book',           'N', 3, '', 'N', 'N', 'value ASC',  null),
-  ('roe_ttm',          'Return on equity (TTM)', 'N', 1, '', 'N', 'N', 'value DESC', 10);
+  ('earnings_growth',  'Earnings growth %',      'Y', 1, '', 'N', 'N', 'value DESC', 14),
+  ('pe',               'Price / earnings',       'Y', 1, '', 'N', 'N', 'value ASC',  12),
+  ('price_sales_ratio','Price / sales',          'Y', 2, '', 'N', 'N', 'value ASC',  12),
+  ('price_book_ratio', 'Price / book',           'Y', 3, '', 'N', 'N', 'value ASC',  12),
+  ('roe_ttm',          'Return on equity (TTM)', 'Y', 1, '', 'N', 'N', 'value DESC', 10);
+
+update screen_indicators
+   set category = 13,
+       description = concat(replace(name, 'mnth', ''), ' month price momentum %')
+ where name in ('3mnth','6mnth','12mnth');
 
 -- One criterion per indicator, then a screen_build row placing it in the group
 -- the quote page reads: 3-7 momentum, 8-12 growth, 13-17 value.
@@ -263,3 +280,38 @@ select ss.symbol, @asof, i.indicator,
        (select 'relative_valuation' indicator, 1.12 factor union all
         select 'relative_industry_valuation', 0.93) i
  where ss.exchange = 'XLON' and ss.enabled = 'Y';
+
+-- ---------------------------------------------------------------------------
+-- The Ratios tab. share_lookup() joins statistics to statistic_averages twice,
+-- once for the market median and once for the sector median, and the template
+-- draws a progress bar from statistics.percentile. None of the three were
+-- seeded, so every category card came out empty.
+-- ---------------------------------------------------------------------------
+
+-- Where the symbol's value sits in the range for that indicator, 0-100.
+update statistics s
+   set percentile = round(mod(ascii(substring(s.symbol,1,1)) * 7 + length(s.indicator) * 11, 101))
+ where s.date = @asof and s.percentile is null;
+
+delete from statistic_averages where date = @asof;
+
+-- Market median: one row per indicator, matched on exchange.
+insert into statistic_averages (date, category, indicator, type, value, sector, industry, exchange)
+select @asof, 'MARKET', s.indicator, 'MEDIAN',
+       round(avg(s.value), 4), null, null, s.exchange
+  from statistics s
+ where s.date = @asof
+   and s.indicator in ('3mnth','6mnth','12mnth','earnings_growth','pe',
+                       'price_sales_ratio','price_book_ratio','roe_ttm')
+ group by s.indicator, s.exchange;
+
+-- Sector median: one row per indicator per sector, matched on stock_symbols.sector.
+insert into statistic_averages (date, category, indicator, type, value, sector, industry, exchange)
+select @asof, 'SECTOR', s.indicator, 'MEDIAN',
+       round(avg(s.value), 4), ss.sector, null, s.exchange
+  from statistics s
+  join stock_symbols ss on ss.symbol = s.symbol and ss.exchange = s.exchange
+ where s.date = @asof
+   and s.indicator in ('3mnth','6mnth','12mnth','earnings_growth','pe',
+                       'price_sales_ratio','price_book_ratio','roe_ttm')
+ group by s.indicator, ss.sector, s.exchange;

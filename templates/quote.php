@@ -351,18 +351,21 @@
 	 					</div>
 	 				</div>
 					
-	 				<div class="tab-pane" id="news">  
-				<!--	 <?php write_log ("quote.php","10")?>
-					 	
-					    <//?php $articles=get_articles($symbol);
-						foreach($articles as $article):?>
-						 	<div class="container">
-			      				<div class="row">
-			      					<//?php print ($article["description"]); ?>
-				      			</div>
-			         		</div>
-			         	<//?php endforeach?>
-						--> 
+	 				<div class="tab-pane" id="news">
+						<div class="container">
+						<?php if (empty($articles)): ?>
+							<p>No news articles for <?=htmlspecialchars($symbol)?>.</p>
+						<?php else: ?>
+							<?php foreach($articles as $article): ?>
+								<div class="row">
+									<div class="col-md-12">
+										<a href="<?=htmlspecialchars($article["link"])?>" target="_blank" rel="noopener noreferrer"><?=htmlspecialchars($article["title"])?></a>
+										<div class="text-muted small"><?=htmlspecialchars($article["pubdate"])?></div>
+									</div>
+								</div>
+							<?php endforeach?>
+						<?php endif?>
+						</div>
 			      	</div>
 			      	<?php write_log ("quote.php","11")?>
 					<div class="tab-pane" id="statistics" >
@@ -388,10 +391,10 @@
 														<tbody>
 														<?php foreach ($category_indicator["indicators"] as $indicator): ?>
 															
-															<tr><td width="20%"><?php print($indicator["description"]);?></td><td width="20%"> <?php print ($indicator["value"] ); ?> </td><td width="20%"><?php print($indicator["sector_average"]);?></td>
+															<tr><td width="20%"><?php print($indicator["description"]);?></td><td width="20%"> <?php print (number_or_blank($indicator["value"], 2) ); ?> </td><td width="20%"><?php print(number_or_blank($indicator["sector_average"], 2));?></td>
 																
 																	<td width="20%">
-																		<?php print($indicator["market_average"]);?>
+																		<?php print(number_or_blank($indicator["market_average"], 2));?>
 																	</td>
 																	<td width="20%">	
 																		<div class="progress">

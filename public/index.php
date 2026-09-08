@@ -55,23 +55,13 @@
         
         write_log("index","symbol=$symbol");
 		
-		$chart="http://chart.finance.yahoo.com/z?s=$symbol&t=$timespan&q=$type&l=on&z=l&p=m20,m50,m100,m200";
-		$quote = share_lookup($symbol);
-		
-		$income_statement=income_statement($symbol);
-		$balance_sheet=balance_sheet($symbol);
-		
-		if ($quote!==false) 
-		{
-			 // else render form
-			 if(isset($screen_id))
-				render("quote.php", ["title" => $symbol,"symbol"=>$symbol,"quote" => $quote,"chart"=>$chart,"screen_id"=>$screen_id,"income_statement"=>$income_statement,"balancesheet"=>$balance_sheet]);
-			 else
-				render("quote.php", ["title" => $symbol,"symbol"=>$symbol,"quote" => $quote,"chart"=>$chart,"incomestatement"=>$income_statement,"balancesheet"=>$balance_sheet]);
-		
-		}
-		else
-			apologize("Invalid Symbol.");
+		//templates/quote.php needs around thirty variables and this passed six,
+		//so every panel it did not know about rendered undefined - 74 warnings
+		//for one symbol. quote.php is the page that builds them all, so hand
+		//the symbol to it rather than keeping a second, half wired copy.
+		$query = ["symbol" => $symbol, "timespan" => $timespan, "type" => $type];
+		if (isset($screen_id)) { $query["screen_id"] = $screen_id; }
+		redirect("quote.php?" . http_build_query($query));
         
         
         

@@ -658,15 +658,46 @@
         /* The chart on the quote page is an <img> pointing at stockgraph.php,
            which required the jpgraph library unconditionally. jpgraph is not
            vendored here, so the require fatalled and the browser showed a broken
-           image. Both graph endpoints must return a PNG whether or not the
-           library is installed. */
+           image. The fallback draws SVG rather than using GD, which ships as a
+           separate package that is often absent - and a missing extension is
+           itself a fatal inside an <img>. Both endpoints must return a picture
+           whether or not either library is installed. */
         foreach (['stockgraph.php?symbol=AAA&timespan=6m'      => 'price chart',
                   'performance_graph.php?session_id=1&timespan=1y' => 'performance chart'] as $u => $what) {
-            $png = (string)$curl("$base/$u");
-            check("the $what endpoint returns a PNG",
-                  strncmp($png, "\x89PNG", 4) === 0,
-                  substr(strip_tags($png), 0, 120));
+            $img = (string)$curl("$base/$u");
+            check("the $what endpoint returns an image",
+                  strpos($img, '<svg') !== false || strncmp($img, "\x89PNG", 4) === 0,
+                  substr(strip_tags($img), 0, 120));
+            check("the $what draws a line, not just a frame",
+                  strpos($img, '<polyline') !== false || strncmp($img, "\x89PNG", 4) === 0);
         }
+        /* GD is the dependency the fallback exists to avoid. */
+        $graph_src = (string)file_get_contents(dirname(__DIR__) . '/includes/simple_graph.php');
+        check('the chart fallback needs no PHP extension',
+              !preg_match('/\bimage(create|png|line|string)/', $graph_src));
+
+        /* get_articles() fetches an external feed and used to exit on failure,
+           which took the whole quote page down with it. */
+        $share_src = (string)file_get_contents(dirname(__DIR__) . '/includes/share_functions.php');
+        $articles_src = substr($share_src, strpos($share_src, 'function get_articles'));
+        $articles_src = substr($articles_src, 0, strpos($articles_src, 'function avg_share_cost'));
+        check('the news fetch cannot end the request it runs inside',
+              strpos($articles_src, 'exit;') === false);
+        check('the news fetch is bounded by a timeout',
+              strpos($articles_src, '"timeout"') !== false);
+        check('the news tab renders rather than being commented out',
+              strpos($q, 'id="news"') !== false
+              && preg_match('/id="news".{0,400}(No news articles|<a href=)/s', $q) === 1);
+
+        /* index.php also renders templates/quote.php when given a symbol, and
+           passed six of the thirty variables the template reads: every panel it
+           did not know about rendered undefined, 74 warnings for one symbol.
+           It hands the symbol to quote.php now, which builds them all. */
+        $via_index = (string)$curl("$base/index.php?symbol=AAA");
+        check('index.php with a symbol renders the quote page cleanly',
+              !preg_match('/(Warning<\/b>|Warning:|Undefined variable|Trying to access array offset)/i', $via_index)
+              && strlen($via_index) > 20000,
+              strlen($via_index) . ' bytes');
 
         /* ratings() returned null for a symbol the ratings job had not reached,
            and the Ratings tab then read five offsets off it. */
@@ -699,7 +730,8 @@
             $body = (string)$curl("$base/$page");
             if (preg_match('/Undefined (variable|array key)/i', $body)) { $undef[] = $page; }
         }
-        foreach (['quote.php', 'quote.php?symbol=AAA', 'quote.php?symbol=ZZZZ'] as $u) {
+        foreach (['quote.php', 'quote.php?symbol=AAA', 'quote.php?symbol=ZZZZ',
+                  'index.php?symbol=AAA'] as $u) {
             $body = (string)$curl("$base/$u");
             if (preg_match('/Undefined (variable|array key)/i', $body)) { $undef[] = $u; }
         }

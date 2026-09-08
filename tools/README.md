@@ -79,10 +79,12 @@ Pre-seeding those rows would mask a genuine failure, so they live in
 - `opcache.enable` applies under the `cli-server` SAPI that `php -S` runs, not
   `opcache.enable_cli`. The script disables it, without which your edits are
   served stale and you will chase changes that appear not to take effect.
-- `stockgraph.php` and `performance_graph.php` fall back to a small GD renderer
+- `stockgraph.php` and `performance_graph.php` fall back to a small SVG renderer
   when the jpgraph library is absent, which it is here, so the price and
-  performance charts do render. `chart.php` and `jpgraph.php` still need
-  `phpChart_Lite/` and do not.
+  performance charts do render, with no PHP extension needed. `chart.php` and
+  `jpgraph.php` still need `phpChart_Lite/` and do not.
+- The News tab needs outbound network for the Google News feed. Without it the
+  tab reports no articles.
 - No EODHD key is set, so live quotes and price fetches degrade to empty rather
   than erroring. Everything the sandbox shows comes from the generated data.
 

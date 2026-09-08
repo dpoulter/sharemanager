@@ -1278,28 +1278,39 @@ function time_to_decimal($time) {
 			];
 
 			// download RSS from Google News
+			//This blocks the quote page while it runs. Without a timeout it
+			//waits for default_socket_timeout, which on a host with no outbound
+			//network means the page hangs rather than loads.
 			$context = stream_context_create([
 				"http" => [
 					"header" => implode(array_map(function($value, $key) { return sprintf("%s: %s\r\n", $key, $value); }, $headers, array_keys($headers))),
-					"method" => "GET"
+					"method" => "GET",
+					"timeout" => 3
 				]
 			]);
 			
 			$contents = @file_get_contents("https://news.google.com/_/rss/search?cf=all&q=$symbol&scoring=n&hl=en-GB&gl=GB&ceid=GB:en", false, $context);
 			//$contents = @file_get_contents("https://news.google.com/news/section?pz=1&cf=all&hl=en&q=$symbol&scoring=n&output=RSS", false, $context);
+			//This runs inside the quote page. Ending the request on a failed
+			//fetch took the whole page down with it, so a news feed that is
+			//unreachable - no outbound network, a rate limit, a changed URL -
+			//now just contributes no articles.
 			if ($contents === false)
 			{
-				http_response_code(503);
-				exit;
+				//The feed is one host, so if the first exchange cannot reach it
+				//neither can the second. Stop rather than wait out a second
+				//timeout on a page the user is watching.
+				write_log("get_articles","no response for $symbol");
+				break;
 			}
 
 			// parse RSS
 			$rss = @simplexml_load_string($contents);
 			//@fclose($handle);
-			if ($rss === false)
+			if ($rss === false || !isset($rss->channel->item))
 			{
-				http_response_code(500);
-				exit;
+				write_log("get_articles","unparseable feed for $symbol");
+				continue;
 			}
 
 			// iterate over items in channel
@@ -1313,17 +1324,16 @@ function time_to_decimal($time) {
 				$blocked=array("Motley Fool","London South East","Proactive Investor");
 				
 				foreach($blocked as $publisher){
-					$pos=strpos($title,$publisher);
-					if ($pos>0)
+					//strpos returns 0 when the title starts with the publisher
+					//name, which >0 reads as "not found".
+					if (strpos($title,$publisher)!==false)
 						$found=true;
 				}
-				
-				
-				
 
-				
-				// add article to array
-			    if ($found)
+				// add article to array. $blocked is a list of publishers to
+				// leave out, so the test was the wrong way round: it kept only
+				// the articles it was meant to drop.
+			    if (!$found)
 				$articles[] = [
 					"link" => (string) $item->link,
 					"title" => (string) $item->title,

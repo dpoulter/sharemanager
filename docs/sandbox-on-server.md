@@ -382,7 +382,11 @@ mysql -e "DROP DATABASE sharemanager_sandbox; DROP USER 'sandbox'@'localhost';"
 
 - **Charts.** `chart.php` and `jpgraph.php` need `phpChart_Lite/`, which is not
   in the repository. `stockgraph.php` and `performance_graph.php` do render:
-  they use jpgraph when it is installed and a small GD line chart otherwise.
+  they use jpgraph when it is installed and a small SVG line chart otherwise.
+  The fallback deliberately avoids GD, which ships as a separate `php-gd`
+  package, so no extension needs installing.
+- **News.** The News tab fetches Google News RSS, so it needs outbound network.
+  Without it the tab says there are no articles rather than hanging or failing.
 - **Live quotes and price fetches.** No `EODHD_API_KEY` is set, so these return
   empty rather than erroring. Everything on screen comes from generated data.
 - **Email.** No SMTP is configured, so password reset cannot send.
