@@ -797,6 +797,24 @@
               substr_count($fresh, 'quote.php?symbol=') >= 10,
               substr_count($fresh, 'quote.php?symbol=') . ' rows');
 
+        /* Everything above walks the site as the seeded user, who owns a full
+           portfolio, so it never saw the pages that assume the account has
+           history. A new account has none: get_portfolio_overview() returned
+           null for it and performance.php read three offsets off that, then
+           handed the nulls to number_format. Walk the same pages as the account
+           that has just registered. */
+        $fresh_warn = [];
+        foreach ($pages as $page) {
+            $body = (string)$regcurl("$base/$page");
+            if (preg_match('/(Warning<\/b>|Deprecated<\/b>|Fatal error|Undefined variable)/i', $body)) {
+                $fresh_warn[] = $page;
+            }
+        }
+        sort($fresh_warn);
+        check('an account with no history can walk the site (1 known)',
+              $fresh_warn === $known_undef,
+              'now: ' . implode(', ', $fresh_warn) . ' | expected: ' . implode(', ', $known_undef));
+
         /* The case that survived the first fix: a session that already existed
            before it. Setting the key only at register and login time leaves
            every open session broken until the user logs out, which is not

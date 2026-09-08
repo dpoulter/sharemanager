@@ -21,7 +21,12 @@ function get_portfolio_overview($session_id){
         return ["cash" => $cash,"total_value" => $total_value,"total_portfolio"=> $total_portfolio,"total_profit" => $total_profit];      
 		
 	}
-	
+
+	//An account the performance job has not run for yet - every newly
+	//registered one - had no row here, and returning null made performance.php
+	//read three offsets off it and the template pass null to number_format.
+	//An empty portfolio is worth zero, so say so.
+	return ["cash" => 0, "total_value" => 0, "total_portfolio" => 0, "total_profit" => 0];
 }
 
 //Get Portfolio Active Positions

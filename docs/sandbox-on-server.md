@@ -378,6 +378,14 @@ mysql -e "DROP DATABASE sharemanager_sandbox; DROP USER 'sandbox'@'localhost';"
 
 ---
 
+## Log in as tester
+
+The seeded portfolio, trades, dividends and performance history all belong to
+the `tester` account (`tester` / `testpass`). An account you register yourself
+is a real, empty account: Portfolio shows zeros, the performance chart says
+there is no history, and the holdings tables are empty. That is correct, not a
+fault - but to see the sandbox with data in it, log in as `tester`.
+
 ## What will not work, and that is expected
 
 - **Charts.** `chart.php` and `jpgraph.php` need `phpChart_Lite/`, which is not
