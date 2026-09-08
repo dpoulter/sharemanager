@@ -582,6 +582,48 @@
         check(count($pages) . ' pages render without a fatal', count($fatal) === 0,
               'fatal: ' . implode(', ', $fatal));
 
+        /* A freshly registered account is the case the seeded user cannot cover.
+           register.php logs the user straight in without going through
+           login.php, and it did not set users.default_exchange or
+           $_SESSION["exchange"], so a new account got "Undefined array key
+           exchange" warnings and four empty dashboard panels. */
+        $newuser = 'reg' . substr((string)time(), -6);
+        $regjar  = tempnam(sys_get_temp_dir(), 'smreg');
+        $regcurl = function ($url, $post = null) use ($regjar) {
+            $cmd = 'curl -s -m 30 -b ' . escapeshellarg($regjar) . ' -c ' . escapeshellarg($regjar);
+            if ($post !== null) { $cmd .= ' -d ' . escapeshellarg($post); }
+            return shell_exec($cmd . ' -L ' . escapeshellarg($url) . ' 2>/dev/null');
+        };
+        $regcurl("$base/register.php");
+        $regcurl("$base/register.php",
+                 "username=$newuser&password=pw123456&confirmation=pw123456&useremail=$newuser@example.com");
+
+        check('registering stores a default exchange on the account',
+              scalar("select default_exchange from users where username=?", [$newuser]) === 'XLON',
+              var_export(scalar("select default_exchange from users where username=?", [$newuser]), true));
+
+        $fresh = (string)$regcurl("$base/index.php");
+        check('a newly registered account sees no undefined-key warning',
+              stripos($fresh, 'Undefined array key') === false,
+              implode(' | ', array_slice(array_filter(explode("\n", strip_tags($fresh)),
+                       fn($l) => stripos($l, 'Undefined') !== false), 0, 2)));
+        check('a newly registered account gets a populated dashboard',
+              substr_count($fresh, 'quote.php?symbol=') >= 10,
+              substr_count($fresh, 'quote.php?symbol=') . ' rows');
+
+        /* And the same account after a real login round trip, which takes the
+           other code path. */
+        $regcurl("$base/logout.php");
+        $regcurl("$base/login.php");
+        $regcurl("$base/login.php", "username=$newuser&password=pw123456");
+        $relogged = (string)$regcurl("$base/index.php");
+        check('the same account works after logging out and back in',
+              stripos($relogged, 'Undefined array key') === false
+              && substr_count($relogged, 'quote.php?symbol=') >= 10);
+
+        db()->prepare("delete from users where username=?")->execute([$newuser]);
+        @unlink($regjar);
+
         /* search.php carried the one live SQL injection in the application and is
            now archived out of the document root, so there is nothing left to
            probe over HTTP. What is still worth asserting is that no page still

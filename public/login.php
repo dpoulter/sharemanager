@@ -30,7 +30,11 @@
             {
                 // remember that user's now logged in by storing user's ID in session
                 $_SESSION["id"] = $row["id"];
-				$_SESSION["exchange"]=$row["default_exchange"];
+				//Accounts created before register.php set this have a null
+				//exchange, which matches no statistics and shows an empty
+				//dashboard. Fall back rather than carrying the null through.
+				$_SESSION["exchange"] = (isset($row["default_exchange"]) && $row["default_exchange"] !== "")
+				                      ? $row["default_exchange"] : default_exchange();
 
                 // redirect to portfolio
                 if (!empty($_POST["response_uri"])){

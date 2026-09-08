@@ -515,6 +515,17 @@
 		return defined('EODHD_EXCHANGE') ? EODHD_EXCHANGE : 'LSE';
 	}
 
+	/**
+	 * The exchange an account works in, for accounts that have no explicit one.
+	 *
+	 * register.php never set users.default_exchange, so every account created
+	 * through it had a null exchange: the dashboard queries matched nothing and
+	 * the top ten panels came back empty.
+	 */
+	function default_exchange() {
+		return defined('DEFAULT_EXCHANGE') ? DEFAULT_EXCHANGE : 'XLON';
+	}
+
 	function call_stock_api($symbol) {
 
 		write_log('call_stock_api',"symbol=$symbol");

@@ -42,6 +42,11 @@
     //application keys on, so the two are not interchangeable.
     define("EODHD_EXCHANGE", "LSE");
 
+    //The exchange a new account starts on. This is the MIC that stock_symbols,
+    //historical_prices and statistics are keyed on, not the EODHD ticker suffix
+    //above, and the two are not interchangeable.
+    define("DEFAULT_EXCHANGE", "XLON");
+
     //Debug Flag. Set to "Y" to have debug_log() write per row tracing to
     //message_log. Leave off for normal running: the batch jobs generate tens of
     //thousands of rows per run with it enabled. Anything worth keeping should
