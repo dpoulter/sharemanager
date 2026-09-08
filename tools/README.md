@@ -1,5 +1,8 @@
 # tools
 
+To run this on a server rather than your laptop, see
+[docs/sandbox-on-server.md](../docs/sandbox-on-server.md).
+
 ## sandbox.sh
 
 Stands up a throwaway copy of the site with generated data, so you can click
