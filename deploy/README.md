@@ -46,6 +46,31 @@ Later updates are then just:
 cd /var/www/sharemanager && sudo git pull
 ```
 
+### Front-end assets
+
+`css/`, `js/`, `img/` and `fonts/` are in `.gitignore`, so a fresh clone has no
+stylesheets and every page renders as unstyled HTML. Fetch the third-party
+libraries `templates/header.php` loads:
+
+```sh
+sudo tools/fetch_assets.sh
+
+# Files created by root do not inherit the group the web server reads through,
+# so put the ownership back afterwards.
+sudo chown -R root:www-data public/css public/js public/img public/fonts
+sudo chmod -R g+rX public/css public/js public/img public/fonts
+```
+
+That gets Bootstrap, jQuery and typeahead from a CDN. It cannot get
+`css/styles1.css`, which is this application's own stylesheet, is gitignored,
+and exists only on whatever server runs the live site - the script writes a
+placeholder so the page does not 404, but the result is plain Bootstrap rather
+than the real look. If you have that server, copy the real files instead:
+
+```sh
+sudo tools/fetch_assets.sh --from you@your-live-server:/var/www/shares
+```
+
 Only `public/` is served. `includes/` (which holds `constants.php` and the
 database password), `tools/`, `tests/`, `sql/` and `.git` sit above the docroot
 and are never reachable over HTTP.
