@@ -125,11 +125,26 @@ ls -l /run/php/sharemanager.sock
 Point the DNS A record at the server first; Caddy needs port 80 reachable for
 the ACME challenge, and gets the certificate itself.
 
+Caddy needs ports 80 and 443 to itself. Check nothing else holds them - a
+previous Apache or nginx will keep it from starting:
+
+```sh
+sudo ss -ltnp | grep -E ':80 |:443 '
+# if apache2 or nginx answers:
+sudo systemctl disable --now apache2 nginx 2>/dev/null
+```
+
 ```sh
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
 sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-sudo systemctl reload caddy
+sudo systemctl restart caddy
+sudo systemctl status caddy --no-pager
 ```
+
+`restart`, not `reload`: reload fails if the service is not already running,
+which it is not on a first install. `caddy validate` only checks the file, so a
+valid config can still fail to start - a port already taken, or `/var/log/caddy`
+missing. `journalctl -xeu caddy` names which.
 
 ## 6. Check it
 

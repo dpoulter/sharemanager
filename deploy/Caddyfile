@@ -1,7 +1,12 @@
 # Caddy vhost for sharemanager.
 #
 #   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile      (or import it)
-#   sudo systemctl reload caddy
+#   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+#   sudo systemctl restart caddy
+#
+# restart, not reload: reload fails outright if the service is not already
+# running, which it is not on a first install. Caddy needs ports 80 and 443, so
+# stop anything else holding them first (ss -ltnp | grep -E ':80|:443').
 #
 # Caddy obtains and renews the TLS certificate itself, so there is no certbot
 # step. Point the DNS A/AAAA record at this host first: the ACME HTTP challenge
