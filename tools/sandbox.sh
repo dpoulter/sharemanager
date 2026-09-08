@@ -63,6 +63,18 @@ MYSQL=$(command -v mariadb || command -v mysql) || { echo "no mysql/mariadb clie
 
 db(){ "$MYSQL" -h"$HOST" -u"$USER" -p"$PASS" "$@"; }
 
+# The template ships a placeholder. Copying it and not editing it is the most
+# likely reason the settings are wrong, and it is a specific condition worth
+# naming rather than reporting as a generic connection failure.
+if [ "$PASS" = "change-me" ]; then
+  echo "SM_SANDBOX_PASS is still the template placeholder 'change-me'." >&2
+  echo >&2
+  echo "Set a real password on the account and put it in $ENV_FILE:" >&2
+  echo >&2
+  echo "  mysql -e \"alter user '$USER'@'localhost' identified by '<password>'; flush privileges;\"" >&2
+  exit 2
+fi
+
 db -e "select 1" >/dev/null 2>&1 || {
   echo "cannot connect as '$USER' to $HOST" >&2
   echo >&2
