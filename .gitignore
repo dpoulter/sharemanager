@@ -10,3 +10,10 @@ sql/Dump20230711.sql
 python/__pycache__/functions.cpython-38.pyc
 python/__pycache__/share_functions.cpython-38.pyc
 python/yfinance.cache
+
+# Python bytecode from the data loaders and tests
+python/__pycache__/
+tests/__pycache__/
+
+# Sandbox database settings, holds a password
+tools/sandbox.env

@@ -21,13 +21,18 @@ function get_portfolio_overview($session_id){
         return ["cash" => $cash,"total_value" => $total_value,"total_portfolio"=> $total_portfolio,"total_profit" => $total_profit];      
 		
 	}
-	
+
+	//An account the performance job has not run for yet - every newly
+	//registered one - had no row here, and returning null made performance.php
+	//read three offsets off it and the template pass null to number_format.
+	//An empty portfolio is worth zero, so say so.
+	return ["cash" => 0, "total_value" => 0, "total_portfolio" => 0, "total_profit" => 0];
 }
 
 //Get Portfolio Active Positions
 function get_active_positions($session_id){
 	$positions=query("select ss.symbol,ss.name, commission,dividends,price,price_paid,price_sold,profit,profit_perc,profit_raw,qty_purchased,qty_sold,value,value_raw from portfolio_performance pp,stock_symbols ss where ss.symbol=pp.symbol and active=? and session_id=? and ss.exchange=? and as_of_date = (select max(as_of_date) from portfolio_performance where session_id=?)"
-					,'Y',$session_id,$_SESSION["exchange"],$session_id);
+					,'Y',$session_id,session_exchange(),$session_id);
 	$active_positions = [];
 	foreach($positions as $position){
 		$active_positions[]=[
@@ -53,7 +58,7 @@ function get_active_positions($session_id){
 //Get Portfolio Inactive Positions
 function get_inactive_positions($session_id){
 	$positions=query("select ss.symbol,ss.name, commission,dividends,price,price_paid,price_sold,profit,profit_perc,profit_raw,qty_purchased,qty_sold,value,value_raw from portfolio_performance pp,stock_symbols ss where ss.symbol=pp.symbol and active=? and session_id=? and ss.exchange=? and as_of_date = (select max(as_of_date) from portfolio_performance where session_id=?)"
-					,'N',$session_id,$_SESSION["exchange"],$session_id);
+					,'N',$session_id,session_exchange(),$session_id);
 	$inactive_positions = [];
 	foreach($positions as $position){
 		$inactive_positions[]=[

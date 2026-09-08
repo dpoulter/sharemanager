@@ -55,8 +55,8 @@
 	</div>
 					
 		<ul class="nav nav-tabs" id="myTab" data-tabs="tabs">
-			<li role="presentation" class="active"><a data-toggle="tab" href="#active">Active Shares</a></li>
-			<li role="presentation"><a data-toggle="tab" href="#inactive">Sold Shares</a></li>
+			<li role="presentation" class="active"><a data-bs-toggle="tab" href="#active">Active Shares</a></li>
+			<li role="presentation"><a data-bs-toggle="tab" href="#inactive">Sold Shares</a></li>
 		</ul>
 	    <div class="tab-content">
 		<div class="tab-pane active" id="active">

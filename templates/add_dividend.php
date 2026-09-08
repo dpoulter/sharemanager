@@ -7,7 +7,7 @@
       label{float:left;}
     </style>
 <fieldset>
-		 <div class="form-group col-md-4" id="search">
+		 <div class="mb-3 col-md-4" id="search">
 		   <ul>
           <li><label>Symbol</label><input autofocus class="form-control typeahead" name="symbol[]" placeholder="Symbol" type="text"/></li>
 			 <li><label>Dividend Date</label>	<input type="date" class="form-control" name="dividend_date[]" placeholder="YYYY-MM-DD"></input></li>

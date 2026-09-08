@@ -1,8 +1,18 @@
 <?php // content="text/plain; charset=utf-8"
-require_once ('jpgraph-4.2.0/src/jpgraph.php');
-require_once ('jpgraph-4.2.0/src/jpgraph_line.php');
-require_once ('jpgraph-4.2.0/src/jpgraph_bar.php');
-require_once( "jpgraph-4.2.0/src/jpgraph_date.php" );
+require_once ('../includes/simple_graph.php');
+//The browser loads this through <img src>, so anything that goes wrong
+//here can only appear as a broken icon. Turn a failure into a legible
+//picture instead.
+graph_error_trap(600, 330);
+//jpgraph is a third-party library that is not vendored in this repository.
+//Without it these requires fatal and the <img> renders as a broken icon, so
+//fall back to the small SVG renderer when the library is not installed.
+if (jpgraph_available()) {
+	require_once ('jpgraph-4.2.0/src/jpgraph.php');
+	require_once ('jpgraph-4.2.0/src/jpgraph_line.php');
+	require_once ('jpgraph-4.2.0/src/jpgraph_bar.php');
+	require_once( "jpgraph-4.2.0/src/jpgraph_date.php" );
+}
 require_once ('../includes/Prices.php');
 
 function creategraph($symbol,$timespan){
@@ -59,6 +69,11 @@ function creategraph($symbol,$timespan){
 	//print_r($xdata);
 	$ydata = $graphprices->graphvalues;
 	//print_r($ydata);
+	
+	if (!jpgraph_available()) {
+		simple_line_svg($dates,$ydata);
+		return;
+	}
 	
 	 
 	 // Width and height of the graph

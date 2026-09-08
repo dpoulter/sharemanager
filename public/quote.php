@@ -67,28 +67,25 @@
 			write_log("quote.php","4");
 			
 			
-			//$income_statement=income_statement($symbol);
-			$income_statement=null;
+			$income_statement=income_statement($symbol);
 			write_log("quote.php","5");
-			//$balance_sheet=balance_sheet($symbol);
-			$balance_sheet=null;
+			$balance_sheet=balance_sheet($symbol);
 			write_log("quote.php","6");
-			//$cash_flow_statement=cash_flow_statement($symbol);
-			$cash_flow_statement=null;
+			$cash_flow_statement=cash_flow_statement($symbol);
+			//templates/quote.php has a Ratings tab reading $ratings, which
+			//neither this page nor index.php passed, so the tab rendered
+			//undefined once the page got far enough to reach it.
 			write_log("quote.php","7");
-			//$ratings=ratings($symbol);
-			$ratings=null;
+			$ratings=ratings($symbol);
 			$valuation=get_valuation($symbol);
 			$industry_valuation=get_industry_valuation($symbol);
 			write_log("quote.php","8");
 			$momentum_statistics=get_momentum_statistics($symbol);
 			//$momentum_statistics=null;
 			write_log("quote.php","9");
-			//$growth_statistics=get_growth_statistics($symbol);
-			$growth_statistics=null;
+			$growth_statistics=get_growth_statistics($symbol);
 			write_log("quote.php","10");
-			//$value_statistics=get_value_statistics($symbol);
-			$value_statistics=null;
+			$value_statistics=get_value_statistics($symbol);
 			write_log("quote.php","11");
 			$quality_statistics=get_quality_statistics($symbol);
 			//$quality_statistics=null;
@@ -105,20 +102,14 @@
 			$qualityranks=get_quality_rank($symbol);
 			//$qualityranks=null;
 			write_log("quote.php","16");
-			//$piotroski_fscore=get_piotroski_fscore($symbol);
-			$piotroski_fscore=null;
-			//$piotroski_variables=get_piotroski_variables($symbol);
-			$piotroski_variables=null;
+			$piotroski_fscore=get_piotroski_fscore($symbol);
+			$piotroski_variables=get_piotroski_variables($symbol);
 			write_log("quote.php","17");
-			//$altman_zscore=get_altman_zscore($symbol);
-			$altman_zscore=null;
+			$altman_zscore=get_altman_zscore($symbol);
 			
-			//$altman_variables=get_altman_variables($symbol);
-			$altman_variables=null;
-			//$altman_nonman_variables=get_altman_nonman_variables($symbol);
-			$altman_nonman_variables=null;
-			//$altman_zscore_nonman=get_altman_zscore_nonman($symbol);
-			$altman_zscore_nonman=null;
+			$altman_variables=get_altman_variables($symbol);
+			$altman_nonman_variables=get_altman_nonman_variables($symbol);
+			$altman_zscore_nonman=get_altman_zscore_nonman($symbol);
 
 			write_log("quote.php","Get relative_sector_valuations");
 			$relative_sector_valuations=get_relative_to_sector($symbol); 
@@ -130,42 +121,51 @@
 			write_log("quote.php","Get category_indicators");
 			$category_indicators=get_indicators();
 
+			//The News tab. get_articles() fetches an external feed, so it comes
+			//back empty on a host with no outbound network and the tab says so.
+			$articles=get_articles($symbol);
+
 
 			//render form
 			write_log("quote.php","Start render form");
 
 			 if(isset($screen_id))
-				render("quote.php", ["title" => $_SESSION['exchange'].":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
+				render("quote.php", ["title" => session_exchange().":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
 					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
 					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations,"share_info"=> $share_info
 					, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"screen_id"=>$screen_id,"incomestatement"=>$income_statement
-					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
+					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
 					,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks
-					,"qualityranks"=>$qualityranks,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman]);
+					,"qualityranks"=>$qualityranks,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman,"articles"=>$articles]);
 			 else
-				render("quote.php", ["title" => $_SESSION['exchange'].":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
+				render("quote.php", ["title" => session_exchange().":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
 					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
 					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations
 					,"share_info"=> $share_info, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"incomestatement"=>$income_statement
-					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"momentum_statistics"=>$momentum_statistics
+					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics
 					,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics
 					,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks,"qualityranks"=>$qualityranks
-					,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman]);
+					,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman,"articles"=>$articles]);
 
 			
 			write_log("quote.php","End render form");
 		
 		}
 		else
-			render("quote_form.php", ["title" => "Stock Quote"]);
+			//quote_form.php is the dashboard template and needs five variables
+			//index.php builds for it. Rendering it from here passed only a
+			//title, so every panel foreach'd over an undefined variable.
+			//index.php apologises for an unknown symbol; do the same.
+			apologize("Invalid Symbol.");
     }
 
 	else {  
 		 //get stock symbols
         //$stock_symbols = query("SELECT symbol, description FROM stock_symbols where enabled='Y'");
         // else render form
-        //render("quote_form.php", ["title" => "Stock Quote","symbols" => $stock_symbols]);
-		  render("quote_form.php", ["title" => "Stock Quote"]);
+        //No symbol to quote. The dashboard lives at index.php, which knows how
+		//to populate it; rendering its template from here cannot.
+		  redirect("index.php");
     }
 
 ?>

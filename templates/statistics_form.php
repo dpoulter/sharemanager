@@ -18,7 +18,7 @@
 </style>
   <body>
     <h3>Calculate Statistics</h3>
-    <form action="statistics.php" method="post" class="form-inline">
+    <form action="statistics.php" method="post" class="d-flex">
         <fieldset>
             <div class="input-group">
 		<input autofocus  id="asofdate" size="10" name="asOfDate" value=<?php echo date("d-m-Y");?>  type="text"/>
@@ -27,7 +27,7 @@
 			<?php $i=0?>
 			<?php foreach ($category_indicators as $category_indicator): ?>
 			<?php write_log("statistics_form.php","category name=".$category_indicator["category"]["name"]); ?>
-      		<li role="presentation" <?php if ($i==0): write_log('statistics_form.php','class=active')?> class="active" <?php endif; ?>><a data-toggle="tab" href="#<?= $category_indicator["category"]["name"] ?>"><?= $category_indicator["category"]["description"] ?></a></li>
+      		<li role="presentation" <?php if ($i==0): write_log('statistics_form.php','class=active')?> class="active" <?php endif; ?>><a data-bs-toggle="tab" href="#<?= $category_indicator["category"]["name"] ?>"><?= $category_indicator["category"]["description"] ?></a></li>
 			<?php $i++; endforeach; ?>
    		</ul>
 	    <div class="tab-content">
@@ -43,7 +43,7 @@
         </div>
 	    <?php $i++; endforeach; ?>
 		</div>
-            <div class="form-group">
+            <div class="mb-3">
             </div>
         </fieldset>
     </form>

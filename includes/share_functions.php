@@ -1,5 +1,12 @@
 <?php
 
+	//get_momentum_screen() and the other screen builders below call
+	//combine_criteria_lists() and intersect_list(), which live in
+	//share_screen.php. Pages that happened to include that file themselves
+	//worked; screening.php did not, and died on an undefined function.
+	require_once("share_screen.php");
+
+
 /* Share Functions */
 
 // function get_historical_prices($start_date,$end_date)
@@ -179,156 +186,95 @@ function get_key_ratios($symbol,$exchange) {
  
  function get_historical_prices($start_date,$end_date){
 
-	   write_log("get_historical_prices", "Start Date= " . $start_date . "End Date=".$end_date);
+	   write_log("get_historical_prices", "Start Date= " . $start_date . " End Date=".$end_date);
 
         require_once("constants.php");
-		
-		//Truncate historical_prices
-		//$result = query("truncate table historical_prices");
-		
-	    //Set exchange
-	    $exchange=$_SESSION["exchange"];
+
+	    //Set exchange. This is the MIC the application keys on (XLON) and is
+	    //what gets written to historical_prices; EODHD addresses the same
+	    //market as CODE.LSE, so the request suffix is EODHD_EXCHANGE.
+	    $exchange=session_exchange();
+
+	    if (eodhd_api_key()===''){
+	    	write_log("get_historical_prices","EODHD_API_KEY is not set, cannot fetch prices");
+	    	return;
+	    }
 
 	    //Get symbols
         $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? ",$exchange);
 
-		//Initialise symbol
-		$symbol="";
-		
 		write_log("get_historical_prices", "Number of symbols = " .count($symbols));
 
-		//Set counter
-		$counter=0;
+		$loaded=0; $empty=0; $failed=0;
 
-		//Loop through all symbols
-        for ($i=0;$i<count($symbols);$i++ )
-        {
-                /*	
-                if ($exchange=='LON'){
-                	$symbol=substr($symbols[$i]['symbol'],0,strpos($symbols[$i]['symbol'],'.')) ;
-				}
-				else{
-					$symbol=$symbols[$i]['symbol'];
-				}*/
-			//increment counter
-			$counter++;
-				write_log("get_historical_prices", "i=" .$i );	
-                
-			write_log("get_historical_prices", "Add symbol " . $symbols[$i]['symbol'] );	
+		//EODHD's end of day endpoint is one symbol per request, so there is no
+		//batching to do. The previous provider allowed 100 symbols per call but
+		//the batching condition used ?? instead of ||, so it never accumulated
+		//and issued one request per symbol anyway.
+		foreach ($symbols as $row){
 
-			write_log("get_historical_prices", "Counter= " .$counter);	
+			$symbol=$row['symbol'];
 
+			//stock_symbols holds the bare code; EODHD wants CODE.LSE
+			$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.eodhd_exchange() : $symbol;
 
+			$url=eodhd_base_url()."/eod/".rawurlencode($eodhd_symbol)
+			    ."?from=".rawurlencode($start_date)
+			    ."&to=".rawurlencode($end_date)
+			    ."&period=d&order=a&fmt=json"
+			    ."&api_token=".rawurlencode(eodhd_api_key());
 
-			//Need to call max of 100 symbols per API Call so split calls 
-			if ($counter== 1){
-					$symbol=$symbols[$i]['symbol'].".".$exchange;
-				}
-			else{
-					$symbol=$symbol.",".$symbols[$i]['symbol'].".".$exchange;		
-				}
-			
-			if ($counter<=100??($i+1)==count($symbols)){
+			//Never log the URL: it carries the API key.
+			debug_log("get_historical_prices", "fetch ".$eodhd_symbol." ".$start_date." to ".$end_date);
 
-										// open connection to World Trade Data
-									$url="https://api.marketstack.com/v1/eod?symbols=".$symbol."&exchange=XLON&access_key=b0ac70e8c036442832769c69fbc619cb"."&date_from=".$start_date."&date_to=".$end_date."&limit=1000&sort=ASC";
-								
-									write_log("get_historical_prices", "URL: " . $url);
-
-									
-									
-								
-									$handle = @fopen($url,"r");
-
-
-									if ($handle === false){
-											// trigger (big, orange) error
-											write_log("get_historical_prices", "Could not connect to Yahoo! for symbol " . $symbol);
-								
-									}
-									else{
-
-										//Clear out symbols
-										$symbol="";
-										
-										/*if ($_SESSION["exchange"]==='LON'){	
-														$symbol=$symbol.".L";
-										} 
-										*/
-										// download first line of CSV file
-										
-										//convert json to array
-										$arrJson = json_decode(stream_get_contents($handle), true);
-										$data = $arrJson["data"];
-										print_r($arrJson);
-										//$data = fgetcsv($handle);
-										/*if ($data === false || count($data) == 1){
-												write_log("get_historical_prices", "No data for symbol " . $symbol . "<br>");
-										}
-										else{
-												
-											
-											
-											/$history=array();
-											while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
-												
-													//write_log("get_historical_prices",'date='.date_format(date_create_from_format('d-M-y',$data[0]),'d-m-Y')." price=".$data[4]);
-													//echo 'date='.$data[0];
-													
-													array_push($history, ["symbol" => $symbol,
-																			"date" => date_format(date_create_from_format('Y-m-d',$data[0]),'Y-m-d'),
-																			"price" => $data[2]]);
-											}    
-										}
-										
-
-										// close connection to Google
-										
-										write_log("get_historical_prices","close connection to Google");
-										*/
-										fclose($handle);
-											
-										//!isset($arrJson["data"][0]["symbol"]
-
-										if (count($arrJson["data"]) === 0){
-												write_log("get_historical_prices", "No data for symbol " . $symbol);
-										}
-										else {
-												
-												
-												foreach ($arrJson["data"] as $line){
-
-													if (isset($line)&&$line['symbol']!=''){
-														//Get Date	
-														write_log("get_historical_prices", "Symbol=".$line['symbol']." Raw Date=" .$line['date']);
-														$date=date_format(date_create_from_format('Y-m-d',substr($line['date'],0,10)),'Y-m-d');
-														write_log("get_historical_prices", "Formatted Date=" .$date);
-														
-														//delete prices
-														
-
-														$sym = substr($line['symbol'],0,strpos($line['symbol'],"."));
-														write_log("get_historical_prices","delete prices for ".$sym);
-
-														query("delete from historical_prices where symbol=? and exchange=? and date = ?",$sym,$_SESSION["exchange"],$date);
-													
-														//insert prices
-														write_log("get_historical_prices","insert prices=".$line['adj_close']);
-
-														
-														query("insert into historical_prices(symbol,exchange, date,price) values (?,?,?,?)",$sym,$_SESSION["exchange"],$date, $line['adj_close']);
-													}
-												}
-										}
-
-										//resset counter
-										$counter=0;
-									}
-								
-
+			$body=@file_get_contents($url);
+			if ($body===false){
+				write_log("get_historical_prices","request failed for ".$eodhd_symbol);
+				$failed++;
+				continue;
 			}
+
+			$prices=json_decode($body,true);
+			if (!is_array($prices)){
+				write_log("get_historical_prices","unreadable response for ".$eodhd_symbol);
+				$failed++;
+				continue;
+			}
+			if (count($prices)===0){
+				debug_log("get_historical_prices","no prices for ".$eodhd_symbol);
+				$empty++;
+				continue;
+			}
+
+			foreach ($prices as $line){
+
+				if (!isset($line['date'])){
+					continue;
+				}
+
+				//Prefer the adjusted close, which is what the momentum
+				//calculations assume; fall back to the close if the plan does
+				//not return it.
+				$price=isset($line['adjusted_close']) ? $line['adjusted_close']
+				      : (isset($line['close']) ? $line['close'] : null);
+				if ($price===null||$price===''){
+					continue;
+				}
+
+				$date=substr($line['date'],0,10);
+
+				//Replace rather than append so a re-run for the same range is
+				//idempotent.
+				query("delete from historical_prices where symbol=? and exchange=? and date=?",$symbol,$exchange,$date);
+				query("insert into historical_prices(symbol,exchange,date,price) values (?,?,?,?)",$symbol,$exchange,$date,$price);
+			}
+
+			$loaded++;
 		}
-			
+
+		write_log("get_historical_prices",
+			"EODHD ".$start_date." to ".$end_date.": ".$loaded." symbols loaded, "
+			.$empty." without prices, ".$failed." failed");
  	}
  
  /**
@@ -363,9 +309,9 @@ function time_to_decimal($time) {
 					
 		   		//Get symbols
 					if (isset($symbol))
-						$rows = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+						$rows = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 					else
-						$rows = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+						$rows = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 						
 					foreach($rows as $row) {
 						
@@ -387,7 +333,7 @@ function time_to_decimal($time) {
 	
 	//Calculate 3mnth Momentum
     function calc_momentum_3mnth($asOfDate,$symbol){
-		write_log("calc_momentum_3mnth","Call calc_momentum");
+		debug_log("calc_momentum_3mnth","Call calc_momentum");
 		calc_momentum($asOfDate,3,$symbol);
 	}
 	
@@ -404,13 +350,13 @@ function time_to_decimal($time) {
      //Calculate Price Momentum
 	function calc_momentum($asOfDate,$mnth,$symbol ){
 
-		write_log("calc_momentum", "As of Date= $asOfDate");
+		debug_log("calc_momentum", "As of Date= $asOfDate");
 
 		 //Get symbols
 			if (isset($symbol))
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 
        		 for ($i=0;$i<count($symbols);$i++ ){
        		 	
@@ -422,7 +368,7 @@ function time_to_decimal($time) {
 					
                $symbol=$symbols[$i]['symbol'];
 
-			   write_log("calc_momentum", "Symbol= $symbol");
+			   debug_log("calc_momentum", "Symbol= $symbol");
 					
 					//write_log("calc_momentum", "Symbol: $symbol, As of Date: $asOfDate , Months: $mnth");
 					//write_log("calc_momentum", "SELECT DATE_SUB($asOfDate, INTERVAL $mnth MONTH) min_date, date max_date FROM historical_prices WHERE symbol=$symbol and date =$asOfDate");
@@ -430,13 +376,13 @@ function time_to_decimal($time) {
 		 	//get min and max date
     			//$dates = query("SELECT min( date ) min_date, max( date ) max_date FROM historical_prices WHERE symbol=? and date >= DATE_SUB(STR_TO_DATE(?, '%d-%m-%Y'), INTERVAL ? MONTH)",$symbol,$asOfDate,$mnth);
 				//$dates = query("SELECT min( date ) min_date, max( date ) max_date FROM historical_prices WHERE symbol=? and date >= DATE_SUB(?, INTERVAL ? MONTH) and date <= ?" ,$symbol,$asOfDate,$mnth,$asOfDate);
-				$date= query("select max(hp1.date) max_date from historical_prices hp1 where hp1.symbol=? and hp1.exchange=? and hp1.date<=?",$symbol,$_SESSION["exchange"],$asOfDate);
+				$date= query("select max(hp1.date) max_date from historical_prices hp1 where hp1.symbol=? and hp1.exchange=? and hp1.date<=?",$symbol,session_exchange(),$asOfDate);
 				
 				$sql="SELECT DATE_SUB(?, INTERVAL ? MONTH) min_date, date max_date FROM historical_prices hp WHERE symbol=? and hp.exchange=? and date =?";
 
-				write_log("calc_momentum", "Query= $sql");
+				debug_log("calc_momentum", "Query= $sql");
 
-				$dates = query($sql,$asOfDate,$mnth,$symbol,$_SESSION["exchange"],$date[0]['max_date']);    	
+				$dates = query($sql,$asOfDate,$mnth,$symbol,session_exchange(),$date[0]['max_date']);    	
 
     			if (is_array($dates)&&count($dates)>0&&isset($dates[0]['min_date'])&&isset($dates[0]['max_date'])){
 					
@@ -446,37 +392,37 @@ function time_to_decimal($time) {
       				$min_date = $dates[0]['min_date'];
       				$max_date = $dates[0]['max_date'];
       				
-					write_log("calc_momentum", " Min date: " . $min_date . "</br>");
-				    write_log("calc_momentum", " Max date: " . $max_date . "</br>");
+					debug_log("calc_momentum", " Min date: " . $min_date . "</br>");
+				    debug_log("calc_momentum", " Max date: " . $max_date . "</br>");
 
     			
 			
 					//get price at min and max date
 					while((date_create_from_format('Y-m-d', $min_date)< date_create_from_format('Y-m-d', $max_date))&&((is_array($max_date_prices)&&count($max_date_prices)==0)||(is_array($min_date_prices)&&count($min_date_prices)==0))) {
 						
-    				write_log("calc_momentum"," Count max date prices: " .count($max_date_prices));
+    				debug_log("calc_momentum"," Count max date prices: " .count($max_date_prices));
     				
-					write_log("calc_momentum"," Count Min date prices: " .count($min_date_prices));
+					debug_log("calc_momentum"," Count Min date prices: " .count($min_date_prices));
     				
     				
-    				write_log("calc_momentum"," Max Date : " . $max_date);
+    				debug_log("calc_momentum"," Max Date : " . $max_date);
     			
-    				$max_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,$_SESSION["exchange"],$max_date);
+    				$max_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,session_exchange(),$max_date);
 					
     				foreach ($max_date_prices as $price){
       					$max_date_price=$price['price'];
-				  		write_log("calc_momentum"," Max Date Price: " . $max_date_price . "</br>");
+				  		debug_log("calc_momentum"," Max Date Price: " . $max_date_price . "</br>");
     				}
     				
 					//$min_date=date_format(date_create_from_format('Y-m-d', $max_date), 'Y-m-d');  
 					
 					
 
-					$min_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,$_SESSION["exchange"],$min_date);
+					$min_date_prices=query("select price from historical_prices where symbol=? and exchange=? and date=?",$symbol,session_exchange(),$min_date);
 					
     				foreach ($min_date_prices as $price){
       					$min_date_price=$price['price'];
-      				 	write_log("calc_momentum", " Min Price: " . $min_date_price . "</br>");
+      				 	debug_log("calc_momentum", " Min Price: " . $min_date_price . "</br>");
     				}
     			
     				if ((count($max_date_prices)==0)||(count($min_date_prices)==0)){
@@ -489,7 +435,7 @@ function time_to_decimal($time) {
 						$interval="P1D";				
 	    				$min_date->add(new DateInterval($interval));
 	    				$min_date=date_format($min_date, 'Y-m-d');
-						write_log("calc_momentum"," Min Date : " . $min_date);
+						debug_log("calc_momentum"," Min Date : " . $min_date);
 					
 					}
 					
@@ -504,48 +450,48 @@ function time_to_decimal($time) {
 			else {
 				$perc_change=0;
 			}
-    			 write_log("calc_momentum", "Perc change: " . $perc_change . "</br>");
+    			 debug_log("calc_momentum", "Perc change: " . $perc_change . "</br>");
 
     			//update price momentum
 				 //write_log("calc_momentum", "update price momentum");
 			    //write_log("calc_momentum", "symbol=$symbol, date=$max_date, indicator=$mnth");
 			if ($mnth==3){
     				//$rows=query("select 3mnth from price_momentum where symbol=?",$symbol);
-					$rows=query("select 1 from statistics where symbol=? and indicator='3mnth' and date=? and exchange=?",$symbol,$asOfDate,$_SESSION['exchange']);
+					$rows=query("select 1 from statistics where symbol=? and indicator='3mnth' and date=? and exchange=?",$symbol,$asOfDate,session_exchange());
 				if (count($rows)==0){
 					//query("insert into price_momentum (symbol, 3mnth) values (?,?)",$symbol,$perc_change);
-					query("insert into statistics (symbol, indicator, value,date,exchange) values (?,?,?,?,?)",$symbol,"3mnth",$perc_change,$asOfDate,$_SESSION['exchange']);
+					query("insert into statistics (symbol, indicator, value,date,exchange) values (?,?,?,?,?)",$symbol,"3mnth",$perc_change,$asOfDate,session_exchange());
 					
 				}
 				else {
 					//query("update price_momentum set 3mnth=? where symbol=?",$perc_change, $symbol);
-					query("update statistics set value=? where symbol=? and indicator='3mnth' and date=? and exchange=? ",$perc_change, $symbol,$asOfDate,$_SESSION['exchange']);
+					query("update statistics set value=? where symbol=? and indicator='3mnth' and date=? and exchange=? ",$perc_change, $symbol,$asOfDate,session_exchange());
 				}
 			}
 			elseif ($mnth==6){
 				//$rows=query("select 6mnth from price_momentum where symbol=?",$symbol);
-				  $rows=query("select 1 from statistics where symbol=? and indicator='6mnth' and date=? and exchange=?",$symbol,$asOfDate,$_SESSION['exchange']);
+				  $rows=query("select 1 from statistics where symbol=? and indicator='6mnth' and date=? and exchange=?",$symbol,$asOfDate,session_exchange());
 				  if (count($rows)==0){
                                         //query("insert into price_momentum (symbol, 6mnth) values (?,?)",$symbol,$perc_change);
-										query("insert into statistics (symbol, indicator, value, date, exchange) values (?,?,?,?,?)",$symbol,"6mnth",$perc_change,$asOfDate,$_SESSION['exchange']);
+										query("insert into statistics (symbol, indicator, value, date, exchange) values (?,?,?,?,?)",$symbol,"6mnth",$perc_change,$asOfDate,session_exchange());
                                 }
                                 else {
                                         //query("update price_momentum set 6mnth=? where symbol=?",$perc_change, $symbol);
-										query("update statistics set value=? where symbol=? and indicator='6mnth' and date=? and exchange=?",$perc_change, $symbol,$asOfDate,$_SESSION['exchange']);
+										query("update statistics set value=? where symbol=? and indicator='6mnth' and date=? and exchange=?",$perc_change, $symbol,$asOfDate,session_exchange());
                                 }
 			}
 			elseif ($mnth==12){
                                 //$rows=query("select 12mnth from price_momentum where symbol=?",$symbol);
-								$rows=query("select 1 from statistics where symbol=? and indicator='12mnth' and date=? and exchange=?",$symbol,$asOfDate,$_SESSION['exchange']);
+								$rows=query("select 1 from statistics where symbol=? and indicator='12mnth' and date=? and exchange=?",$symbol,$asOfDate,session_exchange());
 								//write_log("calc_momentum", "No of rows=".count($rows));
                                 if (count($rows)==0){
                                        // query("insert into price_momentum (symbol, 12mnth) values (?,?)",$symbol,$perc_change);
 									   			//write_log("calc_momentum", "insert into statistics (symbol, indicator, value,date) values ($symbol,12mnth,$perc_change,$asOfDate)");
-									   query("insert into statistics (symbol, indicator, value,date,exchange) values (?,?,?,?,?)",$symbol,"12mnth",$perc_change,$asOfDate,$_SESSION['exchange']);
+									   query("insert into statistics (symbol, indicator, value,date,exchange) values (?,?,?,?,?)",$symbol,"12mnth",$perc_change,$asOfDate,session_exchange());
                                 }
                                 else {
                                         //query("update price_momentum set 12mnth=? where symbol=?",$perc_change, $symbol);
-										query("update statistics set value=? where symbol=? and indicator='12mnth' and date=? and exchange=?",$perc_change, $symbol,$asOfDate,$_SESSION['exchange']);
+										query("update statistics set value=? where symbol=? and indicator='12mnth' and date=? and exchange=?",$perc_change, $symbol,$asOfDate,session_exchange());
                                 }
                         }
 	 		}
@@ -573,9 +519,9 @@ function time_to_decimal($time) {
 		 //write_log("calc_moving_avg", "$indicator: " . $indicator );
 		  //Get symbols
 		  if (isset($symbol))
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
-                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 
                  for ($i=0;$i<count($symbols);$i++ ){
                         $symbol=$symbols[$i]['symbol'];
@@ -587,7 +533,7 @@ function time_to_decimal($time) {
 			$avg=0;
 			//Get last  numDays prices 
 			//$prices=query("select price from historical_prices where symbol=? and date<=STR_TO_DATE(?, '%d-%m-%Y') ORDER BY date DESC LIMIT ?",$symbol,$asOfDate,$numDays);
-			$prices=query("select price from historical_prices where symbol=? and exchange=? and date<=? ORDER BY date DESC LIMIT ?",$symbol,$_SESSION["exchange"],$asOfDate,$numDays);
+			$prices=query("select price from historical_prices where symbol=? and exchange=? and date<=? ORDER BY date DESC LIMIT ?",$symbol,session_exchange(),$asOfDate,$numDays);
                         //sum prices
 			foreach ($prices as $price){
                                 $avg=$avg+$price['price'];
@@ -605,13 +551,13 @@ function time_to_decimal($time) {
                                        
 					//query("insert into price_momentum (symbol, tendayavg) values (?,?)",$symbol,$avg);
 					//write_log("calc_moving_avg", "insert into statistics (symbol, indicator, value, date) values ($symbol,$indicator,$avg,$asOfDate)");
-					query("insert into statistics (symbol, indicator, value, date, exchange) values (?,?,?,?,?)",$symbol,$indicator,$avg,$asOfDate,$_SESSION['exchange']);
+					query("insert into statistics (symbol, indicator, value, date, exchange) values (?,?,?,?,?)",$symbol,$indicator,$avg,$asOfDate,session_exchange());
                                 				
 			}
 			//update record in statistics
 			else {
 				 //query("update price_momentum set tendayavg=? where symbol=?",$avg, $symbol);
-				query("update statistics set value=? where symbol=? and indicator=? and date=? and exchange=?",$avg, $symbol,$indicator,$asOfDate,$_SESSION['exchange']);
+				query("update statistics set value=? where symbol=? and indicator=? and date=? and exchange=?",$avg, $symbol,$indicator,$asOfDate,session_exchange());
                                
              }
 		}
@@ -625,9 +571,9 @@ function time_to_decimal($time) {
 		 //Get symbols
 		 //write_log("calc_earnings_growth","symbol=$symbol");
 		 if (isset($symbol))
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
-                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 		 //write_log("calc_earnings_growth","No of symbols=".count($symbols));
          for ($i=0;$i<count($symbols);$i++){
 			//write_log("calc_earnings_growth","symbol=".$symbols[$i]['symbol']);
@@ -750,9 +696,9 @@ function time_to_decimal($time) {
 		// write_log("calc_earnings_growth_5yr","symbol=$symbol");
 		 
 		 if (isset($symbol))
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
-                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 		$i=0;
 		
 		// write_log("calc_earnings_growth_5yr","No of symbols=".count($symbols));
@@ -834,9 +780,9 @@ function time_to_decimal($time) {
 		 //write_log("dividend_share","symbol=$symbol");
 
 		 if (isset($symbol))
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
-          $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+          $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 		 	//write_log("dividend_share","No of symbols=".count($symbols));
          for ($i=0;$i<count($symbols);$i++){
 			//write_log("dividend_share","symbol=".$symbols[$i]['symbol']);
@@ -885,9 +831,9 @@ function time_to_decimal($time) {
 		 //write_log("dividend_cover","symbol=$symbol");
 		 
 		 if (isset($symbol))
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
-                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 		   ////write_log("dividend_cover","No of symbols=".count($symbols));
          
          for ($i=0;$i<count($symbols);$i++){
@@ -931,9 +877,9 @@ function time_to_decimal($time) {
 		 //Get symbols
 		 //write_log("dividend_yield_cover","symbol=$symbol");
 		 if (isset($symbol))
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
-                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+                $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 		 	//write_log("dividend_yield_cover","No of symbols=".count($symbols));
          for ($i=0;$i<count($symbols);$i++){
 			//write_log("dividend_yield_cover","symbol=".$symbols[$i]['symbol']);
@@ -976,9 +922,9 @@ function time_to_decimal($time) {
 	//write_log("get_share_statistics","date=$asofdate");
 		 //Get symbols
             if (isset($symbol))
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
-				$symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
+				$symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 			
 			//Create list of symbols			
 			$i=0;
@@ -1104,7 +1050,7 @@ function time_to_decimal($time) {
 	function get_earnings_growth($list){
 		$earnings_list=array();
 		//Get count of shares
-		$row=query("select count(1) total from  stock_symbols where enabled='Y' and exchange=?",$_SESSION["exchange"]);
+		$row=query("select count(1) total from  stock_symbols where enabled='Y' and exchange=?",session_exchange());
 		$count=$row[0]["total"];
 		$rows=query("select symbol, 3mnth,6mnth,12mnth,tendayavg, thirtydayavg, hndrddayavg, earnings_growth from price_momentum order by earnings_growth desc limit ?",$count/4);
 		foreach ($rows as $row){
@@ -1189,7 +1135,7 @@ function time_to_decimal($time) {
 	*/		
 	
 			//Get latest statistics job date
-			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+			$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 			$job_date=$rows[0]['job_date'];
 			
 			//initialize
@@ -1208,14 +1154,14 @@ function time_to_decimal($time) {
 						    AND si.category  =?
 						    AND s2.date    =?
 						    and si.enabled='Y'
-						    group by s2.date,s2.indicator",$symbol,$_SESSION['exchange'],$category["category_id"],$job_date);
+						    group by s2.date,s2.indicator",$symbol,session_exchange(),$category["category_id"],$job_date);
     
     		foreach($rows as $row){
 
 			//Get all stats for category that are non yahoo and calculated internally.
 				//write_log("share_lookup","category_id=".$category["category_id"]);
 				$statistics=query("select si.name, si.description, s.value, s.percentile, sec.value sector_average,sa.value market_average from statistics s, screen_indicators si , statistic_averages sec,statistic_averages sa, stock_symbols ss where s.indicator=si.name and sa.indicator=si.name and sec.indicator=si.name and sa.date=s.date and sec.date=s.date and sa.type='MEDIAN' and sec.type='MEDIAN' and sa.category='MARKET' and sec.category='SECTOR' and si.category=? and s.symbol=ss.symbol and s.exchange=sa.exchange and ss.sector=sec.sector and s.symbol=? and s.exchange=? and s.date=? and si.name=?"
-								,$category["category_id"],$symbol,$_SESSION['exchange'],$row['date'],$row['indicator']);
+								,$category["category_id"],$symbol,session_exchange(),$row['date'],$row['indicator']);
 				
 				//write_log("share_lookup","No of rows =".count($statistics));
 				
@@ -1237,12 +1183,12 @@ function time_to_decimal($time) {
 	//function Get_Share_Info
 	function get_share_info ($symbol){
 		
-		$share_query =query ("select name, market, sector,industry_group, industry from stock_symbols where symbol = ? and exchange=?",$symbol,$_SESSION["exchange"]);
+		$share_query =query ("select name, market, sector,industry_group, industry from stock_symbols where symbol = ? and exchange=?",$symbol,session_exchange());
 		
 		if(count($share_query)>0){
 			
 			//Get Job date
-			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+			$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 			$job_date=$rows[0]['job_date'];
 			//echo "jobdate=".$job_date;
 			
@@ -1254,18 +1200,29 @@ function time_to_decimal($time) {
 			//write_log('get_share_info',"market_cap=".$market_cap);
 			
 			//Get Shares Issued
-			$shares=change_number(get_indicator_value($symbol, 'shares_outstanding',$job_date)); 
+			$fundamentals=share_fundamentals($symbol);
+			$shares=get_indicator_value($symbol, 'shares_outstanding',$job_date);
+			//shares_outstanding is a calculated indicator. When it has not been
+			//calculated, the provider's own figure is in stock_info.
+			if ($shares===null||$shares===""||$shares===0){ $shares=$fundamentals["shares"]; }
+			//change_number() abbreviates to "18m", which the template's
+			//number_or_blank() then rejects as non numeric and renders as an
+			//empty cell. Market cap next to it is returned raw and formatted by
+			//the template, so shares is too.
 			
 			//write_log('get_share_info','shares='.$shares);
 			
 			// Get Share info
 			$yahoo_info = lookup($symbol);
 
-			write_log('get_share_info','price='.$yahoo_info["price"]);
-	
+			//The log line used to sit above this guard, so an unknown symbol or
+			//an unset API key made lookup() return false and reading ["price"]
+			//off it warned on every quote page.
 			if($yahoo_info!==false) {
+
+				debug_log('get_share_info','price='.$yahoo_info["price"]);
 			
-				$share_info=["symbol"=>$symbol,"name" => $share_query[0]["name"],"market" => $share_query[0]["market"],"sector" => $share_query[0]["sector"],"industry_group" => $share_query[0]["industry_group"],"industry" => $share_query[0]["industry"],"price" => $yahoo_info["price"],"capital" => $yahoo_info["market_cap"],"shares" => $shares,"change"=>  $yahoo_info["change"],"day_range"=>  $yahoo_info["day_range"],"52w_low"=>  $yahoo_info["52w_low"],"52w_high"=>  $yahoo_info["52w_high"]];
+				$share_info=["symbol"=>$symbol,"name" => $share_query[0]["name"],"market" => $share_query[0]["market"],"sector" => $share_query[0]["sector"],"industry_group" => $share_query[0]["industry_group"],"industry" => $share_query[0]["industry"],"price" => $yahoo_info["price"],"capital" => $fundamentals["market_cap"],"shares" => $shares,"change"=>  $yahoo_info["change"],"day_range"=>  $yahoo_info["day_range"],"52w_low"=>  $yahoo_info["52w_low"],"52w_high"=>  $yahoo_info["52w_high"]];
 		
 				//echo print_r($share_info);
 				return $share_info;
@@ -1280,7 +1237,7 @@ function time_to_decimal($time) {
 	//function Get_Share_Name
 	function get_share_name ($symbol){
 		
-		$share_query =query ("select name from stock_symbols where symbol = ? and exchange=?",$symbol,$_SESSION["exchange"]);
+		$share_query =query ("select name from stock_symbols where symbol = ? and exchange=?",$symbol,session_exchange());
 		
 		if(count($share_query)>0)
 			return $share_query[0]["name"];
@@ -1291,7 +1248,7 @@ function time_to_decimal($time) {
 	//Get Profile for the share symbol
 	function get_profile($symbol){
 		$profile=query('SELECT description, ifnull(employees,"N/A") employees, ifnull(website,"N/A") website, ifnull(directors,"N/A") directors, logo FROM stock_symbols WHERE symbol=? and exchange=?'
-						,$symbol,$_SESSION["exchange"]);
+						,$symbol,session_exchange());
 		//write_log("get_profile","Count = ".count($profile));
 		if (count($profile)>0)
 			return $profile[0];
@@ -1302,6 +1259,15 @@ function time_to_decimal($time) {
 	
 		 // numerically indexed array of articles
 		$articles = [];
+
+		//The News tab is one tab on a page that is mostly about something else,
+		//so nothing here is worth a fatal. simplexml comes from php-xml, which
+		//is a separate package like php-curl was, and the fetch needs
+		//allow_url_fopen. Missing either means no articles, not a dead page.
+		if (!function_exists("simplexml_load_string") || !ini_get("allow_url_fopen")) {
+			write_log("get_articles","news unavailable: no simplexml or allow_url_fopen is off");
+			return $articles;
+		}
 			
 		//Stock Exchange Codes
 		$exchanges=['LSE','LON'];
@@ -1314,35 +1280,50 @@ function time_to_decimal($time) {
 			$symbol=$exchange.':'.$share[0];
 		
 			// headers for proxy servers
+			//The User-Agent used to be built from curl_version(), which needs
+			//ext-curl. The fetch itself is file_get_contents, so curl was never
+			//doing the work - it only supplied a version string - and on a host
+			//without php-curl the call was a fatal that took the page with it.
 			$headers = [
 				"Accept" => "*/*",
 				"Connection" => "Keep-Alive",
-				"User-Agent" => sprintf("curl/%s", curl_version()["version"])
+				"User-Agent" => "sharemanager/1.0 (+php " . PHP_VERSION . ")"
 			];
 
 			// download RSS from Google News
+			//This blocks the quote page while it runs. Without a timeout it
+			//waits for default_socket_timeout, which on a host with no outbound
+			//network means the page hangs rather than loads.
 			$context = stream_context_create([
 				"http" => [
 					"header" => implode(array_map(function($value, $key) { return sprintf("%s: %s\r\n", $key, $value); }, $headers, array_keys($headers))),
-					"method" => "GET"
+					"method" => "GET",
+					"timeout" => 3
 				]
 			]);
 			
 			$contents = @file_get_contents("https://news.google.com/_/rss/search?cf=all&q=$symbol&scoring=n&hl=en-GB&gl=GB&ceid=GB:en", false, $context);
 			//$contents = @file_get_contents("https://news.google.com/news/section?pz=1&cf=all&hl=en&q=$symbol&scoring=n&output=RSS", false, $context);
+			//This runs inside the quote page. Ending the request on a failed
+			//fetch took the whole page down with it, so a news feed that is
+			//unreachable - no outbound network, a rate limit, a changed URL -
+			//now just contributes no articles.
 			if ($contents === false)
 			{
-				http_response_code(503);
-				exit;
+				//The feed is one host, so if the first exchange cannot reach it
+				//neither can the second. Stop rather than wait out a second
+				//timeout on a page the user is watching.
+				write_log("get_articles","no response for $symbol");
+				break;
 			}
 
 			// parse RSS
 			$rss = @simplexml_load_string($contents);
 			//@fclose($handle);
-			if ($rss === false)
+			if ($rss === false || !isset($rss->channel->item))
 			{
-				http_response_code(500);
-				exit;
+				write_log("get_articles","unparseable feed for $symbol");
+				continue;
 			}
 
 			// iterate over items in channel
@@ -1356,17 +1337,16 @@ function time_to_decimal($time) {
 				$blocked=array("Motley Fool","London South East","Proactive Investor");
 				
 				foreach($blocked as $publisher){
-					$pos=strpos($title,$publisher);
-					if ($pos>0)
+					//strpos returns 0 when the title starts with the publisher
+					//name, which >0 reads as "not found".
+					if (strpos($title,$publisher)!==false)
 						$found=true;
 				}
-				
-				
-				
 
-				
-				// add article to array
-			    if ($found)
+				// add article to array. $blocked is a list of publishers to
+				// leave out, so the test was the wrong way round: it kept only
+				// the articles it was meant to drop.
+			    if (!$found)
 				$articles[] = [
 					"link" => (string) $item->link,
 					"title" => (string) $item->title,
@@ -1494,7 +1474,12 @@ function time_to_decimal($time) {
 		if (count($rows)>0){
 			return $rows[0];
 		}
-	
+		
+		//A symbol the ratings job has not reached yet returned null, and the
+		//Ratings tab then read five offsets on it and warned five times. Hand
+		//back the same keys with no values so the tab renders blank instead.
+		return array("momentum_rating"=>null,"growth_rating"=>null,"value_rating"=>null,
+		             "quality_rating"=>null,"overall_rating"=>null);
 	}
 	
 //Get momentum statistics for the Momentum Rating
@@ -1506,38 +1491,40 @@ function get_momentum_statistics($symbol){
 //$asOfDate=date_format($asOfDate,'Y-m-d');
 
 //Get Job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 $job_date=$rows[0]['job_date'];
 
 //write_log("ratings.php","job_date=job_date");
 
+//$symbol arrives from quote.php's query string. The sibling growth, value and
+//quality queries bind it; this one interpolated it straight into the SQL.
 $query="SELECT si.description, s.value,si.order_number
 FROM  `screen_criteria` sc, screen_build sb, screen_indicators si, statistics s
 WHERE sb.criteria_id = sc.id
 AND si.indicator_id = sc.indicator_id
 AND si.name = s.indicator
-AND s.symbol =  '$symbol'
-and s.exchange = '".$_SESSION["exchange"]."'
+AND s.symbol =  ?
+and s.exchange = ?
 AND sb.screen_id
 IN ( 3, 4, 5, 6, 7 )
-and s.date='$job_date'
+and s.date=?
 union
 SELECT si.description, s.value,si.order_number
 FROM  `screen_criteria` sc, screen_build sb, screen_indicators si, statistics s
 WHERE sb.criteria_id = sc.id
 AND si.name = sc.second_operand
 AND si.name = s.indicator
-AND s.symbol =  '$symbol'
-and s.exchange = '".$_SESSION["exchange"]."'
+AND s.symbol =  ?
+and s.exchange = ?
 AND sb.screen_id
 IN ( 3, 4, 5, 6, 7 )
-and s.date='$job_date'
+and s.date=?
 order by order_number";
 
 //write_log("ratings.php","query=$query");
 
 
-	$rows = query($query);
+	$rows = query($query,$symbol,session_exchange(),$job_date,$symbol,session_exchange(),$job_date);
 
 return $rows;
 
@@ -1553,7 +1540,7 @@ function get_growth_statistics($symbol){
 
 
 //Get Job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 $job_date=$rows[0]['job_date'];
 
 
@@ -1563,7 +1550,7 @@ WHERE sb.criteria_id = sc.id
 AND si.indicator_id = sc.indicator_id
 AND si.name = s.indicator
 AND s.symbol =  ?
-and s.exchange = '".$_SESSION["exchange"]."'
+and s.exchange = '".session_exchange()."'
 AND sb.screen_id
 IN ( 8,9,10,11,12 )
 and s.date=?
@@ -1574,7 +1561,7 @@ WHERE sb.criteria_id = sc.id
 AND si.name = sc.second_operand
 AND si.name = s.indicator
 AND s.symbol =  ?
-and s.exchange = '".$_SESSION["exchange"]."'
+and s.exchange = '".session_exchange()."'
 AND sb.screen_id
 IN ( 8,9,10,11,12 )
 and s.date=?
@@ -1594,7 +1581,7 @@ function get_value_statistics($symbol){
 
 
 //Get Job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 $job_date=$rows[0]['job_date'];
 
 $rows = query("SELECT si.description, s.value,order_number
@@ -1603,7 +1590,7 @@ WHERE sb.criteria_id = sc.id
 AND si.indicator_id = sc.indicator_id
 AND si.name = s.indicator
 AND s.symbol =  ?
-and s.exchange = '".$_SESSION["exchange"]."'
+and s.exchange = '".session_exchange()."'
 AND sb.screen_id
 IN ( 13,14,15,16,17 )
 and s.date=?
@@ -1614,12 +1601,12 @@ WHERE sb.criteria_id = sc.id
 AND si.name = sc.second_operand
 AND si.name = s.indicator
 AND s.symbol =  ?
-and s.exchange = '".$_SESSION["exchange"]."'
+and s.exchange = '".session_exchange()."'
 and s.exchange=?
 AND sb.screen_id
 IN ( 13,14,15,16,17 )
 and s.date=?
-order by order_number",$symbol,$_SESSION['exchange'],$job_date,$symbol,$job_date);
+order by order_number",$symbol,session_exchange(),$job_date,$symbol,$job_date);
 
 return $rows;
 
@@ -1635,7 +1622,7 @@ function get_quality_statistics($symbol){
 
 
 //Get Job date
-$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 $job_date=$rows[0]['job_date'];
 
 $rows = query("SELECT si.description, s.value,order_number
@@ -1646,7 +1633,7 @@ and si.category=ic.category_id
 AND s.symbol =  ?
 and s.exchange=?
 and s.date=?
-and ic.category_id in (10,11);",$symbol,$_SESSION['exchange'],$job_date);
+and ic.category_id in (10,11);",$symbol,session_exchange(),$job_date);
 
 return $rows;
 
@@ -1668,7 +1655,7 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 	$score ['quality']=50;
 	$score ['overall']=50;
 	
-	$rows = query("SELECT indicator,value from statistics s1 where symbol=? and exchange=? and date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.date<=? and s2.exchange=s1.exchange) and s1.indicator in ('quality_score','momentum_score','value_score','overall_score')",$symbol,$_SESSION['exchange'],$asOfDate);
+	$rows = query("SELECT indicator,value from statistics s1 where symbol=? and exchange=? and date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.date<=? and s2.exchange=s1.exchange) and s1.indicator in ('quality_score','momentum_score','value_score','overall_score')",$symbol,session_exchange(),$asOfDate);
    foreach($rows as $row){
 		if ($row['indicator']=='momentum_score')
 			$score['momentum']=$row['value'];
@@ -1695,14 +1682,14 @@ $asOfDate->sub(new DateInterval('P1D'));
 $asOfDate=date_format($asOfDate,'Y-m-d');
 
 //Get latest statistics job date
-			$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+			$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 			$asOfDate=$rows[0]['job_date'];
 
 //write_log("get_scores.php","asOfDate=$asOfDate");
 
 
 	
-	$score = query("SELECT s1.indicator,si.description, s1.value share_value,s1.percentile, sa.value market_value from statistics s1 ,screen_indicators si, statistic_averages sa where s1.indicator=si.name and s1.indicator=sa.indicator and sa.date=s1.date and type='MEDIAN' and sa.category='MARKET' and s1.symbol=?  and s1.exchange=? and sa.exchange=s1.exchange and s1.date=? and s1.indicator in ('shareholder_yield','pe','price_sales_ratio','price_book_ratio','enterprise_value_to_ebitda','price_free_cash_flow_per_share')",$symbol,$_SESSION['exchange'],$asOfDate);
+	$score = query("SELECT s1.indicator,si.description, s1.value share_value,s1.percentile, sa.value market_value from statistics s1 ,screen_indicators si, statistic_averages sa where s1.indicator=si.name and s1.indicator=sa.indicator and sa.date=s1.date and type='MEDIAN' and sa.category='MARKET' and s1.symbol=?  and s1.exchange=? and sa.exchange=s1.exchange and s1.date=? and s1.indicator in ('shareholder_yield','pe','price_sales_ratio','price_book_ratio','enterprise_value_to_ebitda','price_free_cash_flow_per_share')",$symbol,session_exchange(),$asOfDate);
    
    
    	//write_log("get_scores.php","value score=".$score['value']);
@@ -1721,12 +1708,12 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 
 //write_log("get_scores.php","asOfDate=$asOfDate");
 //Get latest statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$asOfDate=$rows[0]['job_date'];
 
 
 	
-	$score = query("SELECT s1.indicator,si.description, s1.value share_value,s1.percentile, sa.value market_value from statistics s1 ,screen_indicators si, statistic_averages sa where s1.indicator=si.name and s1.indicator=sa.indicator and sa.date=s1.date and type='MEDIAN' and sa.category='MARKET' and s1.symbol=? and s1.exchange=? and sa.exchange=s1.exchange and s1.date=? and s1.indicator in ('3mnth','6mnth','12mnth') ",$symbol,$_SESSION['exchange'],$asOfDate);
+	$score = query("SELECT s1.indicator,si.description, s1.value share_value,s1.percentile, sa.value market_value from statistics s1 ,screen_indicators si, statistic_averages sa where s1.indicator=si.name and s1.indicator=sa.indicator and sa.date=s1.date and type='MEDIAN' and sa.category='MARKET' and s1.symbol=? and s1.exchange=? and sa.exchange=s1.exchange and s1.date=? and s1.indicator in ('3mnth','6mnth','12mnth') ",$symbol,session_exchange(),$asOfDate);
    
    
    	//write_log("get_scores.php","value score=".$score['value']);
@@ -1745,12 +1732,12 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 
 //write_log("get_scores.php","asOfDate=$asOfDate");
 //Get latest statistics job date
-$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 $asOfDate=$rows[0]['job_date'];
 
 
 	
-	$score = query("SELECT s1.indicator,si.description, s1.value share_value,s1.percentile, sa.value market_value from statistics s1 ,screen_indicators si, statistic_averages sa where s1.indicator=si.name and s1.indicator=sa.indicator and sa.date=s1.date and type='MEDIAN' and sa.category='MARKET' and s1.symbol=? and s1.exchange=? and sa.exchange=s1.exchange and s1.date=? and s1.indicator in ('roe_ttm','roa','operating_margin','profit_margin','roce') ",$symbol,$_SESSION['exchange'],$asOfDate);
+	$score = query("SELECT s1.indicator,si.description, s1.value share_value,s1.percentile, sa.value market_value from statistics s1 ,screen_indicators si, statistic_averages sa where s1.indicator=si.name and s1.indicator=sa.indicator and sa.date=s1.date and type='MEDIAN' and sa.category='MARKET' and s1.symbol=? and s1.exchange=? and sa.exchange=s1.exchange and s1.date=? and s1.indicator in ('roe_ttm','roa','operating_margin','profit_margin','roce') ",$symbol,session_exchange(),$asOfDate);
    
    
    	//write_log("get_scores.php","value score=".$score['value']);
@@ -1982,7 +1969,7 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 
 
 	
-	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and s1.exchange=? and s1.indicator ='piotroski_fscore' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.exchange=s1.exchange and s2.date<=?) ",$symbol,$_SESSION['exchange'],$asOfDate);
+	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and s1.exchange=? and s1.indicator ='piotroski_fscore' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.exchange=s1.exchange and s2.date<=?) ",$symbol,session_exchange(),$asOfDate);
    
    
    	//write_log("get_scores.php","value score=".$score['value']);
@@ -2003,7 +1990,7 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 
 
 	
-	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and s1.exchange=? and s1.indicator ='altman_zscore' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.exchange=s1.exchange and s2.indicator=s1.indicator and s2.date<=?) ",$symbol,$_SESSION['exchange'],$asOfDate);
+	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and s1.exchange=? and s1.indicator ='altman_zscore' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.exchange=s1.exchange and s2.indicator=s1.indicator and s2.date<=?) ",$symbol,session_exchange(),$asOfDate);
    
    
    	//write_log("get_scores.php","value score=".$score['value']);
@@ -2024,7 +2011,7 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 
 
 	
-	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and exchange=? and s1.indicator ='altman_zscore_nonman' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.exchange=s1.exchange and s2.date<=?) ",$symbol,$_SESSION['exchange'],$asOfDate);
+	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and exchange=? and s1.indicator ='altman_zscore_nonman' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.exchange=s1.exchange and s2.date<=?) ",$symbol,session_exchange(),$asOfDate);
    
    
    	//write_log("get_scores.php","value score=".$score['value']);
@@ -2062,7 +2049,9 @@ function get_valuation($symbol){
 	
 //	write_log("get_valuation","ratio =".$ratio);
 	
-	$valuation['value']=round($value);
+	//round(null) is deprecated in PHP 8, and a null $value means the valuation
+	//could not be calculated rather than that it is zero. Keep it null.
+	$valuation['value']=($value===null) ? null : round($value);
 	$valuation['price']=$price;
 	$valuation['ratio']=$ratio;
 	
@@ -2111,7 +2100,7 @@ function get_industry_valuation($symbol){
 //Get Price valuation indicators for Relative to Sector
 function get_relative_to_sector($symbol){
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select si.description indicator, share_stat,sector_stat,value from price_valuation pv, screen_indicators si where si.name=pv.indicator and type='relative_sector' and symbol=? and date=?",$symbol,$job_date);
@@ -2122,7 +2111,7 @@ function get_relative_to_sector($symbol){
 //Get Price valuation indicators for Relative to Industry
 function get_relative_to_industry($symbol){
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select si.description indicator, share_stat,industry_stat,value from price_valuation pv, screen_indicators si where si.name=pv.indicator and type='relative_industry' and symbol=? and date=?",$symbol,$job_date);
@@ -2133,7 +2122,7 @@ function get_relative_to_industry($symbol){
 //Get Piotroski variables
 function get_piotroski_variables($symbol){
 		
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='piotroski_fscore'",$symbol,$job_date);
@@ -2145,7 +2134,7 @@ function get_piotroski_variables($symbol){
 //Get Altman Z-score variables
 function get_altman_variables($symbol){
 		
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='altman_zscore'",$symbol,$job_date);
@@ -2157,7 +2146,7 @@ function get_altman_variables($symbol){
 //Get Altman Z-score (non manufacturing) variables
 function get_altman_nonman_variables($symbol){
 		
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 			
 	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='altman_zscore_nonman'",$symbol,$job_date);
@@ -2200,6 +2189,13 @@ function convert_value($value){
 
 //Convert number values to a display value containing m, or b for millions or billions.
 function change_number($value){
+	//Called with whatever a provider or an uncalculated indicator supplied,
+	//which may be null or a non numeric string. Dividing that is a TypeError
+	//on PHP 8, so anything that is not a number comes straight back.
+	if (!is_numeric($value)) {
+		return $value;
+	}
+	$value = (float)$value;
 	if ($value/1000000000>=1) 
 		return strval($value/1000000000)."b";
 	elseif ($value/1000000>=1) 
@@ -2229,14 +2225,14 @@ function update_statistic($symbol, $indicator, $value, $date){
 	//write_log('update_statistic',"symbol=$symbol , indicator=$indicator, value = $value, date= $date");
 	
 	//check if symbol for indicator exists in statistics
-	$rows=query("select symbol from statistics where symbol=? and exchange=? and indicator=? and date=?",$symbol,$_SESSION['exchange'],$indicator,$date);
+	$rows=query("select symbol from statistics where symbol=? and exchange=? and indicator=? and date=?",$symbol,session_exchange(),$indicator,$date);
 	//insert record in statistics
 	if (count($rows)==0){
-		query("insert into statistics (symbol, exchange, indicator, value,date) values (?,?,?,?,?)",$symbol,$_SESSION['exchange'],$indicator,$value,$date);
+		query("insert into statistics (symbol, exchange, indicator, value,date) values (?,?,?,?,?)",$symbol,session_exchange(),$indicator,$value,$date);
 	}
 	//update record in statistics
 	else {
-		query("update statistics set value=? where symbol=? and exchange=? and indicator=? and date=?",$value,$symbol,$_SESSION['exchange'],$indicator,$date);
+		query("update statistics set value=? where symbol=? and exchange=? and indicator=? and date=?",$value,$symbol,session_exchange(),$indicator,$date);
 	}
 }
 
@@ -2278,7 +2274,7 @@ return $row[0]['value'];
 function get_indicator_value($symbol, $indicator,$date){
 	//write_log('get_indicator_value',"symbol=$symbol, indicator=$indicator, date=$date");
 	
-	$row=query("select value from statistics where symbol=? and exchange=? and indicator=? and date=(select max(date) max_date from statistics where symbol=? and exchange=? and indicator=? and date<=? and date is not null)",$symbol,$_SESSION['exchange'],$indicator,$symbol,$_SESSION['exchange'],$indicator,$date );
+	$row=query("select value from statistics where symbol=? and exchange=? and indicator=? and date=(select max(date) max_date from statistics where symbol=? and exchange=? and indicator=? and date<=? and date is not null)",$symbol,session_exchange(),$indicator,$symbol,session_exchange(),$indicator,$date );
 	
 	
 	if (count($row)>0)
@@ -3109,7 +3105,7 @@ function calc_piotroski_fscore($asOfdate,$symbol){
 function get_share_price($symbol, $date){
 	
 	write_log('get_share_price',"symbol=$symbol , date=$date");
-	$rows=query("SELECT price FROM `historical_prices` WHERE symbol=? and exchange=? and date=(select max(date) from historical_prices where symbol=? and exchange=? and date <= ?)",$symbol,$_SESSION["exchange"],$symbol,$_SESSION["exchange"],$date );
+	$rows=query("SELECT price FROM `historical_prices` WHERE symbol=? and exchange=? and date=(select max(date) from historical_prices where symbol=? and exchange=? and date <= ?)",$symbol,session_exchange(),$symbol,session_exchange(),$date );
 	
 	
 	//write_log('get_share_price',"rows returned=".count($rows));
@@ -3162,7 +3158,7 @@ function calc_implied_valuation ($date,$symbol){
 	if ($price>0){
 		
 		//Get Share Sector
-		$rows = query("select sector from stock_symbols where symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+		$rows = query("select sector from stock_symbols where symbol=? and exchange=?",$symbol,session_exchange());
 		
 		if (count($rows)>0){
 			
@@ -3226,7 +3222,7 @@ function calc_implied_valuation ($date,$symbol){
 		}
 
 		//Get Share Industry
-		$rows = query("select industry from stock_symbols where symbol=? and exchange=?",$symbol,$_SESSION["exchange"]);
+		$rows = query("select industry from stock_symbols where symbol=? and exchange=?",$symbol,session_exchange());
 		
 		if (count($rows)>0){
 			
@@ -3299,11 +3295,11 @@ function calc_implied_valuation ($date,$symbol){
 function get_momentum_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
-	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='momentum_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,$_SESSION["exchange"]);
+	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='momentum_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,session_exchange());
 	
 	return $rows;
 }
@@ -3311,11 +3307,11 @@ function get_momentum_topten(){
 function get_value_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
-	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='value_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,$_SESSION["exchange"]);
+	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='value_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,session_exchange());
 	
 	return $rows;
 }	
@@ -3323,11 +3319,11 @@ function get_value_topten(){
 function get_quality_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 0 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
-	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='quality_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,$_SESSION["exchange"]);
+	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='quality_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,session_exchange());
 	
 	return $rows;
 }	
@@ -3335,18 +3331,18 @@ function get_quality_topten(){
 function get_overall_topten(){
 	
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
-	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='overall_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,$_SESSION["exchange"]);
+	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='overall_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,session_exchange());
 	
 	return $rows;
 }	
 
 function get_sector_companies($sector){
 	//Get statistics job date
-	$rows=query("select date(date_sub(max(job_date),INTERVAL 1 DAY)) job_date from jobs where job_name='get_statistics'");
+	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 	$job_date=$rows[0]['job_date'];
 	
 	//Get companies
@@ -3355,7 +3351,7 @@ function get_sector_companies($sector){
 (select s.value from statistics s where s.symbol=ss.symbol and indicator = 'momentum_score' and s.date=?) momentum_score,
 (select s.value from statistics s where s.symbol=ss.symbol and indicator = 'value_score' and s.date=?) value_score,
 (select s.value from statistics s where s.symbol=ss.symbol and indicator = 'overall_score' and s.date=?) overall_score
-from stock_symbols ss where enabled='Y' and sector=? and ss.exchange=?",$job_date,$job_date,$job_date,$job_date,$sector,$_SESSION["exchange"]);
+from stock_symbols ss where enabled='Y' and sector=? and ss.exchange=?",$job_date,$job_date,$job_date,$job_date,$sector,session_exchange());
 	
 	return($rows);
 		
@@ -3397,7 +3393,7 @@ function get_active_stocks($exchange){
 		};
 		
 		//Get Default Exchange
-		$exchange=$_SESSION["exchange"];
+		$exchange=session_exchange();
 
         // open connection to GOOGLE
         $string = file_get_contents("https://www.worldtradingdata.com/api/v1/stock?symbol=$symbol"."&api_token=ALFvINqaRaN1WSsJqL5CA6BGG79Hooi0siMCcHi1G5PUWm16f6eMa8MYD8Bi");

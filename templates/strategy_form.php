@@ -22,19 +22,19 @@
    </div>
    <div class="col-md-6">
 	
-	 <div class="form-group" id="search">
+	 <div class="mb-3" id="search">
 	 <h4>Shares assigned to the Strategy</h4>
 	 <div class="col-md-9">
 		<input  class="form-control typeahead"  type="text" name="symbol" placeholder="Enter Symbol"/>
 	 </div>
 	 </div>
-	 <div class="form-group">
+	 <div class="mb-3">
     <div class="col-md-3">
 		<button type="submit" class="btn btn-default">Add</button>
 	</div>
 	</div>
 
-   <div class="form-group">
+   <div class="mb-3">
      <?php
 		  foreach($shares as $share):?>
         <strong> <?=$share["symbol"]?></strong><br>

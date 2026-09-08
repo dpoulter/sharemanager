@@ -117,7 +117,7 @@
 			//$asOfDate=new DateTime();	
 			//$asOfDate->sub(new DateInterval('P1D'));
 			//$date=date_format($asOfDate,'Y-m-d');
-			$rows=query("select date(max(date_sub(job_date,INTERVAL 1 DAY))) job_date from jobs where job_name='get_statistics'");
+			$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
 			$date=$rows[0]['job_date'];
 			write_log("build_screen","As of date=".$date);
 		}

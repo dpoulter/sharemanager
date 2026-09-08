@@ -33,6 +33,6 @@ write_log("get_statistics.php","Calculate Sector Medians for all statistics");
 	//insert record into jobs
 	write_log("get_statistics.php","insert record into jobs");
 	
-	query("insert into jobs (job_name, job_date) values (?,?)",'get_statistics',date_format($asOfDate,'Y-m-d'));
+	query("insert into jobs (job_name, job_date) values (?,?)",'get_statistics_asof',date_format($asOfDate,'Y-m-d'));
 	
  ?>

@@ -1,0 +1,66 @@
+# Caddy vhost for sharemanager.
+#
+# Install it as its OWN file and import it. Never copy it over
+# /etc/caddy/Caddyfile: that file may already be serving other sites on this
+# host, and replacing it takes them all down with an SSL error, because Caddy
+# stops holding certificates for names no longer in its config.
+#
+#   sudo mkdir -p /etc/caddy/conf.d
+#   sudo cp deploy/Caddyfile /etc/caddy/conf.d/sharemanager.caddy
+#
+# then make sure /etc/caddy/Caddyfile has this line, once, at the top level:
+#
+#   import /etc/caddy/conf.d/*.caddy
+#
+#   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+#   sudo systemctl reload caddy
+#
+# restart, not reload: reload fails outright if the service is not already
+# running, which it is not on a first install. Caddy needs ports 80 and 443, so
+# stop anything else holding them first (ss -ltnp | grep -E ':80|:443').
+#
+# Caddy obtains and renews the TLS certificate itself, so there is no certbot
+# step. Point the DNS A/AAAA record at this host first: the ACME HTTP challenge
+# has to reach port 80.
+
+sharemanager.advancepost.net {
+	# Only public/ is ever served. includes/ holds constants.php with the
+	# database password, and tools/, tests/, sql/ and .git are not web content.
+	root * /var/www/sharemanager/public
+
+	encode zstd gzip
+
+	# php_fastcgi splits PATH_INFO off the URL by default, so /index.php/x.php
+	# runs index.php. config.php refuses a request carrying path info, but keep
+	# the pattern tight here too rather than relying on one of the two.
+	php_fastcgi unix//run/php/sharemanager.sock {
+		split .php
+	}
+
+	file_server
+
+	# Nothing here is a dotfile the browser needs.
+	@dotfiles path /.* /*/.*
+	respond @dotfiles 404
+
+	header {
+		# This site is HTTPS only once the certificate is issued.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		# The pages load Bootstrap and FontAwesome from CDNs and use inline
+		# handlers, so script-src cannot be tightened without editing templates.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://use.fontawesome.com https://fonts.googleapis.com; font-src 'self' https://use.fontawesome.com https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://code.jquery.com https://cdnjs.cloudflare.com https://stackpath.bootstrapcdn.com; frame-ancestors 'none'"
+		-Server
+	}
+
+	# Caddy runs as the caddy user, so the directory has to be writable by it:
+	#   sudo install -d -o caddy -g caddy -m 750 /var/log/caddy
+	# Without that the service exits at startup with "permission denied", even
+	# though the config validates. Delete this block to log to the journal
+	# instead, which needs no directory at all.
+	log {
+		output file /var/log/caddy/sharemanager.log
+	}
+}

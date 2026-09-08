@@ -64,3 +64,15 @@ $('#symbolInput .typeahead').typeahead({
   source: substringMatcher(symbols)
 });
 
+/* Bootstrap tooltips are opt-in: an element with data-bs-toggle="tooltip" does
+ * nothing until it is initialised. The quote page marks up tooltips on the
+ * valuation badges and nothing ever initialised them, so under Bootstrap 4 they
+ * silently did not work either. Same for popovers.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+    if (typeof bootstrap === 'undefined') { return; }
+    document.querySelectorAll('[data-bs-toggle="tooltip"]')
+            .forEach(function (el) { new bootstrap.Tooltip(el); });
+    document.querySelectorAll('[data-bs-toggle="popover"]')
+            .forEach(function (el) { new bootstrap.Popover(el); });
+});
