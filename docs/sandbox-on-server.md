@@ -131,6 +131,35 @@ Takes a minute or two, mostly inserting price rows.
 
 ---
 
+## 4b. Front-end assets
+
+`css/`, `js/`, `img/` and `fonts/` are in `.gitignore`, so a fresh clone has no
+stylesheets or scripts and every page renders as unstyled HTML: working links
+and forms, no Bootstrap.
+
+```sh
+tools/fetch_assets.sh
+```
+
+That downloads Bootstrap 4.1.3, jQuery 3.3.1 and typeahead.js 0.11.1 into
+`public/css` and `public/js`, and copies `templates/scripts.js` to where
+`header.php` looks for it. It checks every download and reports failures rather
+than leaving empty files behind.
+
+`css/styles1.css` is the application's own stylesheet. It is not on any CDN and
+exists only on the server running the live site, so the script writes a
+placeholder and the sandbox renders with plain Bootstrap. To get the real thing,
+along with the images, copy from a machine that has them:
+
+```sh
+tools/fetch_assets.sh --from you@your-server:/var/www/shares
+```
+
+Use `--from` whenever you can — it is the only way to match production exactly.
+
+If the server has no outbound internet access, `--from` is the only option; the
+CDN downloads will all report `http 000`.
+
 ## 5. Serve it — pick one
 
 ### Option A: private, over SSH (simplest, and the safest)
