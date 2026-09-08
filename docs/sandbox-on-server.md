@@ -9,18 +9,65 @@ is keeping it that way, so the ordering below matters.
 
 ---
 
-## 1. Check what you have
+## 1. Check what you have, and install what is missing
 
 ```sh
 php -v                                  # 8.0 or newer
-php -m | grep -E 'pdo_mysql|mysqli'     # pdo_mysql must be listed
+php -m | grep -E 'pdo_mysql'            # pdo_mysql must be listed
 mysql --version                         # or mariadb --version
 git --version
 ```
 
-If `php -v` reports 7.x, everything still works, but note that
-`includes/PHPMailerAutoload.php` was only fixed for PHP 8 on this branch — it
-was a parse error there, which is what broke password reset.
+If any of those say `command not found`, the box is bare and you need to install
+them. First work out where you are:
+
+```sh
+# Is this the machine already running the live site?
+ls -d /var/www/shares 2>/dev/null && echo "LIVE SITE IS HERE" || echo "not the live site"
+
+cat /etc/os-release | head -2
+```
+
+**Debian or Ubuntu:**
+
+```sh
+sudo apt update
+sudo apt install -y git curl mariadb-server php-cli php-mysql
+sudo systemctl enable --now mariadb
+```
+
+**RHEL, Rocky, Alma or Fedora:**
+
+```sh
+sudo dnf install -y git curl mariadb-server php-cli php-mysqlnd
+sudo systemctl enable --now mariadb
+```
+
+That is everything the sandbox needs. It does **not** need Python, Apache or
+nginx: the seed is PHP, and section 5 option A serves the site with PHP's own
+built-in server. Only add a web server if you choose option B.
+
+Then re-run the four checks above. All four must succeed before continuing;
+`php -m | grep pdo_mysql` printing nothing is the one people miss, and it fails
+later with a confusing PDO error rather than an obvious missing-extension one.
+
+If MariaDB is a fresh install, set a root password while you are here:
+
+```sh
+sudo mariadb-secure-installation
+```
+
+### If this is a different machine from the live site
+
+That is the better arrangement, not a problem. A separate box means the sandbox
+cannot reach production at all, so the isolation this document spends effort on
+comes for free. You can still follow every step below; the checks in section 3
+will simply pass trivially because the live database is not on this machine.
+
+If it turns out this **is** the live machine and PHP is merely missing from
+root's `PATH`, stop and check with `ls /usr/bin/php*` before installing
+anything, so you do not end up with a second PHP version alongside the one the
+live site runs on.
 
 ## 2. Clone to its own directory
 
