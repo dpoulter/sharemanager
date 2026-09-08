@@ -52,11 +52,32 @@ and are never reachable over HTTP.
 
 ## 3. Database
 
+MariaDB matches accounts on user *and* host, and the two loopback spellings are
+not interchangeable: `localhost` connects over the unix socket, `127.0.0.1` over
+TCP, and with name resolution on, a TCP connection from 127.0.0.1 is reported
+back as `localhost` anyway. Create an account for one and point `SM_DB_HOST` at
+the other and every page is a 500 reading "Access denied for user
+'shares'@'localhost'". Create both spellings and the question does not arise.
+
 ```sh
-sudo mariadb -e "create database sharemanager;
-                 create user 'shares'@'localhost' identified by '<a long random password>';
-                 grant all on sharemanager.* to 'shares'@'localhost';"
+sudo mariadb <<'SQL'
+create database if not exists sharemanager;
+create user if not exists 'shares'@'localhost' identified by '<a long random password>';
+create user if not exists 'shares'@'127.0.0.1' identified by '<the same password>';
+grant all on sharemanager.* to 'shares'@'localhost';
+grant all on sharemanager.* to 'shares'@'127.0.0.1';
+flush privileges;
+SQL
 ```
+
+Prove the credential before going any further. This must print 1:
+
+```sh
+mariadb -h 127.0.0.1 -u shares -p sharemanager -e "select 1"
+```
+
+The password has to match `env[SM_DB_PASS]` in the php-fpm pool exactly, and
+`env[SM_DB_HOST]` there is `127.0.0.1`.
 
 Load the schema, then the reset-token table:
 
