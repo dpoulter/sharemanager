@@ -611,6 +611,41 @@
               substr_count($fresh, 'quote.php?symbol=') >= 10,
               substr_count($fresh, 'quote.php?symbol=') . ' rows');
 
+        /* The case that survived the first fix: a session that already existed
+           before it. Setting the key only at register and login time leaves
+           every open session broken until the user logs out, which is not
+           obvious from a page full of warnings. Reading through
+           session_exchange() makes a missing key a default instead. */
+        check('a missing session key falls back rather than warning',
+              session_exchange() === 'XLON');
+        $saved = $_SESSION["exchange"] ?? null;
+        unset($_SESSION["exchange"]);
+        check('session_exchange() covers an unset key', session_exchange() === 'XLON');
+        $_SESSION["exchange"] = "";
+        check('session_exchange() covers an empty key', session_exchange() === 'XLON');
+        $_SESSION["exchange"] = "JSE";
+        check('session_exchange() honours a real value', session_exchange() === 'JSE');
+        if ($saved === null) { unset($_SESSION["exchange"]); } else { $_SESSION["exchange"] = $saved; }
+
+        /* Reading the key directly is fine in a batch script that sets it first.
+           The bug is reading a key you did not set, which is what every web page
+           does: it inherits whatever the session happens to hold. Flag only
+           that, or this comes back next time someone adds a page. */
+        $raw = [];
+        foreach (array_merge(glob(dirname(__DIR__) . '/includes/*.php'),
+                             glob(dirname(__DIR__) . '/public/*.php'),
+                             glob(dirname(__DIR__) . '/templates/*.php')) as $file) {
+            if (basename($file) === 'functions.php') { continue; }   // holds the accessor
+            $src = file_get_contents($file);
+            $assign = '/\$_SESSION\s*\[\s*[\'"]exchange[\'"]\s*\]\s*=(?!=)/';
+            $any    = '/\$_SESSION\s*\[\s*[\'"]exchange[\'"]\s*\]/';
+            $sets   = preg_match($assign, $src);
+            $reads  = preg_match($any, preg_replace($assign, '', $src));
+            if ($reads && !$sets) { $raw[] = basename($file); }
+        }
+        check('nothing reads the session exchange without setting it',
+              count($raw) === 0, implode(', ', $raw));
+
         /* And the same account after a real login round trip, which takes the
            other code path. */
         $regcurl("$base/logout.php");

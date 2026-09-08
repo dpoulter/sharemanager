@@ -72,7 +72,7 @@
 		};*/
 		
 		//Get Default Exchange
-		//$exchange=$_SESSION["exchange"];
+		//$exchange=session_exchange();
 		
 		//echo "symbol=$symbol";
 		
@@ -524,6 +524,21 @@
 	 */
 	function default_exchange() {
 		return defined('DEFAULT_EXCHANGE') ? DEFAULT_EXCHANGE : 'XLON';
+	}
+
+	/**
+	 * The exchange the current request works in.
+	 *
+	 * Every page read session_exchange() directly, so a session without it
+	 * produced an "Undefined array key" warning and a query matching nothing.
+	 * Registering used to create exactly that, but so does any session that
+	 * predates a fix, and the batch scripts set the key themselves. Reading it
+	 * through here means a missing key degrades to the default instead of
+	 * breaking the page.
+	 */
+	function session_exchange() {
+		return (isset($_SESSION["exchange"]) && $_SESSION["exchange"] !== "")
+		     ? $_SESSION["exchange"] : default_exchange();
 	}
 
 	function call_stock_api($symbol) {
