@@ -3,11 +3,20 @@
 For `sharemanager.advancepost.net` on the test server. Read
 [the security notes](#what-changed-because-it-is-public) before opening it up:
 several things that were harmless behind an SSH tunnel are not harmless on a
-public URL, and one of them only appears once PHP runs behind Caddy.
+public URL. They are all present in the sandbox too, so this is worth reading
+even if you are not going public yet.
 
 ## 1. Packages
 
+Caddy is not in the Ubuntu archive; add its repository first.
+
 ```sh
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+
 sudo apt update
 sudo apt install -y caddy php8.3-fpm php8.3-mysql php8.3-xml php8.3-mbstring mariadb-server git
 ```
@@ -49,46 +58,46 @@ sudo mariadb sharemanager < sql/password_resets.sql
 If you have a real `mysqldump --no-data` from the live site, use that instead
 and load only `sql/password_resets.sql` on top.
 
-## 4. constants.php
-
-`includes/constants.php` is in the repository with empty values. Fill it in on
-the server and keep it out of git:
+That leaves an empty database with no accounts, which is what a real deployment
+wants. For a demo with data in it, also run:
 
 ```sh
-sudo -u www-data editor /var/www/sharemanager/includes/constants.php
-sudo chmod 640 /var/www/sharemanager/includes/constants.php
+php -d include_path=/var/www/sharemanager/tests/fixtures:/var/www/sharemanager/includes \
+    tests/seed.php
+sudo mariadb sharemanager < tools/sandbox_data.sql
 ```
 
-Set `DATABASE`, `SERVER`, `USERNAME`, `PASSWORD`, `SITE_URL`
-(`https://sharemanager.advancepost.net`) and `EODHD_API_KEY`.
+That creates **tester / testpass**, whose password is published in this
+repository. Only do it on a host you are willing to have strangers log into,
+and delete the account before the site is anything but a demo.
 
-## 5. php-fpm
+## 4. Settings, and where the password goes
 
-Errors go to the log, never to the browser. `config.php` defaults
-`display_errors` to off; leave `SM_DISPLAY_ERRORS` unset in production.
+Do not edit `includes/constants.php`. It is tracked in git, so an edit there
+conflicts on every `git pull` and puts you one `git commit -a` away from
+publishing the database password. Every setting in it reads the environment
+first, so put the real values in the php-fpm pool instead.
 
 ```sh
 sudo install -d -o www-data -g www-data /var/log/php
-```
-
-In `/etc/php/8.3/fpm/php.ini`:
-
-```ini
-display_errors = Off
-log_errors = On
-error_log = /var/log/php/fpm-error.log
-expose_php = Off
-session.cookie_httponly = 1
-session.cookie_secure = 1
-session.cookie_samesite = Lax
-session.use_strict_mode = 1
-```
-
-```sh
+sudo cp deploy/php-fpm-pool.conf /etc/php/8.3/fpm/pool.d/sharemanager.conf
+sudo chmod 640 /etc/php/8.3/fpm/pool.d/sharemanager.conf
+sudo editor /etc/php/8.3/fpm/pool.d/sharemanager.conf   # set SM_DB_PASS
 sudo systemctl restart php8.3-fpm
 ```
 
-## 6. Caddy
+The pool also sets `display_errors = off`, an `open_basedir` confined to the
+application, and disables the shell-exec family. `SM_DISPLAY_ERRORS` is
+deliberately absent: setting it to 1 puts filesystem paths and query fragments
+on the page for anyone who can reach the site.
+
+Confirm the pool is listening before moving on:
+
+```sh
+ls -l /run/php/sharemanager.sock
+```
+
+## 5. Caddy
 
 Point the DNS A record at the server first; Caddy needs port 80 reachable for
 the ACME challenge, and gets the certificate itself.
@@ -99,7 +108,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl reload caddy
 ```
 
-## 7. Check it
+## 6. Check it
 
 ```sh
 curl -sI https://sharemanager.advancepost.net/login.php | head -1

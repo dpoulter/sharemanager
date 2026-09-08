@@ -5,32 +5,39 @@
      * Global constants.
      */
 
+    //Every setting below reads the environment first and falls back to the
+    //value in this file. This file is tracked in git, so a deployed host should
+    //set SM_DB_PASS and the rest in the environment the web server and cron run
+    //under (php-fpm: env[] in the pool config) and leave the file alone. That
+    //way a real password is never in a tracked file and never in a diff, and
+    //git pull does not conflict with local edits.
+
     // your database's name
-    define("DATABASE", "sharemanager");
+    define("DATABASE", getenv("SM_DB_NAME") ?: "sharemanager");
 
     // your database's password
-    define("PASSWORD", "mypassword");
+    define("PASSWORD", getenv("SM_DB_PASS") ?: "mypassword");
 
     // your database's server
-    define("SERVER", "localhost");
+    define("SERVER", getenv("SM_DB_HOST") ?: "localhost");
 
     // your database's username
-    define("USERNAME", "myuser");
+    define("USERNAME", getenv("SM_DB_USER") ?: "myuser");
 	
 	//smtp host name
-	define("SMTP_HOST","");
+	define("SMTP_HOST", getenv("SM_SMTP_HOST") ?: "");
 	
 	//smtp user name
-	define("SMTP_USERNAME","");
+	define("SMTP_USERNAME", getenv("SM_SMTP_USER") ?: "");
 	
 	//smtp password
-	define("SMTP_PASSWORD","");
+	define("SMTP_PASSWORD", getenv("SM_SMTP_PASS") ?: "");
 	
 	//smtp port
-	define("SMTP_PORT","587");
+	define("SMTP_PORT", getenv("SM_SMTP_PORT") ?: "587");
 	
 	//site_url
-	define ("SITE_URL","https://shares.duckdns.org");
+	define ("SITE_URL", getenv("SM_SITE_URL") ?: "https://shares.duckdns.org");
 
     //EODHD API key. Read from the environment so the key is never committed:
     //set EODHD_API_KEY in the environment the web server and cron run under.

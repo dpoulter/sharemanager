@@ -18,7 +18,7 @@ sharemanager.advancepost.net {
 	# php_fastcgi splits PATH_INFO off the URL by default, so /index.php/x.php
 	# runs index.php. config.php refuses a request carrying path info, but keep
 	# the pattern tight here too rather than relying on one of the two.
-	php_fastcgi unix//run/php/php8.3-fpm.sock {
+	php_fastcgi unix//run/php/sharemanager.sock {
 		split .php
 	}
 
