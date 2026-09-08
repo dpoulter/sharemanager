@@ -78,13 +78,24 @@ conflicts on every `git pull` and puts you one `git commit -a` away from
 publishing the database password. Every setting in it reads the environment
 first, so put the real values in the php-fpm pool instead.
 
+php-fpm refuses to start if it cannot open its error log or its session
+directory, and `systemctl` reports only "control process exited with error
+code", so create both before copying the pool in.
+
 ```sh
 sudo install -d -o www-data -g www-data /var/log/php
+sudo install -d -o www-data -g www-data -m 700 /var/lib/php/sharemanager-sessions
+
 sudo cp deploy/php-fpm-pool.conf /etc/php/8.3/fpm/pool.d/sharemanager.conf
 sudo chmod 640 /etc/php/8.3/fpm/pool.d/sharemanager.conf
 sudo editor /etc/php/8.3/fpm/pool.d/sharemanager.conf   # set SM_DB_PASS
+
+sudo php-fpm8.3 -t          # validates the config and names the offending line
 sudo systemctl restart php8.3-fpm
 ```
+
+`php-fpm8.3 -t` is worth running every time: it prints the exact file and line,
+which the systemd failure message does not.
 
 The pool also sets `display_errors = off`, an `open_basedir` confined to the
 application, and disables the shell-exec family. `SM_DISPLAY_ERRORS` is
