@@ -23,6 +23,40 @@ cross-references were between themselves (`testheader.php` prefetched
   in the document root and published the full PHP configuration, including
   extension versions, paths and environment, to anyone who found the URL.
 
+## archive/public, second pass
+
+Twelve more pages, all unreferenced by any link, form action, redirect, include
+or script.
+
+Five JSON endpoints — `portfolio_json.php`, `quote_json.php`,
+`performance_json.php`, `company_search_json.php`, `login_json.php`. These look
+like an API for a client that was never built, or one that no longer exists.
+Two of them carried a real problem: `portfolio_json.php` and `quote_json.php`
+resolve the account with `SELECT * FROM users WHERE username = 'dale'` rather
+than from the session, so any logged-in caller got that account's portfolio.
+Archiving them removes the leak; if the client turns out to exist, fix that
+before restoring either.
+
+`login_json.php` verified passwords with `crypt($password, $row["hash"])`, while
+`login.php` uses `crypt($password, 'sharemanager')`. Two different schemes
+against the same `users.hash` column, so an account working on one path would
+not necessarily work on the other. Worth resolving before this one comes back.
+
+Seven orphaned pages — `chart.php`, `edit_screen.php`, `history.php`,
+`navbar.php`, `new_screen.php`, `reset.php`, `search.php`.
+
+- `search.php` held the one live SQL injection in the application. It is fixed
+  in the archived copy, but nothing ever called it: the navbar typeahead it
+  appeared to serve uses a hardcoded list, `['AAA','BBB','CCC']`, in
+  `templates/scripts.js`.
+- `reset.php` was a logged-in change-password form. Account recovery is
+  unaffected — `reset_passwd.php` handles the emailed link and is still served,
+  and is one of the four pages `includes/config.php` exempts from the login
+  check — but there is now no in-application way to change a password while
+  logged in.
+- `navbar.php` is superseded by the navigation inside `templates/header.php`.
+- `chart.php` needs `phpChart_Lite/`, which is not in the repository.
+
 ## archive/public-backups
 
 Editor backup files (`*.php~`, `*.bak`) that were committed to `public/` and

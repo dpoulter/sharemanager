@@ -569,11 +569,11 @@
         $curl("$base/login.php", 'username=tester&password=testpass');
 
         $pages = ['index.php','performance.php','portfolio.php','dividends.php','cash_history.php',
-                  'edit.php','topup.php','screen_list.php','quote.php','search.php','criteria.php',
-                  'criteria_list.php','screen_criteria.php','new_screen.php','screening.php',
-                  'strategies.php','history.php','sell.php','buy.php','backtest.php',
+                  'edit.php','topup.php','screen_list.php','quote.php','criteria.php',
+                  'criteria_list.php','screen_criteria.php','screening.php','sector_companies.php',
+                  'strategies.php','sell.php','buy.php','backtest.php','share_screen.php',
                   'backtest_results.php','statistics.php','statistics_form.php','download_prices.php',
-                  'register.php','reset.php','reset_passwd.php','navbar.php'];
+                  'register.php','reset_passwd.php'];
         $fatal = [];
         foreach ($pages as $page) {
             $body = (string)$curl("$base/$page");
@@ -582,14 +582,20 @@
         check(count($pages) . ' pages render without a fatal', count($fatal) === 0,
               'fatal: ' . implode(', ', $fatal));
 
-        /* $_GET["symbol"] reaches search.php straight from the navbar typeahead
-           and used to be concatenated into the SQL. */
-        $hostile = (string)$curl("$base/search.php?symbol=" . rawurlencode("x') OR 1=1 -- "));
-        $normal  = (string)$curl("$base/search.php?symbol=AAA");
-        check('search rejects an injection attempt instead of returning everything',
-              trim($hostile) === '[]', trim($hostile));
-        check('search still matches a real symbol',
-              strpos($normal, 'AAA') !== false, trim($normal));
+        /* search.php carried the one live SQL injection in the application and is
+           now archived out of the document root, so there is nothing left to
+           probe over HTTP. What is still worth asserting is that no page still
+           in public/ concatenates request data into a query. */
+        $interpolating = [];
+        foreach (glob(dirname(__DIR__) . '/public/*.php') as $page) {
+            $src = file_get_contents($page);
+            if (preg_match('/query\s*\(\s*"[^"]*"\s*\.\s*\$_(GET|POST|REQUEST|COOKIE)/', $src)
+                || preg_match('/query\s*\(\s*"[^"]*\$_(GET|POST|REQUEST|COOKIE)/', $src)) {
+                $interpolating[] = basename($page);
+            }
+        }
+        check('no served page interpolates request data into SQL',
+              count($interpolating) === 0, implode(', ', $interpolating));
 
         @unlink($jar);
     }
