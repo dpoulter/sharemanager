@@ -559,8 +559,11 @@
     }
     else {
         $jar = tempnam(sys_get_temp_dir(), 'smjar');
-        $curl = function ($url, $post = null) use ($jar) {
+        /* -L matters: a page that correctly redirects returns an empty body
+           without it, which reads as a broken page rather than a working one. */
+        $curl = function ($url, $post = null, $follow = true) use ($jar) {
             $cmd = 'curl -s -m 30 -b ' . escapeshellarg($jar) . ' -c ' . escapeshellarg($jar);
+            if ($follow) { $cmd .= ' -L'; }
             if ($post !== null) { $cmd .= ' -d ' . escapeshellarg($post); }
             return shell_exec($cmd . ' ' . escapeshellarg($url) . ' 2>/dev/null');
         };
@@ -568,10 +571,10 @@
         $curl("$base/login.php");
         $curl("$base/login.php", 'username=tester&password=testpass');
 
-        $pages = ['index.php','performance.php','portfolio.php','dividends.php','cash_history.php',
+        $pages = ['index.php','performance.php','dividends.php','cash_history.php',
                   'edit.php','topup.php','screen_list.php','quote.php','criteria.php',
                   'criteria_list.php','screen_criteria.php','screening.php','sector_companies.php',
-                  'strategies.php','sell.php','buy.php','backtest.php','share_screen.php',
+                  'strategies.php','sell.php','buy.php','backtest.php',
                   'backtest_results.php','statistics.php','statistics_form.php','download_prices.php',
                   'register.php','reset_passwd.php'];
         $fatal = [];
@@ -609,6 +612,39 @@
         check('an unknown symbol is handled without a warning or fatal',
               !preg_match('/(Fatal error|Parse error|Warning:)/i', $unknown),
               substr(strip_tags($unknown), 0, 150));
+
+        /* quote.php used to fall back to rendering quote_form.php, which is the
+           dashboard template and needs five variables index.php builds. Passing
+           only a title left every panel iterating an undefined variable. Both
+           fallbacks now go somewhere that can populate what it renders. */
+        $noSymbol = (string)$curl("$base/quote.php");
+        check('quote.php with no symbol lands somewhere populated',
+              !preg_match('/Undefined variable/i', $noSymbol)
+              && substr_count($noSymbol, 'quote.php?symbol=') >= 10,
+              substr(strip_tags($noSymbol), 0, 160));
+
+        /* The general form: a template that iterates a variable it was not
+           given. Catches the next caller that renders a template half-populated,
+           rather than only the case already fixed. */
+        $undef = [];
+        foreach ($pages as $page) {
+            $body = (string)$curl("$base/$page");
+            if (preg_match('/Undefined variable/i', $body)) { $undef[] = $page; }
+        }
+        foreach (['quote.php', 'quote.php?symbol=AAA', 'quote.php?symbol=ZZZZ'] as $u) {
+            $body = (string)$curl("$base/$u");
+            if (preg_match('/Undefined variable/i', $body)) { $undef[] = $u; }
+        }
+        /* screening.php renders templates/screen.php with MomentumList, TrendList
+           and EarningsGrowth, but that template belongs to screen_list.php and
+           iterates $stats and $indicators, which screening.php does not have.
+           The two have drifted apart; fixing it means either giving screening.php
+           the right data or retiring it, so it is recorded rather than skipped. */
+        $known_undef = ['screening.php'];
+        sort($undef); sort($known_undef);
+        check('no page renders a template with a variable it was not given (1 known)',
+              $undef === $known_undef,
+              'now: ' . (implode(', ', $undef) ?: 'none') . ' | expected: ' . implode(', ', $known_undef));
 
         /* A freshly registered account is the case the seeded user cannot cover.
            register.php logs the user straight in without going through

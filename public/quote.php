@@ -157,15 +157,20 @@
 		
 		}
 		else
-			render("quote_form.php", ["title" => "Stock Quote"]);
+			//quote_form.php is the dashboard template and needs five variables
+			//index.php builds for it. Rendering it from here passed only a
+			//title, so every panel foreach'd over an undefined variable.
+			//index.php apologises for an unknown symbol; do the same.
+			apologize("Invalid Symbol.");
     }
 
 	else {  
 		 //get stock symbols
         //$stock_symbols = query("SELECT symbol, description FROM stock_symbols where enabled='Y'");
         // else render form
-        //render("quote_form.php", ["title" => "Stock Quote","symbols" => $stock_symbols]);
-		  render("quote_form.php", ["title" => "Stock Quote"]);
+        //No symbol to quote. The dashboard lives at index.php, which knows how
+		//to populate it; rendering its template from here cannot.
+		  redirect("index.php");
     }
 
 ?>

@@ -57,6 +57,16 @@ Seven orphaned pages — `chart.php`, `edit_screen.php`, `history.php`,
 - `navbar.php` is superseded by the navigation inside `templates/header.php`.
 - `chart.php` needs `phpChart_Lite/`, which is not in the repository.
 
+## archive/public, third pass
+
+`portfolio.php` was a template fragment sitting in the document root. It opens
+with `<h3>Portfolio</h3>` and expects `$cash`, `$total_value` and
+`$inactive_positions` to be supplied by whatever renders it. `render()` resolves
+`"portfolio.php"` to `templates/portfolio.php`, which is the copy
+`performance.php` actually uses, so the one in `public/` was reachable only as a
+direct URL and warned seven times when fetched. The two copies had diverged by
+83 lines; the templates one is the live copy.
+
 ## archive/public-backups
 
 Editor backup files (`*.php~`, `*.bak`) that were committed to `public/` and
