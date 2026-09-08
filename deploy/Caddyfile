@@ -1,8 +1,19 @@
 # Caddy vhost for sharemanager.
 #
-#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile      (or import it)
+# Install it as its OWN file and import it. Never copy it over
+# /etc/caddy/Caddyfile: that file may already be serving other sites on this
+# host, and replacing it takes them all down with an SSL error, because Caddy
+# stops holding certificates for names no longer in its config.
+#
+#   sudo mkdir -p /etc/caddy/conf.d
+#   sudo cp deploy/Caddyfile /etc/caddy/conf.d/sharemanager.caddy
+#
+# then make sure /etc/caddy/Caddyfile has this line, once, at the top level:
+#
+#   import /etc/caddy/conf.d/*.caddy
+#
 #   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-#   sudo systemctl restart caddy
+#   sudo systemctl reload caddy
 #
 # restart, not reload: reload fails outright if the service is not already
 # running, which it is not on a first install. Caddy needs ports 80 and 443, so
