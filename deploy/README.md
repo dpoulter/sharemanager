@@ -119,10 +119,19 @@ and load only `sql/password_resets.sql` on top.
 That leaves an empty database with no accounts, which is what a real deployment
 wants. For a demo with data in it, also run:
 
+`tests/seed.php` reads its connection from `tests/fixtures/constants.php`, which
+takes the `SM_TEST_*` variables and otherwise defaults to the throwaway test
+database. Point it at this one explicitly or it will not write here at all:
+
 ```sh
-php -d include_path=/var/www/sharemanager/tests/fixtures:/var/www/sharemanager/includes \
-    tests/seed.php
+cd /var/www/sharemanager
+sudo SM_TEST_DB=sharemanager SM_TEST_HOST=127.0.0.1 \
+     SM_TEST_USER=shares SM_TEST_PASS='<the database password>' \
+     php -d include_path=/var/www/sharemanager/tests/fixtures:/var/www/sharemanager/includes \
+     tests/seed.php
 sudo mariadb sharemanager < tools/sandbox_data.sql
+
+sudo mariadb sharemanager -e "select id, username from users;"
 ```
 
 That creates **tester / testpass**, whose password is published in this
