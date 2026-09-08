@@ -31,7 +31,19 @@ sudo mkdir -p /var/www
 sudo git clone https://github.com/dpoulter/sharemanager /var/www/sharemanager
 cd /var/www/sharemanager
 sudo git checkout claude/code-review-z7ysrs
-sudo chown -R www-data:www-data /var/www/sharemanager
+
+# The web server only ever reads the code, so give it group read and keep
+# ownership with root. Handing the tree to www-data would let a bug in the
+# application rewrite the application, and would make every later `sudo git
+# pull` fail with "detected dubious ownership".
+sudo chown -R root:www-data /var/www/sharemanager
+sudo chmod -R g+rX,o-rwx /var/www/sharemanager
+```
+
+Later updates are then just:
+
+```sh
+cd /var/www/sharemanager && sudo git pull
 ```
 
 Only `public/` is served. `includes/` (which holds `constants.php` and the
