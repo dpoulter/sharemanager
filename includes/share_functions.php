@@ -1259,6 +1259,15 @@ function time_to_decimal($time) {
 	
 		 // numerically indexed array of articles
 		$articles = [];
+
+		//The News tab is one tab on a page that is mostly about something else,
+		//so nothing here is worth a fatal. simplexml comes from php-xml, which
+		//is a separate package like php-curl was, and the fetch needs
+		//allow_url_fopen. Missing either means no articles, not a dead page.
+		if (!function_exists("simplexml_load_string") || !ini_get("allow_url_fopen")) {
+			write_log("get_articles","news unavailable: no simplexml or allow_url_fopen is off");
+			return $articles;
+		}
 			
 		//Stock Exchange Codes
 		$exchanges=['LSE','LON'];
@@ -1271,10 +1280,14 @@ function time_to_decimal($time) {
 			$symbol=$exchange.':'.$share[0];
 		
 			// headers for proxy servers
+			//The User-Agent used to be built from curl_version(), which needs
+			//ext-curl. The fetch itself is file_get_contents, so curl was never
+			//doing the work - it only supplied a version string - and on a host
+			//without php-curl the call was a fatal that took the page with it.
 			$headers = [
 				"Accept" => "*/*",
 				"Connection" => "Keep-Alive",
-				"User-Agent" => sprintf("curl/%s", curl_version()["version"])
+				"User-Agent" => "sharemanager/1.0 (+php " . PHP_VERSION . ")"
 			];
 
 			// download RSS from Google News

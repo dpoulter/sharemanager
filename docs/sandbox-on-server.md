@@ -385,8 +385,9 @@ mysql -e "DROP DATABASE sharemanager_sandbox; DROP USER 'sandbox'@'localhost';"
   they use jpgraph when it is installed and a small SVG line chart otherwise.
   The fallback deliberately avoids GD, which ships as a separate `php-gd`
   package, so no extension needs installing.
-- **News.** The News tab fetches Google News RSS, so it needs outbound network.
-  Without it the tab says there are no articles rather than hanging or failing.
+- **News.** The News tab fetches Google News RSS, so it needs outbound network,
+  the `php-xml` package for simplexml, and `allow_url_fopen` on. Missing any of
+  them means the tab reports no articles; it never hangs or fails the page.
 - **Live quotes and price fetches.** No `EODHD_API_KEY` is set, so these return
   empty rather than erroring. Everything on screen comes from generated data.
 - **Email.** No SMTP is configured, so password reset cannot send.

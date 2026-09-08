@@ -685,6 +685,28 @@
               strpos($articles_src, 'exit;') === false);
         check('the news fetch is bounded by a timeout',
               strpos($articles_src, '"timeout"') !== false);
+
+        /* The News tab runs on every quote page load. Its User-Agent was built
+           from curl_version() even though the fetch is file_get_contents, so
+           ext-curl only supplied a version string - and php-curl is a separate
+           package, so on a host without it the call was a fatal that took the
+           whole page down. simplexml (php-xml) and allow_url_fopen are the same
+           shape of dependency. Run the function under each of those hosts. */
+        $include_path = __DIR__ . '/fixtures' . PATH_SEPARATOR . $INCLUDES;
+        $body = 'require("functions.php"); require("share_functions.php");'
+              . ' $a = get_articles("AAA");'
+              . ' echo is_array($a) ? "ARRAY" : "NOT-ARRAY";';
+        foreach (['-d disable_functions=curl_version,curl_init,curl_exec,curl_setopt,curl_close'
+                      => 'ext-curl',
+                  '-d disable_functions=simplexml_load_string' => 'ext-simplexml',
+                  '-d allow_url_fopen=0'                       => 'allow_url_fopen'] as $flag => $what) {
+            $probe_out = (string)shell_exec('php -d include_path=' . escapeshellarg($include_path)
+                                            . ' ' . $flag . ' -r ' . escapeshellarg($body) . ' 2>&1');
+            check("the quote page survives a host without $what",
+                  strpos($probe_out, 'ARRAY') !== false
+                  && stripos($probe_out, 'Fatal error') === false,
+                  trim(substr($probe_out, 0, 200)));
+        }
         check('the news tab renders rather than being commented out',
               strpos($q, 'id="news"') !== false
               && preg_match('/id="news".{0,400}(No news articles|<a href=)/s', $q) === 1);
