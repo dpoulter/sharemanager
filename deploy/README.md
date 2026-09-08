@@ -144,6 +144,14 @@ sudo install -d -o caddy -g caddy -m 750 /var/log/caddy
 ```sh
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
 sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+# validate runs as root and opens the log writer, which leaves
+# sharemanager.log owned by root in a directory owned by caddy. The service
+# runs as caddy and then cannot write to its own log file, which reads as
+# "permission denied" on a directory that looks correctly owned. Hand the
+# whole directory back after validating.
+sudo chown -R caddy:caddy /var/log/caddy
+
 sudo systemctl restart caddy
 sudo systemctl status caddy --no-pager
 ```

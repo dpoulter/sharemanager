@@ -13,7 +13,6 @@
 # has to reach port 80.
 
 sharemanager.advancepost.net {
-
 	# Only public/ is ever served. includes/ holds constants.php with the
 	# database password, and tools/, tests/, sql/ and .git are not web content.
 	root * /var/www/sharemanager/public
