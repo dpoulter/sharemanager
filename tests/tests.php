@@ -582,6 +582,34 @@
         check(count($pages) . ' pages render without a fatal', count($fatal) === 0,
               'fatal: ' . implode(', ', $fatal));
 
+        /* The crawl above only ever loaded quote.php bare, with no symbol, so it
+           never reached get_share_info() and missed three defects at once: a
+           missing stock_symbols column, a print_r dumping the API response onto
+           the page, and a price read before the lookup()-returned-false guard.
+           Load it the way the dashboard links to it. */
+        $quote_fatal = $quote_warn = $quote_dump = [];
+        foreach (['AAA', 'HHH', 'LLL'] as $sym) {
+            $body = (string)$curl("$base/quote.php?symbol=$sym&page=quote_form.php");
+            if (preg_match('/(Fatal error|Parse error)/i', $body)) { $quote_fatal[] = $sym; }
+            if (preg_match('/Warning:/i', $body))                  { $quote_warn[]  = $sym; }
+            /* print_r output has a distinctive shape and should never reach the
+               browser; the log is where it belongs. */
+            if (preg_match('/Array\s*\(\s*\[/', $body))         { $quote_dump[]  = $sym; }
+        }
+        check('a quote page loads for a real symbol', count($quote_fatal) === 0,
+              'fatal for: ' . implode(', ', $quote_fatal));
+        check('a quote page raises no warnings', count($quote_warn) === 0,
+              'warnings for: ' . implode(', ', $quote_warn));
+        check('a quote page does not print a debug dump', count($quote_dump) === 0,
+              'dump on: ' . implode(', ', $quote_dump));
+
+        /* An unknown symbol takes the lookup()-returns-false path, which is what
+           the misplaced log line tripped over. */
+        $unknown = (string)$curl("$base/quote.php?symbol=ZZZZ&page=quote_form.php");
+        check('an unknown symbol is handled without a warning or fatal',
+              !preg_match('/(Fatal error|Parse error|Warning:)/i', $unknown),
+              substr(strip_tags($unknown), 0, 150));
+
         /* A freshly registered account is the case the seeded user cannot cover.
            register.php logs the user straight in without going through
            login.php, and it did not set users.default_exchange or

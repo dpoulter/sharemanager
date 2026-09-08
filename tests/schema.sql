@@ -37,7 +37,14 @@ create table stock_symbols (
   exchange varchar(10),
   enabled  char(1),
   sector   varchar(100),
+  -- market, industry_group and logo are read by the quote page
+  -- (share_functions.php get_share_info) and by scrape_logos.php. Nothing in
+  -- the seeded pipeline writes them, which is why they were missed until a
+  -- quote page was actually opened.
+  market   varchar(100),
+  industry_group varchar(100),
   industry varchar(100),
+  logo     varchar(255),
   key (symbol, exchange),
   -- search.php runs MATCH(symbol,description) AGAINST(...), which needs a
   -- FULLTEXT index over exactly those columns or MySQL raises error 1191.

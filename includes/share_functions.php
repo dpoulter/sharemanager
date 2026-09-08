@@ -1207,9 +1207,12 @@ function time_to_decimal($time) {
 			// Get Share info
 			$yahoo_info = lookup($symbol);
 
-			write_log('get_share_info','price='.$yahoo_info["price"]);
-	
+			//The log line used to sit above this guard, so an unknown symbol or
+			//an unset API key made lookup() return false and reading ["price"]
+			//off it warned on every quote page.
 			if($yahoo_info!==false) {
+
+				debug_log('get_share_info','price='.$yahoo_info["price"]);
 			
 				$share_info=["symbol"=>$symbol,"name" => $share_query[0]["name"],"market" => $share_query[0]["market"],"sector" => $share_query[0]["sector"],"industry_group" => $share_query[0]["industry_group"],"industry" => $share_query[0]["industry"],"price" => $yahoo_info["price"],"capital" => $yahoo_info["market_cap"],"shares" => $shares,"change"=>  $yahoo_info["change"],"day_range"=>  $yahoo_info["day_range"],"52w_low"=>  $yahoo_info["52w_low"],"52w_high"=>  $yahoo_info["52w_high"]];
 		

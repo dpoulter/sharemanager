@@ -24,7 +24,7 @@
     $LON_SYMBOL   = 'ZZZ';
 
     $insert_price  = $pdo->prepare("insert into historical_prices (symbol,exchange,date,price) values (?,?,?,?)");
-    $insert_symbol = $pdo->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,industry) values (?,?,?,?,?,?,?)");
+    $insert_symbol = $pdo->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market,industry_group,industry,logo) values (?,?,?,?,?,?,?,?,?,?)");
 
     $universe = [];
     foreach ($XLON_SYMBOLS as $i => $symbol) {
@@ -37,7 +37,9 @@
     foreach ($universe as [$symbol, $exchange, $base_price, $i]) {
 
         $insert_symbol->execute([$symbol, $symbol . ' Test PLC', $symbol . ' Test PLC ordinary shares',
-                                 $exchange, 'Y', 'Sector ' . ($i % 3), 'Industry ' . ($i % 4)]);
+                                 $exchange, 'Y', 'Sector ' . ($i % 3),
+                                 $exchange === 'XLON' ? 'Main Market' : 'AIM',
+                                 'Industry Group ' . ($i % 2), 'Industry ' . ($i % 4), null]);
 
         $date = new DateTime($START_DATE);
         $end  = new DateTime('today');

@@ -107,7 +107,10 @@
 			write_log("functions","Trying symbol=$symbol");
     //    	$string = file_get_contents("https://www.worldtradingdata.com/api/v1/stock?symbol=$symbol&api_token=ALFvINqaRaN1WSsJqL5CA6BGG79Hooi0siMCcHi1G5PUWm16f6eMa8MYD8Bi");
 	//		$arrJson = json_decode($string, true);
-			write_log("functions","API returned: ".print_r($arrJson));
+			//print_r needs its second argument to return a string. Without it the
+			//array is printed straight onto the page and the log records "1",
+			//so the quote page carried a dump of the API response.
+			write_log("functions","API returned: ".print_r($arrJson, true));
 //		}
 		
 		if (!isset($arrJson["data"][0]["symbol"]))
