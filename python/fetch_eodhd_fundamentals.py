@@ -20,6 +20,7 @@ from pyrate_limiter import Duration, RequestRate, Limiter
 from requests import Session
 
 from functions import query, db_config
+from pipeline import pipeline_asofdate
 from eodhd import get_fundamentals, flatten_fundamentals, EodhdError
 
 EXCHANGE = 'XLON'
@@ -39,7 +40,9 @@ session = CachedLimiterSession(
 
 
 def main():
-    asofdate = sys.argv[1] if len(sys.argv) > 1 else date.today().strftime('%Y-%m-%d')
+    # Must match what get_api_stats.py reads, or the join finds nothing and the
+    # fundamentals never reach statistics. Shared rather than restated.
+    asofdate = sys.argv[1] if len(sys.argv) > 1 else pipeline_asofdate()
 
     rows = query("select symbol from stock_symbols where enabled='Y' "
                  "and exchange='" + EXCHANGE + "' order by symbol")

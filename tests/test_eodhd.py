@@ -73,6 +73,28 @@ check("a malformed document yields nothing rather than raising",
       flatten_fundamentals(None) == {} and flatten_fundamentals("nope") == {}
       and flatten_fundamentals({"Valuation": "not a dict"}) == {})
 
+# The loader stamps stock_info.asofdate and get_api_stats.py reads it back with
+# an exact match, so the two must agree. They were separate expressions in
+# separate files and drifted: the loader used today, the reader yesterday, so
+# the join matched nothing and the fundamentals never reached statistics. Both
+# now call the same function; these tests pin that it stays one function and
+# stays yesterday.
+import datetime                                                        # noqa: E402
+from pipeline import pipeline_asofdate                                 # noqa: E402
+
+expected = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+check("the pipeline as-of date is yesterday", pipeline_asofdate() == expected,
+      "{} != {}".format(pipeline_asofdate(), expected))
+
+loader = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
+                           'python', 'fetch_eodhd_fundamentals.py')).read()
+reader = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
+                           'python', 'get_api_stats.py')).read()
+check("the loader takes its date from the shared function",
+      'pipeline_asofdate()' in loader and 'date.today()' not in loader)
+check("the reader takes its date from the shared function",
+      'pipeline_asofdate()' in reader and 'timedelta(days=1)' not in reader)
+
 check("bare codes get the LSE suffix", eodhd_symbol("VOD") == "VOD.LSE")
 check("an already-suffixed code is left alone", eodhd_symbol("VOD.LSE") == "VOD.LSE")
 
