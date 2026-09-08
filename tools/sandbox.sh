@@ -36,6 +36,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Settings persist in tools/sandbox.env if it exists, so they do not have to be
+# re-exported in every new shell. Real environment variables still win, and the
+# file is gitignored because it holds a password.
+ENV_FILE="$TOOLS_DIR/sandbox.env"
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  set -a; . "$ENV_FILE"; set +a
+fi
+
 DB="${SM_SANDBOX_DB:-sharemanager_sandbox}"
 HOST="${SM_SANDBOX_HOST:-127.0.0.1}"
 USER="${SM_SANDBOX_USER:-smtest}"
@@ -55,11 +64,22 @@ MYSQL=$(command -v mariadb || command -v mysql) || { echo "no mysql/mariadb clie
 db(){ "$MYSQL" -h"$HOST" -u"$USER" -p"$PASS" "$@"; }
 
 db -e "select 1" >/dev/null 2>&1 || {
-  echo "cannot connect to $USER@$HOST" >&2
-  echo "create the database and user first, e.g.:" >&2
-  echo "  create database $DB;" >&2
-  echo "  create user '$USER'@'%' identified by '<password>';" >&2
-  echo "  grant all on $DB.* to '$USER'@'%';" >&2
+  echo "cannot connect as '$USER' to $HOST" >&2
+  echo >&2
+  if [ -f "$ENV_FILE" ]; then
+    echo "settings came from $ENV_FILE; check the user and password in it." >&2
+  else
+    echo "no $ENV_FILE, so these are the built-in defaults." >&2
+    echo "If you created a different user, write the real settings once:" >&2
+    echo >&2
+    echo "  cp $TOOLS_DIR/sandbox.env.example $ENV_FILE" >&2
+    echo "  \$EDITOR $ENV_FILE" >&2
+    echo >&2
+    echo "Or create the user these defaults expect:" >&2
+    echo "  mysql -e \"create database if not exists $DB;" >&2
+    echo "             create user '$USER'@'localhost' identified by '<password>';" >&2
+    echo "             grant all on $DB.* to '$USER'@'localhost';\"" >&2
+  fi
   exit 2; }
 
 # tests/fixtures/constants.php reads the SM_TEST_* names, so map onto those.

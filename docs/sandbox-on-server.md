@@ -105,15 +105,19 @@ If that succeeds, stop and fix the grant before going further.
 
 ## 4. Build the data
 
+Write the settings to a file rather than exporting them, or you will have to
+re-export in every new shell and the script will fall back to its defaults and
+fail to connect:
+
 ```sh
 cd /var/www/shares-sandbox
-export SM_SANDBOX_DB=sharemanager_sandbox
-export SM_SANDBOX_HOST=127.0.0.1
-export SM_SANDBOX_USER=sandbox
-export SM_SANDBOX_PASS='pick-something-random'
+cp tools/sandbox.env.example tools/sandbox.env
+$EDITOR tools/sandbox.env          # set SM_SANDBOX_USER and SM_SANDBOX_PASS
 
 tools/sandbox.sh --no-serve --rebuild
 ```
+
+`tools/sandbox.env` is gitignored, because it holds the password.
 
 You should see roughly:
 
@@ -389,6 +393,7 @@ mysql -e "DROP DATABASE sharemanager_sandbox; DROP USER 'sandbox'@'localhost';"
 | Blank page, no error | `display_errors` off. Check the web server error log. |
 | Changes to a file appear to do nothing | `php -S` runs under the `cli-server` SAPI, where `opcache.enable` applies rather than `opcache.enable_cli`. Set `opcache.enable=0`, as the unit above does. |
 | Dashboard panels empty | Data not built, or built before this branch. Re-run with `--rebuild`. |
+| "cannot connect as 'smtest'" | Settings not reaching the script. Put them in `tools/sandbox.env`; exports do not survive a new shell. |
 | "refusing to run: must end in _sandbox" | Working as intended — the database name is the guard against pointing this at production. |
 
 ---

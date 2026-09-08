@@ -14,3 +14,6 @@ python/yfinance.cache
 # Python bytecode from the data loaders and tests
 python/__pycache__/
 tests/__pycache__/
+
+# Sandbox database settings, holds a password
+tools/sandbox.env

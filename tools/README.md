@@ -28,8 +28,20 @@ create user 'smtest'@'%' identified by 'smtest';
 grant all on sharemanager_sandbox.* to 'smtest'@'%';
 ```
 
-Override with `SM_SANDBOX_DB`, `SM_SANDBOX_HOST`, `SM_SANDBOX_USER`,
-`SM_SANDBOX_PASS`. The script **refuses to run unless the database name ends in
+### Settings
+
+Defaults are `sharemanager_sandbox` / `smtest` / `smtest` on `127.0.0.1`. If you
+created a different user, write the real values once instead of exporting them
+in every new shell:
+
+```sh
+cp tools/sandbox.env.example tools/sandbox.env
+$EDITOR tools/sandbox.env
+```
+
+`tools/sandbox.env` is gitignored, because it holds a password. Environment
+variables of the same names still override it, which is what the systemd unit in
+the deployment guide relies on. The script **refuses to run unless the database name ends in
 `_sandbox`**, because building drops and recreates every table.
 
 Your own `includes/constants.php` is never read: the sandbox puts
