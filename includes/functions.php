@@ -514,6 +514,10 @@
 		return defined('EODHD_API_KEY') ? EODHD_API_KEY : '';
 	}
 
+	function eodhd_base_url() {
+		return rtrim(defined('EODHD_BASE_URL') ? EODHD_BASE_URL : 'https://eodhd.com/api', '/');
+	}
+
 	function eodhd_exchange() {
 		return defined('EODHD_EXCHANGE') ? EODHD_EXCHANGE : 'LSE';
 	}
@@ -544,29 +548,61 @@
 		     ? $_SESSION["exchange"] : default_exchange();
 	}
 
+	/**
+	 * Last close from the price history, in the shape lookup() reads.
+	 *
+	 * Used when no live quote is available. Reporting "Invalid Symbol" because
+	 * the quote API is unreachable is wrong: the symbol is fine, the price is
+	 * merely stale, and a stale price is far more useful than an error.
+	 */
+	function last_close_rows($symbol) {
+
+		$rows = query("select date, price from historical_prices
+		               where symbol=? and exchange=? and price is not null
+		               order by date desc limit 1",
+		              $symbol, session_exchange());
+
+		if (count($rows) === 0) {
+			return [];
+		}
+
+		return [[
+			"symbol" => $symbol,
+			"close"  => $rows[0]["price"],
+			"date"   => $rows[0]["date"],
+			"stale"  => true,
+		]];
+	}
+
 	function call_stock_api($symbol) {
 
 		write_log('call_stock_api',"symbol=$symbol");
 
 		if (eodhd_api_key()===''){
-			write_log('call_stock_api','EODHD_API_KEY is not set');
-			return json_encode(["data" => []]);
+			debug_log('call_stock_api','no EODHD key, using the last close');
+			return json_encode(["data" => last_close_rows($symbol)]);
 		}
 
 		//stock_symbols holds the bare code; EODHD wants CODE.LSE
 		$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.eodhd_exchange() : $symbol;
 
 		//Never log the URL: it carries the API key.
-		$url="https://eodhd.com/api/real-time/".rawurlencode($eodhd_symbol)
+		$url=eodhd_base_url()."/real-time/".rawurlencode($eodhd_symbol)
 		    ."?fmt=json&api_token=".rawurlencode(eodhd_api_key());
 
 		$body=@file_get_contents($url);
 		if ($body===false){
-			write_log('call_stock_api',"request failed for $eodhd_symbol");
-			return json_encode(["data" => []]);
+			write_log('call_stock_api',"request failed for $eodhd_symbol, using the last close");
+			return json_encode(["data" => last_close_rows($symbol)]);
 		}
 
-		return json_encode(["data" => eodhd_quote_to_rows(json_decode($body,true),$symbol)]);
+		$rows = eodhd_quote_to_rows(json_decode($body,true),$symbol);
+		if (count($rows) === 0) {
+			write_log('call_stock_api',"no quote for $eodhd_symbol, using the last close");
+			$rows = last_close_rows($symbol);
+		}
+
+		return json_encode(["data" => $rows]);
 	}
 
 	/**

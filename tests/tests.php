@@ -538,13 +538,29 @@
     $docroot = dirname(__DIR__) . '/public';
     $port = 8099;
     $include_path = __DIR__ . '/fixtures' . PATH_SEPARATOR . dirname(__DIR__) . '/includes';
-    $server = 'php -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($docroot)
+    $server = 'EODHD_BASE_URL=http://127.0.0.1:' . ($port + 10)
+            . ' EODHD_API_KEY=test-stub-token'
+            . ' php -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($docroot)
             . ' -d include_path=' . escapeshellarg($include_path)
             /* php -S runs under the cli-server SAPI, where opcache.enable applies
                rather than opcache.enable_cli, so without this it serves stale code. */
             . ' -d opcache.enable=0 -d default_socket_timeout=5 -d display_errors=1'
             . ' > /dev/null 2>&1 & echo $!';
     $pid = (int)trim(shell_exec($server));
+
+    /* The quote page calls the price API. Without a stub every symbol looks
+       invalid, so start one on its own port - php -S serves one request at a
+       time, and a server calling a stub inside itself would deadlock. */
+    $stub_port = $port + 10;
+    $stub_cmd = 'SM_TEST_DB=' . escapeshellarg(DATABASE)
+              . ' SM_SANDBOX_DB=' . escapeshellarg(DATABASE)
+              . ' SM_SANDBOX_HOST=' . escapeshellarg(SERVER)
+              . ' SM_SANDBOX_USER=' . escapeshellarg(USERNAME)
+              . ' SM_SANDBOX_PASS=' . escapeshellarg(PASSWORD)
+              . ' php -S 127.0.0.1:' . $stub_port . ' '
+              . escapeshellarg(dirname(__DIR__) . '/tools/eodhd_stub.php')
+              . ' > /dev/null 2>&1 & echo $!';
+    $stub_pid = (int)trim(shell_exec($stub_cmd));
 
     $base = "http://127.0.0.1:$port";
     $up = false;
@@ -605,6 +621,19 @@
               'warnings for: ' . implode(', ', $quote_warn));
         check('a quote page does not print a debug dump', count($quote_dump) === 0,
               'dump on: ' . implode(', ', $quote_dump));
+
+        /* The quote page is the deepest read path in the application: profile,
+           valuation, ratings, health scores and three financial statements. It
+           reached none of that while every symbol looked invalid, so assert it
+           renders the content rather than only that it does not crash. */
+        $q = (string)$curl("$base/quote.php?symbol=AAA&page=quote_form.php");
+        foreach (['Revenue' => 'income statement',
+                  'Total Assets' => 'balance sheet',
+                  'Operating Cash Flow' => 'cash flow statement'] as $needle => $what) {
+            check("the quote page renders the $what", strpos($q, $needle) !== false);
+        }
+        check('the quote page is substantial, not a stub', strlen($q) > 20000,
+              strlen($q) . ' bytes');
 
         /* An unknown symbol takes the lookup()-returns-false path, which is what
            the misplaced log line tripped over. */
@@ -742,6 +771,7 @@
     }
 
     if ($pid > 0) { exec("kill $pid 2>/dev/null"); }
+    if (!empty($stub_pid)) { exec("kill $stub_pid 2>/dev/null"); }
 
     printf("\n%s  %d passed, %d failed\n\n",
            $failed === 0 ? "\033[32mALL PASSED\033[0m" : "\033[31mFAILURES\033[0m", $passed, $failed);

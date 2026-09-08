@@ -15,7 +15,8 @@ drop table if exists historical_prices, stock_symbols, screen_indicators,
   stock_info, strategy_orders, strategy_targets, strategy_positions,
   strategy_accounts, purchases, shares, dividends, cash_history, history,
   portfolio_performance, screen, screen_criteria, screen_build, price_momentum,
-  strategy, strategy_shares, backtest_results, performance, financial_statement_items,
+  strategy, strategy_shares, backtest_results, performance, price_valuation,
+  health_indicators, variables, momentum_ratings, financial_statement_items,
   financial_statement_periods, financial_statement_values;
 
 -- Daily prices, loaded by get_share_prices.php via share_functions.php:319.
@@ -44,6 +45,10 @@ create table stock_symbols (
   market   varchar(100),
   industry_group varchar(100),
   industry varchar(100),
+  -- the company profile tab on the quote page
+  employees varchar(50),
+  website   varchar(255),
+  directors text,
   logo     varchar(255),
   key (symbol, exchange),
   -- search.php runs MATCH(symbol,description) AGAINST(...), which needs a
@@ -392,4 +397,49 @@ create table financial_statement_values (
   item_name varchar(100),
   value     decimal(20,4),
   key (symbol, period_id, item_name)
+);
+
+-- ---------------------------------------------------------------------------
+-- Read by the quote page. Written by the valuation and rating jobs, which the
+-- sandbox does not run, so tools/sandbox_data.sql seeds them instead.
+-- ---------------------------------------------------------------------------
+
+create table price_valuation (
+  symbol        varchar(50),
+  date          date,
+  indicator     varchar(50),
+  share_stat    decimal(20,6),
+  sector_stat   decimal(20,6),
+  industry_stat decimal(20,6),
+  type          varchar(20),
+  value         decimal(20,6),
+  key (symbol, date, type)
+);
+
+create table health_indicators (
+  symbol   varchar(50),
+  type     varchar(30),      -- piotroski_fscore, altman_zscore, ...
+  date     date,
+  variable varchar(50),
+  value    decimal(20,6),
+  key (symbol, type, date)
+);
+
+-- Lookup for the human readable name of a health_indicators.variable.
+create table variables (
+  name varchar(50),
+  text varchar(255),
+  key (name)
+);
+
+create table momentum_ratings (
+  symbol          varchar(50),
+  date            date,
+  number          int,
+  momentum_rating varchar(20),
+  growth_rating   varchar(20),
+  value_rating    varchar(20),
+  quality_rating  varchar(20),
+  overall_rating  varchar(20),
+  key (symbol, date)
 );

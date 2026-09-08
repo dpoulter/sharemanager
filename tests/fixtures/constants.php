@@ -24,6 +24,7 @@
     // key is the documented "feature unavailable" state rather than an error.
     define("EODHD_API_KEY", getenv('EODHD_API_KEY') ?: "");
     define("EODHD_EXCHANGE", "LSE");
+    define("EODHD_BASE_URL", getenv('EODHD_BASE_URL') ?: "https://eodhd.com/api");
 
     // Per row tracing. The suite runs with this off by default and flips it on
     // via SM_TEST_DEBUG_LOG to assert that the gate works in both directions.

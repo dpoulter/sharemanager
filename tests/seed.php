@@ -174,12 +174,17 @@
         ('operating_income','Operating Income','income_statement',2),
         ('net_income','Net Income','income_statement',3),
         ('total_assets','Total Assets','balance_sheet',1),
-        ('total_liabilities','Total Liabilities','balance_sheet',2)");
+        ('total_liabilities','Total Liabilities','balance_sheet',2),
+        ('operating_cash_flow','Operating Cash Flow','cash_flow_statement',1),
+        ('capital_expenditure','Capital Expenditure','cash_flow_statement',2),
+        ('free_cash_flow','Free Cash Flow','cash_flow_statement',3)");
     $pdo->exec("insert into financial_statement_periods (period_id,end_date,period_name) values
         (1,'2023-12-31','FY2023'), (2,'2024-12-31','FY2024'), (3,'2025-12-31','FY2025')");
     $statement = $pdo->prepare("insert into financial_statement_values (symbol,period_id,item_name,value) values (?,?,?,?)");
     $base = ['revenue'=>4200000, 'operating_income'=>780000, 'net_income'=>560000,
-             'total_assets'=>9100000, 'total_liabilities'=>3800000];
+             'total_assets'=>9100000, 'total_liabilities'=>3800000,
+             'operating_cash_flow'=>690000, 'capital_expenditure'=>-210000,
+             'free_cash_flow'=>480000];
     foreach ($XLON_SYMBOLS as $i => $symbol) {
         foreach ([1,2,3] as $period) {
             foreach ($base as $item => $value) {

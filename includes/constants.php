@@ -37,6 +37,11 @@
     //The Python jobs read the same variable directly.
     define("EODHD_API_KEY", getenv("EODHD_API_KEY") ?: "");
 
+    //EODHD API base. Overridable so a sandbox can point at a local stub and
+    //exercise the request, the JSON parsing and the adapter rather than
+    //skipping them.
+    define("EODHD_BASE_URL", getenv("EODHD_BASE_URL") ?: "https://eodhd.com/api");
+
     //EODHD exchange suffix for London. EODHD addresses LSE tickers as CODE.LSE,
     //while stock_symbols.exchange holds the MIC (XLON) the rest of the
     //application keys on, so the two are not interchangeable.

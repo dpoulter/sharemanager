@@ -83,3 +83,26 @@ Pre-seeding those rows would mask a genuine failure, so they live in
   they will not render here.
 - No EODHD key is set, so live quotes and price fetches degrade to empty rather
   than erroring. Everything the sandbox shows comes from the generated data.
+
+## eodhd_stub.php
+
+A stand-in for the EODHD API, so the sandbox exercises the real request path
+rather than skipping it. Serves the two endpoints the application calls, in the
+shapes EODHD documents, built from the seeded price history:
+
+```
+GET /real-time/{CODE}.LSE          latest quote
+GET /eod/{CODE}.LSE?from=&to=      daily prices
+```
+
+`sandbox.sh` starts it automatically on `PORT + 10` and points the application
+at it. It has to be its own process: `php -S` serves one request at a time, so
+an application server calling a stub inside itself would wait for a response it
+cannot produce.
+
+It behaves like the real thing where that matters. A missing `api_token` gets a
+401, and an unknown code gets `"NA"` in every field rather than a 404, which is
+what the real API does and what `eodhd_quote_to_rows()` has to reject.
+
+Without it, `lookup()` finds no price, `get_share_info()` returns false, and
+every quote page says "Invalid Symbol" for a perfectly valid symbol.

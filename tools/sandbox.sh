@@ -101,12 +101,25 @@ fi
 
 [ "$SERVE" = 1 ] || exit 0
 
+# The stub API must be its own process. php -S serves one request at a time, so
+# an application server calling a stub inside itself would deadlock.
+STUB_PORT=$((PORT + 10))
+php -S "127.0.0.1:$STUB_PORT" "$TOOLS_DIR/eodhd_stub.php" >/dev/null 2>&1 &
+STUB_PID=$!
+trap 'kill $STUB_PID 2>/dev/null' EXIT INT TERM
+
+# Point the application at it, with a token the stub will accept. Without a
+# token the stub answers 401, the same as the real API.
+export EODHD_BASE_URL="http://127.0.0.1:$STUB_PORT"
+export EODHD_API_KEY="sandbox-stub-token"
+
 cat <<EOF
 
   sandbox ready
     url       http://127.0.0.1:$PORT/
     login     tester / testpass
     database  $DB on $HOST
+    quote api stub on 127.0.0.1:$STUB_PORT, serving the seeded prices
 
   Ctrl-C to stop.
 
@@ -114,7 +127,7 @@ EOF
 
 # opcache.enable applies under the cli-server SAPI that php -S runs, not
 # opcache.enable_cli, so without this your edits are served stale.
-exec php -S "127.0.0.1:$PORT" -t "$REPO_DIR/public" \
+php -S "127.0.0.1:$PORT" -t "$REPO_DIR/public" \
      -d include_path="$INCLUDE_PATH" \
      -d opcache.enable=0 \
      -d display_errors=1 \

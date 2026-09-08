@@ -218,7 +218,7 @@ function get_key_ratios($symbol,$exchange) {
 			//stock_symbols holds the bare code; EODHD wants CODE.LSE
 			$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.eodhd_exchange() : $symbol;
 
-			$url="https://eodhd.com/api/eod/".rawurlencode($eodhd_symbol)
+			$url=eodhd_base_url()."/eod/".rawurlencode($eodhd_symbol)
 			    ."?from=".rawurlencode($start_date)
 			    ."&to=".rawurlencode($end_date)
 			    ."&period=d&order=a&fmt=json"
@@ -2011,7 +2011,9 @@ function get_valuation($symbol){
 	
 //	write_log("get_valuation","ratio =".$ratio);
 	
-	$valuation['value']=round($value);
+	//round(null) is deprecated in PHP 8, and a null $value means the valuation
+	//could not be calculated rather than that it is zero. Keep it null.
+	$valuation['value']=($value===null) ? null : round($value);
 	$valuation['price']=$price;
 	$valuation['ratio']=$ratio;
 	

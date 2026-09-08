@@ -67,14 +67,15 @@
 			write_log("quote.php","4");
 			
 			
-			//$income_statement=income_statement($symbol);
-			$income_statement=null;
+			$income_statement=income_statement($symbol);
 			write_log("quote.php","5");
-			//$balance_sheet=balance_sheet($symbol);
-			$balance_sheet=null;
+			$balance_sheet=balance_sheet($symbol);
 			write_log("quote.php","6");
-			//$cash_flow_statement=cash_flow_statement($symbol);
-			$cash_flow_statement=null;
+			$cash_flow_statement=cash_flow_statement($symbol);
+			//templates/quote.php has a Ratings tab reading $ratings, which
+			//neither this page nor index.php passed, so the tab rendered
+			//undefined once the page got far enough to reach it.
+			$ratings=ratings($symbol);
 			write_log("quote.php","7");
 			//$ratings=ratings($symbol);
 			$ratings=null;
@@ -139,7 +140,7 @@
 					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
 					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations,"share_info"=> $share_info
 					, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"screen_id"=>$screen_id,"incomestatement"=>$income_statement
-					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
+					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
 					,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks
 					,"qualityranks"=>$qualityranks,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman]);
 			 else
@@ -147,7 +148,7 @@
 					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
 					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations
 					,"share_info"=> $share_info, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"incomestatement"=>$income_statement
-					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"momentum_statistics"=>$momentum_statistics
+					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics
 					,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics
 					,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks,"qualityranks"=>$qualityranks
 					,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman]);
