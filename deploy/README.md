@@ -187,8 +187,24 @@ that directory has to belong to it or the service exits at startup:
 sudo install -d -o caddy -g caddy -m 750 /var/log/caddy
 ```
 
+**Do not copy this over `/etc/caddy/Caddyfile`.** That file may already serve
+other sites on this host, and replacing it takes every one of them down with
+`ERR_SSL_PROTOCOL_ERROR`: Caddy stops holding certificates for names that are no
+longer in its config. Install the vhost as its own file and import it.
+
 ```sh
-sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+sudo mkdir -p /etc/caddy/conf.d
+sudo cp deploy/Caddyfile /etc/caddy/conf.d/sharemanager.caddy
+```
+
+Then make sure `/etc/caddy/Caddyfile` contains this line once, at the top level,
+outside any site block:
+
+```
+import /etc/caddy/conf.d/*.caddy
+```
+
+```sh
 sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
 # validate runs as root and opens the log writer, which leaves
@@ -198,8 +214,15 @@ sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 # whole directory back after validating.
 sudo chown -R caddy:caddy /var/log/caddy
 
-sudo systemctl restart caddy
+sudo systemctl reload caddy
 sudo systemctl status caddy --no-pager
+```
+
+Confirm Caddy still knows every site this host serves, not just this one:
+
+```sh
+sudo caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null \
+  | grep -oE '"[a-z0-9.-]+\.[a-z]{2,}"' | sort -u
 ```
 
 `restart`, not `reload`: reload fails if the service is not already running,
