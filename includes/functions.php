@@ -499,21 +499,37 @@
 	 * previous provider used, so lookup() is unchanged. EODHD returns a flat
 	 * object keyed on "code" rather than a list.
 	 */
+	/**
+	 * EODHD settings, read defensively.
+	 *
+	 * public/constants.php is gitignored, so a deployment can be running a copy
+	 * of constants.php that predates these constants. Referencing them directly
+	 * makes that a fatal error on every page that touches a quote; this way the
+	 * feature degrades and the rest of the site stays up.
+	 */
+	function eodhd_api_key() {
+		return defined('EODHD_API_KEY') ? EODHD_API_KEY : '';
+	}
+
+	function eodhd_exchange() {
+		return defined('EODHD_EXCHANGE') ? EODHD_EXCHANGE : 'LSE';
+	}
+
 	function call_stock_api($symbol) {
 
 		write_log('call_stock_api',"symbol=$symbol");
 
-		if (EODHD_API_KEY===''){
+		if (eodhd_api_key()===''){
 			write_log('call_stock_api','EODHD_API_KEY is not set');
 			return json_encode(["data" => []]);
 		}
 
 		//stock_symbols holds the bare code; EODHD wants CODE.LSE
-		$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.EODHD_EXCHANGE : $symbol;
+		$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.eodhd_exchange() : $symbol;
 
 		//Never log the URL: it carries the API key.
 		$url="https://eodhd.com/api/real-time/".rawurlencode($eodhd_symbol)
-		    ."?fmt=json&api_token=".rawurlencode(EODHD_API_KEY);
+		    ."?fmt=json&api_token=".rawurlencode(eodhd_api_key());
 
 		$body=@file_get_contents($url);
 		if ($body===false){

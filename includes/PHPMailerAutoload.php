@@ -30,20 +30,9 @@ function PHPMailerAutoload($classname)
     }
 }
 
-if (version_compare(PHP_VERSION, '5.1.2', '>=')) {
-    //SPL autoloading was introduced in PHP 5.1.2
-    if (version_compare(PHP_VERSION, '5.3.0', '>=')) {
-        spl_autoload_register('PHPMailerAutoload', true, true);
-    } else {
-        spl_autoload_register('PHPMailerAutoload');
-    }
-} else {
-    /**
-     * Fall back to traditional autoload for old PHP versions
-     * @param string $classname The name of the class to load
-     */
-    function __autoload($classname)
-    {
-        PHPMailerAutoload($classname);
-    }
-}
+//The pre-5.1.2 fallback that used to live here declared a function named
+//__autoload. PHP 8 removed __autoload and rejects the declaration at compile
+//time even inside a branch that can never run, so this whole file failed to
+//parse and reset_passwd.php was dead. Removed: nothing this application uses
+//runs on PHP 5.
+spl_autoload_register('PHPMailerAutoload', true, true);

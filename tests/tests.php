@@ -465,6 +465,70 @@
     db()->exec("delete from strategy_targets where strategy='$STRATEGY'");
     db()->exec("delete from strategy_accounts where strategy='$STRATEGY'");
 
+    echo "\n--- every PHP file parses ---\n";
+
+    /* A syntax sweep, because PHP only reports a parse error when something
+       actually includes the file. PHPMailerAutoload.php declared a function
+       named __autoload, which PHP 8 rejects at compile time even inside a
+       branch that can never run, so the file would not parse at all and
+       reset_passwd.php was dead - and nothing noticed, because no other page
+       requires it. */
+    $repo = dirname(__DIR__);
+    $unparseable = [];
+    $checked = 0;
+    foreach (['includes', 'public', 'templates'] as $dir) {
+        foreach (glob("$repo/$dir/*.php") as $file) {
+            $checked++;
+            exec('php -l ' . escapeshellarg($file) . ' 2>&1', $lint, $rc);
+            if ($rc !== 0) { $unparseable[] = basename($dir) . '/' . basename($file); }
+            $lint = [];
+        }
+    }
+    /* templates/criteria.php is a stale duplicate of public/criteria.php: a full
+       page sitting in the templates directory, with an unmatched brace, that
+       nothing renders. Pinned rather than excluded, so a NEW unparseable file
+       fails here, and so does fixing or deleting this one - at which point
+       remove it from the list. */
+    $known_broken = ['templates/criteria.php'];
+    sort($unparseable);
+    sort($known_broken);
+    check("all $checked PHP files parse under PHP " . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION
+          . ' (except ' . count($known_broken) . ' known)',
+          $unparseable === $known_broken,
+          'unparseable now: ' . (implode(', ', $unparseable) ?: 'none')
+          . ' | expected: ' . implode(', ', $known_broken));
+
+    echo "\n--- EODHD settings degrade instead of fatalling ---\n";
+
+    check('the api key accessor exists', function_exists('eodhd_api_key'));
+    check('the exchange accessor exists', function_exists('eodhd_exchange'));
+    check('the exchange defaults to LSE', eodhd_exchange() === 'LSE');
+
+    /* public/constants.php is gitignored, so a deployment can be running a
+       constants.php that predates these constants. Referencing them directly
+       made that a fatal on every page touching a quote. */
+    $stub = sys_get_temp_dir() . '/sm_no_eodhd_' . getmypid();
+    @mkdir($stub);
+    file_put_contents("$stub/constants.php", "<?php\n"
+        . "define('DATABASE','" . DATABASE . "'); define('SERVER','" . SERVER . "');\n"
+        . "define('USERNAME','" . USERNAME . "'); define('PASSWORD','" . PASSWORD . "');\n"
+        . "define('SMTP_HOST',''); define('SMTP_USERNAME',''); define('SMTP_PASSWORD','');\n"
+        . "define('SMTP_PORT','587'); define('SITE_URL',''); define('DEBUG_LOG','N');\n");
+    $probe = "$stub/probe.php";
+    file_put_contents($probe, "<?php\n"
+        . "require_once('functions.php');\n"
+        . "echo 'key=[' . eodhd_api_key() . '] exchange=[' . eodhd_exchange() . ']';\n");
+    exec('php -d include_path=' . escapeshellarg($stub . PATH_SEPARATOR . $repo . '/includes')
+         . ' ' . escapeshellarg($probe) . ' 2>&1', $probe_out, $probe_rc);
+    $probe_text = implode(' ', $probe_out);
+    check('a constants.php without the EODHD settings does not fatal',
+          $probe_rc === 0 && stripos($probe_text, 'error') === false, $probe_text);
+    check('the missing key reads as empty, the documented unavailable state',
+          strpos($probe_text, 'key=[]') !== false, $probe_text);
+    check('the exchange still falls back to LSE',
+          strpos($probe_text, 'exchange=[LSE]') !== false, $probe_text);
+    @unlink($probe); @unlink("$stub/constants.php"); @rmdir($stub);
+
     printf("\n%s  %d passed, %d failed\n\n",
            $failed === 0 ? "\033[32mALL PASSED\033[0m" : "\033[31mFAILURES\033[0m", $passed, $failed);
     if ($failed > 0) { echo "  failed: " . implode("\n          ", $failures) . "\n\n"; }

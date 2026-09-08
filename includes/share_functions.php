@@ -188,7 +188,7 @@ function get_key_ratios($symbol,$exchange) {
 	    //market as CODE.LSE, so the request suffix is EODHD_EXCHANGE.
 	    $exchange=$_SESSION["exchange"];
 
-	    if (EODHD_API_KEY===''){
+	    if (eodhd_api_key()===''){
 	    	write_log("get_historical_prices","EODHD_API_KEY is not set, cannot fetch prices");
 	    	return;
 	    }
@@ -209,13 +209,13 @@ function get_key_ratios($symbol,$exchange) {
 			$symbol=$row['symbol'];
 
 			//stock_symbols holds the bare code; EODHD wants CODE.LSE
-			$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.EODHD_EXCHANGE : $symbol;
+			$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.eodhd_exchange() : $symbol;
 
 			$url="https://eodhd.com/api/eod/".rawurlencode($eodhd_symbol)
 			    ."?from=".rawurlencode($start_date)
 			    ."&to=".rawurlencode($end_date)
 			    ."&period=d&order=a&fmt=json"
-			    ."&api_token=".rawurlencode(EODHD_API_KEY);
+			    ."&api_token=".rawurlencode(eodhd_api_key());
 
 			//Never log the URL: it carries the API key.
 			debug_log("get_historical_prices", "fetch ".$eodhd_symbol." ".$start_date." to ".$end_date);
