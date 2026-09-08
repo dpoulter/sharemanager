@@ -90,6 +90,9 @@ sandbox cannot reach real data.
 
 ```sql
 CREATE DATABASE sharemanager_sandbox;
+-- 'localhost' here must match SM_SANDBOX_HOST in tools/sandbox.env, which
+-- defaults to localhost. An account created as 'sandbox'@'localhost' is not
+-- necessarily matched by a TCP connection to 127.0.0.1.
 CREATE USER 'sandbox'@'localhost' IDENTIFIED BY 'pick-something-random';
 GRANT ALL PRIVILEGES ON sharemanager_sandbox.* TO 'sandbox'@'localhost';
 FLUSH PRIVILEGES;
@@ -394,6 +397,8 @@ mysql -e "DROP DATABASE sharemanager_sandbox; DROP USER 'sandbox'@'localhost';"
 | Changes to a file appear to do nothing | `php -S` runs under the `cli-server` SAPI, where `opcache.enable` applies rather than `opcache.enable_cli`. Set `opcache.enable=0`, as the unit above does. |
 | Dashboard panels empty | Data not built, or built before this branch. Re-run with `--rebuild`. |
 | "cannot connect as 'smtest'" | Settings not reaching the script. Put them in `tools/sandbox.env`; exports do not survive a new shell. |
+| "cannot connect as 'sandbox'" | Wrong password, or a host mismatch. `select user, host from mysql.user where user='sandbox'` — if it says `localhost`, `SM_SANDBOX_HOST` must be `localhost`, not `127.0.0.1`. |
+| Missing tables after a `git pull` | The schema changed. `tools/sandbox.sh --rebuild`. The script refuses to serve stale data rather than letting it look like an application bug. |
 | "refusing to run: must end in _sandbox" | Working as intended — the database name is the guard against pointing this at production. |
 
 ---

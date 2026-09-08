@@ -46,7 +46,7 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 DB="${SM_SANDBOX_DB:-sharemanager_sandbox}"
-HOST="${SM_SANDBOX_HOST:-127.0.0.1}"
+HOST="${SM_SANDBOX_HOST:-localhost}"
 USER="${SM_SANDBOX_USER:-smtest}"
 PASS="${SM_SANDBOX_PASS:-smtest}"
 
@@ -67,7 +67,15 @@ db -e "select 1" >/dev/null 2>&1 || {
   echo "cannot connect as '$USER' to $HOST" >&2
   echo >&2
   if [ -f "$ENV_FILE" ]; then
-    echo "settings came from $ENV_FILE; check the user and password in it." >&2
+    echo "settings came from $ENV_FILE." >&2
+    echo >&2
+    echo "Check the password, and check the host matches how the account was" >&2
+    echo "created: an account made as '\''$USER'\''@'\''localhost'\'' is not necessarily" >&2
+    echo "matched by a TCP connection to 127.0.0.1." >&2
+    echo >&2
+    echo "  mysql -e \"select user, host from mysql.user where user='\''$USER'\''\"" >&2
+    echo >&2
+    echo "If that says localhost, set SM_SANDBOX_HOST=localhost in the file." >&2
   else
     echo "no $ENV_FILE, so these are the built-in defaults." >&2
     echo "If you created a different user, write the real settings once:" >&2
@@ -88,12 +96,33 @@ INCLUDE_PATH="$REPO_DIR/tests/fixtures:$REPO_DIR/includes"
 
 ALREADY=$(db -N "$DB" -e "select count(*) from information_schema.tables where table_schema='$DB'" 2>/dev/null || echo 0)
 
+# Fingerprint of everything that shapes the database. A pull that changes the
+# schema leaves the existing data a version behind, and the symptom is a wall of
+# "table does not exist" in the browser rather than anything pointing at the
+# cause. Compare, and say so.
+BUILD_SOURCES="$REPO_DIR/tests/schema.sql $REPO_DIR/tests/seed.php $REPO_DIR/sql/paper_trading.sql $TOOLS_DIR/sandbox_data.sql"
+WANT=$(cat $BUILD_SOURCES 2>/dev/null | sha1sum | cut -d' ' -f1)
+HAVE=$(db -N "$DB" -e "select fingerprint from sandbox_build limit 1" 2>/dev/null || true)
+
+if [ "$REBUILD" != 1 ] && [ "${ALREADY:-0}" -ge 5 ] && [ "$HAVE" != "$WANT" ]; then
+  echo "the data in $DB was built from a different version of the schema." >&2
+  echo >&2
+  echo "  rebuild it:  tools/sandbox.sh --rebuild" >&2
+  echo >&2
+  echo "Refusing to serve stale data: the symptom is missing tables in the" >&2
+  echo "browser, which looks like a bug in the application rather than this." >&2
+  exit 2
+fi
+
 if [ "$REBUILD" = 1 ] || [ "${ALREADY:-0}" -lt 5 ]; then
   echo "building sandbox data in $DB"
   db "$DB" < "$REPO_DIR/tests/schema.sql"       || exit 1
   db "$DB" < "$REPO_DIR/sql/paper_trading.sql"  || exit 1
   php -d include_path="$INCLUDE_PATH" "$REPO_DIR/tests/seed.php" || exit 1
   db "$DB" < "$TOOLS_DIR/sandbox_data.sql"      || exit 1
+  db "$DB" -e "create table if not exists sandbox_build (fingerprint char(40), built_at datetime);
+               delete from sandbox_build;
+               insert into sandbox_build values ('$WANT', now());" || exit 1
   echo "  done"
 else
   echo "using existing data in $DB (--rebuild to regenerate)"
