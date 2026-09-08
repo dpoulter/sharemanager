@@ -1,5 +1,12 @@
 <?php
 
+	//get_momentum_screen() and the other screen builders below call
+	//combine_criteria_lists() and intersect_list(), which live in
+	//share_screen.php. Pages that happened to include that file themselves
+	//worked; screening.php did not, and died on an undefined function.
+	require_once("share_screen.php");
+
+
 /* Share Functions */
 
 // function get_historical_prices($start_date,$end_date)

@@ -3,7 +3,7 @@
 
   // configuration
     require("../includes/config.php");
-	include("../includes/share_screen.php");
+	include_once("../includes/share_screen.php");
 
     // if form was submitted
     if ($_SERVER["REQUEST_METHOD"] == "POST"){

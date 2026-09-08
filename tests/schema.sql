@@ -13,7 +13,10 @@
 drop table if exists historical_prices, stock_symbols, screen_indicators,
   statistics, statistic_averages, message_log, jobs, users, indicator_category,
   stock_info, strategy_orders, strategy_targets, strategy_positions,
-  strategy_accounts;
+  strategy_accounts, purchases, shares, dividends, cash_history, history,
+  portfolio_performance, screen, screen_criteria, screen_build, price_momentum,
+  strategy, strategy_shares, backtest_results, performance, financial_statement_items,
+  financial_statement_periods, financial_statement_values;
 
 -- Daily prices, loaded by get_share_prices.php via share_functions.php:319.
 -- The exchange column is written from $_SESSION["exchange"] ('XLON').
@@ -30,11 +33,15 @@ create table historical_prices (
 create table stock_symbols (
   symbol   varchar(50),
   name     varchar(255),
+  description varchar(255),
   exchange varchar(10),
   enabled  char(1),
   sector   varchar(100),
   industry varchar(100),
-  key (symbol, exchange)
+  key (symbol, exchange),
+  -- search.php runs MATCH(symbol,description) AGAINST(...), which needs a
+  -- FULLTEXT index over exactly those columns or MySQL raises error 1191.
+  fulltext key (symbol, description)
 );
 
 -- Indicator definitions. screen_function names the PHP function indicator_stats
@@ -182,4 +189,200 @@ create table strategy_orders (
   note varchar(255),
   key (strategy, as_of_date),
   key (strategy, status)
+);
+
+-- ---------------------------------------------------------------------------
+-- Portfolio, screening and history. Reconstructed from the queries in public/
+-- and includes/, same caveat as the rest of this file: inferred, not a dump.
+-- ---------------------------------------------------------------------------
+
+-- The trade ledger. buy.php and sell.php append here; templates/index.php
+-- aggregates it into positions.
+create table purchases (
+  id            int auto_increment primary key,
+  session_id    int,
+  symbol        varchar(50),
+  trx_type      varchar(10),          -- BUY or SELL
+  shares        int,
+  price_paid    decimal(14,4),
+  commission    decimal(14,4) default 0,
+  purchase_date date,
+  key (session_id, symbol)
+);
+
+-- Current holdings per user. Note buy.php keys this on (id, symbol) where id is
+-- the user id, so a user cannot hold two lots of the same symbol.
+create table shares (
+  id         int,
+  symbol     varchar(50),
+  shares     int,
+  avg_cost   decimal(14,4),
+  -- new_screen.php selects commission and price_paid from this table, but
+  -- nothing in the application ever writes them: buy.php inserts only
+  -- (id, symbol, shares). Included so the page renders; if the real shares
+  -- table does not have these columns then new_screen.php is broken in
+  -- production too, and this is the thing to check.
+  commission decimal(14,4) default 0,
+  price_paid decimal(14,4),
+  primary key (id, symbol)
+);
+
+create table dividends (
+  dividend_id   int auto_increment primary key,
+  session_id    int,
+  symbol        varchar(50),
+  dividend_date date,
+  amount        decimal(14,4),
+  key (session_id, symbol)
+);
+
+create table cash_history (
+  id               int auto_increment primary key,
+  user_id          int,
+  transaction_date date,
+  trx_type         varchar(20),
+  amount           decimal(20,4),
+  key (user_id)
+);
+
+create table history (
+  id        int auto_increment primary key,
+  user_id   int,
+  trx_type  varchar(10),
+  symbol    varchar(50),
+  quantity  int,
+  price     decimal(14,4),
+  timestamp datetime default current_timestamp,
+  key (user_id)
+);
+
+-- Whole-portfolio daily totals, written by performance_function.php and read by
+-- performance.php. Distinct from portfolio_performance, which is per symbol.
+create table performance (
+  id               int auto_increment primary key,
+  session_id       int,
+  performance_date date,
+  total_value      decimal(20,4),
+  total_profit     decimal(20,4),
+  total_holding    decimal(20,4),
+  cash             decimal(20,4),
+  key (session_id, performance_date)
+);
+
+-- Daily valuation snapshots, written by performance_function.php.
+create table portfolio_performance (
+  id            int auto_increment primary key,
+  session_id    int,
+  as_of_date    date,
+  symbol        varchar(50),
+  active        char(1),
+  exchange      varchar(10),
+  qty_purchased int,
+  qty_sold      int,
+  price         decimal(14,4),
+  price_paid    decimal(14,4),
+  price_sold    decimal(14,4),
+  commission    decimal(14,4) default 0,
+  dividends     decimal(14,4) default 0,
+  value         varchar(50),
+  value_raw     decimal(20,4),
+  profit        varchar(50),
+  profit_raw    decimal(20,4),
+  profit_perc   decimal(14,4),
+  key (session_id, as_of_date)
+);
+
+-- Saved screens and their criteria.
+create table screen (
+  id          int auto_increment primary key,
+  name        varchar(100),
+  description varchar(255),
+  displayed   char(1) default 'Y',
+  session_id  int
+);
+
+create table screen_criteria (
+  id             int auto_increment primary key,
+  indicator_id   int,
+  description    varchar(255),
+  operator       varchar(20),
+  first_operand  varchar(100),
+  second_operand varchar(100)
+);
+
+create table screen_build (
+  id          int auto_increment primary key,
+  screen_id   int,
+  criteria_id int,
+  key (screen_id)
+);
+
+-- Legacy momentum table. Columns start with digits, so every reference has to
+-- quote them; calc_momentum writes to statistics now and this is vestigial.
+create table price_momentum (
+  symbol       varchar(50) primary key,
+  `3mnth`      decimal(14,4),
+  `6mnth`      decimal(14,4),
+  `12mnth`     decimal(14,4),
+  tendayavg    decimal(14,4),
+  thirtydayavg decimal(14,4),
+  hndrddayavg  decimal(14,4),
+  earnings_growth decimal(14,4)
+);
+
+create table strategy (
+  strategy_id int auto_increment primary key,
+  name        varchar(100),
+  description varchar(255)
+);
+
+create table strategy_shares (
+  id          int auto_increment primary key,
+  symbol      varchar(50),
+  status      varchar(20),
+  session_id  int,
+  strategy_id int,
+  key (session_id, strategy_id)
+);
+
+create table backtest_results (
+  id                 int auto_increment primary key,
+  strategy_id        int,
+  start_date         date,
+  end_date           date,
+  parameter1_name    varchar(50), parameter1_value varchar(50),
+  parameter2_name    varchar(50), parameter2_value varchar(50),
+  parameter3_name    varchar(50), parameter3_value varchar(50),
+  parameter4_name    varchar(50), parameter4_value varchar(50),
+  parameter5_name    varchar(50), parameter5_value varchar(50),
+  parameter6_name    varchar(50), parameter6_value varchar(50),
+  parameter7_name    varchar(50), parameter7_value varchar(50),
+  parameter8_name    varchar(50), parameter8_value varchar(50),
+  parameter9_name    varchar(50), parameter9_value varchar(50),
+  sharpe_ratio       decimal(14,6),
+  avg_daily_return   decimal(14,6),
+  standard_deviation decimal(14,6)
+);
+
+-- Financial statements, shown on the quote page.
+create table financial_statement_items (
+  name        varchar(100),
+  description varchar(255),
+  type        varchar(50),
+  order_number int,
+  key (type)
+);
+
+create table financial_statement_periods (
+  period_id   int auto_increment primary key,
+  end_date    date,
+  period_name varchar(50)
+);
+
+create table financial_statement_values (
+  symbol    varchar(50),
+  period_id int,
+  item_name varchar(100),
+  value     decimal(20,4),
+  key (symbol, period_id, item_name)
 );

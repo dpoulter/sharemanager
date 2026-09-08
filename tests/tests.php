@@ -529,6 +529,73 @@
           strpos($probe_text, 'exchange=[LSE]') !== false, $probe_text);
     @unlink($probe); @unlink("$stub/constants.php"); @rmdir($stub);
 
+    echo "\n--- pages render without a fatal ---\n";
+
+    /* Drives the site over HTTP as a logged in user. Everything above tests the
+       jobs and the queries; this is the only thing that catches a page which
+       parses fine and still dies on the way to the browser - a missing include,
+       a column nothing writes, an undefined function. */
+    $docroot = dirname(__DIR__) . '/public';
+    $port = 8099;
+    $include_path = __DIR__ . '/fixtures' . PATH_SEPARATOR . dirname(__DIR__) . '/includes';
+    $server = 'php -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($docroot)
+            . ' -d include_path=' . escapeshellarg($include_path)
+            /* php -S runs under the cli-server SAPI, where opcache.enable applies
+               rather than opcache.enable_cli, so without this it serves stale code. */
+            . ' -d opcache.enable=0 -d default_socket_timeout=5 -d display_errors=1'
+            . ' > /dev/null 2>&1 & echo $!';
+    $pid = (int)trim(shell_exec($server));
+
+    $base = "http://127.0.0.1:$port";
+    $up = false;
+    for ($i = 0; $i < 40 && !$up; $i++) {
+        usleep(250000);
+        $probe = @file_get_contents("$base/login.php", false, stream_context_create(['http' => ['timeout' => 2]]));
+        $up = ($probe !== false);
+    }
+
+    if (!$up) {
+        check('the test web server starts', false, "could not reach $base");
+    }
+    else {
+        $jar = tempnam(sys_get_temp_dir(), 'smjar');
+        $curl = function ($url, $post = null) use ($jar) {
+            $cmd = 'curl -s -m 30 -b ' . escapeshellarg($jar) . ' -c ' . escapeshellarg($jar);
+            if ($post !== null) { $cmd .= ' -d ' . escapeshellarg($post); }
+            return shell_exec($cmd . ' ' . escapeshellarg($url) . ' 2>/dev/null');
+        };
+
+        $curl("$base/login.php");
+        $curl("$base/login.php", 'username=tester&password=testpass');
+
+        $pages = ['index.php','performance.php','portfolio.php','dividends.php','cash_history.php',
+                  'edit.php','topup.php','screen_list.php','quote.php','search.php','criteria.php',
+                  'criteria_list.php','screen_criteria.php','new_screen.php','screening.php',
+                  'strategies.php','history.php','sell.php','buy.php','backtest.php',
+                  'backtest_results.php','statistics.php','statistics_form.php','download_prices.php',
+                  'register.php','reset.php','reset_passwd.php','navbar.php'];
+        $fatal = [];
+        foreach ($pages as $page) {
+            $body = (string)$curl("$base/$page");
+            if (preg_match('/(Fatal error|Parse error)/i', $body)) { $fatal[] = $page; }
+        }
+        check(count($pages) . ' pages render without a fatal', count($fatal) === 0,
+              'fatal: ' . implode(', ', $fatal));
+
+        /* $_GET["symbol"] reaches search.php straight from the navbar typeahead
+           and used to be concatenated into the SQL. */
+        $hostile = (string)$curl("$base/search.php?symbol=" . rawurlencode("x') OR 1=1 -- "));
+        $normal  = (string)$curl("$base/search.php?symbol=AAA");
+        check('search rejects an injection attempt instead of returning everything',
+              trim($hostile) === '[]', trim($hostile));
+        check('search still matches a real symbol',
+              strpos($normal, 'AAA') !== false, trim($normal));
+
+        @unlink($jar);
+    }
+
+    if ($pid > 0) { exec("kill $pid 2>/dev/null"); }
+
     printf("\n%s  %d passed, %d failed\n\n",
            $failed === 0 ? "\033[32mALL PASSED\033[0m" : "\033[31mFAILURES\033[0m", $passed, $failed);
     if ($failed > 0) { echo "  failed: " . implode("\n          ", $failures) . "\n\n"; }
