@@ -17,7 +17,7 @@ drop table if exists historical_prices, stock_symbols, screen_indicators,
   portfolio_performance, screen, screen_criteria, screen_build, price_momentum,
   strategy, strategy_shares, backtest_results, performance, price_valuation,
   health_indicators, variables, momentum_ratings, financial_statement_items,
-  financial_statement_periods, financial_statement_values;
+  financial_statement_periods, financial_statement_values, password_resets;
 
 -- Daily prices, loaded by get_share_prices.php via share_functions.php:319.
 -- The exchange column is written from $_SESSION["exchange"] ('XLON').
@@ -116,6 +116,19 @@ create table message_log (
 -- Pages that display statistics must resolve the as of marker, not the run row,
 -- and must use its date as it stands: the marker already carries the as of
 -- date, so subtracting a day from it lands before the statistics.
+-- Password reset tokens. See sql/password_resets.sql; a deployed database
+-- needs that migration run against it.
+create table password_resets (
+  id         int auto_increment primary key,
+  user_id    int not null,
+  token_hash char(64) not null,
+  expires_at datetime not null,
+  used_at    datetime default null,
+  created_at datetime not null default current_timestamp,
+  unique key (token_hash),
+  key (user_id)
+);
+
 create table jobs (
   id       int auto_increment primary key,
   job_name varchar(100),

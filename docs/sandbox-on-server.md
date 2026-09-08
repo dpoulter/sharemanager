@@ -291,42 +291,17 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ---
 
-## 6. If it is reachable from the internet, protect it
+## 6. If it is reachable from the internet
 
-The sandbox login is **tester / testpass**, published in this repository. Beyond
-that, the application hashes passwords with `crypt($password, 'sharemanager')` —
-a fixed salt, so identical passwords produce identical hashes and the scheme is
-weak regardless of what you set. `register.php` also lets anyone create an
-account.
+Do not use this document for that. `deploy/README.md` covers a public host with
+Caddy and TLS, and lists the four things that were only safe because the
+sandbox was behind an SSH tunnel - the login gate, password hashing, the
+password reset token, and errors printed to the browser.
 
-None of that matters behind an SSH tunnel. All of it matters on a public URL.
-Put HTTP basic auth in front of the whole vhost:
-
-```sh
-sudo htpasswd -c /etc/apache2/.htpasswd-sandbox youruser
-```
-
-```apache
-<Directory /var/www/shares-sandbox/public>
-    AuthType Basic
-    AuthName "sandbox"
-    AuthUserFile /etc/apache2/.htpasswd-sandbox
-    Require valid-user
-</Directory>
-```
-
-nginx equivalent:
-
-```nginx
-auth_basic "sandbox";
-auth_basic_user_file /etc/nginx/.htpasswd-sandbox;
-```
-
-Or restrict by address (`Require ip 203.0.113.0/24` / `allow 203.0.113.0/24; deny all;`).
-
-And serve it over HTTPS if it is public — basic auth over plain HTTP sends the
-password in clear text. `certbot --apache -d sandbox.shares.duckdns.org` or the
-nginx equivalent.
+The short version for a sandbox you are exposing anyway: the login is
+**tester / testpass**, published in this repository, and `register.php` lets
+anyone create an account. Put HTTP basic auth in front of the whole vhost, or
+restrict by address, and serve it over HTTPS.
 
 ---
 

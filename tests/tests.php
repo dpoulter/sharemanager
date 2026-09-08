@@ -556,6 +556,11 @@
     $include_path = __DIR__ . '/fixtures' . PATH_SEPARATOR . dirname(__DIR__) . '/includes';
     $server = 'EODHD_BASE_URL=http://127.0.0.1:' . ($port + 10)
             . ' EODHD_API_KEY=test-stub-token'
+            /* config.php defaults display_errors to off, which is right for a
+               public host. Half the checks below read warnings out of the page,
+               so without this they see a clean page and pass whatever the
+               application does. */
+            . ' SM_DISPLAY_ERRORS=1'
             . ' php -S 127.0.0.1:' . $port . ' -t ' . escapeshellarg($docroot)
             . ' -d include_path=' . escapeshellarg($include_path)
             /* php -S runs under the cli-server SAPI, where opcache.enable applies
@@ -875,6 +880,105 @@
                 $interpolating[] = basename($page);
             }
         }
+        /* ---------------------------------------------------------------
+           Things that only matter once the site is reachable from the
+           internet. Every one of these was exploitable as it stood.
+           --------------------------------------------------------------- */
+
+        /* The login gate matched the tail of PHP_SELF, which is SCRIPT_NAME
+           with PATH_INFO appended. Under php-fpm behind Caddy or nginx a
+           request for /index.php/login.php runs index.php with PHP_SELF ending
+           in login.php, so an unauthenticated caller got the page. */
+        $gate_src = (string)file_get_contents(dirname(__DIR__) . '/includes/config.php');
+        check('the login gate does not read PHP_SELF',
+              strpos($gate_src, 'PHP_SELF') === false
+              || strpos($gate_src, 'preg_match("{(?:login') === false);
+        $jar2 = tempnam(sys_get_temp_dir(), 'smj');
+        $anon = function ($url) use ($jar2) {
+            return (string)shell_exec('curl -s -m 30 -c ' . escapeshellarg($jar2)
+                                      . ' ' . escapeshellarg($url) . ' 2>/dev/null');
+        };
+        foreach (['index.php', 'index.php/login.php', 'performance.php/register.php'] as $path) {
+            $body = $anon("$base/$path");
+            check("an anonymous request for /$path does not reach a logged in page",
+                  strpos($body, 'Top Ten') === false && strpos($body, 'Log Out') === false,
+                  substr(strip_tags($body), 0, 120));
+        }
+        @unlink($jar2);
+
+        /* crypt($password,'sharemanager') is a fixed two character DES salt, so
+           identical passwords hash identically for every account and everything
+           past the eighth character is discarded. */
+        check('a password longer than eight characters is not truncated',
+              hash_password('correcthorsebattery') !== hash_password('correctho')
+              && verify_password('correcthorsebattery', hash_password('correcthorsebattery'))
+              && !verify_password('correctho', hash_password('correcthorsebattery')));
+        check('two accounts with the same password get different hashes',
+              hash_password('samepassword') !== hash_password('samepassword'));
+        check('the legacy crypt hashes still verify, so nobody is locked out',
+              verify_password('testpass', crypt('testpass', 'sharemanager'))
+              && !verify_password('wrongpass', crypt('testpass', 'sharemanager')));
+        check('a legacy hash is marked for upgrade and a new one is not',
+              password_needs_upgrade(crypt('testpass', 'sharemanager'))
+              && !password_needs_upgrade(hash_password('testpass')));
+
+        /* The seeded user carries a legacy hash, so logging in should replace
+           it in place - that is how the weak hashes drain away. */
+        db()->exec("update users set hash = " . db()->quote(crypt('testpass', 'sharemanager'))
+                   . " where username = 'tester'");
+        $jar3 = tempnam(sys_get_temp_dir(), 'smj');
+        shell_exec('curl -s -m 30 -c ' . escapeshellarg($jar3) . ' -b ' . escapeshellarg($jar3)
+                   . ' -d ' . escapeshellarg('username=tester&password=testpass')
+                   . ' -o /dev/null ' . escapeshellarg("$base/login.php") . ' 2>/dev/null');
+        $stored = scalar("select hash from users where username='tester'");
+        check('logging in upgrades a legacy hash in place',
+              !password_needs_upgrade($stored) && verify_password('testpass', $stored),
+              substr((string)$stored, 0, 30));
+        check('the upgraded hash still lets the same password in',
+              verify_password('testpass', $stored));
+        @unlink($jar3);
+
+        /* The reset link carried md5(90*13+id) - md5(1170 + the user id) - which
+           anyone can compute for any account, on a page deliberately exempt from
+           the login gate. */
+        /* Match the code, not the prose: the comments that explain the old
+           scheme quote it by name. php_strip_whitespace drops comments. */
+        $reset_src = php_strip_whitespace(dirname(__DIR__) . '/includes/functions.php')
+                   . php_strip_whitespace(dirname(__DIR__) . '/public/reset_passwd.php');
+        check('no reset token is derived from the user id',
+              strpos($reset_src, 'md5(90*13+id)') === false
+              && strpos($reset_src, "md5(90*13+\$row['id'])") === false);
+        $uid = (int)scalar("select id from users where username='tester'");
+        check('the old guessable token is rejected',
+              reset_token_user(md5(1170 + $uid)) === null);
+        $tok = create_reset_token($uid);
+        check('a freshly minted token resolves to its account',
+              (int)reset_token_user($tok) === $uid);
+        check('the raw token is never stored, only its hash',
+              (int)scalar("select count(*) from password_resets where token_hash = ?", [$tok]) === 0
+              && (int)scalar("select count(*) from password_resets where token_hash = ?",
+                             [hash('sha256', $tok)]) === 1);
+        check('tokens are long and random, not a digest of anything guessable',
+              strlen($tok) === 64 && $tok !== create_reset_token($uid));
+        db()->exec("update password_resets set used_at = now() where user_id = $uid and used_at is null");
+        check('a used token stops working', reset_token_user($tok) === null);
+        $expired = create_reset_token($uid);
+        db()->exec("update password_resets set expires_at = date_sub(now(), interval 1 hour)"
+                   . " where user_id = $uid and used_at is null");
+        check('an expired token stops working', reset_token_user($expired) === null);
+
+        /* A warning on a public page carries the filesystem path and often part
+           of the query that failed. */
+        check('errors are not displayed on screen unless asked for',
+              strpos($gate_src, 'getenv("SM_DISPLAY_ERRORS")') !== false
+              && strpos($gate_src, 'ini_set("display_errors", true)') === false);
+        check('the session cookie is httponly and samesite',
+              strpos($gate_src, '"httponly" => true') !== false
+              && strpos($gate_src, '"samesite" => "Lax"') !== false);
+        $login_src = (string)file_get_contents(dirname(__DIR__) . '/public/login.php');
+        check('the session id is regenerated when the session gains privilege',
+              strpos($login_src, 'session_regenerate_id(true)') !== false);
+
         check('no served page interpolates request data into SQL',
               count($interpolating) === 0, implode(', ', $interpolating));
 

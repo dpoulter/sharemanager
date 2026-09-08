@@ -26,8 +26,21 @@
             $row = $rows[0];
 
             // compare hash of user's input against hash that's in database
-            if (crypt($_POST["password"], 'sharemanager') == $row["hash"])
+            if (verify_password($_POST["password"], $row["hash"]))
             {
+                //The old crypt() hashes cannot be converted without the
+                //password, and this is the one moment it is in hand. Replace
+                //the row now, so the weak hashes drain away as people log in.
+                if (password_needs_upgrade($row["hash"])) {
+                    query("UPDATE users SET hash = ? WHERE id = ?",
+                          hash_password($_POST["password"]), $row["id"]);
+                }
+
+                //A new session id at the moment the session gains privilege, so
+                //an id fixed by someone else beforehand is not the one that ends
+                //up logged in.
+                session_regenerate_id(true);
+
                 // remember that user's now logged in by storing user's ID in session
                 $_SESSION["id"] = $row["id"];
 				//Accounts created before register.php set this have a null

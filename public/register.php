@@ -26,7 +26,7 @@
             //null exchange, every statistics query matches nothing, and the
             //dashboard comes up empty for the life of the account.
             $result = query("INSERT INTO users (username, hash, cash, email, default_exchange) VALUES (?,?,10000.00,?,?)",
-            $_POST["username"], crypt($_POST["password"],'sharemanager'), $_POST["useremail"], default_exchange());
+            $_POST["username"], hash_password($_POST["password"]), $_POST["useremail"], default_exchange());
             
             //check if insert was successfull
             if ($result===false) 
@@ -41,6 +41,10 @@
                 {
                     // first (and only) row
                     $row = $rows[0];
+
+                    //As in login.php: a fresh session id the moment the
+                    //session gains privilege.
+                    session_regenerate_id(true);
 
                     // remember that user's now logged in by storing user's ID in session
                     $_SESSION["id"] = $row["id"];

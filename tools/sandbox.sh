@@ -154,6 +154,10 @@ trap 'kill $STUB_PID 2>/dev/null' EXIT INT TERM
 export EODHD_BASE_URL="http://127.0.0.1:$STUB_PORT"
 export EODHD_API_KEY="sandbox-stub-token"
 
+# config.php keeps errors off the page by default, which is right for a public
+# host and wrong for a sandbox you are debugging.
+export SM_DISPLAY_ERRORS=1
+
 cat <<EOF
 
   sandbox ready

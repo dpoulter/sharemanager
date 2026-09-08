@@ -398,19 +398,53 @@
 	}
 	
 	//Update Password
+	/**
+	 * Mint a reset token, store only its hash, and return the token.
+	 *
+	 * The old scheme put md5(90*13+id) in the link, which is md5(1170 + the
+	 * user id): anyone could compute the token for any account, and
+	 * reset_passwd.php is exempt from the login gate, so that was an account
+	 * takeover needing no credentials at all.
+	 */
+	function create_reset_token($user_id, $ttl_minutes = 60) {
+		$token = bin2hex(random_bytes(32));
+		query("insert into password_resets (user_id, token_hash, expires_at) values (?,?,?)",
+		      $user_id, hash("sha256", $token),
+		      date("Y-m-d H:i:s", time() + $ttl_minutes * 60));
+		return $token;
+	}
+
+	/**
+	 * The user id a live reset token belongs to, or null.
+	 *
+	 * Null covers every failure the caller should treat alike: unknown token,
+	 * already used, or expired.
+	 */
+	function reset_token_user($token) {
+		if (!is_string($token) || $token === "") { return null; }
+		$rows = query("select user_id from password_resets
+		               where token_hash = ? and used_at is null and expires_at > now()",
+		              hash("sha256", $token));
+		return (is_array($rows) && count($rows) === 1) ? $rows[0]["user_id"] : null;
+	}
+
 	function update_password($encrypt,$password){
 		
-		$Results =query ("SELECT id FROM users where md5(90*13+id)=?",$encrypt);
-		if(count($Results)>=1)
+		$user_id = reset_token_user($encrypt);
+		if($user_id !== null)
 		{
-    		query ( "update users set hash=? where id=?",password_hash($password,PASSWORD_DEFAULT),$Results[0]['id']);
+    		query ( "update users set hash=? where id=?",hash_password($password),$user_id);
+			//Single use, and every other outstanding token for the account goes
+			//with it: whoever just proved control of the mailbox is the only
+			//one who should still be able to get in.
+			query("update password_resets set used_at = now() where user_id = ? and used_at is null", $user_id);
 			$message = "Password has been reset";
 			echo "<script type='text/javascript'>alert('$message');</script>";
 			render("login_form.php", ["title" => "Login"]);
 		}
 	    else
 	    {
-	        apologize ( 'Invalid key please try again');
+	        apologize ( 'That reset link is invalid or has expired. Please request a new one.');
 	    }
 	}
 	
@@ -446,7 +480,7 @@
 				$mail->addAddress($email, $row['username']);     // Add a recipient
 				$mail->isHTML(true);                                  // Set email format to HTML
 				
-				$encrypt = md5(90*13+$row['id']);
+				$encrypt = create_reset_token($row['id']);
 				$site_url = SITE_URL;
 				$mail->Subject = 'Forget Username or Password';
 				$mail->Body    = 'Hi, <br/> <br/>Your username is '.$row['username'].' <br><br>Click here to reset your password '.$site_url.'/reset_passwd.php?encrypt='.$encrypt.'&action=reset   <br/> <br/>';
@@ -574,6 +608,49 @@
 			"date"   => $rows[0]["date"],
 			"stale"  => true,
 		]];
+	}
+
+	/**
+	 * Hash a password for storage.
+	 *
+	 * This used to be crypt($password, 'sharemanager'): a fixed two character
+	 * DES salt, which means identical passwords hash identically across every
+	 * account, and DES crypt silently ignores everything past the eighth
+	 * character - a twenty character password was only ever as strong as its
+	 * first eight. password_hash() salts each hash separately and uses the
+	 * current default algorithm.
+	 */
+	function hash_password($password) {
+		return password_hash($password, PASSWORD_DEFAULT);
+	}
+
+	/**
+	 * True when $password matches $hash, old scheme or new.
+	 *
+	 * Existing accounts still carry a crypt() hash, and there is no way to
+	 * convert one without the password, so accept it here and let the caller
+	 * upgrade the row on a successful login.
+	 */
+	function verify_password($password, $hash) {
+		$hash = (string) $hash;
+		if ($hash === "") { return false; }
+
+		//A modern hash carries its algorithm in the string.
+		if (password_get_info($hash)["algo"]) {
+			return password_verify($password, $hash);
+		}
+
+		//The legacy fixed-salt scheme. hash_equals keeps the comparison off the
+		//timing side channel that == leaves open.
+		return hash_equals($hash, crypt($password, 'sharemanager'));
+	}
+
+	/**
+	 * True when $hash is in the old scheme and should be replaced.
+	 */
+	function password_needs_upgrade($hash) {
+		return !password_get_info((string) $hash)["algo"]
+		       || password_needs_rehash((string) $hash, PASSWORD_DEFAULT);
 	}
 
 	/**
