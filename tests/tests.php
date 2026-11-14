@@ -890,6 +890,245 @@
           preg_match('/category\s*=\s*10/', $stats_src) === 1
           && substr_count($stats_src, 'screen_indicators si') >= 2);
 
+    echo "\n--- a moving average needs a full window ---\n";
+
+    /* calc_moving_avg() divided the sum by $numDays however many prices came
+       back, so a share with less history than the window got an average scaled
+       down by the shortfall. 138 days of prices divided by 200 is an answer 31%
+       too low, which against a trend screen is not a small error in the right
+       direction: the average sits well below the price, so a newly listed share
+       passes "close above its 200 day average" on arithmetic alone. One of the
+       350 symbols on the live exchange (MNO, 138 days) is in that position.
+
+       These four series are built by hand so the expected averages can be
+       worked out on paper rather than read back out of the thing under test. */
+    $trend_exchange = 'XLON';
+    $trend_asof = date('Y-m-d', strtotime('-1 day'));   // the date the job uses
+
+    /* [symbol, [prices oldest..newest]]. Linear series, so the mean of any
+       tail is just the mean of its ends. */
+    $series = [];
+    //Rising: 250 prices, 100..349. close 349, ma200 249.5, ma50 324.5.
+    $series['TUP'] = array_map(fn($i) => 100.0 + $i, range(0, 249));
+    //Falling: 250 prices, 349..100. close 100, ma200 199.5, ma50 124.5.
+    $series['TDN'] = array_map(fn($i) => 349.0 - $i, range(0, 249));
+    //A long decline with a spike on the last day only: the close clears the
+    //200 day average while the 50 day average is still below it. This is the
+    //share screen 1 holds and screen 2 refuses.
+    $series['TMX'] = array_map(fn($i) => $i === 249 ? 400.0 : 300.0 - $i * 0.6, range(0, 249));
+    //138 prices, the MNO case: enough for a 50 day average, not for a 200 day.
+    $series['TSH'] = array_map(fn($i) => 100.0 + $i, range(0, 137));
+    //20 prices: too short for either average.
+    $series['TVS'] = array_map(fn($i) => 100.0 + $i, range(0, 19));
+
+    $ins_sym = db()->prepare("insert into stock_symbols
+                                (symbol,name,description,exchange,enabled,sector,market,industry_group,industry,logo)
+                              values (?,?,?,?,'Y','Trend','Main Market','Trend','Trend',null)");
+    $ins_px  = db()->prepare("insert into historical_prices (symbol,exchange,date,price) values (?,?,?,?)");
+
+    db()->exec("delete from stock_symbols where sector='Trend'");
+    db()->exec("delete from historical_prices where symbol in ('TUP','TDN','TMX','TSH','TVS')");
+    foreach ($series as $sym => $prices) {
+        $ins_sym->execute([$sym, "$sym Trend PLC", "$sym Trend PLC ordinary shares", $trend_exchange]);
+        $n = count($prices);
+        foreach ($prices as $i => $price) {
+            /* Consecutive days ending on the as of date. The averages count
+               rows rather than calendar days, so this keeps the window size
+               and the arithmetic easy to check by hand. */
+            $ins_px->execute([$sym, $trend_exchange,
+                              date('Y-m-d', strtotime($trend_asof . ' -' . ($n - 1 - $i) . ' day')),
+                              round($price, 4)]);
+        }
+    }
+
+    /* The averages, computed in process. $_SESSION["exchange"] is what
+       session_exchange() reads and every one of these queries filters on. */
+    $saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = $trend_exchange;
+    db()->exec("delete from statistics where indicator in ('close_price','ma50','ma200')");
+    foreach (array_keys($series) as $sym) {
+        close_price($trend_asof, $sym);
+        ma50($trend_asof, $sym);
+        ma200($trend_asof, $sym);
+    }
+
+    $stat = function ($sym, $ind) use ($trend_asof) {
+        $v = scalar("select value from statistics where symbol=? and indicator=? and date=? and exchange='XLON'",
+                    [$sym, $ind, $trend_asof]);
+        return $v === false || $v === null ? null : (float)$v;
+    };
+
+    foreach ([['TUP', 349.0, 324.5, 249.5],
+              ['TDN', 100.0, 124.5, 199.5],
+              ['TMX', 400.0, 170.288, 211.547]] as [$sym, $close, $ma50, $ma200]) {
+        check("$sym close is the latest price", abs($stat($sym, 'close_price') - $close) < 0.0005,
+              'got ' . var_export($stat($sym, 'close_price'), true) . ' want ' . $close);
+        check("$sym 50 day average is the mean of the last 50 prices",
+              abs($stat($sym, 'ma50') - $ma50) < 0.001,
+              'got ' . var_export($stat($sym, 'ma50'), true) . ' want ' . $ma50);
+        check("$sym 200 day average is the mean of the last 200 prices",
+              abs($stat($sym, 'ma200') - $ma200) < 0.001,
+              'got ' . var_export($stat($sym, 'ma200'), true) . ' want ' . $ma200);
+    }
+
+    /* The fix. 138 prices is not a 200 day average at any price, and the old
+       code would have written sum/200 = 116.265 against a close of 237, which
+       reads as a share trading 104% above its long term trend. */
+    check('a 138 day history gets no 200 day average at all',
+          $stat('TSH', 'ma200') === null,
+          'got ' . var_export($stat('TSH', 'ma200'), true));
+    check('a 138 day history still gets a 50 day average, which it has the prices for',
+          $stat('TSH', 'ma50') !== null && abs($stat('TSH', 'ma50') - 212.5) < 0.001,
+          'got ' . var_export($stat('TSH', 'ma50'), true) . ' want 212.5');
+    check('the short average it does get is not the scaled-down one',
+          $stat('TSH', 'ma200') === null || abs($stat('TSH', 'ma200') - 116.265) > 0.001,
+          'got ' . var_export($stat('TSH', 'ma200'), true));
+    check('a 20 day history gets neither average',
+          $stat('TVS', 'ma50') === null && $stat('TVS', 'ma200') === null,
+          'ma50=' . var_export($stat('TVS', 'ma50'), true)
+          . ' ma200=' . var_export($stat('TVS', 'ma200'), true));
+    check('a 20 day history still gets a close, which is a real number',
+          abs($stat('TVS', 'close_price') - 119.0) < 0.0005,
+          'got ' . var_export($stat('TVS', 'close_price'), true));
+
+    /* Re-running must not leave a stale value behind. A run that refuses to
+       write is only idempotent if it also clears what an earlier run wrote,
+       otherwise the bad value outlives the data that produced it. */
+    db()->prepare("insert into statistics (symbol,indicator,value,date,exchange)
+                   values ('TSH','ma200',116.265,?,'XLON')")->execute([$trend_asof]);
+    ma200($trend_asof, 'TSH');
+    check('a re-run clears a value an earlier run should not have written',
+          $stat('TSH', 'ma200') === null,
+          'got ' . var_export($stat('TSH', 'ma200'), true));
+
+    echo "\n--- the nightly job calculates the trend indicators ---\n";
+
+    /* Item 4 of the ask: the three indicators have to exist for the date
+       build_screen() uses. get_momentum_statistics.php was the obvious place
+       to look and is the wrong one - it steps through monthly as of dates
+       (min_date + 3 months, then P1M), so its dates coincide with the daily
+       screening date only by chance. get_statistics.php is the right one: it
+       calculates every enabled indicator for yesterday and then records that
+       same date as the get_statistics_asof job, which is exactly what
+       build_screen() reads. Registering the three with a screen_function is
+       therefore all that was needed, and this proves it rather than assuming
+       it. */
+    db()->exec("delete from statistics where indicator in ('close_price','ma50','ma200')");
+    run_script('get_statistics.php');
+
+    $job_asof = scalar("select date(max(job_date)) from jobs where job_name='get_statistics_asof'");
+    check('the job records the as of date the screens read',
+          $job_asof === $trend_asof, "job says $job_asof, expected $trend_asof");
+
+    foreach (['close_price', 'ma50', 'ma200'] as $ind) {
+        check("the nightly job writes $ind for that date",
+              (int)scalar("select count(*) from statistics where indicator=? and date=?",
+                          [$ind, $job_asof]) > 0);
+    }
+    check('the job calculates them without ranking them',
+          (int)scalar("select count(*) from statistics
+                        where indicator in ('close_price','ma50','ma200')
+                          and (percentile is not null or stat_rank is not null)") === 0,
+          'a price has no business carrying a percentile');
+
+    /* Re-running the job must not duplicate rows: statistics has a non-unique
+       index on (symbol, indicator, date, exchange), so nothing in the database
+       would stop a second insert. */
+    $before_rows = (int)scalar("select count(*) from statistics
+                                 where indicator in ('close_price','ma50','ma200')");
+    run_script('get_statistics.php');
+    $after_rows = (int)scalar("select count(*) from statistics
+                                where indicator in ('close_price','ma50','ma200')");
+    check('re-running the job writes no duplicate rows',
+          $before_rows === $after_rows && $before_rows > 0,
+          "$before_rows rows then $after_rows");
+    $dups = rows("select symbol, indicator, count(*) n from statistics
+                   where indicator in ('close_price','ma50','ma200')
+                   group by symbol, indicator, date, exchange having n > 1");
+    check('no symbol has two values for one indicator and date',
+          count($dups) === 0, json_encode(array_slice($dups, 0, 5)));
+
+    echo "\n--- the two trend screens return the right shares ---\n";
+
+    $screen1 = (int)scalar("select id from screen where name='Trend following (200-day)'");
+    $screen2 = (int)scalar("select id from screen where name='Trend following (50/200)'");
+    check('the migration created both screens', $screen1 > 0 && $screen2 > 0,
+          "ids $screen1 and $screen2");
+
+    /* The expected membership, worked out from historical_prices rather than
+       from the statistics rows the job just wrote. This is the same sum the
+       check figures came from, so if the screens and this disagree, one of the
+       two is wrong and the test says which share. */
+    $expect1 = $expect2 = [];
+    $closest = PHP_FLOAT_MAX;
+    foreach (rows("select symbol from stock_symbols where enabled='Y' and exchange='XLON' order by symbol") as $r) {
+        $p = rows("select price from historical_prices
+                    where symbol=? and exchange='XLON' and date<=? order by date desc limit 200",
+                  [$r['symbol'], $trend_asof]);
+        if (count($p) < 200) { continue; }
+        $px    = array_map('floatval', array_column($p, 'price'));
+        $close = $px[0];
+        $ma200 = round(array_sum($px) / 200, 6);
+        $ma50  = round(array_sum(array_slice($px, 0, 50)) / 50, 6);
+        $closest = min($closest, abs($close - $ma200), abs($ma50 - $ma200));
+        if ($close > $ma200) {
+            $expect1[] = $r['symbol'];
+            if ($ma50 > $ma200) { $expect2[] = $r['symbol']; }
+        }
+    }
+    /* If anything sat within a rounding error of its average the comparison
+       could fall either way and the test would be flaky rather than wrong. */
+    check('no share sits on the knife edge of its own average, so the sets are definite',
+          $closest > 0.01, 'closest margin ' . $closest);
+
+    $flatten = function ($screen_id) {
+        $out = [];
+        foreach (build_screen($screen_id, null) as $row) {
+            $out[] = is_array($row) ? ($row['symbol'] ?? reset($row)) : $row;
+        }
+        sort($out);
+        return array_values(array_unique($out));
+    };
+    sort($expect1); sort($expect2);
+
+    $got1 = $flatten($screen1);
+    $got2 = $flatten($screen2);
+
+    check('the 200-day screen returns exactly the shares above their 200 day average',
+          $got1 === $expect1,
+          'got ' . json_encode($got1) . ' expected ' . json_encode($expect1));
+    check('the 50/200 screen returns exactly the shares that also have ma50 above ma200',
+          $got2 === $expect2,
+          'got ' . json_encode($got2) . ' expected ' . json_encode($expect2));
+
+    /* The hand built series, named individually: a set comparison passes if
+       both sides are wrong in the same way, and these are the four cases the
+       rule is actually about. */
+    check('a share in an uptrend is held by both screens',
+          in_array('TUP', $got1, true) && in_array('TUP', $got2, true));
+    check('a share below its 200 day average is dropped by both - the sell signal',
+          !in_array('TDN', $got1, true) && !in_array('TDN', $got2, true));
+    check('a share above its 200 day average but with ma50 below it is held only by the 200-day screen',
+          in_array('TMX', $got1, true) && !in_array('TMX', $got2, true));
+    check('a share with too little history is in neither screen, not falsely in both',
+          !in_array('TSH', $got1, true) && !in_array('TSH', $got2, true));
+    check('the 50/200 screen is a subset of the 200-day screen',
+          count(array_diff($got2, $got1)) === 0,
+          'only in 50/200: ' . json_encode(array_values(array_diff($got2, $got1))));
+
+    /* The second screen is a filter, so it must actually remove something,
+       otherwise the two screens are the same screen and the test above is
+       satisfied by a tautology. */
+    check('the 50/200 screen is stricter than the 200-day screen',
+          count($got2) < count($got1), count($got1) . ' vs ' . count($got2));
+
+    //Leave the universe as it was found.
+    db()->exec("delete from stock_symbols where sector='Trend'");
+    db()->exec("delete from historical_prices where symbol in ('TUP','TDN','TMX','TSH','TVS')");
+    db()->exec("delete from statistics where symbol in ('TUP','TDN','TMX','TSH','TVS')");
+    if ($saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $saved_exchange; }
+
     echo "\n--- the price log names the provider that actually ran ---\n";
 
     /* An FMP run logged "EODHD 2021-11-15 to 2026-11-13: 350 symbols loaded". */

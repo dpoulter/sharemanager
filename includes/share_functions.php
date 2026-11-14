@@ -559,52 +559,148 @@ function time_to_decimal($time) {
 	function hndrddayavg ($asOfDate,$symbol){
 		calc_moving_avg("hndrddayavg",100,$asOfDate,$symbol);
 	}
+
+	/* ------------------------------------------------------------------
+	   Trend following indicators.
+
+	   These three are compared against each other rather than ranked, so
+	   screen_indicators.calc_rank is 'N' for all of them: a percentile on a
+	   share price means nothing. See sql/trend_screens.sql.
+
+	   They are registered with a screen_function, which is what makes
+	   get_statistics.php compute them: get_stats_indicators() returns every
+	   enabled indicator, indicator_stats() dispatches through the function
+	   name, and the as of date is the one get_statistics.php then records as
+	   the get_statistics_asof job - the same date build_screen() reads. So no
+	   job needed changing; get_momentum_statistics.php works on monthly as of
+	   dates and would have been the wrong place for a daily signal.
+	   ------------------------------------------------------------------ */
+
+	//Latest close on or before the as of date
+	function close_price ($asOfDate,$symbol){
+		calc_close_price("close_price",$asOfDate,$symbol);
+	}
+
+	//50 day simple moving average
+	function ma50 ($asOfDate,$symbol){
+		calc_moving_avg("ma50",50,$asOfDate,$symbol);
+	}
+
+	//200 day simple moving average
+	function ma200 ($asOfDate,$symbol){
+		calc_moving_avg("ma200",200,$asOfDate,$symbol);
+	}
+
+	/**
+	 * Write the latest close on or before $asOfDate to statistics.
+	 *
+	 * A share with no price history at all gets no row rather than a zero: a
+	 * zero close would sit below every moving average and read as a sell
+	 * signal, which is a statement about the share rather than the absence of
+	 * data. Any stale value is removed in that case, so a symbol that loses
+	 * its history does not keep yesterday's answer.
+	 */
+	function calc_close_price($indicator,$asOfDate,$symbol){
+
+		if (isset($symbol))
+			$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
+		else
+			$symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
+
+		foreach ($symbols as $row){
+
+			$symbol=$row['symbol'];
+
+			$prices=query("select price from historical_prices where symbol=? and exchange=? and date<=? ORDER BY date DESC LIMIT 1",
+			              $symbol,session_exchange(),$asOfDate);
+
+			if (count($prices)==0){
+				clear_statistic($symbol,$indicator,$asOfDate);
+				continue;
+			}
+
+			upsert_statistic($symbol,$indicator,$asOfDate,$prices[0]['price']);
+		}
+	}
+
+	/**
+	 * Remove an indicator value for one symbol and date.
+	 *
+	 * Used when a run decides there is no honest value to write. Without this
+	 * a re-run is not idempotent in the direction that matters: the run that
+	 * refuses to write leaves the previous run's answer in place, so a bad
+	 * value outlives the data that produced it.
+	 */
+	function clear_statistic($symbol,$indicator,$asOfDate){
+		query("delete from statistics where symbol=? and indicator=? and date=? and exchange=?",
+		      $symbol,$indicator,$asOfDate,session_exchange());
+	}
+
+	/**
+	 * Insert or update one indicator value, the same semantics as
+	 * insert_statistic() in python/share_functions.py: one row per symbol,
+	 * indicator, date and exchange, whatever order the jobs run in.
+	 *
+	 * statistics has a non-unique index on those four columns rather than a
+	 * unique constraint, so "insert on duplicate key" is not available and the
+	 * check has to be explicit.
+	 */
+	function upsert_statistic($symbol,$indicator,$asOfDate,$value){
+		$rows=query("select symbol from statistics where symbol=? and indicator=? and date=? and exchange=?",
+		            $symbol,$indicator,$asOfDate,session_exchange());
+
+		if (count($rows)==0)
+			query("insert into statistics (symbol, indicator, value, date, exchange) values (?,?,?,?,?)",
+			      $symbol,$indicator,$value,$asOfDate,session_exchange());
+		else
+			query("update statistics set value=? where symbol=? and indicator=? and date=? and exchange=?",
+			      $value,$symbol,$indicator,$asOfDate,session_exchange());
+	}
+
 	//Calculate Moving Average
 	function calc_moving_avg($indicator,$numDays,$asOfDate,$symbol){
-		 //write_log("calc_moving_avg", "$indicator: " . $indicator );
 		  //Get symbols
 		  if (isset($symbol))
 				$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
 			else
                 $symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
 
-                 for ($i=0;$i<count($symbols);$i++ ){
-                        $symbol=$symbols[$i]['symbol'];
-						
-                         //write_log("calc_moving_avg", "Symbol: $symbol");
-                         //write_log("calc_moving_avg", "As of Date: $asOfDate");
+		foreach ($symbols as $row){
 
-			//reset avg
+			$symbol=$row['symbol'];
+
+			//Get last numDays prices
+			$prices=query("select price from historical_prices where symbol=? and exchange=? and date<=? ORDER BY date DESC LIMIT ?",
+			              $symbol,session_exchange(),$asOfDate,$numDays);
+
+			/* A full window or nothing.
+			
+			   This used to divide the sum by $numDays however many prices came
+			   back, so a share with less history than the window got an
+			   average of its own prices scaled down by the shortfall: 138 days
+			   of prices divided by 200 is an answer 31% too low. Against a
+			   trend screen that is not a small error in the right direction,
+			   it is the wrong answer - the average sits far below the price, so
+			   a newly listed share passes "close above its 200 day average"
+			   on arithmetic rather than on any trend. One of the 350 symbols
+			   on the live exchange is in exactly that position for ma200.
+			
+			   There is no partial-window average worth writing, because the
+			   indicator's meaning depends on the window being the stated
+			   length. So write nothing, and clear any value an earlier run
+			   left, which is also what makes the job safe to re-run. */
+			if (count($prices)<$numDays){
+				clear_statistic($symbol,$indicator,$asOfDate);
+				continue;
+			}
+
 			$avg=0;
-			//Get last  numDays prices 
-			//$prices=query("select price from historical_prices where symbol=? and date<=STR_TO_DATE(?, '%d-%m-%Y') ORDER BY date DESC LIMIT ?",$symbol,$asOfDate,$numDays);
-			$prices=query("select price from historical_prices where symbol=? and exchange=? and date<=? ORDER BY date DESC LIMIT ?",$symbol,session_exchange(),$asOfDate,$numDays);
-                        //sum prices
 			foreach ($prices as $price){
-                                $avg=$avg+$price['price'];
-                        }
-			//divide by Numdays to get moving average
+				$avg=$avg+$price['price'];
+			}
 			$avg=$avg/$numDays;
 
-			//insert or update moving average
-			
-			//check if symbol exists in statistics 
-		        //$rows=query("select symbol from price_momentum where symbol=?",$symbol);
-				$rows=query("select symbol from statistics where symbol=? and indicator=? and date=?",$symbol,$indicator,$asOfDate);
-                        //insert record in statistics
-			if (count($rows)==0){
-                                       
-					//query("insert into price_momentum (symbol, tendayavg) values (?,?)",$symbol,$avg);
-					//write_log("calc_moving_avg", "insert into statistics (symbol, indicator, value, date) values ($symbol,$indicator,$avg,$asOfDate)");
-					query("insert into statistics (symbol, indicator, value, date, exchange) values (?,?,?,?,?)",$symbol,$indicator,$avg,$asOfDate,session_exchange());
-                                				
-			}
-			//update record in statistics
-			else {
-				 //query("update price_momentum set tendayavg=? where symbol=?",$avg, $symbol);
-				query("update statistics set value=? where symbol=? and indicator=? and date=? and exchange=?",$avg, $symbol,$indicator,$asOfDate,session_exchange());
-                               
-             }
+			upsert_statistic($symbol,$indicator,$asOfDate,$avg);
 		}
 	}
 
