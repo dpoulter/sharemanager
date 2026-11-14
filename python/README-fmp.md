@@ -43,22 +43,45 @@ risking 429s that would cost more than the pacing saves.
 
 ## Setup
 
-1. Put the key in the environment the jobs and the web server run under.
-   Nothing reads a committed key.
+0. The loaders need the MySQL driver. On Debian and Ubuntu:
 
-   php-fpm pool:
+   ```sh
+   sudo apt install python3-mysql.connector
+   ```
+
+   Nothing else: `python/fmp.py` is standard library only.
+
+1. Put the settings in the environment the jobs and the web server run under.
+   Nothing reads a committed key, and nothing falls back to a built-in
+   database password.
+
+   php-fpm pool, for the pages:
 
    ```ini
    env[SM_DATA_PROVIDER] = fmp
    env[FMP_API_KEY] = your_key_here
    ```
 
-   crontab (cron does not read shell profiles):
+   Cron sees none of that, so `includes/refresh_all.sh` reads
+   `/etc/sharemanager.env`, which must be root-only because it holds the
+   database password and the API key:
+
+   ```sh
+   sudo install -m 600 /dev/null /etc/sharemanager.env
+   sudo editor /etc/sharemanager.env
+   ```
 
    ```
+   SM_DB_HOST=127.0.0.1
+   SM_DB_NAME=sharemanager
+   SM_DB_USER=shares
+   SM_DB_PASS=the-database-password
    SM_DATA_PROVIDER=fmp
-   FMP_API_KEY=your_key_here
-   0 2 * * * /var/www/sharemanager/includes/refresh_all.sh
+   FMP_API_KEY=the-fmp-key
+   ```
+
+   ```
+   0 2 * * * /var/www/sharemanager/includes/refresh_all.sh >> /var/log/sharemanager-refresh.log 2>&1
    ```
 
 2. Apply the mapping and the column widening:
@@ -85,6 +108,20 @@ risking 429s that would cost more than the pacing saves.
 
 ## Dependencies
 
-`python/fmp.py` is standard library only. `fetch_fmp_fundamentals.py` needs
-`mysql-connector-python`, as the other loaders do, but nothing else - no
-`requests`, no `requests_cache`.
+`python/fmp.py` is standard library only. `fetch_fmp_fundamentals.py` needs the
+MySQL driver, as the other loaders do, but nothing else - no `requests`, no
+`requests_cache`. On Debian and Ubuntu that is the `python3-mysql.connector`
+apt package; `pip install mysql-connector-python` works too.
+
+## Database credentials
+
+`python/functions.py` reads `SM_DB_HOST`, `SM_DB_NAME`, `SM_DB_USER`,
+`SM_DB_PASS` and optionally `SM_DB_AUTH_PLUGIN` - the same variables the PHP
+side takes from the php-fpm pool. A missing user or password is an error
+naming the variable; there is deliberately no fallback.
+
+It previously carried a hard-coded host, user and password, and forced
+`auth_plugin=mysql_native_password`. **Those credentials are in the git
+history and should be treated as exposed**: if `myuser` / `mypassword` was
+ever a real login on a real database, change it. The forced auth plugin is
+also gone, since a server that has retired the plugin rejects the login.

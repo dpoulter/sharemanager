@@ -47,7 +47,7 @@ def main():
     rows = query("select symbol from stock_symbols where enabled='Y' "
                  "and exchange='" + EXCHANGE + "' order by symbol")
 
-    connection = mysql.connector.connect(**db_config)
+    connection = mysql.connector.connect(**db_config())
     cursor = connection.cursor()
 
     loaded = skipped = failed = 0

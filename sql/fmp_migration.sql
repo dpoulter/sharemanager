@@ -29,16 +29,34 @@
 alter table stock_info modify attribute varchar(100) not null;
 
 -- Valuation and quality ratios the screens rank on.
-update screen_indicators set provider_field='Ratios.priceToEarningsRatioTTM' where name='pe';
-update screen_indicators set provider_field='Ratios.priceToSalesRatioTTM'    where name='price_sales_ratio';
-update screen_indicators set provider_field='Ratios.priceToBookRatioTTM'     where name='price_book_ratio';
-update screen_indicators set provider_field='KeyMetrics.evToEBITDATTM'       where name='enterprise_value_to_ebitda';
-update screen_indicators set provider_field='KeyMetrics.returnOnEquityTTM'   where name='roe_ttm';
-update screen_indicators set provider_field='KeyMetrics.returnOnAssetsTTM'   where name='roa';
-update screen_indicators set provider_field='Ratios.netProfitMarginTTM'      where name='profit_margin';
+--
+-- These four are the indicators the application currently defines, so these
+-- are the four that will report a changed row.
+update screen_indicators set provider_field='Ratios.priceToEarningsRatioTTM'  where name='pe';
+update screen_indicators set provider_field='Ratios.priceToSalesRatioTTM'     where name='price_sales_ratio';
+update screen_indicators set provider_field='Ratios.priceToBookRatioTTM'      where name='price_book_ratio';
+update screen_indicators set provider_field='KeyMetrics.returnOnEquityTTM'    where name='roe_ttm';
+
+-- The five below match no row today, and that is expected rather than a
+-- failure: the application does not define these indicators. FMP returns all
+-- of them, so the mapping is recorded here ready for the day one is added, and
+-- running this file again will pick it up. They are deliberately not inserted:
+-- a new row in screen_indicators is ranked by get_statistics.php and changes
+-- what the screens select, which is a decision about the product rather than
+-- part of switching data provider.
+update screen_indicators set provider_field='KeyMetrics.evToEBITDATTM'        where name='enterprise_value_to_ebitda';
+update screen_indicators set provider_field='KeyMetrics.returnOnAssetsTTM'    where name='roa';
+update screen_indicators set provider_field='Ratios.netProfitMarginTTM'       where name='profit_margin';
 update screen_indicators set provider_field='Ratios.operatingProfitMarginTTM' where name='operating_margin';
-update screen_indicators set provider_field='Ratios.dividendYieldTTM'        where name='dividend_yield';
+update screen_indicators set provider_field='Ratios.dividendYieldTTM'         where name='dividend_yield';
 
 -- Indicators this application calculates itself (the momentum series, the
 -- Piotroski and Altman components) have no provider field and keep null, which
 -- makes them fall back to matching on name.
+
+-- What the mapping looks like afterwards, so the run says what it did rather
+-- than leaving you to count "0 rows affected" five times.
+select name,
+       ifnull(provider_field, '(calculated locally)') as provider_field
+  from screen_indicators
+ order by provider_field is null, name;

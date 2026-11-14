@@ -61,15 +61,26 @@ def main():
 
     rows = query("select symbol from stock_symbols where enabled='Y' "
                  "and exchange='" + EXCHANGE + "' order by symbol")
-    symbols = [r['symbol'] for r in rows]
+
+    # query() hands back tuples from a plain cursor, so the symbol is row[0];
+    # indexing it by name raises "tuple indices must be integers". It also
+    # swallows a connection error and returns None, which would otherwise fail
+    # here as "NoneType is not iterable" rather than saying what went wrong.
+    if rows is None:
+        print("could not read stock_symbols; see the database error above")
+        return 1
+    symbols = [row[0] for row in rows]
     if limit:
         symbols = symbols[:limit]
+    if not symbols:
+        print("no enabled {} symbols in stock_symbols, nothing to load".format(EXCHANGE))
+        return 1
 
     estimate = len(symbols) * CALLS_PER_SYMBOL
     print("fmp fundamentals: {} symbols, about {} calls, as of {}"
           .format(len(symbols), estimate, asofdate))
 
-    connection = mysql.connector.connect(**db_config)
+    connection = mysql.connector.connect(**db_config())
     cursor = connection.cursor()
 
     loaded = skipped = failed = 0
@@ -124,7 +135,7 @@ def main():
           .format(asofdate, loaded, skipped, failed, time.time() - started))
     # A run where nothing loaded is a failure worth a non-zero exit, so cron
     # reports it rather than looking like a clean night.
-    return 1 if loaded == 0 and symbols else 0
+    return 1 if loaded == 0 else 0
 
 
 if __name__ == '__main__':

@@ -4,20 +4,15 @@ from datetime import date
 import datetime
 import requests_cache
 from datetime import timedelta
-from functions import query
+from functions import query, db_config
 from requests import Session
 from requests_cache import CacheMixin, SQLiteCache
 from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
 from pyrate_limiter import Duration, RequestRate, Limiter
 
-# Database configuration
-db_config = {
-    'host': 'localhost',
-    'user': 'myuser',
-    'password': 'mypassword',
-    'database': 'sharemanager',
-    'auth_plugin': 'mysql_native_password'
-}
+# Database configuration comes from functions.db_config(), which reads the
+# SM_DB_* environment variables. This file used to carry its own copy of the
+# credentials, including the password.
 
 class CachedLimiterSession(CacheMixin, LimiterMixin, Session):
     pass
@@ -69,7 +64,7 @@ for row in rows:
         info = fetch_stock_info(symbol+".L",asofdate,session)
     
         # Connect to the database
-        connection = mysql.connector.connect(**db_config)
+        connection = mysql.connector.connect(**db_config())
         cursor = connection.cursor()
 
         # Insert the stock info into the stock_info table
