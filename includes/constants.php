@@ -84,5 +84,8 @@
 
 	
 
-?>
-
+/* No closing tag. PHP swallows exactly one newline after "?>" and emits
+   every byte after that, so a blank line here put a newline at the front of
+   every response - including the graph endpoints, where a leading byte
+   before the PNG header made the browser show a broken image. Leaving the
+   tag off means there is nothing after it to get wrong. */

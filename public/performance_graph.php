@@ -59,14 +59,30 @@ function creategraph($session_id,$timespan){
 	 // Width and height of the graph
 	$width = 800; $height = 400;
 	
+	/* Read both series before picking a renderer, so "is there anything to
+	   draw" is answered once and whichever renderer runs sees the same data.
+	   A session with no holdings yields two empty arrays. The SVG path has
+	   always handled that, but jpgraph throws on an empty series ("Empty input
+	   data array", error 25121) - and inside an <img> an exception is a broken
+	   icon, not a message. So the check sits above the branch rather than
+	   inside the fallback, which is only reached on a host without jpgraph. */
+	$profit=new Prices();
+	$profit->performance($session_id,$startdate,$enddate);
+	$holding=new Prices();
+	$holding->total_holding($session_id,$startdate,$enddate);
+
+	$profitvalues  = is_array($profit->graphvalues)  ? $profit->graphvalues  : array();
+	$holdingvalues = is_array($holding->graphvalues) ? $holding->graphvalues : array();
+
+	if (count($profitvalues)==0 && count($holdingvalues)==0) {
+		graph_message_svg("No performance history available",$width,$height);
+		return;
+	}
+
 	if (!jpgraph_available()) {
-		$profit=new Prices();
-		$profit->performance($session_id,$startdate,$enddate);
-		$holding=new Prices();
-		$holding->total_holding($session_id,$startdate,$enddate);
 		simple_multi_line_svg(array(
-			array("label"=>"Profit","dates"=>$profit->graphdates,"values"=>$profit->graphvalues),
-			array("label"=>"Total","dates"=>$holding->graphdates,"values"=>$holding->graphvalues)
+			array("label"=>"Profit","dates"=>$profit->graphdates,"values"=>$profitvalues),
+			array("label"=>"Total","dates"=>$holding->graphdates,"values"=>$holdingvalues)
 		),$width,$height);
 		return;
 	}
@@ -86,80 +102,26 @@ function creategraph($session_id,$timespan){
 	
 	$graph->xaxis->scale->SetDateFormat( 'd-M-y' );
 		
-	//**************************	
-	//Create Graph for Profit
-	//**************************
-	$graphprices=new Prices(); 
-	
-	$graphprices-> performance($session_id,$startdate,$enddate);
-	
-	$dates=array();
-	$ydata=array();
-	$dates = $graphprices->graphdates;
-	
-	$xdata=array();
-	foreach($dates as $date){
-		array_push($xdata,$date->getTimestamp());
+	/* Both series, from the data already read above. This used to build two
+	   more Prices objects and re-run the same two queries for numbers it
+	   already had. The per-series skip is belt and braces: today both series
+	   come from the same rows of the performance table so they are empty or
+	   populated together, and the guard above has already returned in the
+	   empty case - but an empty array reaching LinePlot is the "Empty input
+	   data array" raise, and that is too sharp an edge to leave uncovered. */
+	foreach (array(array('Profit', $profit->graphdates,  $profitvalues),
+	               array('Total',  $holding->graphdates, $holdingvalues)) as $series) {
+		list($legend, $dates, $ydata) = $series;
+		if (count($ydata) == 0) { continue; }
+
+		$xdata = array();
+		foreach ($dates as $date) { array_push($xdata, $date->getTimestamp()); }
+
+		$lineplot = new LinePlot($ydata, $xdata);
+		$lineplot->SetLegend($legend);
+		$graph->Add($lineplot);
 	}
-	//print_r($xdata);
-	$ydata = $graphprices->graphvalues;
-	//print_r($ydata);
-	 
-	// Setup a title for the graph
-	//$graph->title->Set('Sunspot example');
-	 
-	// Setup titles and X-axis labels
-	//$graph->xaxis->title->Set('(year from 1701)');
-	 
-	// Setup Y-axis title
-	//$graph->yaxis->title->Set('(# sunspots)');
-	 
-	// Create the linear plot
-	$lineplot=new LinePlot($ydata,$xdata);
-	
-	$lineplot->SetLegend('Profit');
-	 
-	// Add the plot to the graph
-	$graph->Add($lineplot);
-	 
-	//**************************	
-	//Create Graph for Total Holding
-	//**************************	
-	$graphprices=new Prices(); 
-	
-	$graphprices-> total_holding($session_id,$startdate,$enddate);
-	
-	$dates=array();
-	$ydata=array();
-	$dates = $graphprices->graphdates;
-	
-	$xdata=array();
-	foreach($dates as $date){
-		array_push($xdata,$date->getTimestamp());
-	}
-	//print_r($xdata);
-	$ydata = $graphprices->graphvalues;
-	//print_r($ydata);
-	
-	 
-	 
-	// Setup a title for the graph
-	//$graph->title->Set('Sunspot example');
-	 
-	// Setup titles and X-axis labels
-	//$graph->xaxis->title->Set('(year from 1701)');
-	 
-	// Setup Y-axis title
-	//$graph->yaxis->title->Set('(# sunspots)');
-	 
-	// Create the linear plot
-	$lineplot=new LinePlot($ydata,$xdata);
-	
-	$lineplot->SetLegend('Total');
-	 
-	// Add the plot to the graph
-	$graph->Add($lineplot);
-	
+
 	// Display the graph
 	$graph->Stroke();
 

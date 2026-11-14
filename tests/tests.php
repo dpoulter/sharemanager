@@ -514,6 +514,47 @@
           'unparseable now: ' . (implode(', ', $unparseable) ?: 'none')
           . ' | expected: ' . implode(', ', $known_broken));
 
+    echo "\n--- no library file emits anything of its own ---\n";
+
+    /* includes/constants.php had a blank line after its closing "?>". PHP
+       swallows exactly one newline after the tag and emits every byte after
+       that, so the second newline was written to the front of every single
+       response - harmless in HTML, fatal in an image, where a byte before the
+       PNG header is a malformed file and the browser shows a broken icon. The
+       graph endpoints were the visible symptom; the cause was in a file that
+       has nothing to do with graphs.
+
+       Checked with PHP's own tokenizer rather than by searching for the last
+       "?>": class.phpmailer.php contains "?>" inside a regular expression
+       literal 107KB before the end of the file, so a string search finds the
+       wrong one and reads the rest of the library as trailing output.
+
+       The rule is about whitespace, not about markup. Several files in
+       includes/ are HTML fragments whose whole job is to emit markup after the
+       tag; what none of them may have is stray blank lines, which are never
+       deliberate and always leak.
+
+       The tokenizer counts the newline PHP swallows as part of the close tag,
+       so a whitespace-only trailing token is exactly the bytes that reach the
+       browser: "?>\\n" produces no trailing token at all, "?>\\n\\n" produces one
+       holding a single newline, and that newline is the byte that broke the
+       images. Any whitespace tail at all is therefore a leak. */
+    $leaking = [];
+    foreach (glob(dirname(__DIR__) . '/includes/*.php') as $file) {
+        $tokens = token_get_all((string)file_get_contents($file));
+        $last = end($tokens);
+        if (!is_array($last) || $last[0] !== T_INLINE_HTML) { continue; }
+        $tail = $last[1];
+        /* Markup is the file's purpose; whitespace is an accident. */
+        if (trim($tail) !== '') { continue; }
+        if ($tail !== '') {
+            $leaking[] = basename($file) . ' (' . strlen($tail) . ' bytes: '
+                       . str_replace(["\n", "\r", "\t"], ['\n', '\r', '\t'], $tail) . ')';
+        }
+    }
+    check('no file in includes/ emits whitespace after its final ?>',
+          count($leaking) === 0, implode(', ', $leaking));
+
     echo "\n--- EODHD settings degrade instead of fatalling ---\n";
 
     check('the api key accessor exists', function_exists('eodhd_api_key'));
@@ -699,6 +740,72 @@
                         where table_schema=? and table_name='statistics'", [DATABASE]) === 1
           && stripos($out_bad, 'Fatal error') === false);
     db()->exec("update screen_indicators set rank_order='value ASC' where name='pe'");
+
+    echo "\n--- a re-run clears the ranks it is about to replace ---\n";
+
+    /* The rank write is an UPDATE of the rows the ranking query returns, so a
+       row the query stops returning keeps whatever it was given last time.
+       That is exactly the rows EXCLUDE drops. On the N100 the negatives had
+       already been ranked under NORMAL, so after switching to EXCLUDE they
+       kept their old percentiles and a negative P/E went on scoring as the
+       cheapest share in the index - the fix was in place and looked like it
+       had done nothing.
+
+       The sequence below is the one that happened: rank once with negatives
+       included, switch to EXCLUDE, rank again. Nothing clears the table in
+       between, because in production nothing does. */
+    reset_calculated();
+    db()->exec("delete from screen_indicators where name='pe'");
+    db()->exec("insert into screen_indicators
+                  (name, description, enabled, order_number, calc_rank, rank_zero,
+                   rank_order, rank_negative)
+                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','NORMAL')");
+
+    $asof2 = date('Y-m-d', strtotime('-1 day'));
+    $pes2 = ['AAA' => -527.0, 'BBB' => -3.0, 'CCC' => 5.0, 'DDD' => 12.0, 'EEE' => 40.0];
+    foreach ($pes2 as $sym => $v) {
+        db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                       values (?,?,'pe',?,'XLON')")->execute([$sym, $asof2, $v]);
+    }
+
+    run_script('get_statistics.php');
+    $before = scalar("select percentile from statistics
+                       where symbol='AAA' and indicator='pe' and date=?", [$asof2]);
+    check('a negative ranks under NORMAL, so there is a stale value to leave behind',
+          $before !== null, 'AAA percentile was ' . var_export($before, true));
+
+    db()->exec("update screen_indicators set rank_negative='EXCLUDE' where name='pe'");
+    run_script('get_statistics.php');
+
+    $after = [];
+    foreach (array_keys($pes2) as $sym) {
+        $after[$sym] = scalar("select percentile from statistics
+                                where symbol=? and indicator='pe' and date=?", [$sym, $asof2]);
+    }
+    $after_rank = scalar("select stat_rank from statistics
+                           where symbol='AAA' and indicator='pe' and date=?", [$asof2]);
+
+    check('switching to EXCLUDE clears the percentile the earlier run left',
+          $after['AAA'] === null && $after['BBB'] === null,
+          'AAA=' . var_export($after['AAA'], true) . ' BBB=' . var_export($after['BBB'], true)
+          . ' (was ' . var_export($before, true) . ')');
+    check('switching to EXCLUDE clears the stale stat_rank too',
+          $after_rank === null, 'AAA stat_rank=' . var_export($after_rank, true));
+    check('the rows that are still ranked keep getting a percentile',
+          $after['CCC'] !== null && $after['DDD'] !== null && $after['EEE'] !== null,
+          json_encode($after));
+
+    /* The same re-run must be stable: ranking twice with no change in between
+       must not move a percentile, which it would if the clear removed a value
+       the ranking query then failed to put back. */
+    $twice_before = scalar("select percentile from statistics
+                             where symbol='CCC' and indicator='pe' and date=?", [$asof2]);
+    run_script('get_statistics.php');
+    $twice_after = scalar("select percentile from statistics
+                            where symbol='CCC' and indicator='pe' and date=?", [$asof2]);
+    check('ranking twice in a row leaves the same percentile',
+          $twice_before !== null && $twice_before === $twice_after,
+          var_export($twice_before, true) . ' then ' . var_export($twice_after, true));
 
     echo "\n--- the ranking settings survive a rebuild ---\n";
 
@@ -943,12 +1050,112 @@
         foreach (['stockgraph.php?symbol=AAA&timespan=6m'      => 'price chart',
                   'performance_graph.php?session_id=1&timespan=1y' => 'performance chart'] as $u => $what) {
             $img = (string)$curl("$base/$u");
+            /* The image must be the FIRST byte of the body, not merely present
+               in it. A stray newline from an include's trailing blank line sat
+               in front of the PNG header and the browser showed a broken image,
+               while a check for "contains <svg" passed throughout. */
             check("the $what endpoint returns an image",
-                  strpos($img, '<svg') !== false || strncmp($img, "\x89PNG", 4) === 0,
-                  substr(strip_tags($img), 0, 120));
+                  strncmp($img, '<?xml', 5) === 0 || strncmp($img, '<svg', 4) === 0
+                  || strncmp($img, "\x89PNG", 4) === 0,
+                  'body starts: ' . json_encode(substr($img, 0, 60)));
             check("the $what draws a line, not just a frame",
                   strpos($img, '<polyline') !== false || strncmp($img, "\x89PNG", 4) === 0);
         }
+        /* An empty portfolio.
+           A session with no holdings gives two empty series. jpgraph raises on
+           an empty data array ("Empty input data array", error 25121); inside
+           an <img> that is a picture of an exception where a "no data yet"
+           message belongs.
+
+           The bug was invisible to this suite because jpgraph is not vendored
+           here: jpgraph_available() is false, so only the SVG fallback ever
+           ran, and the fallback has always handled empty data. The N100 has
+           jpgraph installed, so the broken branch was the one never taken.
+           Stub the library - a LinePlot that raises on empty input, as the real
+           one does - and the jpgraph path runs and can be asserted on.
+
+           php -S chdirs to its docroot, and jpgraph_available() resolves its
+           path relative to the working directory, so the stub goes in public/
+           and is removed again below. */
+        $stub_lib = $docroot . '/jpgraph-4.2.0/src';
+        @mkdir($stub_lib, 0777, true);
+        file_put_contents($stub_lib . '/jpgraph.php', <<<'STUB'
+<?php
+class JpGraphException extends Exception {}
+class JpGraphStubAxis {
+	public $scale;
+	function __construct() { $this->scale = new JpGraphStubScale(); }
+	function SetLabelAngle($a) {}
+}
+class JpGraphStubScale { function SetDateFormat($f) {} }
+class Graph {
+	public $xaxis;
+	function __construct($w, $h) { $this->xaxis = new JpGraphStubAxis(); }
+	function SetScale($s) {}
+	function SetMargin($a, $b, $c, $d) {}
+	function Add($p) {}
+	//A real Stroke() writes a PNG; the magic bytes are all this needs.
+	function Stroke() { header("Content-Type: image/png"); print("\x89PNG\r\n\x1a\n"); }
+}
+STUB
+        );
+        file_put_contents($stub_lib . '/jpgraph_line.php', <<<'STUB'
+<?php
+class LinePlot {
+	function __construct($ydata, $xdata = array()) {
+		if (!is_array($ydata) || count($ydata) === 0) {
+			throw new JpGraphException('Empty input data array specified for plot. Must have at least one data point.');
+		}
+	}
+	function SetLegend($l) {}
+}
+STUB
+        );
+        file_put_contents($stub_lib . '/jpgraph_bar.php',  "<?php\n");
+        file_put_contents($stub_lib . '/jpgraph_date.php', "<?php\n");
+
+        /* 999999 is deliberately a session that has never been valued, which is
+           the same two empty arrays as a new portfolio. */
+        $empty_img = (string)$curl("$base/performance_graph.php?session_id=999999&timespan=1y");
+        check('an empty portfolio still returns a picture',
+              strncmp($empty_img, '<?xml', 5) === 0 || strncmp($empty_img, '<svg', 4) === 0
+              || strncmp($empty_img, "\x89PNG", 4) === 0,
+              'body starts: ' . json_encode(substr($empty_img, 0, 80)));
+        check('an empty portfolio is not a picture of jpgraph\'s exception',
+              stripos($empty_img, 'Empty input data array') === false
+              && stripos($empty_img, 'xception') === false,
+              'body: ' . json_encode(substr(strip_tags($empty_img), 0, 160)));
+        check('an empty portfolio says it has no history',
+              stripos($empty_img, 'No performance history') !== false,
+              'body: ' . json_encode(substr(strip_tags($empty_img), 0, 160)));
+
+        /* And the guard must not swallow a portfolio that does have history: a
+           check for "returns a picture" alone would pass just as well if the
+           endpoint drew "no data" for everybody. */
+        db()->exec("delete from performance where session_id=424242");
+        foreach ([['-8 day', 120.50, 1800.00], ['-1 day', 240.75, 1950.00]] as [$when, $pf, $hd]) {
+            db()->prepare("insert into performance
+                             (session_id, performance_date, total_value, total_profit, total_holding, cash)
+                           values (424242, ?, ?, ?, ?, 0)")
+                ->execute([date('Y-m-d', strtotime($when)), $hd, $pf, $hd]);
+        }
+        $full_img = (string)$curl("$base/performance_graph.php?session_id=424242&timespan=1y");
+        check('a portfolio with history strokes a real chart through jpgraph',
+              strncmp($full_img, "\x89PNG", 4) === 0,
+              'body starts: ' . json_encode(substr($full_img, 0, 80)));
+        check('a portfolio with history is not told it has none',
+              stripos($full_img, 'No performance history') === false,
+              'body: ' . json_encode(substr(strip_tags($full_img), 0, 160)));
+        db()->exec("delete from performance where session_id=424242");
+
+        /* Leave the docroot as it was found: a stub library left in public/
+           would change which branch every later run takes. */
+        foreach (glob($stub_lib . '/*.php') as $f) { @unlink($f); }
+        @rmdir($stub_lib);
+        @rmdir($docroot . '/jpgraph-4.2.0');
+        check('the stub library is removed again',
+              !file_exists($docroot . '/jpgraph-4.2.0'));
+
         /* GD is the dependency the fallback exists to avoid. */
         $graph_src = (string)file_get_contents(dirname(__DIR__) . '/includes/simple_graph.php');
         check('the chart fallback needs no PHP extension',

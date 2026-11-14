@@ -174,6 +174,23 @@
 				   ) AS st
 			 ) AS result";
 	     
+			/* Clear the previous run's ranks for this date and indicator before
+			   working out the new ones. The write below only touches the rows the
+			   ranking query returns, so any row it no longer returns kept the
+			   stat_rank and percentile it was given earlier. That is exactly the
+			   rows EXCLUDE drops: a negative P/E stopped being ranked but kept the
+			   percentile it had when negatives still sorted first, so it went on
+			   scoring as the cheapest share in the index and the fix looked like
+			   it had not worked. Nulling them first means an unranked row reads as
+			   unranked, which is what the score queries already treat as the
+			   neutral 50.
+
+			   Scoped to date and indicator, matching the update below, which is
+			   not scoped by exchange either. */
+			query("update statistics set stat_rank=null, percentile=null"
+			      ." where date=? and indicator=?",
+			      date_format($asOfDate,'Y-m-d'), $indicator['name']);
+
 	     	write_log("get_statistics.php","query=$sql1");
 
 			write_log("get_statistics.php","Execute Query for ".$indicator['name']." and AsofDate=".date_format($asOfDate, 'Y-m-d'));
