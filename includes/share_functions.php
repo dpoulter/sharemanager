@@ -316,7 +316,9 @@ function provider_prices_to_rows($decoded) {
 		}
 
 		write_log("get_historical_prices",
-			"EODHD ".$start_date." to ".$end_date.": ".$loaded." symbols loaded, "
+			//The provider is a setting, so naming one here reports the wrong
+			//thing as soon as it is changed: an FMP run logged "EODHD".
+			strtoupper(data_provider())." ".$start_date." to ".$end_date.": ".$loaded." symbols loaded, "
 			.$empty." without prices, ".$failed." failed");
  	}
  

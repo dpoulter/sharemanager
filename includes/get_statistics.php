@@ -174,6 +174,14 @@
 		write_log("get_statistics.php","Asof Date= ".date_format($asOfDate,'Y-m-d').", exchange=".$_SESSION['exchange']);
 		write_log("get_statistics.php","No of rows returned= ".count($scores));
 
+		/* Without this a second run for the same date appends a whole
+		   fresh set instead of replacing it: two runs for 2026-11-13 left
+		   700 momentum_score rows where there should be 350. Scoped to
+		   this date, indicator and exchange, so other days and other
+		   exchanges are untouched. */
+		query("delete from statistics where date=? and indicator=? and exchange=?",
+		      date_format($asOfDate,'Y-m-d'),'momentum_score',$_SESSION['exchange']);
+
 		foreach($scores as $score){
 
 			write_log("get_statistics.php","insert into statistics...symbol=".$score['symbol'].", value=".$score['percentile']);
@@ -193,6 +201,9 @@
 	*/
 	
 		$scores = query($sql,date_format($asOfDate,'Y-m-d'),$_SESSION['exchange']);
+		query("delete from statistics where date=? and indicator=? and exchange=?",
+		      date_format($asOfDate,'Y-m-d'),'value_score',$_SESSION['exchange']);
+
 		foreach($scores as $score){
 				query("insert into statistics (symbol,date, indicator,value,exchange) values (?,?,?,?,?)",$score['symbol'],date_format($asOfDate,'Y-m-d'),'value_score',$score['percentile'],$_SESSION['exchange']);
 	
@@ -209,6 +220,9 @@
 	*/
 		$scores = query($sql,date_format($asOfDate,'Y-m-d'),$_SESSION['exchange']);
 		write_log("get_statistics.php","Number of scores for quality ranking: ".count($scores));
+		query("delete from statistics where date=? and indicator=? and exchange=?",
+		      date_format($asOfDate,'Y-m-d'),'quality_score',$_SESSION['exchange']);
+
 		foreach($scores as $score){
 				query("insert into statistics (symbol,date, indicator,value,exchange) values (?,?,?,?,?)",$score['symbol'],date_format($asOfDate,'Y-m-d'),'quality_score',$score['percentile'],$_SESSION['exchange']);
 	
@@ -219,13 +233,25 @@
 		
 		//Calculate Overall Ranking
 		write_log("get_statistics.php","Calculate Overall Ranking");
-		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(value is null,50,value))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and indicator in ('value_score','momentum_score','quality_score') and s.exchange=?  group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+				/* This joined statistics to screen_indicators on si.name = s.indicator,
+		   but the three indicators it sums - value_score, momentum_score and
+		   quality_score - are scores this job writes, not rows in
+		   screen_indicators, so the join matched nothing and overall_score was
+		   never written. The join only ever carried si.rank_zero, which is
+		   grouped by and then used in no condition, so dropping it changes
+		   nothing else. The value and quality queries above keep their join:
+		   theirs select real indicators, and the quality one needs
+		   si.category. */
+		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(value is null,50,value))) as value,symbol FROM statistics s where date= ? and indicator in ('value_score','momentum_score','quality_score') and s.exchange=?  group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		 /*$sql      =   "SELECT  symbol, round(sum(if(value is null,50,value))/3) as percentile
 		FROM statistics r where date=? and indicator in ('value_score','momentum_score','quality_score') 
 		group by symbol";
 		*/
 		$scores = query($sql,date_format($asOfDate,'Y-m-d'),$_SESSION['exchange']);
+		query("delete from statistics where date=? and indicator=? and exchange=?",
+		      date_format($asOfDate,'Y-m-d'),'overall_score',$_SESSION['exchange']);
+
 		foreach($scores as $score){
 				query("insert into statistics (symbol,date, indicator,value,exchange) values (?,?,?,?,?)",$score['symbol'],date_format($asOfDate,'Y-m-d'),'overall_score',$score['percentile'],$_SESSION['exchange']);
 	

@@ -1,24 +1,17 @@
+# This job reads the database only: it turns the fundamentals a loader has
+# already stored into statistics rows. It makes no HTTP calls, so it needs
+# nothing beyond the standard library and mysql.connector.
+#
+# It used to build a rate-limited caching HTTP session and import
+# get_key_ratios, both left over from the yfinance loader and neither used.
+# The imports alone were enough to stop the nightly run on a server where
+# those packages are not installed.
 import sys
 import datetime
-import requests_cache
 from datetime import timedelta
 from functions import query
 from pipeline import pipeline_asofdate
-from share_functions import get_key_ratios, insert_statistic
-from requests import Session
-from requests_cache import CacheMixin, SQLiteCache
-from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
-from pyrate_limiter import Duration, RequestRate, Limiter
-
-
-class CachedLimiterSession(CacheMixin, LimiterMixin, Session):
-    pass
-
-session = CachedLimiterSession(
-    limiter=Limiter(RequestRate(2, Duration.SECOND*5)),  # max 2 requests per 5 seconds
-    bucket_class=MemoryQueueBucket,
-    backend=SQLiteCache("yfinance.cache"),
-)
+from share_functions import insert_statistic
 
 # Set exchange
 exchange = 'XLON'

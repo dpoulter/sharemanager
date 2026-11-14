@@ -10,14 +10,10 @@ Run before get_api_stats.py:
 """
 
 import sys
+import time
 from datetime import date
 
 import mysql.connector
-import requests_cache
-from requests_cache import CacheMixin, SQLiteCache
-from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
-from pyrate_limiter import Duration, RequestRate, Limiter
-from requests import Session
 
 from functions import query, db_config
 from pipeline import pipeline_asofdate
@@ -25,18 +21,21 @@ from eodhd import get_fundamentals, flatten_fundamentals, EodhdError
 
 EXCHANGE = 'XLON'
 
+# EODHD's own guidance is to stay under 1000 requests/minute. Two a second is
+# far below that; the binding constraint on these plans is the daily call
+# budget, not the rate.
+#
+# This was a requests_cache + requests_ratelimiter session. Those packages are
+# not installed on the server and nothing installs them, so the nightly job
+# could not start whenever SM_DATA_PROVIDER was eodhd. Pacing by the clock
+# needs no dependency. The response caching went with them: this job runs once
+# a night, so nothing was being served from that cache anyway.
+RATE_PER_SECOND = 2
+MIN_INTERVAL = 1.0 / RATE_PER_SECOND
 
-class CachedLimiterSession(CacheMixin, LimiterMixin, Session):
-    pass
-
-
-# EODHD's own guidance is to stay under 1000 requests/minute. This is far below
-# that; the binding constraint on these plans is the daily call budget, not rate.
-session = CachedLimiterSession(
-    limiter=Limiter(RequestRate(2, Duration.SECOND)),
-    bucket_class=MemoryQueueBucket,
-    backend=SQLiteCache("eodhd.cache"),
-)
+# The HTTP client no longer takes a session; the argument is kept so the call
+# sites read the same as before.
+session = None
 
 
 def main():
@@ -54,6 +53,7 @@ def main():
 
     for row in rows:
         symbol = row[0]
+        turn = time.time()
         try:
             document = get_fundamentals(symbol, session=session)
         except EodhdError as error:
@@ -83,6 +83,11 @@ def main():
 
         print("  {:8s} {} attributes".format(symbol, len(attributes)))
         loaded += 1
+
+        # Pace to the rate the session used to enforce.
+        spent = time.time() - turn
+        if spent < MIN_INTERVAL:
+            time.sleep(MIN_INTERVAL - spent)
 
     cursor.close()
     connection.close()

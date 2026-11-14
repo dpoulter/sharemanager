@@ -606,6 +606,99 @@
     check('a non-array body is a failure',
           provider_prices_to_rows("not json") === null);
 
+    echo "\n--- the scores are safe to re-run, and all four get written ---\n";
+
+    /* get_statistics.php inserted the four scores without clearing the date
+       first, so a second run for one date appended a whole fresh set: two runs
+       for 2026-11-13 left 700 momentum_score rows where there should be 350.
+       And overall_score was never written at all, because its query joined
+       screen_indicators on si.name = s.indicator while summing three scores
+       that are not rows in that table. */
+
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    [$out1, ] = run_script('get_statistics.php');
+    check('get_statistics.php completes on a first run',
+          stripos($out1, 'Fatal error') === false, substr($out1, -300));
+
+    $after_one = [];
+    foreach (['momentum_score','value_score','quality_score','overall_score'] as $score) {
+        $after_one[$score] = (int)scalar(
+            "select count(*) from statistics where indicator=?", [$score]);
+    }
+
+    /* The bug the FTSE 350 load hit: the overall ranking silently produced
+       nothing, so the dashboard's Overall Top Ten had no data to rank. */
+    check('overall_score is written at all', $after_one['overall_score'] > 0,
+          'rows: ' . var_export($after_one, true));
+    /* value_score and quality_score need indicators this seed does not define -
+       it carries only the three momentum ones - so they are legitimately zero
+       here. What matters is that overall_score summed the component scores
+       that do exist rather than coming back empty. */
+    check('overall_score covers every symbol that has a component score',
+          $after_one['overall_score'] === $after_one['momentum_score'],
+          var_export($after_one, true));
+
+    /* Running the same date twice must leave the same rows, not twice as many. */
+    run_script('get_statistics.php');
+    $duplicated = [];
+    foreach ($after_one as $score => $before) {
+        $now = (int)scalar("select count(*) from statistics where indicator=?", [$score]);
+        if ($now !== $before) { $duplicated[] = "$score $before->$now"; }
+    }
+    check('re-running get_statistics.php does not duplicate any score',
+          count($duplicated) === 0, implode(', ', $duplicated));
+
+    $dupe_keys = (int)scalar(
+        "select count(*) from (select symbol,date,indicator,exchange from statistics
+          where indicator like '%\\_score' group by symbol,date,indicator,exchange
+          having count(*)>1) d");
+    check('no symbol has two rows for the same score on the same date',
+          $dupe_keys === 0, "$dupe_keys duplicated keys");
+
+    /* The value and quality queries legitimately join screen_indicators - they
+       select real indicators, and quality filters on si.category - so the fix
+       must not have removed those. */
+    $stats_src = (string)file_get_contents(dirname(__DIR__) . '/includes/get_statistics.php');
+    check('the quality query still joins screen_indicators for its category',
+          preg_match('/category\s*=\s*10/', $stats_src) === 1
+          && substr_count($stats_src, 'screen_indicators si') >= 2);
+
+    echo "\n--- the price log names the provider that actually ran ---\n";
+
+    /* An FMP run logged "EODHD 2021-11-15 to 2026-11-13: 350 symbols loaded". */
+    $share_src = (string)file_get_contents(dirname(__DIR__) . '/includes/share_functions.php');
+    $at = strpos($share_src, 'symbols loaded');
+    $summary = $at === false ? '' : substr($share_src, max(0, $at - 400), 500);
+    check('the price summary does not hard-code a provider name',
+          stripos($summary, '"EODHD ') === false && stripos($summary, '"FMP ') === false,
+          trim(substr($summary, 0, 160)));
+    check('the price summary reports the configured provider',
+          strpos($summary, 'data_provider()') !== false);
+
+    echo "\n--- no function is defined in both public/ and includes/ ---\n";
+
+    /* Visiting /share_screen.php was a fatal: public/share_screen.php defined
+       insert_criteria, then config.php pulled in includes/share_screen.php,
+       which declared it again. */
+    $defined = [];
+    foreach (['public', 'includes'] as $dir) {
+        foreach (glob(dirname(__DIR__) . "/$dir/*.php") as $file) {
+            $src = (string)file_get_contents($file);
+            if (preg_match_all('/^\s*function\s+([A-Za-z_]\w*)\s*\(/m', $src, $m)) {
+                foreach ($m[1] as $fn) { $defined[$fn][$dir] = basename($file); }
+            }
+        }
+    }
+    $clashes = [];
+    foreach ($defined as $fn => $where) {
+        if (count($where) > 1) {
+            $clashes[] = $fn . ' (' . implode(', ', $where) . ')';
+        }
+    }
+    check('no function is declared in both public/ and includes/',
+          count($clashes) === 0, implode('; ', $clashes));
+
     echo "\n--- pages render without a fatal ---\n";
 
     /* Drives the site over HTTP as a logged in user. Everything above tests the

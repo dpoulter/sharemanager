@@ -10,7 +10,9 @@ EODHD addresses London tickers as CODE.LSE. stock_symbols.exchange holds the MIC
 interchangeable and eodhd_symbol() does the translation in one place.
 """
 
+import json
 import os
+from urllib import request as urlrequest, parse as urlparse, error as urlerror
 
 BASE_URL = "https://eodhd.com/api"
 EXCHANGE_SUFFIX = "LSE"
@@ -41,28 +43,32 @@ def eodhd_symbol(symbol, suffix=EXCHANGE_SUFFIX):
 
 
 def _get(path, session=None, **params):
-    #Imported here rather than at module scope so the pure helpers below -
-    #flatten_fundamentals and eodhd_symbol, which the tests cover - can be
-    #imported on a machine without requests installed. Only the HTTP path
-    #needs it.
-    import requests
+    """One GET against the EODHD API. Returns parsed JSON, or None for 404.
 
+    Standard library only. This used to go through requests, with a cached
+    rate-limited session, which meant the nightly job could not start on a
+    server where those packages are absent - and nothing installs them. The
+    `session` argument is accepted and ignored so existing callers still work.
+    """
     params["api_token"] = api_key()
     params.setdefault("fmt", "json")
-    getter = session.get if session is not None else requests.get
-    response = getter("{}/{}".format(BASE_URL, path), params=params, timeout=60)
+    url = "{}/{}?{}".format(BASE_URL, path, urlparse.urlencode(params))
 
-    if response.status_code == 401:
-        raise EodhdError("EODHD rejected the API key (401)")
-    if response.status_code == 402:
-        raise EodhdError("this endpoint is not included in the current EODHD plan (402)")
-    if response.status_code == 404:
-        return None          # unknown ticker, treated as "no data" by callers
-    if response.status_code == 429:
-        raise EodhdError("EODHD daily call limit reached (429)")
-    response.raise_for_status()
-
-    return response.json()
+    try:
+        with urlrequest.urlopen(url, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8", "replace"))
+    except urlerror.HTTPError as e:
+        if e.code == 401:
+            raise EodhdError("EODHD rejected the API key (401)")
+        if e.code == 402:
+            raise EodhdError("this endpoint is not included in the current EODHD plan (402)")
+        if e.code == 404:
+            return None      # unknown ticker, treated as "no data" by callers
+        if e.code == 429:
+            raise EodhdError("EODHD daily call limit reached (429)")
+        raise EodhdError("EODHD returned {}".format(e.code))
+    except ValueError as e:
+        raise EodhdError("EODHD returned a body that is not JSON: {}".format(e))
 
 
 def get_fundamentals(symbol, session=None):
