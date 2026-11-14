@@ -60,52 +60,60 @@ def db_config():
 
     return config
 
-
 def query(query_string):
-    """Run a select. Returns a list of tuples, or None if the query failed.
+    """Run a statement.
 
-    None rather than an exception is long-standing behaviour that other
-    scripts rely on, so callers must check before iterating.
+    Returns a list of tuples for anything with a result set, and the number of
+    affected rows for anything without one, which is committed before
+    returning.
+
+    It used to call fetchall() unconditionally. On an UPDATE that raises "No
+    result set to fetch from", and the error was caught and turned into None,
+    so the statement looked merely unsuccessful while actually never being
+    committed: insert_statistic() updates through here, so a re-run could
+    never correct a value, and one get_api_stats run printed 1,394 of those
+    errors.
+
+    Errors are raised now rather than returned as None. None was
+    indistinguishable from "no rows matched", which let a nightly job report
+    success having written nothing.
     """
+    print ("query string="+query_string)
+
+    connection = mysql.connector.connect(**db_config())
     try:
-
-        print ("query string="+query_string)
-
-        # Connect to the database
-        connection = mysql.connector.connect(**db_config())
         cursor = connection.cursor()
+        try:
+            cursor.execute(query_string)
 
-        # Execute the query
-        cursor.execute(query_string)
-        result = cursor.fetchall()
+            # with_rows is false for INSERT, UPDATE and DELETE. Fetching then
+            # is the error; committing is what they actually need.
+            if cursor.with_rows:
+                result = cursor.fetchall()
+            else:
+                connection.commit()
+                result = cursor.rowcount
 
-        # Close the cursor and connection
-        cursor.close()
+            print (result)
+            return result
+        finally:
+            cursor.close()
+    finally:
         connection.close()
 
-        print (result)
-
-        return result
-
-    except mysql.connector.Error as error:
-        print("Error while connecting to MySQL:", error)
 
 def insert(insert_string):
+    """Run an insert and commit it. Raises on error, as query() does."""
+    print ("insert string="+insert_string)
+
+    connection = mysql.connector.connect(**db_config())
     try:
-
-        print ("insert string="+insert_string)
-
-         # Connect to the database
-        connection = mysql.connector.connect(**db_config())
-
-        # Create a cursor
         cursor = connection.cursor()
-        cursor.execute(insert_string)
-        connection.commit()
-
-         # Close the cursor and connection
-        cursor.close()
+        try:
+            cursor.execute(insert_string)
+            connection.commit()
+            return cursor.rowcount
+        finally:
+            cursor.close()
+    finally:
         connection.close()
-
-    except mysql.connector.Error as error:
-        print("Error while connecting to MySQL:", error)

@@ -606,6 +606,125 @@
     check('a non-array body is a failure',
           provider_prices_to_rows("not json") === null);
 
+    echo "\n--- dead pages stay out of the docroot ---\n";
+
+    /* public/get_share_prices.php was a 2023 copy that nothing linked to and
+       that answered 500, failing to require constants.php. screening.php read
+       price_momentum, the legacy table calc_momentum stopped writing to, and
+       rendered templates/screen.php with variables that template does not use.
+       Both are archived; anything in public/ is a URL somebody can reach. */
+    foreach (['get_share_prices.php', 'screening.php'] as $gone) {
+        check("public/$gone is not served",
+              !file_exists(dirname(__DIR__) . "/public/$gone"));
+        check("$gone is kept in the archive",
+              file_exists(dirname(__DIR__) . "/archive/public/$gone"));
+    }
+
+    echo "\n--- a negative valuation ratio must not rank as the cheapest ---\n";
+
+    /* pe, price_sales_ratio and price_book_ratio rank value ASC, so negatives
+       sorted first and scored as the best value in the index: on the live
+       FTSE 350 for 2026-11-13 the six best P/E percentiles were all negative,
+       Spire Healthcare at -527 and Eurowag at -257, and Hg Capital Trust
+       reached value_score 99 on negative book value. */
+
+    reset_calculated();
+    db()->exec("delete from screen_indicators where name='pe'");
+    db()->exec("insert into screen_indicators
+                  (name, description, enabled, order_number, calc_rank, rank_zero,
+                   rank_order, rank_negative)
+                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE')");
+
+    $asof = date('Y-m-d', strtotime('-1 day'));
+    $pes = ['AAA' => -527.0, 'BBB' => -3.0, 'CCC' => 5.0, 'DDD' => 12.0, 'EEE' => 40.0];
+    foreach ($pes as $sym => $v) {
+        db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                       values (?,?,'pe',?,'XLON')")->execute([$sym, $asof, $v]);
+    }
+    run_script('get_statistics.php');
+
+    $pct = [];
+    foreach (array_keys($pes) as $sym) {
+        $pct[$sym] = scalar("select percentile from statistics
+                              where symbol=? and indicator='pe' and date=?", [$sym, $asof]);
+    }
+
+    /* The headline requirement: a negative P/E must not outrank a positive one. */
+    $worst_positive = min(array_filter([$pct['CCC'], $pct['DDD'], $pct['EEE']],
+                                       fn($p) => $p !== null));
+    $negatives_above = array_filter(['AAA' => $pct['AAA'], 'BBB' => $pct['BBB']],
+                                    fn($p) => $p !== null && $p > $worst_positive);
+    check('a negative P/E does not rank above a positive one',
+          count($negatives_above) === 0,
+          'negatives ' . json_encode($negatives_above) . ' beat ' . $worst_positive);
+
+    /* EXCLUDE means unranked, so the score queries use their neutral 50
+       rather than treating a loss-maker as either cheap or expensive. */
+    check('an excluded negative is left unranked rather than scored',
+          $pct['AAA'] === null && $pct['BBB'] === null,
+          'AAA=' . var_export($pct['AAA'], true) . ' BBB=' . var_export($pct['BBB'], true));
+    check('the cheapest positive still ranks best',
+          $pct['CCC'] !== null && $pct['CCC'] >= $pct['EEE'],
+          "CCC={$pct['CCC']} EEE={$pct['EEE']}");
+
+    /* LAST is the alternative: ranked, but behind everything non-negative. */
+    db()->exec("update screen_indicators set rank_negative='LAST' where name='pe'");
+    db()->exec("update statistics set percentile=null, stat_rank=null where indicator='pe'");
+    run_script('get_statistics.php');
+    $last = [];
+    foreach (array_keys($pes) as $sym) {
+        $last[$sym] = scalar("select percentile from statistics
+                               where symbol=? and indicator='pe' and date=?", [$sym, $asof]);
+    }
+    check('LAST ranks negatives behind every positive',
+          $last['AAA'] !== null && $last['BBB'] !== null
+          && max($last['AAA'], $last['BBB']) < min($last['CCC'], $last['DDD'], $last['EEE']),
+          json_encode($last));
+
+    /* NORMAL is still available, and is what every other indicator uses. */
+    db()->exec("update screen_indicators set rank_negative='NORMAL' where name='pe'");
+    db()->exec("update statistics set percentile=null, stat_rank=null where indicator='pe'");
+    run_script('get_statistics.php');
+    $normal = scalar("select percentile from statistics
+                       where symbol='AAA' and indicator='pe' and date=?", [$asof]);
+    check('NORMAL leaves the old behaviour reachable', $normal !== null);
+
+    /* rank_order is interpolated into an ORDER BY, and initial_data.sql set it
+       to 1, which is not a sort expression. */
+    db()->exec("update screen_indicators set rank_order='1; drop table statistics' where name='pe'");
+    db()->exec("update statistics set percentile=null, stat_rank=null where indicator='pe'");
+    [$out_bad, ] = run_script('get_statistics.php');
+    check('an unusable rank_order is refused rather than interpolated',
+          (int)scalar("select count(*) from information_schema.tables
+                        where table_schema=? and table_name='statistics'", [DATABASE]) === 1
+          && stripos($out_bad, 'Fatal error') === false);
+    db()->exec("update screen_indicators set rank_order='value ASC' where name='pe'");
+
+    echo "\n--- the ranking settings survive a rebuild ---\n";
+
+    /* calc_rank was 'N' for the four provider indicators, so they never got a
+       percentile and value_score and quality_score were 0 for every share.
+       Set by hand on the live database; it has to be in the repo. */
+    $fmp_sql = (string)file_get_contents(dirname(__DIR__) . '/sql/fmp_migration.sql');
+    foreach (['pe', 'price_sales_ratio', 'price_book_ratio', 'roe_ttm'] as $ind) {
+        check("the migration turns calc_rank on for $ind",
+              preg_match("/calc_rank='Y'[^;]*'" . preg_quote($ind, '/') . "'/s", $fmp_sql) === 1);
+    }
+    check('the migration adds the rank_negative column',
+          stripos($fmp_sql, 'add column if not exists rank_negative') !== false);
+    check('the migration excludes negatives for the ASC valuation ratios',
+          preg_match("/rank_negative='EXCLUDE'[^;]*price_book_ratio/s", $fmp_sql) === 1);
+
+    /* initial_data.sql set calc_rank by indicator_id - 140, 141, 142 - which
+       match nothing on a fresh install, so the momentum indicators never got
+       a percentile there either. */
+    $initial = (string)file_get_contents(dirname(__DIR__) . '/sql/initial_data.sql');
+    check('initial_data.sql sets calc_rank by name, not by a hard-coded id',
+          preg_match("/calc_rank='Y'[^;]*where\s+name='3mnth'/is", $initial) === 1
+          && preg_match("/indicator_id`?='1(40|41|42)'/", $initial) !== 1);
+    check('initial_data.sql gives rank_order a sort expression, not a number',
+          preg_match("/rank_order\s*=\s*1\b/", $initial) !== 1);
+
     echo "\n--- the scores are safe to re-run, and all four get written ---\n";
 
     /* get_statistics.php inserted the four scores without clearing the date
@@ -764,7 +883,7 @@
 
         $pages = ['index.php','performance.php','dividends.php','cash_history.php',
                   'edit.php','topup.php','screen_list.php','quote.php','criteria.php',
-                  'criteria_list.php','screen_criteria.php','screening.php','sector_companies.php',
+                  'criteria_list.php','screen_criteria.php','sector_companies.php',
                   'strategies.php','sell.php','buy.php','backtest.php',
                   'backtest_results.php','statistics.php','statistics_form.php','download_prices.php',
                   'register.php','reset_passwd.php'];
@@ -916,14 +1035,15 @@
             $body = (string)$curl("$base/$u");
             if (preg_match('/Undefined (variable|array key)/i', $body)) { $undef[] = $u; }
         }
-        /* screening.php renders templates/screen.php with MomentumList, TrendList
-           and EarningsGrowth, but that template belongs to screen_list.php and
-           iterates $stats and $indicators, which screening.php does not have.
-           The two have drifted apart; fixing it means either giving screening.php
-           the right data or retiring it, so it is recorded rather than skipped. */
-        $known_undef = ['screening.php'];
+        /* screening.php was the one known exception here: it rendered
+           templates/screen.php with MomentumList, TrendList and EarningsGrowth,
+           while that template iterates the $stats and $indicators that
+           screen_list.php passes. It was linked from nowhere and read
+           price_momentum, the legacy table calc_momentum stopped writing to,
+           so it is archived and the exception is gone. */
+        $known_undef = [];
         sort($undef); sort($known_undef);
-        check('no page renders a template with a variable it was not given (1 known)',
+        check('no page renders a template with a variable it was not given',
               $undef === $known_undef,
               'now: ' . (implode(', ', $undef) ?: 'none') . ' | expected: ' . implode(', ', $known_undef));
 
@@ -970,7 +1090,7 @@
             }
         }
         sort($fresh_warn);
-        check('an account with no history can walk the site (1 known)',
+        check('an account with no history can walk the site',
               $fresh_warn === $known_undef,
               'now: ' . implode(', ', $fresh_warn) . ' | expected: ' . implode(', ', $known_undef));
 

@@ -54,9 +54,52 @@ update screen_indicators set provider_field='Ratios.dividendYieldTTM'         wh
 -- Piotroski and Altman components) have no provider field and keep null, which
 -- makes them fall back to matching on name.
 
+-- ---------------------------------------------------------------------------
+-- Ranking settings.
+-- ---------------------------------------------------------------------------
+
+-- Without calc_rank='Y' an indicator never gets a percentile, and the value
+-- and quality rankings sum percentiles: every share scored 0 for both, and
+-- overall_score was momentum alone. This was set by hand on the live database
+-- and is recorded here so a rebuild does not lose it.
+update screen_indicators set calc_rank='Y'
+ where name in ('pe','price_sales_ratio','price_book_ratio','roe_ttm');
+
+-- The direction each is ranked in. Cheap is a low ratio; quality is a high
+-- return.
+update screen_indicators set rank_order='value ASC'
+ where name in ('pe','price_sales_ratio','price_book_ratio');
+update screen_indicators set rank_order='value DESC' where name='roe_ttm';
+
+-- How a negative value is ranked.
+--
+-- Ranking value ASC put negatives first, so a loss-making company was scored
+-- as the cheapest share in the index: on the FTSE 350 for 2026-11-13 the six
+-- best P/E percentiles were all negative - Spire Healthcare at -527, Eurowag
+-- at -257 - and Hg Capital Trust reached value_score 99 on negative book
+-- value.
+--
+--   NORMAL   ranked on its value like any other (the column default)
+--   EXCLUDE  left unranked, so percentile stays null and the score queries
+--            use the neutral 50 they already apply to a missing value
+--   LAST     ranked behind every non-negative value
+--
+-- EXCLUDE for the three valuation ratios. A negative P/E does not mean cheap,
+-- and it does not mean expensive either: the ratio has no meaning for a
+-- company with no earnings, so it should neither help nor hurt the score.
+-- LAST is there for anyone who would rather a loss-maker scored worst.
+-- roe_ttm ranks DESC, where a negative return already sorts last, so it keeps
+-- NORMAL.
+alter table screen_indicators
+  add column if not exists rank_negative varchar(8) default 'NORMAL' after rank_order;
+
+update screen_indicators set rank_negative='EXCLUDE'
+ where name in ('pe','price_sales_ratio','price_book_ratio');
+
 -- What the mapping looks like afterwards, so the run says what it did rather
 -- than leaving you to count "0 rows affected" five times.
 select name,
-       ifnull(provider_field, '(calculated locally)') as provider_field
+       ifnull(provider_field, '(calculated locally)') as provider_field,
+       calc_rank, rank_order, rank_negative
   from screen_indicators
  order by provider_field is null, name;

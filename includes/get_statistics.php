@@ -100,9 +100,40 @@
 		//Calculate Rank for each statistic
 		write_log("get_statistics.php","Calculate Rank for each statistic");
 		
-	    $indicators=query("select name ,if(rank_order='','DESC',rank_order) rank_order from screen_indicators where enabled='Y' and calc_rank='Y'");
+	    $indicators=query("select name, if(rank_order='','DESC',rank_order) rank_order,
+	                             ifnull(nullif(rank_negative,''),'NORMAL') rank_negative
+	                        from screen_indicators where enabled='Y' and calc_rank='Y'");
 
 	    foreach ($indicators as $indicator){
+
+			/* rank_order comes from the database and is interpolated below, so
+			   it is checked against what it is allowed to be rather than
+			   trusted. An unrecognised value falls back to the column default. */
+			$rank_order = trim($indicator['rank_order']);
+			if (!preg_match('/^value\s+(ASC|DESC)$/i', $rank_order)) {
+				write_log("get_statistics.php",
+				          "unexpected rank_order '".$rank_order."' for "
+				          .$indicator['name'].", using value DESC");
+				$rank_order = 'value DESC';
+			}
+
+			/* A negative valuation ratio is not a cheap share. pe,
+			   price_sales_ratio and price_book_ratio rank value ASC, so a
+			   loss-maker or a company with negative book value sorted ahead of
+			   every profitable one: on the FTSE 350 for 2026-11-13 the six best
+			   P/E percentiles were all negative.
+
+			   EXCLUDE leaves them unranked, so percentile stays null and the
+			   score queries fall back to the neutral 50 they already use. That
+			   is the honest answer: a negative ratio does not mean cheap, and
+			   it does not mean expensive either - it means the ratio has no
+			   meaning for this company, so it should neither help nor hurt.
+			   LAST is available for anyone who would rather a loss-maker scored
+			   worst than neutral. */
+			$negatives = strtoupper(trim($indicator['rank_negative']));
+			$negative_filter = ($negatives === 'EXCLUDE') ? " AND value >= 0" : "";
+			$order_by = ($negatives === 'LAST') ? "(value < 0), ".$rank_order : $rank_order;
+
 		 	$sql1 = "SELECT
 			 symbol,
 			 IF(value = 0, IF(rank_zero = 'N', IF(rank_order = 'DESC', 0, @rownum), `rank`), `rank`) AS `rank`,
@@ -136,9 +167,10 @@
 							   s.indicator = si.name
 							   AND date = '".date_format($asOfDate, 'Y-m-d')."'
 							   AND indicator = '".$indicator['name']."'
+							   ".$negative_filter."
 						 ) s,
 						 (SELECT @rownum := 0, @prev_value := NULL) r
-					  ORDER BY ".$indicator['rank_order']."
+					  ORDER BY ".$order_by."
 				   ) AS st
 			 ) AS result";
 	     

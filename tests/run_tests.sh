@@ -61,6 +61,7 @@ python3 "$TESTS_DIR/test_eodhd.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp.py"        || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp_loader.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_job_imports.py" || PY_FAILED=1
+python3 "$TESTS_DIR/test_db_functions.py" || PY_FAILED=1
 
 echo "running tests"
 php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/tests.php" || PHP_FAILED=1

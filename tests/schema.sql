@@ -74,6 +74,13 @@ create table screen_indicators (
   rank_zero       char(1) default 'N',
   calc_rank       char(1) default 'N',
   rank_order      varchar(30) default 'value DESC',
+  -- How a negative value is ranked. Valuation ratios rank value ASC, so a
+  -- negative P/E or price/book sorted to the top and scored as the cheapest
+  -- share in the index. See sql/fmp_migration.sql.
+  --   NORMAL   sorted on its value like any other (the default)
+  --   EXCLUDE  left unranked, so the score queries use their neutral 50
+  --   LAST     sorted behind every non-negative value
+  rank_negative   varchar(8) default 'NORMAL',
   category        int
 );
 
