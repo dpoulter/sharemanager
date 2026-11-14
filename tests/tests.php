@@ -545,6 +545,67 @@
           strpos($probe_text, 'exchange=[LSE]') !== false, $probe_text);
     @unlink($probe); @unlink("$stub/constants.php"); @rmdir($stub);
 
+    echo "\n--- the two market data providers ---\n";
+
+    /* Both providers are supported and the choice is a setting. These cover the
+       mapping each one needs; the HTTP calls are not exercised, so no key and
+       no network are needed. The FMP records are real VOD.L responses captured
+       by python/fmp_probe.py. */
+
+    check('the provider defaults to eodhd when unset or nonsense',
+          data_provider() === 'eodhd');
+
+    /* Each provider spells a London ticker differently, and stock_symbols holds
+       a third spelling (the MIC). Getting this wrong asks for a symbol the
+       provider has never heard of and the page silently shows the last close. */
+    check('a bare code gets the suffix the selected provider wants',
+          provider_symbol('VOD') === 'VOD.LSE');
+    check('an already-suffixed code is left alone',
+          provider_symbol('VOD.L') === 'VOD.L');
+
+    $fmp_quote = [[
+        "symbol" => "VOD.L", "name" => "Vodafone Group Plc", "price" => 116.95,
+        "yearHigh" => 132.072, "yearLow" => 88.398, "marketCap" => 27095677700,
+        "exchange" => "LSE", "previousClose" => 118.05, "timestamp" => 1794588534,
+    ]];
+    $rows = fmp_quote_to_rows($fmp_quote, 'VOD');
+    check('an FMP quote yields one row for the bare symbol',
+          count($rows) === 1 && $rows[0]['symbol'] === 'VOD');
+    check('the price comes through as the close',
+          $rows[0]['close'] === 116.95);
+    check('the timestamp becomes a date',
+          $rows[0]['date'] === date('Y-m-d', 1794588534));
+
+    /* FMP answers an unknown ticker with an empty list rather than an error.
+       Read as a quote that would be a price of zero. */
+    check('an empty FMP list is no quote, not a zero price',
+          fmp_quote_to_rows([], 'VOD') === []);
+    check('an FMP error object is no quote',
+          fmp_quote_to_rows(["Error Message" => "Invalid API KEY."], 'VOD') === []);
+    check('a non-numeric FMP price is rejected',
+          fmp_quote_to_rows([["symbol" => "VOD.L", "price" => "NA"]], 'VOD') === []);
+
+    /* EODHD's own mapping must keep working: both providers are supported. */
+    check('an EODHD quote still maps',
+          count(eodhd_quote_to_rows(["close" => 101.5, "timestamp" => 1794588534], 'VOD')) === 1);
+    check('EODHD "NA" is still rejected',
+          eodhd_quote_to_rows(["close" => "NA"], 'VOD') === []);
+
+    /* The price series arrives flat from both providers today, and nested from
+       FMP's older shape. An unreadable body has to be distinguishable from a
+       symbol that simply has no prices: they get different counters. */
+    $flat = [["date" => "2026-09-30", "close" => 122.7], ["date" => "2026-09-29", "close" => 124.1]];
+    check('a flat price series passes through',
+          provider_prices_to_rows($flat) === $flat);
+    check('a series nested under historical is unwrapped',
+          provider_prices_to_rows(["symbol" => "VOD.L", "historical" => $flat]) === $flat);
+    check('an empty series is no prices, not a failure',
+          provider_prices_to_rows([]) === []);
+    check('an error body is a failure, not an empty series',
+          provider_prices_to_rows(["Error Message" => "Legacy Endpoint"]) === null);
+    check('a non-array body is a failure',
+          provider_prices_to_rows("not json") === null);
+
     echo "\n--- pages render without a fatal ---\n";
 
     /* Drives the site over HTTP as a logged in user. Everything above tests the

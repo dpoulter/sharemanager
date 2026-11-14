@@ -39,6 +39,23 @@
 	//site_url
 	define ("SITE_URL", getenv("SM_SITE_URL") ?: "https://shares.duckdns.org");
 
+    //Which market data provider to use: "eodhd" or "fmp". Both are supported;
+    //this picks one. Nothing else branches on it beyond a handful of functions
+    //in functions.php and the provider_field column in screen_indicators.
+    define("DATA_PROVIDER", getenv("SM_DATA_PROVIDER") ?: "eodhd");
+
+    //Financial Modeling Prep. Read from the environment, as above, so the key
+    //is never committed.
+    define("FMP_API_KEY", getenv("FMP_API_KEY") ?: "");
+
+    //FMP's stable API. The older /api/v3 paths answer 403 "Legacy Endpoint" on
+    //accounts opened after the change, so they are not a fallback.
+    define("FMP_BASE_URL", getenv("FMP_BASE_URL") ?: "https://financialmodelingprep.com/stable");
+
+    //FMP addresses London tickers as CODE.L, where EODHD says CODE.LSE and
+    //stock_symbols.exchange holds the MIC (XLON). None are interchangeable.
+    define("FMP_EXCHANGE", "L");
+
     //EODHD API key. Read from the environment so the key is never committed:
     //set EODHD_API_KEY in the environment the web server and cron run under.
     //The Python jobs read the same variable directly.

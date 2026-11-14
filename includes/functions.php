@@ -559,6 +559,58 @@
 	}
 
 	/**
+	 * Which market data provider to use: 'eodhd' or 'fmp'.
+	 *
+	 * Both are supported. This picks one; nothing else in the application
+	 * branches on the provider beyond the functions immediately below and
+	 * the provider_field column in screen_indicators.
+	 */
+	function data_provider() {
+		$p = defined('DATA_PROVIDER') ? strtolower(trim(DATA_PROVIDER)) : 'eodhd';
+		return in_array($p, ['eodhd', 'fmp'], true) ? $p : 'eodhd';
+	}
+
+	/**
+	 * Financial Modeling Prep settings, read defensively, as above.
+	 *
+	 * FMP's /api/v3 endpoints answer 403 "Legacy Endpoint" for accounts opened
+	 * after the change, so the stable API is the only base worth defaulting to.
+	 */
+	function fmp_api_key() {
+		return defined('FMP_API_KEY') ? FMP_API_KEY : '';
+	}
+
+	function fmp_base_url() {
+		return rtrim(defined('FMP_BASE_URL') ? FMP_BASE_URL
+		                                     : 'https://financialmodelingprep.com/stable', '/');
+	}
+
+	function fmp_exchange() {
+		return defined('FMP_EXCHANGE') ? FMP_EXCHANGE : 'L';
+	}
+
+	/**
+	 * The key for whichever provider is selected, '' when it is unset.
+	 *
+	 * An empty key is the documented "no live quotes" state: the pages fall
+	 * back to the last close rather than erroring.
+	 */
+	function provider_api_key() {
+		return data_provider() === 'fmp' ? fmp_api_key() : eodhd_api_key();
+	}
+
+	/**
+	 * stock_symbols holds a bare code; each provider wants its own suffix.
+	 * EODHD says VOD.LSE, FMP says VOD.L, and stock_symbols.exchange holds the
+	 * MIC (XLON) that the rest of the application keys on. None of the three
+	 * are interchangeable.
+	 */
+	function provider_symbol($symbol) {
+		if (strpos($symbol, '.') !== false) { return $symbol; }
+		return $symbol . '.' . (data_provider() === 'fmp' ? fmp_exchange() : eodhd_exchange());
+	}
+
+	/**
 	 * The exchange an account works in, for accounts that have no explicit one.
 	 *
 	 * register.php never set users.default_exchange, so every account created
@@ -708,33 +760,75 @@
 
 	function call_stock_api($symbol) {
 
-		write_log('call_stock_api',"symbol=$symbol");
+		$provider = data_provider();
+		write_log('call_stock_api',"symbol=$symbol provider=$provider");
 
-		if (eodhd_api_key()===''){
-			debug_log('call_stock_api','no EODHD key, using the last close');
+		if (provider_api_key()===''){
+			debug_log('call_stock_api',"no $provider key, using the last close");
 			return json_encode(["data" => last_close_rows($symbol)]);
 		}
 
-		//stock_symbols holds the bare code; EODHD wants CODE.LSE
-		$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.eodhd_exchange() : $symbol;
+		$code = provider_symbol($symbol);
 
 		//Never log the URL: it carries the API key.
-		$url=eodhd_base_url()."/real-time/".rawurlencode($eodhd_symbol)
-		    ."?fmt=json&api_token=".rawurlencode(eodhd_api_key());
+		if ($provider === 'fmp') {
+			$url=fmp_base_url()."/quote?symbol=".rawurlencode($code)
+			    ."&apikey=".rawurlencode(fmp_api_key());
+		} else {
+			$url=eodhd_base_url()."/real-time/".rawurlencode($code)
+			    ."?fmt=json&api_token=".rawurlencode(eodhd_api_key());
+		}
 
-		$body=@file_get_contents($url);
+		//A provider that is slow or unreachable must not hang the page.
+		$context = stream_context_create(["http" => ["timeout" => 10]]);
+		$body=@file_get_contents($url,false,$context);
 		if ($body===false){
-			write_log('call_stock_api',"request failed for $eodhd_symbol, using the last close");
+			write_log('call_stock_api',"request failed for $code, using the last close");
 			return json_encode(["data" => last_close_rows($symbol)]);
 		}
 
-		$rows = eodhd_quote_to_rows(json_decode($body,true),$symbol);
+		$decoded = json_decode($body,true);
+		$rows = ($provider === 'fmp')
+		      ? fmp_quote_to_rows($decoded,$symbol)
+		      : eodhd_quote_to_rows($decoded,$symbol);
+
 		if (count($rows) === 0) {
-			write_log('call_stock_api',"no quote for $eodhd_symbol, using the last close");
+			write_log('call_stock_api',"no quote for $code, using the last close");
 			$rows = last_close_rows($symbol);
 		}
 
 		return json_encode(["data" => $rows]);
+	}
+
+	/**
+	 * Normalise an FMP stable-API quote into the rows lookup() reads.
+	 *
+	 * Separated from the HTTP call so the mapping can be tested without a key.
+	 * The stable API answers with a list even for one symbol, and returns an
+	 * empty list rather than an error for a ticker it does not carry - which
+	 * must read as "no quote", not as a price of zero.
+	 */
+	function fmp_quote_to_rows($quote,$symbol) {
+
+		//list of one, or a bare object if that ever changes
+		if (is_array($quote) && isset($quote[0]) && is_array($quote[0])) {
+			$quote = $quote[0];
+		}
+		if (!is_array($quote) || !isset($quote['price'])) {
+			return [];
+		}
+
+		$price=$quote['price'];
+		if ($price===null||$price===''||!is_numeric($price)){
+			return [];
+		}
+
+		return [[
+			"symbol" => $symbol,
+			"close"  => $price,
+			"date"   => isset($quote['timestamp'])&&is_numeric($quote['timestamp'])
+			            ? date('Y-m-d',(int)$quote['timestamp']) : null,
+		]];
 	}
 
 	/**

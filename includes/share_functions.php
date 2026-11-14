@@ -184,6 +184,37 @@ function get_key_ratios($symbol,$exchange) {
 	
  }
  
+/**
+ * Normalise either provider's price series into a flat list of day records.
+ *
+ * EODHD returns a flat list. FMP's stable API returns a flat list too, but its
+ * v3 predecessor nested the series under "historical" and some endpoints still
+ * wrap it, so both shapes are accepted. Returns null when the body is not a
+ * series at all, which the caller treats as a failed request rather than as a
+ * symbol with no prices - the two need different counters.
+ *
+ * Order is not normalised: the caller inserts each row by date and does not
+ * depend on the sequence. EODHD is asked for ascending, FMP answers newest
+ * first.
+ */
+function provider_prices_to_rows($decoded) {
+
+	if (!is_array($decoded)) {
+		return null;
+	}
+	//An error body is an object carrying a message, not a series.
+	if (isset($decoded['Error Message']) || isset($decoded['error'])) {
+		return null;
+	}
+	//Nested shape: {"symbol":"VOD.L","historical":[...]}
+	if (isset($decoded['historical']) && is_array($decoded['historical'])) {
+		return $decoded['historical'];
+	}
+	//Flat list, which is what both providers send today. An empty list is a
+	//valid answer meaning the provider has nothing for this symbol.
+	return $decoded;
+}
+
  function get_historical_prices($start_date,$end_date){
 
 	   write_log("get_historical_prices", "Start Date= " . $start_date . " End Date=".$end_date);
@@ -195,8 +226,9 @@ function get_key_ratios($symbol,$exchange) {
 	    //market as CODE.LSE, so the request suffix is EODHD_EXCHANGE.
 	    $exchange=session_exchange();
 
-	    if (eodhd_api_key()===''){
-	    	write_log("get_historical_prices","EODHD_API_KEY is not set, cannot fetch prices");
+	    if (provider_api_key()===''){
+	    	write_log("get_historical_prices",
+	    	          "no API key for the ".data_provider()." provider, cannot fetch prices");
 	    	return;
 	    }
 
@@ -215,33 +247,41 @@ function get_key_ratios($symbol,$exchange) {
 
 			$symbol=$row['symbol'];
 
-			//stock_symbols holds the bare code; EODHD wants CODE.LSE
-			$eodhd_symbol=(strpos($symbol,'.')===false) ? $symbol.'.'.eodhd_exchange() : $symbol;
+			//stock_symbols holds the bare code; each provider wants its own
+			//suffix (EODHD CODE.LSE, FMP CODE.L).
+			$code=provider_symbol($symbol);
 
-			$url=eodhd_base_url()."/eod/".rawurlencode($eodhd_symbol)
-			    ."?from=".rawurlencode($start_date)
-			    ."&to=".rawurlencode($end_date)
-			    ."&period=d&order=a&fmt=json"
-			    ."&api_token=".rawurlencode(eodhd_api_key());
+			if (data_provider() === 'fmp') {
+				$url=fmp_base_url()."/historical-price-eod/full?symbol=".rawurlencode($code)
+				    ."&from=".rawurlencode($start_date)
+				    ."&to=".rawurlencode($end_date)
+				    ."&apikey=".rawurlencode(fmp_api_key());
+			} else {
+				$url=eodhd_base_url()."/eod/".rawurlencode($code)
+				    ."?from=".rawurlencode($start_date)
+				    ."&to=".rawurlencode($end_date)
+				    ."&period=d&order=a&fmt=json"
+				    ."&api_token=".rawurlencode(eodhd_api_key());
+			}
 
 			//Never log the URL: it carries the API key.
-			debug_log("get_historical_prices", "fetch ".$eodhd_symbol." ".$start_date." to ".$end_date);
+			debug_log("get_historical_prices", "fetch ".$code." ".$start_date." to ".$end_date);
 
 			$body=@file_get_contents($url);
 			if ($body===false){
-				write_log("get_historical_prices","request failed for ".$eodhd_symbol);
+				write_log("get_historical_prices","request failed for ".$code);
 				$failed++;
 				continue;
 			}
 
-			$prices=json_decode($body,true);
-			if (!is_array($prices)){
-				write_log("get_historical_prices","unreadable response for ".$eodhd_symbol);
+			$prices=provider_prices_to_rows(json_decode($body,true));
+			if ($prices===null){
+				write_log("get_historical_prices","unreadable response for ".$code);
 				$failed++;
 				continue;
 			}
 			if (count($prices)===0){
-				debug_log("get_historical_prices","no prices for ".$eodhd_symbol);
+				debug_log("get_historical_prices","no prices for ".$code);
 				$empty++;
 				continue;
 			}
@@ -255,8 +295,11 @@ function get_key_ratios($symbol,$exchange) {
 				//Prefer the adjusted close, which is what the momentum
 				//calculations assume; fall back to the close if the plan does
 				//not return it.
+				//FMP's stable series spells it adjClose and omits it on some
+				//plans, hence all three.
 				$price=isset($line['adjusted_close']) ? $line['adjusted_close']
-				      : (isset($line['close']) ? $line['close'] : null);
+				      : (isset($line['adjClose']) ? $line['adjClose']
+				      : (isset($line['close']) ? $line['close'] : null));
 				if ($price===null||$price===''){
 					continue;
 				}

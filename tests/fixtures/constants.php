@@ -20,6 +20,13 @@
     define("SMTP_PORT", "587");
     define("SITE_URL", "");
 
+    // Provider selection. The suite exercises both mappings directly, so the
+    // default here only decides which one the served pages would use.
+    define("DATA_PROVIDER",  getenv('SM_DATA_PROVIDER') ?: 'eodhd');
+    define("FMP_API_KEY",    getenv('FMP_API_KEY') ?: "");
+    define("FMP_BASE_URL",   getenv('FMP_BASE_URL') ?: "https://financialmodelingprep.com/stable");
+    define("FMP_EXCHANGE",   "L");
+
     // EODHD. No key in tests: nothing here calls the live API, and an empty
     // key is the documented "feature unavailable" state rather than an error.
     define("EODHD_API_KEY", getenv('EODHD_API_KEY') ?: "");
