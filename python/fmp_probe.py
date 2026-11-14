@@ -8,8 +8,15 @@ script exists so the FMP mapping does not repeat that: run it once, paste the
 output, and the adapter gets built against what the API really sends.
 
     export FMP_API_KEY=...        # or it will prompt
-    python3 python/fmp_probe.py               # defaults to VOD.L
+    python3 python/fmp_probe.py               # per-symbol endpoints, VOD.L
     python3 python/fmp_probe.py SHEL.L BP.L
+    python3 python/fmp_probe.py --bulk        # whole-universe endpoints
+
+The --bulk run matters at scale: 2000 symbols is four calls each for
+fundamentals and one a day each for prices, where a bulk endpoint is one call
+for the lot. Those endpoints answer CSV rather than JSON and are a higher-tier
+feature, so the probe reports either shape and treats a 402 or 403 as an
+answer.
 
 It only reads. It writes nothing, changes nothing, and never prints the key -
 the key is stripped from every URL before it is shown.
@@ -53,6 +60,21 @@ def endpoints(symbol):
     ]
 
 
+BULK = [
+    # Whole-universe downloads. On FMP these are a Premium/Ultimate feature and
+    # answer CSV rather than JSON, so the probe reports either shape.
+    ("profile-bulk",        "/stable/profile-bulk",        {"part": "0"}),
+    ("ratios-ttm-bulk",     "/stable/ratios-ttm-bulk",     {"part": "0"}),
+    ("key-metrics-ttm-bulk", "/stable/key-metrics-ttm-bulk", {"part": "0"}),
+    ("scores-bulk",         "/stable/scores-bulk",         {"part": "0"}),
+    # One call for every symbol's close on a given day, which is what a nightly
+    # price refresh wants instead of one call per symbol.
+    ("batch-eod",           "/stable/batch-eod",           {"date": "2026-11-13"}),
+    # A quote for a list of symbols in one request.
+    ("batch-quote",         "/stable/batch-quote",         {"symbols": "VOD.L,SHEL.L,BP.L"}),
+]
+
+
 def call(path, params, key):
     """GET one endpoint. Returns (http status, parsed body or raw text)."""
     query = dict(params)
@@ -70,7 +92,8 @@ def call(path, params, key):
     try:
         return status, json.loads(raw)
     except ValueError:
-        return status, raw[:300]
+        # Bulk endpoints answer CSV. Keep enough to show the header and a row.
+        return status, raw[:4000]
 
 
 def first_record(body):
@@ -115,16 +138,53 @@ def show(label, status, body, verbose):
         print(f"      {k:34} {text}")
 
 
+def show_bulk(label, status, body):
+    """Report a bulk endpoint, which may answer CSV rather than JSON."""
+    if isinstance(body, (list, dict)):
+        print(f"  {label:22} http {status:<4} {describe(body)}")
+        rec = first_record(body)
+        if isinstance(rec, dict):
+            print("      fields: " + ", ".join(list(rec)[:14]))
+        return
+
+    text = str(body)
+    if status != 200:
+        print(f"  {label:22} http {status:<4} {text.strip()[:150]}")
+        return
+
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines:
+        print(f"  {label:22} http {status:<4} empty")
+        return
+    header = lines[0]
+    print(f"  {label:22} http {status:<4} CSV, {len(lines) - 1}+ rows in this chunk")
+    print("      columns: " + header[:200])
+    if len(lines) > 1:
+        print("      first:   " + lines[1][:200])
+
+
 def main():
     key = os.environ.get("FMP_API_KEY") or getpass.getpass("FMP API key (not echoed, not printed): ")
     if not key.strip():
         sys.exit("no key given")
     key = key.strip()
 
-    symbols = sys.argv[1:] or ["VOD.L"]
+    args = [a for a in sys.argv[1:] if a != "--bulk"]
+    bulk_only = "--bulk" in sys.argv
+    symbols = args or ["VOD.L"]
 
     print("Financial Modeling Prep probe")
     print("The key is never printed; URLs below are shown without it.\n")
+
+    if bulk_only:
+        print("=== bulk endpoints (whole universe in one call) " + "=" * 14)
+        print("A 402 or 403 here means the endpoint is not on this plan; that is\n"
+              "an answer, not a failure - the loader just fetches per symbol.\n")
+        for label, path, params in BULK:
+            status, body = call(path, params, key)
+            show_bulk(label, status, body)
+        print("\nPaste all of the above back. Nothing in it is secret.")
+        return
 
     for symbol in symbols:
         print(f"=== {symbol} " + "=" * (60 - len(symbol)))
