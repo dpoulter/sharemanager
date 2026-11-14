@@ -1321,6 +1321,103 @@ function time_to_decimal($time) {
 		return $share_quote;
     }
 	
+	/* ------------------------------------------------------------------
+	   The navbar share lookup.
+
+	   templates/header.php posts the search box to quote.php, which used to
+	   read the symbol as substr($term, 0, strpos($term, ' ')): everything
+	   before the first space. With no space strpos() returns false, substr()
+	   treats that as 0 and the symbol came out empty, so typing "III" gave
+	   "Invalid Symbol" and only the "III 3i Group" form the suggestions
+	   produce ever worked - and the suggestions never appeared either.
+
+	   Resolving is split from searching because they answer different
+	   questions: the form needs to know whether the term identifies one share,
+	   and the suggestion endpoint just needs a short list.
+	   ------------------------------------------------------------------ */
+
+	/**
+	 * Shares whose symbol or name contains $term. For the suggestion endpoint.
+	 *
+	 * Bound parameters only: $term arrives from the search box, and the
+	 * archived search.php this replaces concatenated it into a MATCH()
+	 * expression.
+	 */
+	function search_symbols($term,$limit=10){
+
+		$term=trim((string)$term);
+		if ($term===''){ return array(); }
+
+		/* % and _ are wildcards inside LIKE, so someone searching for "100%"
+		   would otherwise match everything. Backslash is escaped first, or
+		   the backslashes added for the other two would be escaped in turn. */
+		$like='%'.str_replace(array('\\','%','_'),array('\\\\','\%','\_'),$term).'%';
+
+		//The only interpolated value here. It is a caller-supplied integer
+		//rather than anything from the request, and it is cast regardless so
+		//that stays true if a caller ever passes something looser.
+		$limit=max(1,(int)$limit);
+
+		return query("select symbol, name from stock_symbols
+		               where enabled='Y' and exchange=?
+		                 and (symbol like ? or name like ?)
+		               order by case when upper(symbol)=upper(?) then 0
+		                             when upper(symbol) like upper(?) then 1
+		                             else 2 end, symbol
+		               limit ".$limit,
+		             session_exchange(),$like,$like,$term,$term.'%');
+	}
+
+	/**
+	 * Resolve what someone typed into the shares it could mean.
+	 *
+	 * Returns a list of ['symbol'=>..,'name'=>..]. Empty means no match, one
+	 * element means the term names a single share and the caller can show its
+	 * quote, and more than one means it is ambiguous and the caller should
+	 * offer a choice. The caller decides, because "no match" and "several"
+	 * want different pages.
+	 *
+	 * An exact ticker always wins over a name containing the same letters: a
+	 * share whose symbol is typed in full is what was meant, even if the
+	 * letters also appear in a dozen company names.
+	 */
+	function find_symbols($term){
+
+		$term=trim((string)$term);
+		if ($term===''){ return array(); }
+
+		$exchange=session_exchange();
+
+		/* What the term might be as a ticker. The whole thing for a bare
+		   symbol, and the first word for the "SYMBOL Name" the suggestions
+		   put in the box. London tickers are written with a dot (BT.A) and
+		   stored with a dash (BT-A), so each candidate is tried both ways. */
+		$words=preg_split('/\s+/',$term);
+		$candidates=array();
+		foreach (array($term,$words[0]) as $candidate){
+			if ($candidate===''){ continue; }
+			$candidates[]=$candidate;
+			if (strpos($candidate,'.')!==false){
+				$candidates[]=str_replace('.','-',$candidate);
+			}
+		}
+
+		foreach (array_unique($candidates) as $candidate){
+			/* upper() on both sides rather than relying on the column
+			   collation, so "iii" finds III whether or not the database was
+			   built case insensitive. 350 rows, so the lost index does not
+			   matter. */
+			$rows=query("select symbol, name from stock_symbols
+			              where enabled='Y' and exchange=? and upper(symbol)=upper(?)
+			              order by symbol",
+			            $exchange,$candidate);
+			if (count($rows)>0){ return $rows; }
+		}
+
+		//Nothing is a ticker, so treat it as part of a company name.
+		return search_symbols($term,50);
+	}
+
 	//function Get_Share_Info
 	function get_share_info ($symbol){
 		

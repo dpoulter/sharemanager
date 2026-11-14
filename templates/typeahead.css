@@ -1,0 +1,74 @@
+/*
+ * typeahead.js ships no stylesheet.
+ *
+ * The library positions the menu with inline styles and gives the elements
+ * their tt-* classes, but nothing else: with no rules of its own the
+ * suggestion list renders as unstyled, transparent, unlayered text over the
+ * page behind it. So the navbar suggestions would have been invisible even
+ * once they started arriving.
+ *
+ * This lives in the repository and is copied to public/css by
+ * tools/fetch_assets.sh, the same arrangement as scripts.js. It is kept out of
+ * styles1.css because that file is in .gitignore and exists only on the
+ * server.
+ */
+
+/* The library wraps the input in this, which must not break the navbar's
+   flex layout. */
+.twitter-typeahead {
+    flex: 1 1 auto;
+}
+
+.twitter-typeahead .form-control {
+    width: 100%;
+}
+
+.tt-menu {
+    width: 100%;
+    min-width: 18rem;
+    max-height: 20rem;
+    overflow-y: auto;
+    margin-top: 0.25rem;
+    padding: 0.25rem 0;
+    background-color: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 0.375rem;
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+    /* The navbar is .fixed-top, which carries its own stacking context, so
+       the menu needs to sit above the page content below it. */
+    z-index: 1056;
+}
+
+.tt-suggestion {
+    padding: 0.35rem 0.75rem;
+    color: #212529;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.tt-suggestion:hover,
+.tt-suggestion.tt-cursor {
+    background-color: #0d6efd;
+    color: #ffffff;
+}
+
+.tt-suggestion:hover .text-muted,
+.tt-suggestion.tt-cursor .text-muted {
+    color: #e9ecef !important;
+}
+
+/* The inline hint sits behind the real input and must not look like text the
+   user typed. */
+.tt-hint {
+    color: #6c757d;
+}
+
+@media (prefers-color-scheme: dark) {
+    .tt-menu {
+        background-color: #212529;
+        border-color: rgba(255, 255, 255, 0.15);
+    }
+    .tt-suggestion {
+        color: #dee2e6;
+    }
+}

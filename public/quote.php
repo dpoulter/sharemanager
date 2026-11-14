@@ -8,14 +8,43 @@
     if ($_SERVER["REQUEST_METHOD"] == "POST")
     {
         // validate submission
-        if (empty($_POST["symbol"]))
+        //is_string, because symbol[] in the request body makes this an array
+        //and casting one to string is a warning rather than a search term.
+        if (empty($_POST["symbol"]) || !is_string($_POST["symbol"]))
         {
             apologize("You must enter a symbol.");
         }
 		else
-			//symbol
-			$symbol=substr($_POST["symbol"],0,strpos($_POST["symbol"],' '));
-			//echo "Symbol=$symbol";
+		{
+			/* What was typed in the navbar search box.
+			
+			   This used to be substr($term, 0, strpos($term, ' ')) - the text
+			   before the first space. A bare symbol has no space, strpos()
+			   returns false, substr() reads that as 0 and the symbol came out
+			   empty, so "III" was an invalid symbol and only "III 3i Group"
+			   worked. find_symbols() accepts a bare ticker in any case, the
+			   "SYMBOL Name" the suggestions produce, the dotted form London
+			   tickers are written in, or part of a company name. */
+			$matches=find_symbols($_POST["symbol"]);
+			
+			if (count($matches)==0)
+			{
+				apologize("Invalid Symbol.");
+			}
+			
+			/* More than one share fits. Offering the choice beats guessing:
+			   picking the first would show a quote for a share nobody asked
+			   for, which is worse than one more click. */
+			if (count($matches)>1)
+			{
+				render("symbol_matches.php",
+				       ["title"=>"Search","term"=>trim($_POST["symbol"]),"matches"=>$matches]);
+				exit;
+			}
+			
+			//Exactly one, so the term named a share.
+			$symbol=$matches[0]["symbol"];
+			
 			//timespan
 			if (isset($_POST["timespan"]))
 				$timespan=$_POST["timespan"];
@@ -26,6 +55,7 @@
 				$type=$_POST["type"];
 			else
 				$type="l";
+		}
 	}
 	
 	//Check if symbol was passed to form

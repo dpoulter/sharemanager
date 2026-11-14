@@ -1445,6 +1445,226 @@ STUB
               && strlen($via_index) > 20000,
               strlen($via_index) . ' bytes');
 
+        /* ----------------------------------------------------------------
+           The navbar share lookup.
+
+           quote.php read the symbol as substr($term, 0, strpos($term, ' ')).
+           A bare symbol has no space, so strpos() returned false, substr()
+           read that as 0, and the symbol came out empty: "III" was an
+           invalid symbol and only the "III 3i Group" form the suggestions
+           produce ever worked - and the suggestions never appeared, so in
+           practice nothing worked.
+           ---------------------------------------------------------------- */
+
+        /* Two shares the seeded universe does not have: one with the dash a
+           London ticker is stored with, one whose name is worth searching
+           for. */
+        db()->exec("delete from stock_symbols where symbol in ('BT-A','RR')");
+        db()->prepare("insert into stock_symbols
+                         (symbol,name,description,exchange,enabled,sector,market,industry_group,industry,logo)
+                       values (?,?,?,'XLON','Y','Telecoms','Main Market','Telecoms','Telecoms',null)")
+             ->execute(['BT-A', 'BT Group plc', 'BT Group plc ordinary shares']);
+        db()->prepare("insert into stock_symbols
+                         (symbol,name,description,exchange,enabled,sector,market,industry_group,industry,logo)
+                       values (?,?,?,'XLON','Y','Industrials','Main Market','Aerospace','Aerospace',null)")
+             ->execute(['RR', 'Rolls-Royce Holdings plc', 'Rolls-Royce Holdings plc ordinary shares']);
+        /* Both need prices. get_share_info() returns false when lookup() has
+           no price for the symbol, and quote.php then apologises - so without
+           these two the test would be measuring the absence of a price feed
+           rather than whether the search resolved. tools/eodhd_stub.php serves
+           whatever is in historical_prices. */
+        db()->exec("delete from historical_prices where symbol in ('BT-A','RR')");
+        $ins_trend_px = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                                       values (?,'XLON',?,?)");
+        /* Not $base: that name holds the test server's URL in this scope, and
+           using it here overwrote it with 615.0, so every later $curl() in the
+           suite addressed a host called "615". */
+        foreach (['BT-A' => 142.5, 'RR' => 615.0] as $sym => $start_price) {
+            for ($d = 20; $d >= 1; $d--) {
+                $ins_trend_px->execute([$sym, date('Y-m-d', strtotime("-$d day")),
+                                        round($start_price + (20 - $d) * 0.5, 4)]);
+            }
+        }
+
+        $search = function ($term) use ($curl, $base) {
+            return (string)$curl("$base/quote.php", 'symbol=' . urlencode($term));
+        };
+        //The quote page puts "<exchange>:<symbol>" in the title, which is the
+        //shortest proof of which share was actually resolved.
+        $resolved = function ($body) {
+            return preg_match('/Share Portfolio Manager XLON:([A-Z0-9.\-]+)/', $body, $m)
+                   ? $m[1] : null;
+        };
+
+        foreach ([['III',              'III', 'a bare symbol'],
+                  ['iii',              'III', 'a symbol in lower case'],
+                  ['III III Test PLC', 'III', 'the "SYMBOL Name" a suggestion puts in the box'],
+                  ['  III  ',          'III', 'a symbol with stray spaces'],
+                  ['BT.A',             'BT-A', 'the dotted form a London ticker is written in'],
+                  ['rolls',            'RR',   'part of a company name'],
+                  ['Rolls-Royce',      'RR',   'more of a company name']] as [$term, $want, $what]) {
+            $body = $search($term);
+            check("searching $what finds the share ($term -> $want)",
+                  $resolved($body) === $want && stripos($body, 'Sorry!') === false,
+                  'resolved to ' . var_export($resolved($body), true)
+                  . (stripos($body, 'Sorry!') !== false ? ' (apologised)' : ''));
+        }
+
+        /* Several shares fit. Every seeded name ends "Test PLC", so this is
+           ambiguous and the page should offer the choice rather than guess. */
+        $many = $search('Test PLC');
+        preg_match_all('/quote\.php\?symbol=([A-Za-z0-9.%\-]+)/', $many, $links);
+        check('an ambiguous term lists the matches instead of guessing',
+              count(array_unique($links[1])) >= 12 && $resolved($many) === null,
+              count(array_unique($links[1])) . ' links, resolved to '
+              . var_export($resolved($many), true));
+        check('the list names the shares, not just their symbols',
+              strpos($many, 'Test PLC') !== false && stripos($many, 'Sorry!') === false);
+        /* A link from that list has to work, or the choice leads nowhere.
+           Guarded on there being a link at all: with an empty $links the
+           comparison was null === null and passed while proving nothing. */
+        check('the match list produced a link to follow', count($links[1]) > 0,
+              'no quote.php?symbol= links in ' . strlen($many) . ' bytes');
+        if (count($links[1]) > 0) {
+            $picked = (string)$curl("$base/quote.php?symbol=" . urlencode($links[1][0]));
+            check('a link from the match list opens that share',
+                  $resolved($picked) === $links[1][0],
+                  'wanted ' . $links[1][0] . ' got ' . var_export($resolved($picked), true));
+        }
+
+        /* No match keeps the existing apology. */
+        $none = $search('NOSUCHSHARE');
+        check('a term matching nothing still apologises',
+              stripos($none, 'Sorry!') !== false && stripos($none, 'Invalid Symbol') !== false
+              && $resolved($none) === null);
+        check('an empty search asks for a symbol rather than listing everything',
+              stripos((string)$search(''), 'must enter a symbol') !== false);
+
+        /* The session exchange scopes the search. ZZZ is seeded on LON and
+           must not be reachable from an XLON session. */
+        $other_exchange = $search('ZZZ');
+        check('a share on another exchange is not found',
+              stripos($other_exchange, 'Sorry!') !== false && $resolved($other_exchange) === null,
+              'resolved to ' . var_export($resolved($other_exchange), true));
+
+        /* ---------------- the suggestion endpoint ---------------- */
+
+        $suggest = (string)$curl("$base/symbol_search.php?term=III");
+        $decoded = json_decode($suggest, true);
+        check('the suggestion endpoint returns JSON',
+              is_array($decoded), 'got ' . json_encode(substr($suggest, 0, 120)));
+        check('a suggestion carries both the symbol and the name',
+              is_array($decoded) && count($decoded) > 0
+              && isset($decoded[0]['symbol']) && isset($decoded[0]['name'])
+              && $decoded[0]['symbol'] === 'III',
+              json_encode(array_slice((array)$decoded, 0, 3)));
+        check('the endpoint matches on company name too, not only the symbol',
+              is_array(json_decode((string)$curl("$base/symbol_search.php?term=rolls"), true))
+              && json_decode((string)$curl("$base/symbol_search.php?term=rolls"), true)[0]['symbol'] === 'RR');
+        $wide = json_decode((string)$curl("$base/symbol_search.php?term=Test"), true);
+        check('the endpoint caps the list rather than returning the universe',
+              is_array($wide) && count($wide) <= 10 && count($wide) > 1,
+              'returned ' . (is_array($wide) ? count($wide) : 'non-array'));
+        check('the endpoint body is JSON from its first byte',
+              strncmp($suggest, '[', 1) === 0 || strncmp($suggest, '{', 1) === 0,
+              'starts: ' . json_encode(substr($suggest, 0, 40)));
+        /* A wildcard typed into the box is a search term, not a pattern. */
+        /* Encoded, so curl sends a literal percent rather than leaving the
+           server to guess at a stray one - an unencoded %, read as empty,
+           would make this pass without testing anything. The same for the
+           underscore, which matches any single character. */
+        $pct = json_decode((string)$curl("$base/symbol_search.php?term=" . urlencode('%')), true);
+        check('a LIKE wildcard is searched for rather than expanded',
+              is_array($pct) && count($pct) === 0,
+              'returned ' . (is_array($pct) ? json_encode($pct) : 'non-array'));
+        $us = json_decode((string)$curl("$base/symbol_search.php?term=" . urlencode('II_')), true);
+        check('an underscore is a character to find, not a single-character wildcard',
+              is_array($us) && count($us) === 0,
+              'returned ' . (is_array($us) ? json_encode($us) : 'non-array'));
+
+        /* Anonymous requests must not reach the share universe. config.php's
+           gate covers this file because it is not on the allow list, which is
+           the point: there is no second copy of the rule here to drift. */
+        $anon_jar = tempnam(sys_get_temp_dir(), 'smanon');
+        $anon = (string)shell_exec('curl -s -m 30 -b ' . escapeshellarg($anon_jar)
+                                   . ' -c ' . escapeshellarg($anon_jar) . ' -L '
+                                   . escapeshellarg("$base/symbol_search.php?term=III") . ' 2>/dev/null');
+        /* Not a search for the word "symbol": header.php renders the navbar on
+           the login page too, and its box is name="symbol", so looking for
+           that string finds the login form and fails for the wrong reason.
+           What matters is that no share data comes back and the request ends
+           at the login form. */
+        check('the suggestion endpoint refuses an anonymous request',
+              json_decode($anon, true) === null
+              && strpos($anon, '{"symbol":') === false
+              && stripos($anon, 'name="password"') !== false,
+              'body: ' . json_encode(substr($anon, 0, 160)));
+        $anon_code = trim((string)shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 30 '
+                                             . escapeshellarg("$base/symbol_search.php?term=III") . ' 2>/dev/null'));
+        check('an anonymous request is redirected to the login page',
+              $anon_code === '302', "status $anon_code");
+        @unlink($anon_jar);
+
+        /* ---------------- the script that wires it up ---------------- */
+
+        /* Comments are stripped before these string searches. The comment
+           explaining a fixed selector contains the broken selector, so a
+           plain strpos() over the file finds the explanation and reports the
+           bug as still present - the same trap the provider tests hit with
+           md5(90*13+id). */
+        $strip_js = function ($src) {
+            $src = preg_replace('#/\\*.*?\\*/#s', '', $src);
+            return preg_replace('#^\\s*//.*$#m', '', $src);
+        };
+        $js = $strip_js((string)file_get_contents(dirname(__DIR__) . '/templates/scripts.js'));
+        /* The whole file was a SyntaxError: an unterminated string literal in
+           a #btnAddrow handler ran off the end of its line. The browser
+           executed none of it, which is why neither the suggestions nor the
+           tooltip setup ever ran. node is not a dependency of this suite, so
+           the check is skipped where it is absent rather than passing
+           vacuously. */
+        exec('command -v node >/dev/null 2>&1 && node --check '
+             . escapeshellarg(dirname(__DIR__) . '/templates/scripts.js') . ' 2>&1 || echo NO_NODE',
+             $node_out, $node_rc);
+        $node_said = implode("\n", $node_out);
+        if (trim($node_said) === 'NO_NODE') {
+            echo "  \033[33mSKIP\033[0m  scripts.js parses (node not installed)\n";
+        }
+        else {
+            check('scripts.js parses, so the browser runs any of it',
+                  $node_rc === 0, $node_said);
+        }
+        check('the typeahead is not bound to a selector that matches nothing',
+              strpos($js, '#symbolInput .typeahead') === false);
+        check('the typeahead is bound after the document is ready, not in <head>',
+              preg_match('/\$\(document\)\.ready\(/', $js) === 1
+              && strpos(substr($js, 0, strpos($js, ".typeahead({")), '$(document).ready(') !== false);
+        check('the suggestions come from the database, not a hard-coded list',
+              strpos($js, "['AAA','BBB','CCC']") === false
+              && strpos($js, 'symbol_search.php?term=%QUERY') !== false);
+        check('picking a suggestion submits the form',
+              strpos($js, 'typeahead:select') !== false
+              && preg_match('/closest\([\'"]form[\'"]\)/', $js) === 1);
+        /* typeahead.js ships no CSS, so without this the list is invisible. */
+        $tacss = (string)file_get_contents(dirname(__DIR__) . '/templates/typeahead.css');
+        check('the suggestion list has a stylesheet, and the page loads it',
+              strpos($tacss, '.tt-menu') !== false
+              && strpos((string)file_get_contents(dirname(__DIR__) . '/templates/header.php'),
+                        'css/typeahead.css') !== false);
+        check('fetch_assets.sh installs that stylesheet',
+              strpos((string)file_get_contents(dirname(__DIR__) . '/tools/fetch_assets.sh'),
+                     'typeahead.css') !== false);
+
+        /* The footer loaded the Bootstrap 4.1.3 CDN bundle on top of the
+           Bootstrap 5 bundle header.php loads. It was already commented out,
+           so this pins it rather than fixing it. */
+        $footer = preg_replace('/<!--.*?-->/s', '',
+                               (string)file_get_contents(dirname(__DIR__) . '/templates/footer.php'));
+        check('the footer loads no second Bootstrap',
+              strpos($footer, 'stackpath') === false && strpos($footer, '4.1.3') === false);
+
+        db()->exec("delete from stock_symbols where symbol in ('BT-A','RR')");
+
         /* ratings() returned null for a symbol the ratings job had not reached,
            and the Ratings tab then read five offsets off it. */
         check('a symbol with no rating row still returns the rating keys',

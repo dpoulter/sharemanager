@@ -32,9 +32,16 @@ done
 
 mkdir -p "$PUBLIC/css" "$PUBLIC/js" "$PUBLIC/img" "$PUBLIC/fonts" "$PUBLIC/webfonts"
 
-# scripts.js is in the repository, just not where header.php looks for it.
-cp "$REPO_DIR/templates/scripts.js" "$PUBLIC/js/scripts.js"
-echo "  js/scripts.js          copied from templates/"
+# Assets that live in the repository rather than on a CDN, just not where
+# header.php looks for them. Copied after any --from rsync, not before: the
+# tracked copy is the authoritative one, and rsync would otherwise overwrite it
+# with whatever the source host happens to have.
+copy_repo_assets() {
+  cp "$REPO_DIR/templates/scripts.js"   "$PUBLIC/js/scripts.js"
+  echo "  js/scripts.js          copied from templates/"
+  cp "$REPO_DIR/templates/typeahead.css" "$PUBLIC/css/typeahead.css"
+  echo "  css/typeahead.css      copied from templates/"
+}
 
 if [ -n "$FROM" ]; then
   command -v rsync >/dev/null || { echo "rsync not found" >&2; exit 2; }
@@ -43,9 +50,12 @@ if [ -n "$FROM" ]; then
   rsync -a "$FROM/public/js/"  "$PUBLIC/js/"  || exit 1
   rsync -a "$FROM/public/img/" "$PUBLIC/img/" 2>/dev/null || true
   rsync -a "$FROM/public/fonts/" "$PUBLIC/fonts/" 2>/dev/null || true
+  copy_repo_assets
   echo "  done"
   exit 0
 fi
+
+copy_repo_assets
 
 command -v curl >/dev/null || { echo "curl not found" >&2; exit 2; }
 

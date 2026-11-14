@@ -3,13 +3,19 @@
  *
  Global JavaScript, if any.
  */
-$( document ).ready(function() {
-         var tbl = $("#tbl");
-         $("#btnAddrow").click(function(){
-             $("<tr><td><input type=text id='symbolInput' class='typeahead' name='symbol[]'</input></td><td><input type=text name='shares[]'</input></td><td><input name='price_paid[]'
-</input></td><td><input type=text name='commission[]'</input></td></tr>");
-    });
-});
+/* The #btnAddrow handler that used to be here is gone.
+ *
+ * It held an unterminated string literal - a "<tr>...<input name='price_paid[]'"
+ * that ran off the end of the line and continued on the next - so this whole
+ * file was a SyntaxError and the browser executed none of it. That is the
+ * reason the navbar suggestions never appeared and, since it was added later,
+ * the reason the tooltip setup at the bottom never ran either.
+ *
+ * It was dead code even so: no template contains a #btnAddrow button (only
+ * templates/testheader.php, which nothing renders), and the row it built was
+ * never appended to anything - $("<tr>...") with no .appendTo() makes a
+ * detached element and drops it.
+ */
 
 function killMe(el){
     return el.parentNode.removeChild(el);
@@ -29,39 +35,68 @@ function delRow(el){
 }
 
 
-var substringMatcher = function(strs) {
-  return function findMatches(q, cb) {
-    var matches, substringRegex;
- 
-    // an array that will be populated with substring matches
-    matches = [];
- 
-    // regex used to determine if a string contains the substring `q`
-    substrRegex = new RegExp(q, 'i');
- 
-    // iterate through the pool of strings and for any string that
-    // contains the substring `q`, add it to the `matches` array
-    $.each(strs, function(i, str) {
-      if (substrRegex.test(str)) {
-        matches.push(str);
-      }
+/* The navbar share search box.
+ *
+ * Two things stopped this from ever producing a suggestion.
+ *
+ * The selector was '#symbolInput .typeahead' - a descendant selector, so it
+ * looked for a .typeahead *inside* an element with id symbolInput. The navbar
+ * input (templates/header.php) has class typeahead and no such ancestor, so
+ * the selector matched nothing.
+ *
+ * And it ran at parse time. header.php loads this file in <head>, so the
+ * navbar did not exist yet; even with the right selector there was nothing to
+ * bind to. It is inside a ready handler now.
+ *
+ * The source was also a hard-coded ['AAA','BBB','CCC'] fed through a
+ * substring matcher over that array. It is a remote lookup against
+ * symbol_search.php, which searches stock_symbols.
+ */
+$(document).ready(function () {
+
+    //If the vendored assets did not land, bind nothing rather than throwing
+    //and taking the rest of this file (the tooltip setup below) with it.
+    if (typeof Bloodhound === 'undefined' || !$.fn.typeahead) { return; }
+
+    var symbols = new Bloodhound({
+        datumTokenizer: function (datum) {
+            return Bloodhound.tokenizers.whitespace(datum.symbol + ' ' + datum.name);
+        },
+        queryTokenizer: Bloodhound.tokenizers.whitespace,
+        remote: {
+            url: 'symbol_search.php?term=%QUERY',
+            wildcard: '%QUERY'
+        }
     });
- 
-    cb(matches);
-  };
-};
 
-
-var symbols=['AAA','BBB','CCC'];
-
-$('#symbolInput .typeahead').typeahead({
-  hint: true,
-  highlight: true,
-  minLength: 1
-},
-{
-  name: 'symbols',
-  source: substringMatcher(symbols)
+    $('input.typeahead').typeahead({
+        hint: true,
+        highlight: true,
+        minLength: 1
+    }, {
+        name: 'symbols',
+        limit: 10,
+        source: symbols,
+        //What goes in the box when a suggestion is picked. quote.php accepts
+        //this "SYMBOL Name" form, and the select handler below narrows it to
+        //the symbol anyway, so neither depends on the other.
+        display: function (datum) { return datum.symbol + ' ' + datum.name; },
+        templates: {
+            //Built with .text() rather than string concatenation: a company
+            //name is data from the database and does not belong in markup.
+            suggestion: function (datum) {
+                return $('<div></div>')
+                    .append($('<strong></strong>').text(datum.symbol))
+                    .append(document.createTextNode(' '))
+                    .append($('<span class="text-muted"></span>').text(datum.name || ''));
+            },
+            notFound: '<div class="tt-suggestion text-muted px-2">No matching share</div>'
+        }
+    }).on('typeahead:select', function (ev, datum) {
+        //Submit the symbol on its own, so the server has nothing to parse.
+        $(this).typeahead('val', datum.symbol);
+        $(this).closest('form').trigger('submit');
+    });
 });
 
 /* Bootstrap tooltips are opt-in: an element with data-bs-toggle="tooltip" does
