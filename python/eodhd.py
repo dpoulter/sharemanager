@@ -11,7 +11,6 @@ interchangeable and eodhd_symbol() does the translation in one place.
 """
 
 import os
-import requests
 
 BASE_URL = "https://eodhd.com/api"
 EXCHANGE_SUFFIX = "LSE"
@@ -42,6 +41,12 @@ def eodhd_symbol(symbol, suffix=EXCHANGE_SUFFIX):
 
 
 def _get(path, session=None, **params):
+    #Imported here rather than at module scope so the pure helpers below -
+    #flatten_fundamentals and eodhd_symbol, which the tests cover - can be
+    #imported on a machine without requests installed. Only the HTTP path
+    #needs it.
+    import requests
+
     params["api_token"] = api_key()
     params.setdefault("fmt", "json")
     getter = session.get if session is not None else requests.get
