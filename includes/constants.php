@@ -133,6 +133,35 @@
     //five-minute write rate, which is what cache_control: ephemeral buys.
     define("ANTHROPIC_PRICE_CACHE_WRITE", getenv("ANTHROPIC_PRICE_CACHE_WRITE") ?: "10.00");
 
+    //The news scorer. A thousand headlines a night is the wrong job for the
+    //model behind the outlook panel: it is a sentence of classification per
+    //headline, twenty at a time, and Haiku does it at a fiftieth of the
+    //price. Its own model and its own rates, so the cost line in the log is
+    //about the model that actually ran rather than about the one in
+    //ANTHROPIC_MODEL.
+    //
+    //Haiku 5.5: $0.10 in / $0.50 out per million tokens.
+    define("NEWS_SCORE_MODEL",        getenv("NEWS_SCORE_MODEL")        ?: "claude-haiku-5-5");
+    define("NEWS_PRICE_INPUT",        getenv("NEWS_PRICE_INPUT")        ?: "0.10");
+    define("NEWS_PRICE_OUTPUT",       getenv("NEWS_PRICE_OUTPUT")       ?: "0.50");
+    define("NEWS_PRICE_CACHE_READ",   getenv("NEWS_PRICE_CACHE_READ")   ?: "0.01");
+    define("NEWS_PRICE_CACHE_WRITE",  getenv("NEWS_PRICE_CACHE_WRITE")  ?: "0.125");
+
+    //How many headlines one run may score. The nightly job scores whatever
+    //is unscored, and a feed that suddenly returns a thousand articles a
+    //symbol would otherwise be a bill rather than a surprise. Anything left
+    //over waits for tomorrow.
+    define("NEWS_SCORE_MAX_PER_RUN",  (int) (getenv("NEWS_SCORE_MAX_PER_RUN") ?: 1000));
+
+    //Headlines per request. Twenty short titles and a schema fit comfortably
+    //inside the token budget, and the per-request overhead - the system
+    //prompt, the schema - is then paid once for twenty rather than once each.
+    define("NEWS_SCORE_BATCH",        (int) (getenv("NEWS_SCORE_BATCH") ?: 20));
+
+    //Seconds between Google News requests. One a second is gentle; the feed
+    //has no published limit and answers 429 when it has had enough.
+    define("NEWS_FETCH_INTERVAL",     (float) (getenv("NEWS_FETCH_INTERVAL") ?: 1.0));
+
     //Output tokens per generation, thinking included. Raise it for a model
     //that thinks at length; it cannot go below 4000, because a budget too
     //small to finish in does not save money, it buys truncated answers.

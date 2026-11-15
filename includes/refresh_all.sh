@@ -81,6 +81,19 @@ fi
 
 "$PYTHON" "$APP_DIR/python/get_api_stats.py"
 
+# Headlines, their scores and the sentiment indicators. After the prices,
+# because the as of date is the newest date in historical_prices and the
+# indicators are written against it; before get_statistics.php only so that a
+# screen reading a sentiment indicator sees today's figure rather than
+# yesterday's.
+#
+# This one talks to Google at a request a second and to Anthropic in batches
+# of twenty, so it is the slowest job here - about six minutes for 350
+# symbols - and the one most likely to be refused by the other end. It is
+# allowed to fail without taking the run with it: no headlines is a worse
+# dashboard, not a broken one.
+"$PHP" "$APP_DIR/includes/fetch_news.php" || echo "refresh_all: news failed" >&2
+
 # Incremental by default (most recent as of date per symbol). To rebuild
 # history run manually with a date range, e.g.
 #   php /var/www/sharemanager/includes/get_momentum_statistics.php 2015-01-01 2025-12-31

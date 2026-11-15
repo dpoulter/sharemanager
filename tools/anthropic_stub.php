@@ -15,7 +15,8 @@
  *
  * Modes: ok, prose, bad_stance, empty_summary, unauthorized, rate_limited,
  *        server_error, not_json, slow, cached, thinking, no_text, truncated,
- *        refusal
+ *        refusal, injection, stance_case,
+ *        news_ok, news_bad_shape, news_bad_fields, explain_ok
  */
 
 $dir = getenv('SM_STUB_DIR') ?: sys_get_temp_dir();
@@ -24,6 +25,11 @@ $mode = $mode === false ? 'ok' : trim($mode);
 
 $body = file_get_contents('php://input');
 @file_put_contents($dir . '/last_request', $body);
+
+//Decoded once, here, because three of the modes answer from what was asked
+//rather than from a fixed script.
+$payload = json_decode($body, true);
+if (!is_array($payload)) { $payload = []; }
 
 //Header names arrive upper cased with an HTTP_ prefix; normalise so a test
 //can ask for "x-api-key" the way the client spells it.
@@ -157,7 +163,78 @@ $outlook = [
     "watch"     => "The 50 day average crossing the 200 day.",
 ];
 
+/**
+ * The news scorer's answer: one entry per id the request carried.
+ *
+ * Built from the request rather than fixed, because the whole point of the
+ * id is that the answer is matched back to the headline it is about - a
+ * canned reply would pass a test that an off-by-one would also pass.
+ *
+ * Sentiment is derived from the headline so a test can predict it: a title
+ * containing "rise" or "raise" scores well, one containing "fall" or "probe"
+ * badly, anything else neutral.
+ */
+function stub_news_scores($payload, $shift_ids = false) {
+    $text = '';
+    foreach (($payload['messages'] ?? []) as $message) {
+        $text .= is_string($message['content'] ?? '') ? $message['content'] : '';
+    }
+
+    $scores = [];
+    foreach (preg_split('/\r?\n/', $text) as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] !== '{') { continue; }
+        $item = json_decode($line, true);
+        if (!is_array($item) || !isset($item['id'])) { continue; }
+
+        $headline = strtolower((string) ($item['headline'] ?? ''));
+        if (preg_match('/\b(rise|raise|beat|wins|upgrade)/', $headline))      { $sentiment = 0.8; }
+        elseif (preg_match('/\b(fall|cut|probe|warn|loss)/', $headline))      { $sentiment = -0.7; }
+        else                                                                   { $sentiment = 0.0; }
+
+        $impact = preg_match('/result|profit|earning/', $headline) ? 'earnings' : 'other';
+
+        $scores[] = [
+            "id"          => ((int) $item['id']) + ($shift_ids ? 1000 : 0),
+            "sentiment"   => $sentiment,
+            "impact_type" => $impact,
+            "summary"     => "Stub summary of headline " . ((int) $item['id']) . ".",
+            "bull_point"  => "A holder would read it well.",
+            "bear_point"  => "A seller would read it badly.",
+        ];
+    }
+
+    return ["scores" => $scores];
+}
+
 switch ($mode) {
+
+    case 'news_ok':
+        //One score per id, matched back to the headline it is about.
+        print(json_encode(stub_message(stub_news_scores($payload), false,
+                                       $payload['model'] ?? 'claude-haiku-5-5')));
+        break;
+
+    case 'news_bad_shape':
+        //Valid JSON, wrong shape: no scores array at all. The batch must
+        //stay unscored and come round again rather than being written as
+        //nulls.
+        print(json_encode(stub_message(["answers" => []], false,
+                                       $payload['model'] ?? 'claude-haiku-5-5')));
+        break;
+
+    case 'news_bad_fields':
+        //The right shape with values the schema would not have allowed: an
+        //impact type outside the list, a sentiment that is not a number,
+        //and an id that was never asked about.
+        $bad = stub_news_scores($payload);
+        if (isset($bad['scores'][0])) { $bad['scores'][0]['impact_type'] = 'vibes'; }
+        if (isset($bad['scores'][1])) { $bad['scores'][1]['sentiment'] = 'quite good'; }
+        $bad['scores'][] = ["id" => 999999, "sentiment" => 1, "impact_type" => "other",
+                            "summary" => "About a headline nobody asked about.",
+                            "bull_point" => "", "bear_point" => ""];
+        print(json_encode(stub_message($bad, false, $payload['model'] ?? 'claude-haiku-5-5')));
+        break;
 
     case 'unauthorized':
         http_response_code(401);

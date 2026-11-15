@@ -82,6 +82,9 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/shareholder_yield.sql" > /dev/null || exit 1
 echo "applying sql/fmp_scores.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/fmp_scores.sql" > /dev/null || exit 1
 
+echo "applying sql/news.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/news.sql" > /dev/null || exit 1
+
 echo "running provider client tests (offline, no key needed)"
 python3 "$TESTS_DIR/test_eodhd.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp.py"        || PY_FAILED=1

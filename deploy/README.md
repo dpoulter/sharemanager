@@ -164,6 +164,7 @@ sudo mariadb sharemanager < sql/fund_sectors.sql
 sudo mariadb sharemanager < sql/report_currency.sql
 sudo mariadb sharemanager < sql/shareholder_yield.sql
 sudo mariadb sharemanager < sql/fmp_scores.sql
+sudo mariadb sharemanager < sql/news.sql
 ```
 
 Every `sql/*.sql` above is re-runnable, so a later `git pull` can just run

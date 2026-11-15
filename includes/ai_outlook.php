@@ -23,6 +23,7 @@
 	require_once("constants.php");
 	require_once("llm.php");
 	require_once("vault.php");
+	require_once("news.php");
 
 	/**
 	 * The shape the answer must take.
@@ -353,6 +354,18 @@ How to answer:
 				"eps_growth"     => $score('earnings_growth'),
 				"growth_note"    => "fractions, not percentages: 0.05 is 5%",
 			],
+			/* How the news has read lately. Not part of any score - there
+			   is no history yet to say what a week of good headlines is
+			   worth - so it is here as context and nowhere else. Mean
+			   sentiment is weighted towards the recent; see news.php. */
+			"news" => [
+				"sentiment_7d"  => $score('news_sentiment_7d'),
+				"sentiment_30d" => $score('news_sentiment_30d'),
+				"count_7d"      => $score('news_count_7d'),
+				"note"          => "sentiment runs -1 to 1 and is a recency-weighted "
+				                 . "mean of scored headlines; null means none were scored "
+				                 . "in the window, which is not the same as neutral",
+			],
 			"relative_to_sector" => $relative,
 			"screens"            => $screens,
 			"holding"            => $holding,
@@ -461,7 +474,28 @@ How to answer:
 	 * Headlines for the prompt, in the same shape the News tab renders.
 	 */
 	function outlook_headlines($symbol, $limit = 8) {
+
+		/* Scored headlines out of the store, where there are any. A summary
+		   somebody has already read the article for is shorter than the
+		   title it came from, says more, and is a smaller injection surface:
+		   the scorer was told the headline was data and the model here is
+		   reading its answer rather than the raw feed.
+
+		   Falling back to the live feed keeps the panel working on the day
+		   this ships, before the nightly job has stored anything, and on a
+		   symbol the feed has nothing for. */
 		$out = [];
+		foreach ((array) @news_recent_scored($symbol, $limit) as $article) {
+			$out[] = ["date"        => (string) $article['published'],
+			          "sentiment"   => $article['sentiment'] === null
+			                           ? null : (float) $article['sentiment'],
+			          "impact_type" => (string) $article['impact_type'],
+			          "summary"     => (string) $article['summary'],
+			          "source"      => (string) $article['publisher']];
+		}
+
+		if (count($out)) { return $out; }
+
 		foreach ((array) @get_articles($symbol) as $article) {
 			$out[] = ["title" => (string) $article['title'],
 			          "date"  => (string) $article['pubdate'],

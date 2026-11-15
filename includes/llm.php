@@ -68,14 +68,24 @@
 	 * charges a premium to put something in the cache and a large discount to
 	 * read it back, which is the whole point of sending the vault that way.
 	 */
-	function llm_cost($usage) {
+	function llm_cost($usage, $prices = null) {
+		/* $prices overrides the configured rates for a call that went to a
+		   different model. The news scorer runs on Haiku at a fiftieth of
+		   the price, and billing a thousand headlines at the panel's rates
+		   would report a figure forty times too high. */
+		$rates = [
+			"input"       => $prices['input']       ?? ANTHROPIC_PRICE_INPUT,
+			"output"      => $prices['output']      ?? ANTHROPIC_PRICE_OUTPUT,
+			"cache_read"  => $prices['cache_read']  ?? ANTHROPIC_PRICE_CACHE_READ,
+			"cache_write" => $prices['cache_write'] ?? ANTHROPIC_PRICE_CACHE_WRITE,
+		];
 		$per_million = function ($tokens, $price) {
 			return ((float) $tokens) * ((float) $price) / 1000000.0;
 		};
-		return $per_million($usage['input_tokens']  ?? 0, ANTHROPIC_PRICE_INPUT)
-		     + $per_million($usage['cache_write_tokens'] ?? 0, ANTHROPIC_PRICE_CACHE_WRITE)
-		     + $per_million($usage['cached_tokens'] ?? 0, ANTHROPIC_PRICE_CACHE_READ)
-		     + $per_million($usage['output_tokens'] ?? 0, ANTHROPIC_PRICE_OUTPUT);
+		return $per_million($usage['input_tokens']  ?? 0, $rates['input'])
+		     + $per_million($usage['cache_write_tokens'] ?? 0, $rates['cache_write'])
+		     + $per_million($usage['cached_tokens'] ?? 0, $rates['cache_read'])
+		     + $per_million($usage['output_tokens'] ?? 0, $rates['output']);
 	}
 
 	/**
@@ -140,7 +150,26 @@
 	 * tool is not a portable way to get structured output. Structured outputs
 	 * are, and they need no beta header.
 	 */
-	function llm_generate($cached_system, $system, $user_text, $schema) {
+	function llm_generate($cached_system, $system, $user_text, $schema, $options = []) {
+
+		/* $options lets one caller use a different model without every
+		   caller having to. The news scorer runs a thousand headlines a
+		   night through Haiku; the panels run one request through the
+		   configured model. Everything else - the schema, the cache block,
+		   the error handling, the logging - is the same work and is done
+		   once, here.
+
+		     model        model id, default ANTHROPIC_MODEL
+		     prices       per-million rates for that model, default the
+		                  configured ones, so the cost line is about the
+		                  model that actually ran
+		     max_tokens   default ANTHROPIC_MAX_TOKENS, floored at 4000
+		     label        what to call this caller in the log */
+		$model_wanted = isset($options['model']) && trim((string) $options['model']) !== ''
+		              ? trim((string) $options['model']) : llm_model();
+		$prices       = $options['prices'] ?? null;
+		$max_tokens   = llm_max_tokens($options['max_tokens'] ?? null);
+		$label        = isset($options['label']) ? (string) $options['label'] : 'panel';
 
 		if (!llm_configured()) {
 			return llm_failure("No API key is configured, so there is nothing to ask. "
@@ -159,14 +188,14 @@
 		}
 
 		$payload = [
-			"model"      => llm_model(),
+			"model"      => $model_wanted,
 			//Thinking tokens come out of this budget, so a model that thinks
 			//before answering can spend the whole allowance and have the JSON
 			//cut off part way. 2000 was enough for the answer and not for the
 			//thinking in front of it. The floor is not negotiable by
 			//configuration: a smaller number does not save money, it buys
 			//truncated answers that are thrown away and paid for anyway.
-			"max_tokens" => llm_max_tokens(),
+			"max_tokens" => $max_tokens,
 			"system"     => $system_blocks,
 			"messages"   => [["role" => "user", "content" => (string) $user_text]],
 			//No tools and no tool_choice. See llm_generate() above.
@@ -201,7 +230,7 @@
 		if ($response === false) {
 			//A timeout and an unreachable host look the same here. Both mean
 			//the same thing to the person reading the panel.
-			llm_log("WARN", "outcome=unreachable model=" . llm_model()
+			llm_log("WARN", "outcome=unreachable caller=" . $label . " model=" . $model_wanted
 			              . " duration_ms=" . $duration_ms
 			              . " timeout_s=" . (defined('ANTHROPIC_TIMEOUT') ? ANTHROPIC_TIMEOUT : 90));
 			return llm_failure("Could not reach the API: it did not respond within "
@@ -217,7 +246,8 @@
 			//happened and is still worth counting - a run of 429s is exactly
 			//the thing these lines exist to make visible.
 			llm_log("WARN", "outcome=http_error status=" . $status
-			              . " model=" . llm_model() . " duration_ms=" . $duration_ms);
+			              . " caller=" . $label . " model=" . $model_wanted
+			              . " duration_ms=" . $duration_ms);
 			return llm_failure(llm_error_message($status, $decoded));
 		}
 
@@ -240,7 +270,7 @@
 			                        : null,
 		];
 
-		$model = (string) ($decoded["model"] ?? llm_model());
+		$model = (string) ($decoded["model"] ?? $model_wanted);
 
 		/* One line per generation, whatever the outcome. The truncation
 		   warning below is the alert; this is the record, and without it a
@@ -250,9 +280,10 @@
 		   path that got a response is counted exactly once. */
 		llm_log("INFO", "outcome=generated"
 		              . " stop_reason=" . ((string) ($decoded["stop_reason"] ?? 'none'))
+		              . " caller=" . $label
 		              . " model=" . $model
 		              . " duration_ms=" . $duration_ms
-		              . " max_tokens=" . llm_max_tokens()
+		              . " max_tokens=" . $max_tokens
 		              . " input_tokens=" . $usage["input_tokens"]
 		              . " cached_tokens=" . $usage["cached_tokens"]
 		              . " cache_write_tokens=" . $usage["cache_write_tokens"]
@@ -261,7 +292,7 @@
 
 		$fail  = function ($message) use ($usage, $model) {
 			return array_merge(llm_failure($message),
-				["usage" => $usage, "cost" => llm_cost($usage), "model" => $model]);
+				["usage" => $usage, "cost" => llm_cost($usage, $prices), "model" => $model]);
 		};
 
 		/* Why the answer stopped, before reading it.
@@ -323,7 +354,7 @@
 		}
 
 		return ["ok" => true, "error" => "", "output" => $output,
-		        "usage" => $usage, "cost" => llm_cost($usage), "model" => $model];
+		        "usage" => $usage, "cost" => llm_cost($usage, $prices), "model" => $model];
 	}
 
 	/**

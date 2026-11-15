@@ -81,7 +81,12 @@ while (($conn = @stream_socket_accept($server, -1)) !== false) {
         $head = "HTTP/1.1 302 Found\r\nLocation: $location\r\n";
     }
     else {
-        $body = $feed;
+        /* $SM_STUB_DIR/news_feed.xml overrides the built-in feed, so a test
+           can change what Google returns between two runs of the job - which
+           is the only way to test that a second run stores nothing new, and
+           that a new article on the third is picked up. */
+        $override = @file_get_contents($dir . '/news_feed.xml');
+        $body = ($override === false || trim($override) === '') ? $feed : $override;
         $head = "HTTP/1.1 200 OK\r\nContent-Type: application/rss+xml\r\n";
     }
 
