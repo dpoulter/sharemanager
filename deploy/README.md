@@ -104,13 +104,67 @@ mariadb -h 127.0.0.1 -u shares -p sharemanager -e "select 1"
 The password has to match `env[SM_DB_PASS]` in the php-fpm pool exactly, and
 `env[SM_DB_HOST]` there is `127.0.0.1`.
 
+## The AI outlook panel
+
+The quote page and the dashboard each have an outlook panel. Nothing generates
+one on a schedule: the panel draws the last saved outlook, and only the
+Generate button calls the API. An idle site costs nothing, and no cron job
+needs an API key.
+
+Settings go in the php-fpm pool, beside the database ones, not in
+`/etc/sharemanager.env` - that file is sourced by cron jobs, none of which has
+any use for an API key:
+
+```
+env[ANTHROPIC_API_KEY] = sk-ant-...
+env[ANTHROPIC_MODEL]   = claude-sonnet-5-5
+env[SM_VAULT_DIR]      = /var/lib/sharemanager/vault
+```
+
+With no key the panel says so and generates nothing; that is a state, not an
+error, so the page still works.
+
+The per-million prices the panel costs each generation with default to Sonnet
+5.5's published rates and can be overridden when they change:
+`ANTHROPIC_PRICE_INPUT`, `ANTHROPIC_PRICE_OUTPUT`, `ANTHROPIC_PRICE_CACHE_READ`,
+`ANTHROPIC_PRICE_CACHE_WRITE`.
+
+### The vault
+
+`SM_VAULT_DIR` is a directory of markdown notes with YAML frontmatter - your
+own investing notes, synced from wherever you write them:
+
+```
+---
+title: Position sizing
+tags: [policy, risk]
+---
+Never more than 5% of the portfolio in one name.
+```
+
+Notes tagged `policy` and `indicators` go into every prompt. A share outlook
+also gets notes tagged with its sector (`stock_symbols.industry_group`, e.g.
+`industrials`) and with any screen it is currently in (`trend-following`); the
+market outlook gets notes tagged `market` instead. Over
+`SM_VAULT_WORD_BUDGET` words (6,000 by default) sector notes are dropped
+first, then strategy notes. Policy notes are never dropped.
+
+The directory is allowed to be missing or empty. The panel says which notes it
+used, and "no vault notes were available" is a normal answer.
+
 Load the schema, then the reset-token table:
 
 ```sh
 sudo mariadb sharemanager < tests/schema.sql
 sudo mariadb sharemanager < sql/paper_trading.sql
 sudo mariadb sharemanager < sql/password_resets.sql
+sudo mariadb sharemanager < sql/trend_screens.sql
+sudo mariadb sharemanager < sql/ai_outlook.sql
 ```
+
+`sql/trend_screens.sql` and `sql/ai_outlook.sql` are both re-runnable, so a
+later `git pull` can just run them again rather than working out whether they
+were applied.
 
 `tests/schema.sql` is a reconstruction, not a dump of your production database.
 If you have a real `mysqldump --no-data` from the live site, use that instead

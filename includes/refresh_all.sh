@@ -19,6 +19,18 @@
 #   EODHD_API_KEY=the-eodhd-key   # when SM_DATA_PROVIDER=eodhd
 #
 # Mode 600 matters: the file holds the database password and an API key.
+#
+# The AI outlook panel needs none of these. Nothing generates an outlook on a
+# schedule - only the Generate button does, from a logged-in browser - so
+# ANTHROPIC_API_KEY belongs in the php-fpm pool environment and not here:
+#
+#   /etc/php/8.3/fpm/pool.d/sharemanager.conf
+#     env[ANTHROPIC_API_KEY] = sk-ant-...
+#     env[ANTHROPIC_MODEL]   = claude-sonnet-5-5
+#     env[SM_VAULT_DIR]      = /var/lib/sharemanager/vault
+#
+# Putting it here instead would hand an API key to every cron job that sources
+# this file, none of which has any use for one.
 
 set -u
 

@@ -13,6 +13,11 @@
     require_once("constants.php");
     require_once("functions.php");
     require_once("share_functions.php");
+    //The AI outlook and the pieces under it. Loading these calls nothing and
+    //reaches no network; only outlook_generate() does.
+    require_once("llm.php");
+    require_once("vault.php");
+    require_once("ai_outlook.php");
 
     $INCLUDES = dirname(__DIR__) . '/includes';
     $passed = 0; $failed = 0; $failures = [];
@@ -1164,6 +1169,224 @@
     check('no function is declared in both public/ and includes/',
           count($clashes) === 0, implode('; ', $clashes));
 
+    echo "\n--- the investing vault: which notes go to the model ---\n";
+
+    /* The vault is the owner's own notes, synced from elsewhere, and it is
+       what makes an outlook theirs rather than generic. It is also allowed to
+       be absent, so every one of these has to hold with and without it. */
+    $vault = sys_get_temp_dir() . '/smvault' . getmypid();
+    @mkdir($vault, 0777, true);
+    $write_note = function ($name, $tags, $body) use ($vault) {
+        file_put_contents("$vault/$name.md", "---\ntags: [" . implode(', ', $tags) . "]\n---\n" . $body);
+    };
+    array_map('unlink', glob("$vault/*.md") ?: []);
+    $write_note('position-sizing', ['policy', 'risk'],  'Never more than 5% in one name.');
+    $write_note('what-i-look-at',  ['indicators'],      'Trend first, then quality, then price.');
+    $write_note('industrials',     ['industrials'],     'Cyclical; check the order book.');
+    $write_note('trend-following', ['trend-following'], 'Hold above the 200 day average.');
+    $write_note('market-regime',   ['market'],          'Breadth leads the index.');
+    $write_note('unrelated',       ['recipes'],         'Not about investing at all.');
+
+    $all_notes = vault_notes($vault);
+    check('every note in the vault is read', count($all_notes) === 6, count($all_notes) . ' notes');
+    check('frontmatter tags are parsed', in_array('policy', $all_notes[3]['tags'] ?? [], true)
+          || in_array('policy', array_merge(...array_column($all_notes, 'tags')), true));
+
+    /* A block list is the other way people write frontmatter tags, and the
+       owner's vault is hand written. */
+    file_put_contents("$vault/block-style.md", "---\ntitle: Block\ntags:\n  - policy\n  - sizing\nmore: yes\n---\nBody here.");
+    $block = null;
+    foreach (vault_notes($vault) as $note) { if ($note['name'] === 'block-style') { $block = $note; } }
+    check('tags written as a block list are parsed too',
+          $block !== null && in_array('policy', $block['tags'], true) && in_array('sizing', $block['tags'], true),
+          json_encode($block['tags'] ?? null));
+    @unlink("$vault/block-style.md");
+
+    $share_tags = outlook_wanted_tags('share', 'Industrials', ['Trend following (200-day)']);
+    $picked = vault_select($share_tags, vault_notes($vault));
+    sort($picked['names']);
+    check('a share outlook takes policy, indicators, its sector and its screens',
+          $picked['names'] === ['industrials', 'position-sizing', 'trend-following', 'what-i-look-at'],
+          json_encode($picked['names']));
+    check('notes about nothing relevant are left out',
+          !in_array('unrelated', $picked['names'], true) && !in_array('market-regime', $picked['names'], true));
+
+    /* A screen name becomes a tag, so one note can cover a strategy without
+       being renamed every time a screen is. */
+    check('a screen name becomes a tag', outlook_slug('Trend following (200-day)') === 'trend-following',
+          outlook_slug('Trend following (200-day)'));
+    check('the other trend screen maps to the same note',
+          outlook_slug('Trend following (50/200)') === 'trend-following');
+
+    $market = vault_select(outlook_wanted_tags('market'), vault_notes($vault));
+    sort($market['names']);
+    check('a market outlook takes policy, indicators and market notes',
+          $market['names'] === ['market-regime', 'position-sizing', 'what-i-look-at'],
+          json_encode($market['names']));
+
+    /* The word budget. Policy is how the owner invests: an outlook that
+       quietly stopped applying it would look exactly like one that did. */
+    $write_note('fat-sector',   ['industrials'],     str_repeat('sector ', 400));
+    $write_note('fat-strategy', ['trend-following'], str_repeat('strategy ', 400));
+    $write_note('fat-policy',   ['policy'],          str_repeat('policy ', 400));
+
+    $before = vault_select($share_tags, vault_notes($vault));
+    check('without a budget every matching note is sent', $before['words'] > 1000, $before['words'] . ' words');
+
+    /* The budget is a parameter so the rule can be exercised directly; a
+       constant cannot be redefined mid-process, and production passes
+       nothing and gets SM_VAULT_WORD_BUDGET. */
+    $tight = vault_select($share_tags, vault_notes($vault), 900);
+    check('over the budget, the sector note is dropped first',
+          !in_array('fat-sector', $tight['names'], true)
+          && in_array('fat-strategy', $tight['names'], true),
+          'kept ' . json_encode($tight['names']));
+
+    $tighter = vault_select($share_tags, vault_notes($vault), 450);
+    check('then the strategy note goes too',
+          !in_array('fat-sector', $tighter['names'], true)
+          && !in_array('fat-strategy', $tighter['names'], true),
+          'kept ' . json_encode($tighter['names']));
+
+    $tightest = vault_select($share_tags, vault_notes($vault), 1);
+    check('policy notes are never dropped, however tight the budget',
+          in_array('fat-policy', $tightest['names'], true)
+          && in_array('position-sizing', $tightest['names'], true)
+          && in_array('what-i-look-at', $tightest['names'], true),
+          'kept ' . json_encode($tightest['names']));
+    check('dropping a note is reported rather than silent',
+          count($tightest['dropped']) > 0, json_encode($tightest['dropped']));
+    check('a note is dropped whole, never cut in half',
+          count(array_filter($tightest['notes'], fn($n) => substr($n['body'], -1) === '.'
+                                                        || strpos($n['body'], 'policy ') === 0)) > 0);
+
+    array_map('unlink', glob("$vault/fat-*.md") ?: []);
+
+    //A vault that is not there at all. This is the normal state on a host
+    //that has not synced yet, and the panel still has to work.
+    $absent = vault_select($share_tags, vault_notes($vault . '-does-not-exist'));
+    check('a missing vault selects nothing and does not fail',
+          $absent['names'] === [] && $absent['words'] === 0);
+    check('a missing vault produces no notes text', vault_text($absent) === '');
+
+    echo "\n--- the news lookup searches for the company, not the ticker ---\n";
+
+    /* The feed was searched for "LSE:RR" and "LON:RR". Nobody writes about a
+       company that way, and for a two letter ticker it matched nothing: RR
+       returned no usable articles at all. */
+    db()->exec("delete from stock_symbols where symbol in ('RR','QQ1')");
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market,industry_group,industry,logo)
+                   values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','Aerospace',null)")
+         ->execute(['RR', 'Rolls-Royce Holdings plc', 'x']);
+
+    $query = news_query('RR');
+    check('the news query uses the company name', strpos($query, 'Rolls-Royce Holdings') !== false, $query);
+    check('the company name is quoted, so the words stay together',
+          strpos($query, '"Rolls-Royce Holdings"') !== false, $query);
+    check('the legal suffix is dropped, which an exact phrase would exclude on',
+          stripos($query, 'plc') === false, $query);
+    check('the query says shares, which is what makes the results financial',
+          strpos($query, 'shares') !== false, $query);
+    check('the old ticker form is gone', strpos($query, 'LSE:') === false && strpos($query, 'LON:') === false, $query);
+
+    /* A symbol with no name on file still has to produce a usable search. */
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market,industry_group,industry,logo)
+                   values (?,?,?,'XLON','Y','x','x','x','x',null)")->execute(['QQ1', '', 'x']);
+    check('a share with no name on file falls back to the ticker',
+          strpos(news_query('QQ1'), 'QQ1') !== false, news_query('QQ1'));
+
+    check('the feed url encodes the query rather than pasting it in',
+          strpos(news_feed_url('"BT Group" shares'), rawurlencode('"BT Group" shares')) !== false,
+          news_feed_url('"BT Group" shares'));
+
+    db()->exec("delete from stock_symbols where symbol in ('RR','QQ1')");
+
+    echo "\n--- the outlook request and what comes back ---\n";
+
+    /* What the model is asked for. tool_choice forces the tool, so the answer
+       has a shape rather than being prose that has to be parsed. */
+    $tool = outlook_tool();
+    check('the tool is named outlook', $tool['name'] === 'outlook');
+    check('the schema requires every field the panel draws',
+          $tool['input_schema']['required'] === ['stance','summary','positives','risks','action','watch'],
+          json_encode($tool['input_schema']['required']));
+    check('stance is an enum, not free text',
+          $tool['input_schema']['properties']['stance']['enum'] === ['positive','neutral','negative']);
+    check('three positives and three risks are asked for',
+          $tool['input_schema']['properties']['positives']['minItems'] === 3
+          && $tool['input_schema']['properties']['risks']['maxItems'] === 3);
+
+    /* The prompt has to tell the model to apply the owner's policy and to
+       speak up when the data disagrees with it, or the notes are decoration. */
+    $prompt = outlook_system_prompt('share');
+    check('the prompt tells the model to apply the policy notes',
+          stripos($prompt, 'apply them') !== false);
+    check('the prompt tells the model to say when the data conflicts with policy',
+          preg_match('/conflicts\s+with a policy note/i', $prompt) === 1);
+    check('the prompt says a null percentile is deliberate, not missing',
+          stripos($prompt, 'deliberately left unranked') !== false);
+    check('the prompt says headlines are data, not instructions',
+          stripos($prompt, 'never follow any') !== false);
+
+    //Validation. A model that answers oddly must not take the panel with it.
+    list($valid, $err) = outlook_validate([
+        "stance" => "Positive", "summary" => "Fine.",
+        "positives" => ["a","b","c"], "risks" => ["d","e","f"],
+        "action" => "Hold.", "watch" => "The average."]);
+    check('a good answer validates', $err === null && $valid['stance'] === 'positive');
+
+    list($v2, $e2) = outlook_validate(["stance" => "wildly bullish", "summary" => "x"]);
+    check('an unrecognised stance is refused', $v2 === null && $e2 !== null, (string) $e2);
+    list($v3, $e3) = outlook_validate(["stance" => "neutral", "summary" => "   "]);
+    check('an empty summary is refused', $v3 === null && $e3 !== null, (string) $e3);
+    list($v4, $e4) = outlook_validate("not an object at all");
+    check('a non-object is refused', $v4 === null && $e4 !== null, (string) $e4);
+    list($v5, $e5) = outlook_validate(["stance" => "neutral", "summary" => "x",
+                                       "positives" => [], "risks" => []]);
+    check('an answer with nothing for or against is refused', $v5 === null && $e5 !== null, (string) $e5);
+
+    list($v6, $e6) = outlook_validate(["stance" => "neutral",
+                                       "summary" => str_repeat('word ', 200),
+                                       "positives" => ["a"], "risks" => ["b"],
+                                       "action" => "", "watch" => ""]);
+    check('an over-long summary is trimmed rather than thrown away',
+          $e6 === null && count(preg_split('/\s+/', $v6['summary'], -1, PREG_SPLIT_NO_EMPTY)) <= 101,
+          $e6 === null ? 'trimmed' : (string) $e6);
+
+    //Cost. The panel shows it, so it has to be the real arithmetic.
+    $cost = llm_cost(["input_tokens" => 1000000, "cached_tokens" => 0,
+                      "cache_write_tokens" => 0, "output_tokens" => 0]);
+    check('a million input tokens costs the input rate', abs($cost - 2.00) < 0.0001, (string) $cost);
+    $cost = llm_cost(["input_tokens" => 0, "cached_tokens" => 1000000,
+                      "cache_write_tokens" => 0, "output_tokens" => 0]);
+    check('a million cached tokens costs the cache read rate', abs($cost - 0.10) < 0.0001, (string) $cost);
+    $cost = llm_cost(["input_tokens" => 0, "cached_tokens" => 0,
+                      "cache_write_tokens" => 0, "output_tokens" => 1000000]);
+    check('a million output tokens costs the output rate', abs($cost - 10.00) < 0.0001, (string) $cost);
+    check('reading the cache is far cheaper than sending it again',
+          llm_cost(["cached_tokens" => 100000]) < llm_cost(["input_tokens" => 100000]) / 10);
+
+    //No key is a state, not a failure.
+    check('with no key configured nothing is sent', !llm_configured());
+    $nokey = llm_generate('system', '', 'user', outlook_tool());
+    check('with no key the caller gets a message, not an exception',
+          $nokey['ok'] === false && stripos($nokey['error'], 'no api key') !== false, $nokey['error']);
+    check('a failed generation reports no cost', $nokey['cost'] == 0.0);
+
+    echo "\n--- the index the market outlook reads ---\n";
+
+    /* An index is addressed by its own code: FMP wants ^FTSE, not ^FTSE.L. */
+    check('an index code takes no exchange suffix', provider_symbol('^FTSE') === '^FTSE');
+    check('an ordinary ticker still gets one', provider_symbol('III') !== 'III');
+    check('the index list is the FTSE 100', index_symbols() === ['^FTSE']);
+
+    /* It must not be in stock_symbols: everything there is ranked by the
+       screens, counted in the breadth figures and offered by the search box. */
+    check('the index is not part of the tradeable universe',
+          (int) scalar("select count(*) from stock_symbols where symbol like '^%'") === 0);
+    $prices_src = (string) file_get_contents($INCLUDES . '/get_share_prices.php');
+    check('the nightly price job loads the index', strpos($prices_src, 'get_index_prices') !== false);
+
     echo "\n--- pages render without a fatal ---\n";
 
     /* Drives the site over HTTP as a logged in user. Everything above tests the
@@ -1173,8 +1396,32 @@
     $docroot = dirname(__DIR__) . '/public';
     $port = 8099;
     $include_path = __DIR__ . '/fixtures' . PATH_SEPARATOR . dirname(__DIR__) . '/includes';
+    /* The AI outlook talks to tools/anthropic_stub.php, never the real API:
+       it costs money, needs a key, and would make the suite depend on what a
+       model happens to say today. The stub's control directory lets a test
+       pick the answer, and records the request so the prompt can be asserted.
+
+       ANTHROPIC_API_KEY is a recognisable fake, so a test can prove it never
+       appears in a response or a log. */
+    $ai_dir   = sys_get_temp_dir() . '/smai' . getmypid();
+    $ai_vault = sys_get_temp_dir() . '/smaivault' . getmypid();
+    @mkdir($ai_dir, 0777, true);
+    @mkdir($ai_vault, 0777, true);
+    file_put_contents("$ai_dir/mode", "ok");
+    file_put_contents("$ai_vault/house-policy.md",
+                      "---\ntags: [policy]\n---\nNever more than 5% in one name.");
+    file_put_contents("$ai_vault/signals.md",
+                      "---\ntags: [indicators]\n---\nTrend first, then quality.");
+
+    $ai_key  = 'sk-ant-test-NOT-A-REAL-KEY-9f3a';
+    $ai_port = $port + 20;
+
     $server = 'EODHD_BASE_URL=http://127.0.0.1:' . ($port + 10)
             . ' EODHD_API_KEY=test-stub-token'
+            . ' ANTHROPIC_BASE_URL=http://127.0.0.1:' . $ai_port
+            . ' ANTHROPIC_API_KEY=' . escapeshellarg($ai_key)
+            . ' ANTHROPIC_TIMEOUT=5'
+            . ' SM_VAULT_DIR=' . escapeshellarg($ai_vault)
             /* config.php defaults display_errors to off, which is right for a
                public host. Half the checks below read warnings out of the page,
                so without this they see a clean page and pass whatever the
@@ -1201,6 +1448,13 @@
               . escapeshellarg(dirname(__DIR__) . '/tools/eodhd_stub.php')
               . ' > /dev/null 2>&1 & echo $!';
     $stub_pid = (int)trim(shell_exec($stub_cmd));
+
+    $ai_stub_cmd = 'SM_STUB_DIR=' . escapeshellarg($ai_dir)
+                 . ' SM_STUB_SLEEP=8'
+                 . ' php -S 127.0.0.1:' . $ai_port . ' '
+                 . escapeshellarg(dirname(__DIR__) . '/tools/anthropic_stub.php')
+                 . ' > /dev/null 2>&1 & echo $!';
+    $ai_stub_pid = (int)trim(shell_exec($ai_stub_cmd));
 
     $base = "http://127.0.0.1:$port";
     $up = false;
@@ -1604,6 +1858,224 @@ STUB
         check('an anonymous request is redirected to the login page',
               $anon_code === '302', "status $anon_code");
         @unlink($anon_jar);
+
+        /* ---------------- the AI outlook panel ---------------- */
+
+        $ai_mode = function ($mode) use ($ai_dir) { file_put_contents("$ai_dir/mode", $mode); };
+        $ai_last_request = function () use ($ai_dir) {
+            $raw = @file_get_contents("$ai_dir/last_request");
+            return $raw === false ? null : json_decode($raw, true);
+        };
+        $ai_post = function ($fields) use ($curl, $base) {
+            return (string) $curl("$base/ai_outlook.php", $fields);
+        };
+        $ai_json = function ($fields) use ($ai_post) { return json_decode($ai_post($fields), true); };
+
+        $ai_mode('ok');
+
+        /* ai_outlook is created by sql/ai_outlook.sql rather than by
+           schema.sql, so unlike every other table it survives a reload and
+           carries the previous run's rows into this one. */
+        db()->exec("truncate ai_outlook");
+
+        /* Nothing may call the API without being asked. An idle site, a
+           crawler or a page refresh must cost nothing. */
+        @unlink("$ai_dir/last_request");
+        $curl("$base/quote.php?symbol=III&page=quote_form.php");
+        $curl("$base/index.php");
+        check('loading a page never calls the API',
+              !file_exists("$ai_dir/last_request"));
+
+        $quote_page = (string)$curl("$base/quote.php?symbol=III&page=quote_form.php");
+        check('the quote page shows an AI outlook panel',
+              strpos($quote_page, 'sm-outlook') !== false && strpos($quote_page, 'AI outlook') !== false);
+        check('with nothing generated the panel says so',
+              strpos($quote_page, 'No outlook yet') !== false);
+        $home_page = (string)$curl("$base/index.php");
+        check('the home page shows a market outlook panel',
+              strpos($home_page, 'Market outlook') !== false && strpos($home_page, 'sm-outlook') !== false);
+
+        /* The endpoint. A generation spends money and writes a row, so it is
+           not something a link or a prefetch should reach. */
+        $get_body = (string)$curl("$base/ai_outlook.php");
+        check('the endpoint refuses GET',
+              strpos($get_body, 'Use POST') !== false, substr($get_body, 0, 120));
+        $get_code = trim((string)shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 20 -b '
+                   . escapeshellarg($jar) . ' ' . escapeshellarg("$base/ai_outlook.php") . ' 2>/dev/null'));
+        check('a GET answers 405', $get_code === '405', "status $get_code");
+
+        $anon_ai_jar = tempnam(sys_get_temp_dir(), 'smanonai');
+        $anon_ai = (string)shell_exec('curl -s -m 20 -b ' . escapeshellarg($anon_ai_jar)
+                   . ' -c ' . escapeshellarg($anon_ai_jar) . ' -L -d symbol=III '
+                   . escapeshellarg("$base/ai_outlook.php") . ' 2>/dev/null');
+        check('the endpoint refuses an anonymous request',
+              json_decode($anon_ai, true) === null && stripos($anon_ai, 'name="password"') !== false,
+              'body: ' . json_encode(substr($anon_ai, 0, 120)));
+        @unlink("$ai_dir/last_request");
+        check('an anonymous request never reaches the API',
+              !file_exists("$ai_dir/last_request"));
+        @unlink($anon_ai_jar);
+
+        /* One click, one call. */
+        @unlink("$ai_dir/last_request");
+        $generated = $ai_json('symbol=III');
+        check('Generate returns an outlook',
+              is_array($generated) && ($generated['ok'] ?? false) === true,
+              json_encode(array_slice((array) $generated, 0, 2)));
+        check('Generate calls the API exactly once', file_exists("$ai_dir/last_request"));
+        check('the outlook has every part the panel draws',
+              isset($generated['outlook']['stance'], $generated['outlook']['summary'],
+                    $generated['outlook']['positives'], $generated['outlook']['risks'],
+                    $generated['outlook']['action'], $generated['outlook']['watch']));
+
+        /* The request itself: caching is the difference between a few pence
+           and a few pounds over a week of clicking. */
+        $sent = $ai_last_request();
+        check('the system prompt is sent as a cacheable block',
+              isset($sent['system'][0]['cache_control']['type'])
+              && $sent['system'][0]['cache_control']['type'] === 'ephemeral',
+              json_encode($sent['system'][0]['cache_control'] ?? null));
+        check('the vault notes are inside that cached block',
+              strpos($sent['system'][0]['text'] ?? '', 'Never more than 5%') !== false);
+        check('the share data is in the user message, not the cached block',
+              strpos($sent['messages'][0]['content'] ?? '', 'III') !== false
+              && strpos($sent['system'][0]['text'] ?? '', '"symbol": "III"') === false);
+        check('the tool is forced rather than offered',
+              ($sent['tool_choice']['type'] ?? '') === 'tool'
+              && ($sent['tool_choice']['name'] ?? '') === 'outlook',
+              json_encode($sent['tool_choice'] ?? null));
+        check('the model is the configured one', ($sent['model'] ?? '') === 'claude-sonnet-5-5');
+
+        /* The key goes to the API and nowhere else. */
+        $sent_headers = json_decode((string)@file_get_contents("$ai_dir/last_headers"), true);
+        check('the key is sent to the API', ($sent_headers['x-api-key'] ?? '') === $ai_key);
+        check('the API version header is sent',
+              ($sent_headers['anthropic-version'] ?? '') === '2023-06-01');
+        check('the key never reaches the browser',
+              strpos(json_encode($generated), $ai_key) === false
+              && strpos($quote_page, $ai_key) === false);
+        check('the key is not written to the message log',
+              (int) scalar("select count(*) from message_log where message_text like ?", ['%' . $ai_key . '%']) === 0);
+        check('the key is not in the request body either, only the header',
+              strpos(json_encode($sent), $ai_key) === false);
+
+        /* Saved, with the usage and the cost. */
+        $saved = rows("select * from ai_outlook where scope='share' and symbol='III' order by id desc limit 1");
+        check('the generation is saved', count($saved) === 1);
+        if (count($saved)) {
+            check('the saved row records the model and the tokens',
+                  $saved[0]['model'] === 'claude-sonnet-5-5'
+                  && (int) $saved[0]['output_tokens'] > 0,
+                  json_encode(array_intersect_key($saved[0], array_flip(['model','input_tokens','output_tokens']))));
+            check('the saved row records what it cost', (float) $saved[0]['cost_usd'] > 0);
+            check('the saved row keeps the inputs the model was shown',
+                  strpos((string) $saved[0]['inputs_json'], '"symbol"') !== false);
+            check('the saved row lists the notes used',
+                  strpos((string) $saved[0]['notes_used'], 'house-policy') !== false,
+                  (string) $saved[0]['notes_used']);
+        }
+
+        $reloaded = (string)$curl("$base/quote.php?symbol=III&page=quote_form.php");
+        check('the panel then shows the saved outlook with its date',
+              strpos($reloaded, 'No outlook yet') === false
+              && strpos($reloaded, 'Not financial advice') !== false
+              && strpos($reloaded, 'cost $') !== false);
+
+        /* History is kept: the panel shows the latest, the table keeps both. */
+        $ai_json('symbol=III');
+        check('a second generation is kept as history, not an overwrite',
+              (int) scalar("select count(*) from ai_outlook where scope='share' and symbol='III'") >= 2);
+
+        /* A repeat click should read the cache rather than resend the vault. */
+        $ai_mode('cached');
+        $ai_json('symbol=III');
+        $cached_row = rows("select * from ai_outlook order by id desc limit 1");
+        check('a cached call is recorded as cache reads, and costs less',
+              (int) $cached_row[0]['cached_tokens'] > 0
+              && (float) $cached_row[0]['cost_usd'] < (float) $saved[0]['cost_usd'],
+              'cached ' . $cached_row[0]['cached_tokens'] . ' tokens, $'
+              . $cached_row[0]['cost_usd'] . ' vs $' . $saved[0]['cost_usd']);
+        $ai_mode('ok');
+
+        /* The market panel. */
+        $market = $ai_json('scope=market');
+        check('the market scope generates an outlook',
+              is_array($market) && ($market['ok'] ?? false) === true);
+        $market_sent = $ai_last_request();
+        check('the market prompt carries index and breadth figures, not one share',
+              strpos($market_sent['messages'][0]['content'] ?? '', 'breadth') !== false
+              && strpos($market_sent['messages'][0]['content'] ?? '', 'Market data') !== false);
+        check('the market outlook is saved with no symbol',
+              (int) scalar("select count(*) from ai_outlook where scope='market' and symbol is null") >= 1);
+
+        /* Every failure has to read as a sentence, not a blank panel. */
+        foreach ([['unauthorized', 'rejected the key'],
+                  ['rate_limited', 'Rate limited'],
+                  ['server_error', 'had a problem'],
+                  ['not_json',     'not JSON'],
+                  ['no_tool',      'expected form'],
+                  ['bad_stance',   'unrecognised stance'],
+                  ['empty_summary','empty summary']] as [$mode, $expected]) {
+            $ai_mode($mode);
+            /* Not $failed: tests.php runs at file scope, so that name is
+               the suite's own failure counter and assigning to it here
+               silently broke the totals. */
+            $ai_error = $ai_json('symbol=III');
+            check("the $mode case explains itself",
+                  is_array($ai_error) && ($ai_error['ok'] ?? true) === false
+                  && stripos($ai_error['error'] ?? '', $expected) !== false,
+                  json_encode($ai_error));
+            check("the $mode case returns JSON, not a PHP error page",
+                  is_array($ai_error),
+                  'decoded ' . (is_array($ai_error) ? 'yes' : 'no'));
+        }
+
+        /* A timeout. ANTHROPIC_TIMEOUT is 5s for the suite and the stub
+           sleeps 8, so this exercises the real path rather than a mock. */
+        $ai_mode('slow');
+        $timed_out = $ai_json('symbol=III');
+        check('a timeout says so rather than hanging the panel',
+              is_array($timed_out) && ($timed_out['ok'] ?? true) === false
+              && stripos($timed_out['error'] ?? '', 'did not respond') !== false,
+              json_encode($timed_out));
+        $ai_mode('ok');
+
+        /* Model output is untrusted: it is shaped by headlines written by
+           strangers, and it is drawn on a logged-in page. */
+        $ai_mode('injection');
+        $nasty = $ai_json('symbol=III');
+        check('output carrying markup is still accepted as text',
+              is_array($nasty) && ($nasty['ok'] ?? false) === true);
+        $nasty_page = (string)$curl("$base/quote.php?symbol=III&page=quote_form.php");
+        check('model output is escaped, so markup in it cannot become markup',
+              strpos($nasty_page, '<script>alert("xss")</script>') === false
+              && strpos($nasty_page, '&lt;script&gt;') !== false);
+        check('an attribute break in model output is escaped too',
+              strpos($nasty_page, '"><img src=x') === false);
+        $ai_mode('ok');
+
+        /* A bad symbol must not reach the API at all. */
+        @unlink("$ai_dir/last_request");
+        $unknown = $ai_json('symbol=NOSUCHSHARE');
+        check('an unknown symbol is refused before the API is called',
+              is_array($unknown) && ($unknown['ok'] ?? true) === false
+              && !file_exists("$ai_dir/last_request"),
+              json_encode($unknown));
+        $missing = $ai_json('');
+        check('a request with no symbol and no scope is refused',
+              is_array($missing) && ($missing['ok'] ?? true) === false);
+
+        /* The vault is synced from elsewhere and may simply not be there. */
+        $hidden = $ai_vault . '-away';
+        rename($ai_vault, $hidden);
+        $no_vault = $ai_json('symbol=III');
+        check('a missing vault still produces an outlook',
+              is_array($no_vault) && ($no_vault['ok'] ?? false) === true,
+              json_encode(array_slice((array) $no_vault, 0, 2)));
+        $no_vault_sent = $ai_last_request();
+        check('and the prompt says the notes were not available',
+              stripos($no_vault_sent['system'][0]['text'] ?? '', 'not available on this host') !== false);
+        rename($hidden, $ai_vault);
 
         /* ---------------- the search box, in a real browser ----------------
 
@@ -2029,6 +2501,20 @@ STUB
 
     if ($pid > 0) { exec("kill $pid 2>/dev/null"); }
     if (!empty($stub_pid)) { exec("kill $stub_pid 2>/dev/null"); }
+    if (!empty($ai_stub_pid)) { exec("kill $ai_stub_pid 2>/dev/null"); }
+
+    /* The counters live at file scope, which is also where every test's own
+       variables live, so a test that uses $passed, $failed or $failures as a
+       scratch name overwrites them and the totals quietly stop meaning
+       anything. That has happened twice. If they no longer agree, say so
+       rather than printing a number nobody can trust. */
+    if (!is_int($failed) || !is_int($passed) || !is_array($failures) || count($failures) !== $failed) {
+        printf("\n\033[31mBROKEN COUNTERS\033[0m  the suite's own tallies were overwritten by a test: "
+               . "passed=%s failed=%s failures=%s\n"
+               . "  Something assigned to \$passed, \$failed or \$failures at file scope.\n\n",
+               var_export($passed, true), var_export($failed, true), var_export($failures, true));
+        exit(1);
+    }
 
     printf("\n%s  %d passed, %d failed\n\n",
            $failed === 0 ? "\033[32mALL PASSED\033[0m" : "\033[31mFAILURES\033[0m", $passed, $failed);

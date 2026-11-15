@@ -288,6 +288,17 @@
 		</div>
 		</br>
 		
+		<!-- AI outlook -->
+		<div class="container">
+		<?php
+			require_once(__DIR__ . '/../includes/ai_outlook.php');
+			$outlook_scope  = 'share';
+			$outlook_symbol = $symbol;
+			$outlook_title  = 'AI outlook';
+			include(__DIR__ . '/ai_outlook_panel.php');
+		?>
+		</div>
+
 		<!-- Business Profile, News and Ratios  --> 
 		
 		<div class="container">

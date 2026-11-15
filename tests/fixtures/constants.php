@@ -33,6 +33,22 @@
     define("EODHD_EXCHANGE", "LSE");
     define("EODHD_BASE_URL", getenv('EODHD_BASE_URL') ?: "https://eodhd.com/api");
 
+    // The AI outlook. There is no real key here and never should be: the
+    // suite points ANTHROPIC_BASE_URL at tools/anthropic_stub.php and asserts
+    // the request shape, the usage accounting and every error path against
+    // that. An empty key is itself one of the cases under test.
+    define("ANTHROPIC_API_KEY", getenv('ANTHROPIC_API_KEY') ?: "");
+    define("ANTHROPIC_MODEL",   getenv('ANTHROPIC_MODEL') ?: "claude-sonnet-5-5");
+    define("ANTHROPIC_BASE_URL", getenv('ANTHROPIC_BASE_URL') ?: "https://api.anthropic.com");
+    define("ANTHROPIC_PRICE_INPUT",       getenv('ANTHROPIC_PRICE_INPUT')       ?: "2.00");
+    define("ANTHROPIC_PRICE_OUTPUT",      getenv('ANTHROPIC_PRICE_OUTPUT')      ?: "10.00");
+    define("ANTHROPIC_PRICE_CACHE_READ",  getenv('ANTHROPIC_PRICE_CACHE_READ')  ?: "0.10");
+    define("ANTHROPIC_PRICE_CACHE_WRITE", getenv('ANTHROPIC_PRICE_CACHE_WRITE') ?: "2.50");
+    define("ANTHROPIC_TIMEOUT", (int)(getenv('ANTHROPIC_TIMEOUT') ?: 90));
+
+    define("SM_VAULT_DIR", getenv('SM_VAULT_DIR') ?: "");
+    define("SM_VAULT_WORD_BUDGET", (int)(getenv('SM_VAULT_WORD_BUDGET') ?: 6000));
+
     // Per row tracing. The suite runs with this off by default and flips it on
     // via SM_TEST_DEBUG_LOG to assert that the gate works in both directions.
     define("DEBUG_LOG", getenv('SM_TEST_DEBUG_LOG') === 'Y' ? 'Y' : 'N');

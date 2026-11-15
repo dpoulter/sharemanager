@@ -215,6 +215,120 @@ function provider_prices_to_rows($decoded) {
 	return $decoded;
 }
 
+/**
+ * Fetch one symbol's prices from the provider and store them.
+ *
+ * Extracted from get_historical_prices() so the index loader below can use
+ * exactly the same request, parsing and idempotent write rather than a second
+ * copy of them that drifts.
+ *
+ * Returns 'loaded', 'empty' or 'failed'.
+ */
+function store_provider_prices($symbol,$exchange,$start_date,$end_date){
+
+	//stock_symbols holds the bare code; each provider wants its own
+	//suffix (EODHD CODE.LSE, FMP CODE.L). An index keeps its own code.
+	$code=provider_symbol($symbol);
+
+	if (data_provider() === 'fmp') {
+		$url=fmp_base_url()."/historical-price-eod/full?symbol=".rawurlencode($code)
+		    ."&from=".rawurlencode($start_date)
+		    ."&to=".rawurlencode($end_date)
+		    ."&apikey=".rawurlencode(fmp_api_key());
+	} else {
+		$url=eodhd_base_url()."/eod/".rawurlencode($code)
+		    ."?from=".rawurlencode($start_date)
+		    ."&to=".rawurlencode($end_date)
+		    ."&period=d&order=a&fmt=json"
+		    ."&api_token=".rawurlencode(eodhd_api_key());
+	}
+
+	//Never log the URL: it carries the API key.
+	debug_log("get_historical_prices", "fetch ".$code." ".$start_date." to ".$end_date);
+
+	$body=@file_get_contents($url);
+	if ($body===false){
+		write_log("get_historical_prices","request failed for ".$code);
+		return 'failed';
+	}
+
+	$prices=provider_prices_to_rows(json_decode($body,true));
+	if ($prices===null){
+		write_log("get_historical_prices","unreadable response for ".$code);
+		return 'failed';
+	}
+	if (count($prices)===0){
+		debug_log("get_historical_prices","no prices for ".$code);
+		return 'empty';
+	}
+
+	foreach ($prices as $line){
+
+		if (!isset($line['date'])){
+			continue;
+		}
+
+		//Prefer the adjusted close, which is what the momentum
+		//calculations assume; fall back to the close if the plan does
+		//not return it.
+		//FMP's stable series spells it adjClose and omits it on some
+		//plans, hence all three.
+		$price=isset($line['adjusted_close']) ? $line['adjusted_close']
+		      : (isset($line['adjClose']) ? $line['adjClose']
+		      : (isset($line['close']) ? $line['close'] : null));
+		if ($price===null||$price===''){
+			continue;
+		}
+
+		$date=substr($line['date'],0,10);
+
+		//Replace rather than append so a re-run for the same range is
+		//idempotent.
+		query("delete from historical_prices where symbol=? and exchange=? and date=?",$symbol,$exchange,$date);
+		query("insert into historical_prices(symbol,exchange,date,price) values (?,?,?,?)",$symbol,$exchange,$date,$price);
+	}
+
+	return 'loaded';
+}
+
+/**
+ * The index codes the market outlook reads.
+ *
+ * ^FTSE (FTSE 100) works on the current FMP plan. ^FTMC (FTSE 250) does not,
+ * so the market panel speaks for large caps and says so rather than quietly
+ * reporting a narrower index as "the market".
+ *
+ * These are deliberately not rows in stock_symbols. Everything in that table
+ * is part of the tradeable universe: the screens rank it, the breadth figures
+ * count it and the search box offers it. An index is none of those things.
+ */
+function index_symbols(){
+	return ['^FTSE'];
+}
+
+/**
+ * Load index prices into historical_prices, beside the shares.
+ */
+function get_index_prices($start_date,$end_date){
+
+	$exchange=session_exchange();
+
+	if (provider_api_key()===''){
+		write_log("get_index_prices","no API key for the ".data_provider()." provider, cannot fetch index prices");
+		return;
+	}
+
+	$loaded=0; $failed=0;
+	foreach (index_symbols() as $symbol){
+		if (store_provider_prices($symbol,$exchange,$start_date,$end_date)==='loaded'){ $loaded++; }
+		else { $failed++; }
+	}
+
+	write_log("get_index_prices",
+		strtoupper(data_provider())." ".$start_date." to ".$end_date.": "
+		.$loaded." indices loaded, ".$failed." failed");
+}
+
  function get_historical_prices($start_date,$end_date){
 
 	   write_log("get_historical_prices", "Start Date= " . $start_date . " End Date=".$end_date);
@@ -245,74 +359,11 @@ function provider_prices_to_rows($decoded) {
 		//and issued one request per symbol anyway.
 		foreach ($symbols as $row){
 
-			$symbol=$row['symbol'];
-
-			//stock_symbols holds the bare code; each provider wants its own
-			//suffix (EODHD CODE.LSE, FMP CODE.L).
-			$code=provider_symbol($symbol);
-
-			if (data_provider() === 'fmp') {
-				$url=fmp_base_url()."/historical-price-eod/full?symbol=".rawurlencode($code)
-				    ."&from=".rawurlencode($start_date)
-				    ."&to=".rawurlencode($end_date)
-				    ."&apikey=".rawurlencode(fmp_api_key());
-			} else {
-				$url=eodhd_base_url()."/eod/".rawurlencode($code)
-				    ."?from=".rawurlencode($start_date)
-				    ."&to=".rawurlencode($end_date)
-				    ."&period=d&order=a&fmt=json"
-				    ."&api_token=".rawurlencode(eodhd_api_key());
+			switch (store_provider_prices($row['symbol'],$exchange,$start_date,$end_date)){
+				case 'loaded': $loaded++; break;
+				case 'empty':  $empty++;  break;
+				default:       $failed++; break;
 			}
-
-			//Never log the URL: it carries the API key.
-			debug_log("get_historical_prices", "fetch ".$code." ".$start_date." to ".$end_date);
-
-			$body=@file_get_contents($url);
-			if ($body===false){
-				write_log("get_historical_prices","request failed for ".$code);
-				$failed++;
-				continue;
-			}
-
-			$prices=provider_prices_to_rows(json_decode($body,true));
-			if ($prices===null){
-				write_log("get_historical_prices","unreadable response for ".$code);
-				$failed++;
-				continue;
-			}
-			if (count($prices)===0){
-				debug_log("get_historical_prices","no prices for ".$code);
-				$empty++;
-				continue;
-			}
-
-			foreach ($prices as $line){
-
-				if (!isset($line['date'])){
-					continue;
-				}
-
-				//Prefer the adjusted close, which is what the momentum
-				//calculations assume; fall back to the close if the plan does
-				//not return it.
-				//FMP's stable series spells it adjClose and omits it on some
-				//plans, hence all three.
-				$price=isset($line['adjusted_close']) ? $line['adjusted_close']
-				      : (isset($line['adjClose']) ? $line['adjClose']
-				      : (isset($line['close']) ? $line['close'] : null));
-				if ($price===null||$price===''){
-					continue;
-				}
-
-				$date=substr($line['date'],0,10);
-
-				//Replace rather than append so a re-run for the same range is
-				//idempotent.
-				query("delete from historical_prices where symbol=? and exchange=? and date=?",$symbol,$exchange,$date);
-				query("insert into historical_prices(symbol,exchange,date,price) values (?,?,?,?)",$symbol,$exchange,$date,$price);
-			}
-
-			$loaded++;
 		}
 
 		write_log("get_historical_prices",
@@ -1492,6 +1543,38 @@ function time_to_decimal($time) {
 			return $profile[0];
 	}
 	
+	/**
+	 * The company name to search news for.
+	 *
+	 * The feed was searched for "LSE:RR" and "LON:RR". Those are not how
+	 * anybody writes about a company, and for a two letter ticker they match
+	 * almost nothing: RR returned no usable articles at all. A quoted company
+	 * name plus "shares" is what a person would type, and it returns the
+	 * coverage the panel and the News tab are for.
+	 *
+	 * The legal suffix is dropped. "Rolls-Royce Holdings plc" as an exact
+	 * phrase excludes every article that writes the name the normal way.
+	 */
+	function news_query($symbol){
+
+		$name = '';
+		$rows = query("select name from stock_symbols where symbol=? and exchange=?",
+		              $symbol, session_exchange());
+		if (count($rows) > 0) { $name = trim((string) $rows[0]['name']); }
+
+		//No name on file: the ticker is all there is, and a bare ticker is
+		//better than an empty search.
+		if ($name === '') { return '"' . $symbol . '" shares'; }
+
+		$name = preg_replace('/\s+(p\.?l\.?c\.?|ltd\.?|limited|inc\.?|corp\.?)\s*$/i', '', $name);
+		$name = trim(preg_replace('/\s+/', ' ', $name));
+		if ($name === '') { $name = $symbol; }
+
+		//Quoted, so the words stay together: Rolls-Royce rather than every
+		//article containing "Rolls" and "Royce" somewhere.
+		return '"' . $name . '" shares';
+	}
+
 	//Get News articles for the share symbol
 	function get_articles($symbol){
 	
@@ -1506,95 +1589,96 @@ function time_to_decimal($time) {
 			write_log("get_articles","news unavailable: no simplexml or allow_url_fopen is off");
 			return $articles;
 		}
-			
-		//Stock Exchange Codes
-		$exchanges=['LSE','LON'];
-		
-		//break up symbol to news format
-		$share=explode(".",$symbol);
-		
-		//get news articles for each exchange
-		foreach ($exchanges as $exchange){
-			$symbol=$exchange.':'.$share[0];
-		
-			// headers for proxy servers
-			//The User-Agent used to be built from curl_version(), which needs
-			//ext-curl. The fetch itself is file_get_contents, so curl was never
-			//doing the work - it only supplied a version string - and on a host
-			//without php-curl the call was a fatal that took the page with it.
-			$headers = [
-				"Accept" => "*/*",
-				"Connection" => "Keep-Alive",
-				"User-Agent" => "sharemanager/1.0 (+php " . PHP_VERSION . ")"
-			];
 
-			// download RSS from Google News
-			//This blocks the quote page while it runs. Without a timeout it
-			//waits for default_socket_timeout, which on a host with no outbound
-			//network means the page hangs rather than loads.
-			$context = stream_context_create([
-				"http" => [
-					"header" => implode(array_map(function($value, $key) { return sprintf("%s: %s\r\n", $key, $value); }, $headers, array_keys($headers))),
-					"method" => "GET",
-					"timeout" => 3
-				]
-			]);
-			
-			$contents = @file_get_contents("https://news.google.com/_/rss/search?cf=all&q=$symbol&scoring=n&hl=en-GB&gl=GB&ceid=GB:en", false, $context);
-			//$contents = @file_get_contents("https://news.google.com/news/section?pz=1&cf=all&hl=en&q=$symbol&scoring=n&output=RSS", false, $context);
-			//This runs inside the quote page. Ending the request on a failed
-			//fetch took the whole page down with it, so a news feed that is
-			//unreachable - no outbound network, a rate limit, a changed URL -
-			//now just contributes no articles.
-			if ($contents === false)
-			{
-				//The feed is one host, so if the first exchange cannot reach it
-				//neither can the second. Stop rather than wait out a second
-				//timeout on a page the user is watching.
-				write_log("get_articles","no response for $symbol");
-				break;
-			}
+		$query = news_query($symbol);
 
-			// parse RSS
-			$rss = @simplexml_load_string($contents);
-			//@fclose($handle);
-			if ($rss === false || !isset($rss->channel->item))
-			{
-				write_log("get_articles","unparseable feed for $symbol");
-				continue;
-			}
+		// headers for proxy servers
+		//The User-Agent used to be built from curl_version(), which needs
+		//ext-curl. The fetch itself is file_get_contents, so curl was never
+		//doing the work - it only supplied a version string - and on a host
+		//without php-curl the call was a fatal that took the page with it.
+		$headers = [
+			"Accept" => "*/*",
+			"Connection" => "Keep-Alive",
+			"User-Agent" => "sharemanager/1.0 (+php " . PHP_VERSION . ")"
+		];
 
-			// iterate over items in channel
-			foreach ($rss->channel->item as $item)
-			{
-				
-				$title = (string) $item->title ;
-				$found=false;
-					
-				//Block certain publishes
-				$blocked=array("Motley Fool","London South East","Proactive Investor");
-				
-				foreach($blocked as $publisher){
-					//strpos returns 0 when the title starts with the publisher
-					//name, which >0 reads as "not found".
-					if (strpos($title,$publisher)!==false)
-						$found=true;
-				}
+		// download RSS from Google News
+		//This blocks the quote page while it runs. Without a timeout it
+		//waits for default_socket_timeout, which on a host with no outbound
+		//network means the page hangs rather than loads.
+		$context = stream_context_create([
+			"http" => [
+				"header" => implode(array_map(function($value, $key) { return sprintf("%s: %s\r\n", $key, $value); }, $headers, array_keys($headers))),
+				"method" => "GET",
+				"timeout" => 3
+			]
+		]);
 
-				// add article to array. $blocked is a list of publishers to
-				// leave out, so the test was the wrong way round: it kept only
-				// the articles it was meant to drop.
-			    if (!$found)
-				$articles[] = [
-					"link" => (string) $item->link,
-					"title" => (string) $item->title,
-					"pubdate" => (string) $item->pubDate,
-					"description" => (string) $item->description
-				];
-			}
+		//One request now rather than two. The old pair only differed by an
+		//exchange prefix on the ticker, and both halves searched for
+		//something nobody writes.
+		$contents = @file_get_contents(news_feed_url($query), false, $context);
+
+		//This runs inside the quote page. Ending the request on a failed
+		//fetch took the whole page down with it, so a news feed that is
+		//unreachable - no outbound network, a rate limit, a changed URL -
+		//now just contributes no articles.
+		if ($contents === false)
+		{
+			write_log("get_articles","no response for ".$symbol);
+			return $articles;
 		}
+
+		// parse RSS
+		$rss = @simplexml_load_string($contents);
+		if ($rss === false || !isset($rss->channel->item))
+		{
+			write_log("get_articles","unparseable feed for ".$symbol);
+			return $articles;
+		}
+
+		// iterate over items in channel
+		foreach ($rss->channel->item as $item)
+		{
+
+			$title = (string) $item->title ;
+			$found=false;
+
+			//Block certain publishers
+			$blocked=array("Motley Fool","London South East","Proactive Investor");
+
+			foreach($blocked as $publisher){
+				//strpos returns 0 when the title starts with the publisher
+				//name, which >0 reads as "not found".
+				if (strpos($title,$publisher)!==false)
+					$found=true;
+			}
+
+			// add article to array. $blocked is a list of publishers to
+			// leave out, so the test was the wrong way round: it kept only
+			// the articles it was meant to drop.
+			if (!$found)
+			$articles[] = [
+				"link" => (string) $item->link,
+				"title" => (string) $item->title,
+				"pubdate" => (string) $item->pubDate,
+				"description" => (string) $item->description
+			];
+		}
+
 		return $articles;
-	
+
+	}
+
+	/**
+	 * The Google News RSS URL for a search.
+	 *
+	 * Separate so the tests can read the query back without a network call.
+	 */
+	function news_feed_url($query){
+		return "https://news.google.com/rss/search?q=" . rawurlencode($query)
+		     . "&hl=en-GB&gl=GB&ceid=GB:en";
 	}
 
 	//Calculate average cost of share

@@ -606,6 +606,9 @@
 	 * are interchangeable.
 	 */
 	function provider_symbol($symbol) {
+		//An index is addressed by its own code and takes no exchange suffix:
+		//FMP wants ^FTSE, not ^FTSE.L. The caret is the marker.
+		if (strpos($symbol, '^') === 0) { return $symbol; }
 		if (strpos($symbol, '.') !== false) { return $symbol; }
 		return $symbol . '.' . (data_provider() === 'fmp' ? fmp_exchange() : eodhd_exchange());
 	}

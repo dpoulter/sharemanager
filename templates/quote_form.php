@@ -5,6 +5,16 @@
 </head>
 
 <div class="container">
+<?php
+	require_once(__DIR__ . '/../includes/ai_outlook.php');
+	$outlook_scope  = 'market';
+	$outlook_symbol = null;
+	$outlook_title  = 'Market outlook';
+	include(__DIR__ . '/ai_outlook_panel.php');
+?>
+</div>
+
+<div class="container">
 	<div class="row">
 		<div class="col-md-6">
 			<div class="card card-default">

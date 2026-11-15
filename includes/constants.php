@@ -76,6 +76,53 @@
     //above, and the two are not interchangeable.
     define("DEFAULT_EXCHANGE", "XLON");
 
+    //-----------------------------------------------------------------------
+    // The AI outlook panel. Same pattern as the market data providers above:
+    // the key is read from the environment and never committed.
+    //
+    // php-fpm pool (/etc/php/8.3/fpm/pool.d/sharemanager.conf):
+    //     env[ANTHROPIC_API_KEY] = sk-ant-...
+    //     env[ANTHROPIC_MODEL]   = claude-sonnet-5-5
+    //     env[SM_VAULT_DIR]      = /var/lib/sharemanager/vault
+    //
+    // Cron (/etc/sharemanager.env, mode 600) needs none of these: nothing
+    // generates an outlook on a schedule. Only the Generate button calls the
+    // API. See includes/llm.php.
+    //-----------------------------------------------------------------------
+
+    //Anthropic API key. Empty means the panel says so and generates nothing;
+    //it is never a fatal and never reaches the browser.
+    define("ANTHROPIC_API_KEY", getenv("ANTHROPIC_API_KEY") ?: "");
+
+    define("ANTHROPIC_MODEL", getenv("ANTHROPIC_MODEL") ?: "claude-sonnet-5-5");
+
+    //Overridable so the tests can point at a local stub and exercise the
+    //request, the response parsing and the error paths rather than skipping
+    //them. Never set this on a real host.
+    define("ANTHROPIC_BASE_URL", getenv("ANTHROPIC_BASE_URL") ?: "https://api.anthropic.com");
+
+    //Dollars per million tokens, so the panel can price each generation.
+    //Defaults are Sonnet 5.5's published rates; override when they change or
+    //when ANTHROPIC_MODEL points somewhere else, rather than editing code.
+    define("ANTHROPIC_PRICE_INPUT",      getenv("ANTHROPIC_PRICE_INPUT")      ?: "2.00");
+    define("ANTHROPIC_PRICE_OUTPUT",     getenv("ANTHROPIC_PRICE_OUTPUT")     ?: "10.00");
+    define("ANTHROPIC_PRICE_CACHE_READ", getenv("ANTHROPIC_PRICE_CACHE_READ") ?: "0.10");
+    //Writing to the cache costs more than ordinary input and reading back
+    //costs far less; that gap is the reason the vault is sent cached at all,
+    //so the two are priced apart rather than lumped together.
+    define("ANTHROPIC_PRICE_CACHE_WRITE", getenv("ANTHROPIC_PRICE_CACHE_WRITE") ?: "2.50");
+
+    //How long to wait for a generation before giving up and saying so.
+    define("ANTHROPIC_TIMEOUT", (int)(getenv("ANTHROPIC_TIMEOUT") ?: 90));
+
+    //The investing vault: markdown notes with YAML frontmatter, synced from
+    //elsewhere. Missing or empty is normal and the panel still works.
+    define("SM_VAULT_DIR", getenv("SM_VAULT_DIR") ?: "/var/lib/sharemanager/vault");
+
+    //Words of notes to send at most. Over this, sector notes are dropped and
+    //then strategy notes; policy notes are never dropped.
+    define("SM_VAULT_WORD_BUDGET", (int)(getenv("SM_VAULT_WORD_BUDGET") ?: 6000));
+
     //Debug Flag. Set to "Y" to have debug_log() write per row tracing to
     //message_log. Leave off for normal running: the batch jobs generate tens of
     //thousands of rows per run with it enabled. Anything worth keeping should

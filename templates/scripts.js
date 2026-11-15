@@ -156,6 +156,125 @@ $(document).ready(function () {
     });
 });
 
+/* The AI outlook panel.
+ *
+ * The panel is drawn server side from the last saved outlook. This only runs
+ * when Generate is pressed: one POST to ai_outlook.php, a spinner while it
+ * waits, and the answer rendered in place.
+ *
+ * Everything from the response is put on the page with textContent. The model
+ * writes that text, and what the model writes is shaped by news headlines
+ * written by strangers, so none of it is ever handed to innerHTML.
+ */
+$(document).ready(function () {
+
+    function el(tag, text, className) {
+        var node = document.createElement(tag);
+        if (text !== undefined && text !== null) { node.textContent = String(text); }
+        if (className) { node.className = className; }
+        return node;
+    }
+
+    function bulletList(points) {
+        var ul = document.createElement('ul');
+        points.forEach(function (point) { ul.appendChild(el('li', point)); });
+        return ul;
+    }
+
+    function labelled(label, text) {
+        var p = el('p', null, 'mb-1');
+        p.appendChild(el('strong', label));
+        p.appendChild(document.createTextNode(' ' + String(text)));
+        return p;
+    }
+
+    function badgeClass(stance) {
+        if (stance === 'positive') { return 'badge text-bg-success'; }
+        if (stance === 'negative') { return 'badge text-bg-danger'; }
+        return 'badge text-bg-secondary';
+    }
+
+    function render(body, data) {
+        body.textContent = '';
+
+        var outlook = data.outlook || {};
+
+        var stanceLine = el('p', null, 'mb-2');
+        var stance = String(outlook.stance || '');
+        stanceLine.appendChild(el('span', stance.charAt(0).toUpperCase() + stance.slice(1),
+                                  badgeClass(stance)));
+        body.appendChild(stanceLine);
+
+        body.appendChild(el('p', outlook.summary || ''));
+
+        if ((outlook.positives || []).length) {
+            body.appendChild(labelled('For', ''));
+            body.appendChild(bulletList(outlook.positives));
+        }
+        if ((outlook.risks || []).length) {
+            body.appendChild(labelled('Against', ''));
+            body.appendChild(bulletList(outlook.risks));
+        }
+        if (outlook.action) { body.appendChild(labelled('Action', outlook.action)); }
+        if (outlook.watch)  { body.appendChild(labelled('Watch',  outlook.watch)); }
+
+        var notes = (data.notes_used || []).length
+            ? 'Notes used: ' + data.notes_used.join(', ') + '.'
+            : 'No vault notes were available.';
+        var cost = typeof data.cost === 'number' ? data.cost.toFixed(4) : '0.0000';
+
+        body.appendChild(el('p',
+            notes + ' Data as of ' + (data.as_of_date || 'unknown') + '. '
+            + (data.model || '') + ', generated ' + (data.created_at || '') + ', '
+            + 'cost $' + cost + '. Not financial advice.',
+            'text-muted small mb-0 sm-outlook-meta'));
+    }
+
+    $('.sm-outlook').each(function () {
+        var panel   = $(this);
+        var button  = panel.find('.sm-outlook-generate');
+        var spinner = panel.find('.sm-outlook-spinner');
+        var error   = panel.find('.sm-outlook-error');
+        var body    = panel.find('.sm-outlook-body');
+
+        button.on('click', function () {
+            button.prop('disabled', true);
+            spinner.removeClass('d-none');
+            error.addClass('d-none').text('');
+
+            var params = new URLSearchParams();
+            if (panel.data('scope') === 'market') { params.set('scope', 'market'); }
+            else { params.set('symbol', panel.data('symbol')); }
+
+            fetch('ai_outlook.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params.toString(),
+                credentials: 'same-origin'
+            }).then(function (response) {
+                //A session that expired mid-request redirects to the login
+                //page, so the body is HTML and json() would throw something
+                //unhelpful.
+                return response.text().then(function (text) {
+                    try { return JSON.parse(text); }
+                    catch (e) {
+                        return { ok: false, error: 'The server did not return an outlook. '
+                                                 + 'You may have been logged out - reload and try again.' };
+                    }
+                });
+            }).then(function (data) {
+                if (data && data.ok) { render(body[0], data); }
+                else { error.removeClass('d-none').text((data && data.error) || 'The outlook could not be generated.'); }
+            }).catch(function (e) {
+                error.removeClass('d-none').text('Could not reach the server: ' + e.message);
+            }).then(function () {
+                spinner.addClass('d-none');
+                button.prop('disabled', false);
+            });
+        });
+    });
+});
+
 /* Bootstrap tooltips are opt-in: an element with data-bs-toggle="tooltip" does
  * nothing until it is initialised. The quote page marks up tooltips on the
  * valuation badges and nothing ever initialised them, so under Bootstrap 4 they
