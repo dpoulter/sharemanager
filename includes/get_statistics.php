@@ -255,7 +255,15 @@
 		//Calculate Momentum Rank for each share
 		write_log("get_statistics.php","Calculate Momentum Rank for each share");
 		
-		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and indicator in ('3mnth','6mnth','12mnth') and s.exchange=? group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		/* No rank_zero in the grouping. It is selected by the ranking
+		   expression's siblings but used by none of these three queries -
+		   only the per indicator ranking above needs it, where a zero may
+		   mean "no value" - and grouping by it splits a symbol into one row
+		   per distinct rank_zero among its components. The value score has
+		   mixed values now (the price ratios are 'N', the yields are 'Y'), so
+		   every company got two rows and two inserts: 542 value_score rows
+		   for 271 companies on the live run for 2026-11-13. */
+		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and indicator in ('3mnth','6mnth','12mnth') and s.exchange=? group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 
 	    write_log("get_statistics.php","Query= ".$sql);
 
@@ -304,7 +312,7 @@
 
 		   not_fund_sql() leaves investment funds out: no value_score row is
 		   written for a fund at all. See sql/fund_sectors.sql. */
-		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and si.enabled='Y' and si.category=12 and si.calc_rank='Y' ".not_fund_sql('s.symbol')."  group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and si.enabled='Y' and si.category=12 and si.calc_rank='Y' ".not_fund_sql('s.symbol')."  group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/6) as percentile
@@ -323,7 +331,7 @@
 		
 		//Calculate Quality Ranking
 		write_log("get_statistics.php","Calculate Quality Ranking");
-		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and category = 10  and s.exchange=? ".not_fund_sql('s.symbol')." group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and category = 10  and s.exchange=? ".not_fund_sql('s.symbol')." group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/1) as percentile

@@ -29,7 +29,8 @@ import mysql.connector
 from functions import query, db_config
 from pipeline import pipeline_resolve_asofdate, report_ccy_is_stale
 from fmp import (fetch_sections, flatten, fetch_reported_currency,
-                 fetch_fx_pair, resolve_fx_rate, FX_BASE, FmpError)
+                 fetch_fx_pair, resolve_fx_rate, is_fund_flag, FX_BASE,
+                 FmpError)
 
 EXCHANGE = 'XLON'
 # quote, profile, key-metrics-ttm, ratios-ttm and one quarterly cash flow.
@@ -143,7 +144,7 @@ def main():
     cursor = connection.cursor()
 
     loaded = skipped = failed = 0
-    currencies_read = 0
+    currencies_read = funds_flagged = 0
     started = time.time()
 
     for n, symbol in enumerate(symbols, 1):
@@ -171,7 +172,8 @@ def main():
                 currencies_read += 1
 
         try:
-            flat = flatten(fetch_sections(symbol))
+            sections = fetch_sections(symbol)
+            flat = flatten(sections, log=print)
         except FmpError as e:
             # A key or plan problem affects every symbol, so there is no point
             # grinding through two thousand of them to say so each time.
@@ -185,6 +187,19 @@ def main():
             print("  {}: {}: {}".format(symbol, type(e).__name__, e))
             failed += 1
             continue
+
+        # Whether FMP calls this a fund. The profile is fetched every run
+        # anyway, so this costs nothing, and the sector list alone misses the
+        # ones filed under "Equity Investments", "General Financial" and
+        # "Financial Services" - which then filled the value top ten on the
+        # strength of buyback yields no operating company could post.
+        fund_flag = is_fund_flag(sections.get("Profile"))
+        if fund_flag is not None:
+            cursor.execute("update stock_symbols set is_fund=%s where symbol=%s and exchange=%s",
+                           (fund_flag, symbol, EXCHANGE))
+            connection.commit()
+            if fund_flag == 'Y':
+                funds_flagged += 1
 
         if not flat:
             # FMP answers an unknown ticker with an empty list rather than an
@@ -215,9 +230,10 @@ def main():
     cursor.close()
     connection.close()
 
-    print("as of {}: {} loaded, {} with no data, {} failed, {} currencies read, {:.0f}s"
+    print("as of {}: {} loaded, {} with no data, {} failed, {} currencies read, "
+          "{} flagged as funds, {:.0f}s"
           .format(asofdate, loaded, skipped, failed, currencies_read,
-                  time.time() - started))
+                  funds_flagged, time.time() - started))
     # A run where nothing loaded is a failure worth a non-zero exit, so cron
     # reports it rather than looking like a clean night.
     return 1 if loaded == 0 else 0

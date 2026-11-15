@@ -50,9 +50,13 @@ function fund_config_ready() {
 	$column = query("select count(*) n from information_schema.columns
 	                  where table_schema=database() and table_name='screen_indicators'
 	                    and column_name='rank_funds'");
+	$flag   = query("select count(*) n from information_schema.columns
+	                  where table_schema=database() and table_name='stock_symbols'
+	                    and column_name='is_fund'");
 
 	$ready = (count($table) && (int) $table[0]['n'] === 1)
-	      && (count($column) && (int) $column[0]['n'] === 1);
+	      && (count($column) && (int) $column[0]['n'] === 1)
+	      && (count($flag) && (int) $flag[0]['n'] === 1);
 
 	if (!$ready)
 		write_log("fund_sectors", "sql/fund_sectors.sql has not been applied: "
@@ -65,8 +69,9 @@ function fund_config_ready() {
  * A SQL predicate, ready to be AND'ed on, that excludes investment funds.
  *
  * $symbol_expr is how the surrounding query spells the symbol column, e.g.
- * 's.symbol'. No sector name is interpolated anywhere: the predicate joins to
- * fund_sectors, so adding a sector is a row rather than a release.
+ * 's.symbol'. The same two sources as is_fund(): the provider's flag on
+ * stock_symbols, or a sector in fund_sectors. No sector name is interpolated
+ * anywhere, so adding a sector is a row rather than a release.
  *
  * Not scoped by exchange. A symbol's sector is the same whichever exchange row
  * carries it, and the ranking query it is used in is not scoped by exchange
@@ -80,9 +85,11 @@ function not_fund_sql($symbol_expr) {
 	if (!fund_config_ready())
 		return "";
 
-	return " and not exists (select 1 from stock_symbols fund_ss, fund_sectors fund_fs
+	return " and not exists (select 1 from stock_symbols fund_ss
 	                          where fund_ss.symbol = ".$symbol_expr."
-	                            and fund_ss.sector = fund_fs.sector) ";
+	                            and (fund_ss.is_fund = 'Y'
+	                                 or exists (select 1 from fund_sectors fund_fs
+	                                             where fund_fs.sector = fund_ss.sector))) ";
 }
 
 /* ---------------------------------------------------------------------------
@@ -216,15 +223,25 @@ function resolve_asof_date($requested = null, $exchange = null) {
 }
 
 /**
- * True when this symbol sits in one of the fund sectors.
+ * True when this symbol is an investment fund.
+ *
+ * Two sources, because neither is complete on its own. stock_symbols.is_fund
+ * is FMP's Profile.isFund, written by the fundamentals loader, and it flags
+ * 92 of the 350 - including FGT, VEIL, VOF and SEQI, which file under
+ * "Equity Investments", "General Financial" and "Financial Services" and are
+ * in no fund sector. fund_sectors is the editable side: a sector can be added
+ * here without waiting for a provider to change its mind.
  */
 function is_fund($symbol) {
 
 	if (!fund_config_ready())
 		return false;
 
-	$rows = query("select 1 from stock_symbols ss, fund_sectors fs
-	                where ss.symbol=? and ss.sector=fs.sector", $symbol);
+	$rows = query("select 1 from stock_symbols ss
+	                where ss.symbol=?
+	                  and (ss.is_fund='Y'
+	                       or exists (select 1 from fund_sectors fs
+	                                   where fs.sector = ss.sector))", $symbol);
 
 	return count($rows) > 0;
 }

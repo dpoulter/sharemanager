@@ -44,11 +44,22 @@ update screen_indicators set category=12
 -- the halves separately would count the choice rather than the amount. They
 -- are summed into shareholder_yield, which is what gets a percentile.
 --
--- Both are a figure from the accounts over a sterling price or market
--- capitalisation, so they need the opposite correction to a P/E: DIVIDE
--- rather than MULTIPLY. A dollar reporter's dividend per share divided into a
--- pound price comes out too large by the exchange rate. See
--- sql/report_currency.sql.
+-- Only one of the two needs converting, and it is not the obvious one.
+--
+-- div_yield comes from FMP's own ratios-ttm, where the dividend and the price
+-- are already in the same currency: on the live run for 2026-11-13 SHEL came
+-- back at 3.11%, which is $1.43 against a price near $49 and matches its
+-- published 2.9-3.1%. Dividing that by GBPUSD made it 2.35%, and BGEO's
+-- 2.31% became 0.68%. So fx_adjust='NONE': the figure arrives right and the
+-- correction was the error. (LGEN, a sterling reporter, was 6.96% either way,
+-- which is why this did not show up until a non-sterling one was checked.)
+--
+-- buyback_yield is this application's own arithmetic, and it does mix: the
+-- repurchases come from the cash flow statement in the reporting currency and
+-- the market capitalisation is sterling. So it keeps fx_adjust='DIVIDE' - too
+-- large by the rate, the opposite way round from a P/E. Live SHEL comes out
+-- at 4.87%, which is about $14bn a year against about $284bn.
+-- See sql/report_currency.sql.
 --
 -- Values are fractions, not percentages: FMP's dividendYieldTTM comes back as
 -- 0.0339 for 3.39%, and Derived.buybackYieldTTM is computed to match.
@@ -58,7 +69,7 @@ insert into screen_indicators
         screen_function, rank_zero, calc_rank, rank_order, rank_negative,
         rank_funds, fx_adjust, category)
 select 'div_yield', 'Ratios.dividendYieldTTM', 'Dividend yield', 'Y', 210,
-       null, 'Y', 'N', 'value DESC', 'NORMAL', 'N', 'DIVIDE', 12
+       null, 'Y', 'N', 'value DESC', 'NORMAL', 'N', 'NONE', 12
  where not exists (select 1 from screen_indicators where name = 'div_yield');
 
 insert into screen_indicators
@@ -75,7 +86,7 @@ update screen_indicators
    set provider_field='Ratios.dividendYieldTTM', description='Dividend yield',
        enabled='Y', screen_function=null, rank_zero='Y', calc_rank='N',
        rank_order='value DESC', rank_negative='NORMAL', rank_funds='N',
-       fx_adjust='DIVIDE', category=12
+       fx_adjust='NONE', category=12
  where name='div_yield';
 
 update screen_indicators

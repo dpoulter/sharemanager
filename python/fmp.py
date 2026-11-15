@@ -21,6 +21,7 @@ company. Mixing the two is a hundredfold error, so market cap is converted to
 the price's own unit on the way in; see normalise_market_cap().
 """
 
+import datetime
 import json
 import os
 from urllib import request as urlrequest, parse as urlparse, error as urlerror
@@ -89,6 +90,33 @@ def _first(body):
     if isinstance(body, list):
         return body[0] if body else None
     return body if isinstance(body, dict) else None
+
+
+def is_fund_flag(profile):
+    """'Y', 'N' or None from Profile.isFund.
+
+    fund_sectors catches a fund whose sector says so, and most do, but not
+    all: FGT files under "Equity Investments", VEIL and VOF under "General
+    Financial" and SEQI under "Financial Services". FMP flags all four, 92 of
+    the 350 in all. None means the profile did not say, which is left alone
+    rather than guessed at.
+    """
+    if not isinstance(profile, dict) or "isFund" not in profile:
+        return None
+
+    flag = profile.get("isFund")
+
+    if isinstance(flag, bool):
+        return 'Y' if flag else 'N'
+    if isinstance(flag, (int, float)):
+        return 'Y' if flag else 'N'
+    if isinstance(flag, str):
+        text = flag.strip().lower()
+        if text in ("true", "yes", "y", "1"):
+            return 'Y'
+        if text in ("false", "no", "n", "0"):
+            return 'N'
+    return None
 
 
 def normalise_market_cap(market_cap, currency):
@@ -236,7 +264,67 @@ def fetch_sections(symbol, session=None):
     return out
 
 
-def buyback_yield(quarters, market_cap):
+# Above this, the figure is not a buyback yield, it is a mistake. A company
+# handing back a quarter of its market capitalisation in a year is possible
+# and rare; a run of them means the periods being summed do not add up to a
+# year. Nothing is written over the cap, because a wrong yield ranks.
+BUYBACK_YIELD_CAP = 0.25
+
+
+def _period_end(period):
+    """The date a reported period ends, or None."""
+    if not isinstance(period, dict):
+        return None
+    for field in ("date", "endDate", "fillingDate"):
+        raw = period.get(field)
+        if not raw:
+            continue
+        try:
+            return datetime.datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+    return None
+
+
+def _one_year_before(day):
+    """The same day a year earlier, stepping back from 29 February."""
+    try:
+        return day.replace(year=day.year - 1)
+    except ValueError:                       # 29 February
+        return day.replace(year=day.year - 1, day=28)
+
+
+def trailing_twelve_months(periods):
+    """The reported periods covering the year that ends at the latest one.
+
+    Taking "the last four" covers twelve months only for a company that
+    reports quarterly, and most UK companies report half-yearly: FMP labels
+    their two periods Q2 and Q4, so four of them are two years. TRN's four
+    came to 304m against a true trailing twelve months of 172m, and the
+    buyback yields that came out of that reached 65%.
+
+    Periods are consecutive and do not overlap, so the ones inside the year
+    are the ones ending after the same day a year before the latest end -
+    which is the period boundaries doing the work rather than a count. A
+    period ending exactly a year earlier is the year before's and is left
+    out.
+    """
+    dated = []
+    for period in (periods or []):
+        end = _period_end(period)
+        if end is not None:
+            dated.append((end, period))
+
+    if not dated:
+        return []
+
+    dated.sort(key=lambda pair: pair[0], reverse=True)
+    cutoff = _one_year_before(dated[0][0])
+
+    return [period for end, period in dated if end > cutoff]
+
+
+def buyback_yield(periods, market_cap, cap=BUYBACK_YIELD_CAP, log=None):
     """Trailing twelve month buybacks as a fraction of market capitalisation.
 
     commonStockRepurchased is a cash outflow, so FMP reports it negative; the
@@ -245,12 +333,17 @@ def buyback_yield(quarters, market_cap):
     number here, which is not a negative buyback yield - it is a different
     thing - so only outflows count.
 
+    Only the periods inside the trailing year count, whether the company
+    reports quarterly, half-yearly or annually: see trailing_twelve_months().
+    A period with no readable end date is not counted at all, because there is
+    no way to tell which year it belongs to.
+
     The sum is in the company's reporting currency and the market cap is in
     the quote currency, which for a London line is pounds. That mismatch is
-    the same one FMP's own ratios have, and is corrected downstream by
-    fx_adjust='DIVIDE' rather than here, so one place owns the conversion.
+    corrected downstream by fx_adjust='DIVIDE' rather than here, so one place
+    owns the conversion.
     """
-    if not isinstance(quarters, list) or not quarters or not market_cap:
+    if not market_cap:
         return None
 
     try:
@@ -260,12 +353,14 @@ def buyback_yield(quarters, market_cap):
     if market_cap <= 0:
         return None
 
+    counted = trailing_twelve_months(periods)
+    if not counted:
+        return None
+
     spent = 0.0
     seen = False
-    for quarter in quarters:
-        if not isinstance(quarter, dict):
-            continue
-        value = quarter.get("commonStockRepurchased")
+    for period in counted:
+        value = period.get("commonStockRepurchased")
         if value is None or value == "":
             continue
         try:
@@ -279,11 +374,24 @@ def buyback_yield(quarters, market_cap):
     if not seen:
         return None
 
-    return spent / market_cap
+    yield_ = spent / market_cap
+
+    if cap is not None and yield_ > cap:
+        if log:
+            log("  buyback yield {:.1%} over the {:.0%} cap from {} period(s) "
+                "ending {} - not written".format(
+                    yield_, cap, len(counted), _period_end(counted[0])))
+        return None
+
+    return yield_
 
 
-def flatten(sections):
+def flatten(sections, log=None):
     """{section: record} -> {"Section.field": value} ready for stock_info.
+
+    log, when given, is called with a line about anything dropped on the way
+    through - today only a buyback yield over the sanity cap, which is silent
+    otherwise and would look like a company that simply bought nothing back.
 
     Nulls and empty strings are dropped rather than stored, so a missing figure
     stays missing instead of becoming the string "None". Nested values are
@@ -323,7 +431,7 @@ def flatten(sections):
     # ranks on. The raw market cap, not the pence-normalised one: the cash
     # flow figures are in major units and so is marketCap.
     buybacks = buyback_yield(sections.get("CashFlowQuarters"),
-                             profile.get("marketCap"))
+                             profile.get("marketCap"), log=log)
     if buybacks is not None:
         flat["Derived.buybackYieldTTM"] = round(buybacks, 8)
 

@@ -1400,6 +1400,49 @@
           $fund_momentum_as_fund == $fund_momentum_as_company,
           json_encode($fund_momentum_as_fund) . ' vs ' . json_encode($fund_momentum_as_company));
 
+    echo "\n--- a fund the sector list does not catch ---\n";
+
+    /* A sector list catches most funds and misses the rest. On the live FTSE
+       350 FGT files under "Equity Investments", VEIL and VOF under "General
+       Financial" and SEQI under "Financial Services"; all four are
+       investment companies, none is in fund_sectors, and all four reached
+       the value top ten on buyback yields no operating company could post.
+       FMP's Profile.isFund flags 92 of the 350, including those, so a symbol
+       is a fund if the provider says so or its sector says so. */
+
+    db()->prepare("update stock_symbols set sector='Equity Investments', is_fund='Y'
+                    where symbol=?")->execute([$fund_sym]);
+    check('its sector is not one of the fund sectors',
+          (int)scalar("select count(*) from fund_sectors where sector='Equity Investments'") === 0);
+    check('but the provider flags it, so it is a fund', is_fund($fund_sym) === true);
+
+    run_script('get_statistics.php');
+    check('a flagged fund is left out of the rankings like any other',
+          scalar("select percentile from statistics where symbol=? and indicator='pe' and date=?",
+                 [$fund_sym, $fund_asof]) === null);
+    check('and gets no value, quality or overall score',
+          $fund_score_rows($fund_sym) === 0, $fund_score_rows($fund_sym) . ' rows');
+    check('while a company in the same sector is ranked as normal',
+          scalar("select percentile from statistics where symbol='AAA' and indicator='pe' and date=?",
+                 [$fund_asof]) !== null);
+
+    /* The flag off and the sector not in the list: back to being a company. */
+    db()->prepare("update stock_symbols set is_fund='N' where symbol=?")->execute([$fund_sym]);
+    check('with the flag off and no fund sector it is a company again',
+          is_fund($fund_sym) === false);
+    run_script('get_statistics.php');
+    check('and it is ranked and scored again',
+          scalar("select percentile from statistics where symbol=? and indicator='pe' and date=?",
+                 [$fund_sym, $fund_asof]) !== null
+          && $fund_score_rows($fund_sym) === 3);
+
+    /* Either source on its own is enough. */
+    db()->prepare("update stock_symbols set sector='Investment Trusts', is_fund='N'
+                    where symbol=?")->execute([$fund_sym]);
+    check('a fund sector alone still makes it a fund', is_fund($fund_sym) === true);
+    db()->prepare("update stock_symbols set is_fund=null where symbol=?")->execute([$fund_sym]);
+    check('an unknown flag does not undo the sector list', is_fund($fund_sym) === true);
+
     echo "\n--- moving a symbol in and out of a fund sector ---\n";
 
     /* Item 8 of the ask. Nothing is left behind by the move: the job clears
@@ -2428,9 +2471,16 @@
     check('the total is calculated rather than fetched',
           scalar("select screen_function from screen_indicators where name='shareholder_yield'")
           === 'calc_shareholder_yield');
-    check('both components are converted the opposite way to a P/E',
-          scalar("select fx_adjust from screen_indicators where name='div_yield'") === 'DIVIDE'
-          && scalar("select fx_adjust from screen_indicators where name='buyback_yield'") === 'DIVIDE');
+    /* Only one of the two is converted, and it is not the obvious one. FMP's
+       dividendYieldTTM arrives currency-consistent - SHEL came back at 3.11%
+       on the live run, which is $1.43 against a price near $49 - and
+       dividing it by GBPUSD made it 2.35%. buyback_yield is this
+       application's own arithmetic over a sterling market cap, and that one
+       really does mix. */
+    check('the provider dividend yield is left exactly as it arrives',
+          scalar("select fx_adjust from screen_indicators where name='div_yield'") === 'NONE');
+    check('the buyback yield, which this application works out, is converted',
+          scalar("select fx_adjust from screen_indicators where name='buyback_yield'") === 'DIVIDE');
     check('and the total is not converted again on top of them',
           scalar("select fx_adjust from screen_indicators where name='shareholder_yield'") === 'NONE');
 
@@ -2442,9 +2492,9 @@
        corrected yields land on the published ones - SHEL about 4%, BGEO about
        5% - not numbers read back off the live API. */
     $sy_ccy = ['YUS' => 'USD', 'YGB' => 'GBP', 'YGE' => 'GEL', 'YNO' => 'ZWL'];
-    $sy_raw = ['YUS' => ['div' => 0.052848, 'buy' => 0.093371],   // SHEL shaped
+    $sy_raw = ['YUS' => ['div' => 0.031100, 'buy' => 0.064341],   // SHEL shaped
                'YGB' => ['div' => 0.004500, 'buy' => 0.010500],   // RR shaped
-               'YGE' => ['div' => 0.179000, 'buy' => 0.047600],   // BGEO shaped
+               'YGE' => ['div' => 0.023100, 'buy' => 0.035800],   // BGEO shaped
                'YNO' => ['div' => 0.030000, 'buy' => 0.010000]];
     $sy_rate = ['USD' => 1.3212, 'GBP' => 1.0, 'GEL' => 3.58, 'ZWL' => null];
 
@@ -2471,23 +2521,40 @@
         return ($v === false || $v === null) ? null : (float)$v;
     };
 
-    /* DIVIDE, not MULTIPLY: a dollar dividend over a pound price is too large
-       by the rate, which is the opposite way round from a P/E. */
-    check('a dollar reporter\'s dividend yield is divided by the rate',
-          abs($sy_value('YUS', 'div_yield') - 0.052848 / 1.3212) < 1e-6,
+    /* The provider's dividend yield is already currency-consistent, so it
+       must come through untouched whoever reports in what. Converting it
+       turned SHEL's 3.11% into 2.35% and BGEO's 2.31% into 0.68%; a sterling
+       reporter like LGEN was unaffected either way, which is why it took a
+       non-sterling one to show it. */
+    check('a dollar reporter\'s dividend yield arrives exactly as the provider sent it',
+          $sy_value('YUS', 'div_yield') === 0.0311,
           var_export($sy_value('YUS', 'div_yield'), true));
-    check('a sterling reporter\'s is untouched',
-          $sy_value('YGB', 'div_yield') === 0.0045);
-    check('a lari reporter uses the crossed rate',
-          abs($sy_value('YGE', 'div_yield') - 0.179 / 3.58) < 1e-6,
+    check('and a lari reporter\'s',
+          $sy_value('YGE', 'div_yield') === 0.0231,
           var_export($sy_value('YGE', 'div_yield'), true));
+    check('and a sterling reporter\'s',
+          $sy_value('YGB', 'div_yield') === 0.0045);
+
+    /* The buyback yield does mix: repurchases from the accounts over a
+       sterling market cap. Too large by the rate, the opposite way round
+       from a P/E. */
+    check('a dollar reporter\'s buyback yield is divided by the rate',
+          abs($sy_value('YUS', 'buyback_yield') - 0.064341 / 1.3212) < 1e-6,
+          var_export($sy_value('YUS', 'buyback_yield'), true));
+    check('a lari reporter\'s uses the crossed rate',
+          abs($sy_value('YGE', 'buyback_yield') - 0.0358 / 3.58) < 1e-6,
+          var_export($sy_value('YGE', 'buyback_yield'), true));
+    check('a sterling reporter\'s is untouched',
+          $sy_value('YGB', 'buyback_yield') === 0.0105);
     check('dividing is not the same as multiplying (the two paths are distinct)',
-          $sy_value('YUS', 'div_yield') < 0.052848
+          $sy_value('YUS', 'buyback_yield') < 0.064341
           && $sy_value('YUS', 'pe') > 10.0,
-          'yield ' . var_export($sy_value('YUS', 'div_yield'), true)
+          'buyback ' . var_export($sy_value('YUS', 'buyback_yield'), true)
           . ', pe ' . var_export($sy_value('YUS', 'pe'), true));
-    check('a reporter with no rate gets neither component',
-          $sy_value('YNO', 'div_yield') === null && $sy_value('YNO', 'buyback_yield') === null);
+    check('a reporter with no rate still gets the yield that needs no rate',
+          $sy_value('YNO', 'div_yield') === 0.03
+          && $sy_value('YNO', 'buyback_yield') === null,
+          json_encode([$sy_value('YNO', 'div_yield'), $sy_value('YNO', 'buyback_yield')]));
 
     //The total, calculated by get_statistics.php from the two components.
     run_script('get_statistics.php');
@@ -2512,13 +2579,25 @@
                $sy_value($sy_s, 'shareholder_yield'),
                $sy_value($sy_s, 'shareholder_yield') * 100);
     }
-    check('the dollar reporter\'s dividend yield lands on its published one, about 4%',
-          abs($sy_value('YUS', 'div_yield') - 0.04) < 0.0005,
+    check('the dollar reporter\'s dividend yield is its published one, about 3.1%',
+          abs($sy_value('YUS', 'div_yield') - 0.031) < 0.0005,
           var_export($sy_value('YUS', 'div_yield'), true));
-    check('and the lari reporter\'s on about 5%',
-          abs($sy_value('YGE', 'div_yield') - 0.05) < 0.0005,
+    check('and its buyback yield about 4.9%, which is $14bn against $284bn',
+          abs($sy_value('YUS', 'buyback_yield') - 0.0487) < 0.0005,
+          var_export($sy_value('YUS', 'buyback_yield'), true));
+    check('and the lari reporter\'s dividend yield about 2.3%',
+          abs($sy_value('YGE', 'div_yield') - 0.0231) < 0.0005,
           var_export($sy_value('YGE', 'div_yield'), true));
 
+    check('a company with one component gets it alone rather than nothing',
+          $sy_value('YNO', 'shareholder_yield') === 0.03,
+          var_export($sy_value('YNO', 'shareholder_yield'), true));
+
+    /* And one with neither still gets no row, rather than the old zero. */
+    db()->prepare("delete from statistics where symbol='YNO' and date=?
+                    and indicator in ('div_yield','buyback_yield','shareholder_yield')")
+        ->execute([$sy_asof]);
+    run_script('get_statistics.php');
     check('a company with neither component gets no shareholder yield row, not a zero',
           $sy_value('YNO', 'shareholder_yield') === null,
           var_export($sy_value('YNO', 'shareholder_yield'), true));
@@ -2545,6 +2624,71 @@
     check('but it still has the figure, which is a fact about it',
           $sy_value('YGE', 'shareholder_yield') !== null);
     db()->exec("update stock_symbols set sector='Yield Test' where symbol='YGE'");
+
+    echo "\n--- one score row per company, however many runs ---\n";
+
+    /* One run wrote two value_score rows for every company: 542 rows for 271
+       companies on the live run for 2026-11-13. The three score queries
+       grouped by symbol AND si.rank_zero, and category 12 has both values in
+       it now - the price ratios are 'N', the yields are 'Y' - so each symbol
+       came out of the inner select twice and was inserted twice.
+
+       The suite had a duplicate check already and it passed, because the
+       seeded universe had no category 12 indicator at all and so no
+       value_score rows to duplicate. This section has the mixed set, which
+       is the shape that breaks it. */
+
+    reset_calculated();
+    db()->exec("truncate price_valuation");
+    $sy_ratio2 = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange) values (?,?,?,?,'XLON')");
+    foreach (['YUS' => 1.0, 'YGB' => 2.0, 'YGE' => 3.0, 'YNO' => 4.0] as $sy_s => $sy_pe) {
+        $sy_ratio2->execute([$sy_s, $sy_asof, 'pe', $sy_pe]);
+        $sy_ratio2->execute([$sy_s, $sy_asof, 'div_yield', 0.03]);
+        $sy_ratio2->execute([$sy_s, $sy_asof, 'buyback_yield', 0.01]);
+    }
+    check('the fixture has both rank_zero values in the value category, which is what broke it',
+          (int)scalar("select count(distinct rank_zero) from screen_indicators
+                        where enabled='Y' and category=12 and calc_rank='Y'") === 2,
+          scalar("select group_concat(distinct rank_zero) from screen_indicators
+                   where enabled='Y' and category=12 and calc_rank='Y'"));
+
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+
+    $sy_dupes = function () use ($sy_asof) {
+        /* "rows" is reserved in MariaDB 10.11, so the column is not called
+           that however well it would read. */
+        return rows("select indicator, count(*) written, count(distinct symbol) companies
+                       from statistics where date=? and indicator like '%\\_score'
+                      group by indicator having count(*) <> count(distinct symbol)",
+                    [$sy_asof]);
+    };
+    check('one run writes one row per company for every score',
+          count($sy_dupes()) === 0, json_encode($sy_dupes()));
+    check('and value_score is among the scores it wrote, so that is not vacuous',
+          (int)scalar("select count(*) from statistics where date=? and indicator='value_score'",
+                      [$sy_asof]) > 0);
+
+    $sy_counts = [];
+    foreach (rows("select indicator, count(*) n from statistics
+                    where date=? and indicator like '%\\_score' group by indicator", [$sy_asof]) as $sy_r) {
+        $sy_counts[$sy_r['indicator']] = (int)$sy_r['n'];
+    }
+    run_script('get_statistics.php');
+    $sy_after = [];
+    foreach (rows("select indicator, count(*) n from statistics
+                    where date=? and indicator like '%\\_score' group by indicator", [$sy_asof]) as $sy_r) {
+        $sy_after[$sy_r['indicator']] = (int)$sy_r['n'];
+    }
+    /* quality_score is legitimately absent here: nothing in this fixture is
+       in category 10. The three that are written have to be unchanged. */
+    check('a second run for the same date leaves every score count where it was',
+          $sy_counts === $sy_after
+          && isset($sy_counts['value_score'], $sy_counts['momentum_score'],
+                   $sy_counts['overall_score']),
+          json_encode($sy_counts) . ' then ' . json_encode($sy_after));
+    check('and still one row per company',
+          count($sy_dupes()) === 0, json_encode($sy_dupes()));
 
     echo "\n--- the value score is built from what exists ---\n";
 

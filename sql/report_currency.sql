@@ -82,9 +82,15 @@ update screen_indicators set fx_adjust='MULTIPLY'
  where name in ('pe','price_sales_ratio','price_book_ratio',
                 'price_free_cash_flow_per_share','price_eps_ratio_curr_year');
 
--- A yield is the same ratio inverted.
-update screen_indicators set fx_adjust='DIVIDE'
- where name in ('dividend_yield');
+-- A yield is the same ratio inverted - where the figures really are in two
+-- currencies. FMP's own dividendYieldTTM is not: it comes back consistent,
+-- and converting it made SHEL's 3.11% into 2.35%. Only a yield this
+-- application works out itself from a reporting-currency amount over a
+-- sterling price needs this, which today is buyback_yield; see
+-- sql/shareholder_yield.sql, which sets it.
+--
+-- dividend_yield is the FMP-mapped name that nothing uses - div_yield is the
+-- one the application writes - and it is left alone for the same reason.
 
 -- shareholder_yield is not here on purpose. It is not a provider figure:
 -- calc_shareholder_yield() in share_functions.php adds buyback_yield and

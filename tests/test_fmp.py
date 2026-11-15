@@ -129,21 +129,67 @@ print("\n--- buyback yield ---")
 # its own shares, and the two together are the shareholder yield the value
 # score ranks on. commonStockRepurchased is a cash outflow, so it arrives
 # negative.
-quarters = [{"commonStockRepurchased": -1000.0}, {"commonStockRepurchased": -2000.0},
-            {"commonStockRepurchased": -3000.0}, {"commonStockRepurchased": -4000.0}]
-check("four quarters are summed and the sign dropped",
-      fmp.buyback_yield(quarters, 100000.0) == 0.1,
+def period(date, spent=None):
+    row = {"date": date}
+    if spent is not None:
+        row["commonStockRepurchased"] = spent
+    return row
+
+
+# A quarterly reporter: four periods are a year.
+quarters = [period("2026-09-30", -1000.0), period("2026-06-30", -2000.0),
+            period("2026-03-31", -3000.0), period("2025-12-31", -4000.0)]
+check("four quarters are a year, and the sign is dropped",
+      len(fmp.trailing_twelve_months(quarters)) == 4
+      and fmp.buyback_yield(quarters, 100000.0) == 0.1,
       str(fmp.buyback_yield(quarters, 100000.0)))
+
+# A half-yearly reporter: FMP labels the two periods Q2 and Q4, so four of
+# them are two years. TRN's four summed 304m against a true trailing twelve
+# months of 172m, and the yields that came out of that reached 65%.
+half_yearly = [period("2026-08-31", -172000.0), period("2026-02-28", 0.0),
+               period("2025-08-31", -132000.0), period("2025-02-28", 0.0)]
+check("a half-yearly reporter's year is two periods, not four",
+      len(fmp.trailing_twelve_months(half_yearly)) == 2,
+      str(len(fmp.trailing_twelve_months(half_yearly))))
+check("and the sum is the trailing twelve months, not two years",
+      fmp.buyback_yield(half_yearly, 1000000.0) == 0.172,
+      str(fmp.buyback_yield(half_yearly, 1000000.0)))
+check("summing all four would have given almost twice that",
+      abs(304000.0 / 1000000.0 - 0.304) < 1e-9
+      and fmp.buyback_yield(half_yearly, 1000000.0) < 0.304 * 0.6)
+
+# An annual reporter: one period is the year.
+annual = [period("2026-03-31", -5000.0), period("2025-03-31", -6000.0)]
+check("an annual reporter's year is one period",
+      len(fmp.trailing_twelve_months(annual)) == 1
+      and fmp.buyback_yield(annual, 100000.0) == 0.05)
+
+# The boundary. A period ending exactly a year before the latest belongs to
+# the year before it.
+check("a period ending exactly a year earlier is left out",
+      len(fmp.trailing_twelve_months([period("2026-08-31"), period("2025-08-31")])) == 1)
+check("one ending a day later is in",
+      len(fmp.trailing_twelve_months([period("2026-08-31"), period("2025-09-01")])) == 2)
+check("29 February does not break the year before it",
+      len(fmp.trailing_twelve_months([period("2028-02-29"), period("2027-02-28")])) == 1)
+
+check("periods arrive in any order and the latest still anchors the year",
+      len(fmp.trailing_twelve_months(list(reversed(quarters)))) == 4)
+check("a period with no readable date cannot be placed, so it is not counted",
+      fmp.trailing_twelve_months([{"commonStockRepurchased": -1.0}]) == []
+      and fmp.buyback_yield([{"commonStockRepurchased": -1.0}], 100000.0) is None)
+
 check("a quarter with nothing in it is not a gap in the sum",
-      fmp.buyback_yield([{"commonStockRepurchased": -1000.0},
-                         {"commonStockRepurchased": None},
-                         {}], 100000.0) == 0.01)
+      fmp.buyback_yield([period("2026-09-30", -1000.0),
+                         period("2026-06-30", None),
+                         period("2026-03-31")], 100000.0) == 0.01)
 # A positive number here is stock issued, not a negative buyback.
 check("issuing shares is not a negative buyback yield",
-      fmp.buyback_yield([{"commonStockRepurchased": 5000.0},
-                         {"commonStockRepurchased": -1000.0}], 100000.0) == 0.01)
+      fmp.buyback_yield([period("2026-09-30", 5000.0),
+                         period("2026-06-30", -1000.0)], 100000.0) == 0.01)
 check("a company that bought nothing back yields nothing, which is a real zero",
-      fmp.buyback_yield([{"commonStockRepurchased": 0.0}], 100000.0) == 0.0)
+      fmp.buyback_yield([period("2026-09-30", 0.0)], 100000.0) == 0.0)
 check("no cash flow at all is no answer, not a zero",
       fmp.buyback_yield([], 100000.0) is None
       and fmp.buyback_yield([{}], 100000.0) is None
@@ -152,8 +198,40 @@ check("no market cap is no answer either",
       fmp.buyback_yield(quarters, None) is None
       and fmp.buyback_yield(quarters, 0) is None)
 check("a non-numeric figure is skipped rather than crashing the loader",
-      fmp.buyback_yield([{"commonStockRepurchased": "n/a"},
-                         {"commonStockRepurchased": -1000.0}], 100000.0) == 0.01)
+      fmp.buyback_yield([period("2026-09-30", "n/a"),
+                         period("2026-06-30", -1000.0)], 100000.0) == 0.01)
+
+# The sanity cap. A quarter of the market capitalisation in a year is
+# possible and rare; a run of them means the periods do not add up to a year,
+# which is exactly what happened. Nothing is written, because a wrong yield
+# ranks.
+said_cap = []
+check("a yield over the cap is not written",
+      fmp.buyback_yield([period("2026-09-30", -30000.0)], 100000.0,
+                        log=said_cap.append) is None)
+check("and it says so, rather than looking like a company that bought nothing",
+      len(said_cap) == 1 and "cap" in said_cap[0] and "30.0%" in said_cap[0],
+      str(said_cap))
+check("a yield just under the cap is kept",
+      fmp.buyback_yield([period("2026-09-30", -24000.0)], 100000.0) == 0.24)
+check("the cap is a quarter of the market capitalisation",
+      fmp.BUYBACK_YIELD_CAP == 0.25)
+
+print("\n--- whether the provider calls it a fund ---")
+
+# fund_sectors catches a fund whose sector says so. FGT files under "Equity
+# Investments", VEIL and VOF under "General Financial", SEQI under "Financial
+# Services" - all four are investment companies and none is in the list.
+check("a true flag is a fund", fmp.is_fund_flag({"isFund": True}) == 'Y')
+check("a false flag is not", fmp.is_fund_flag({"isFund": False}) == 'N')
+check("the strings providers send instead of booleans are read",
+      fmp.is_fund_flag({"isFund": "true"}) == 'Y'
+      and fmp.is_fund_flag({"isFund": "False"}) == 'N'
+      and fmp.is_fund_flag({"isFund": 1}) == 'Y'
+      and fmp.is_fund_flag({"isFund": 0}) == 'N')
+check("a profile that does not say is left alone rather than guessed at",
+      fmp.is_fund_flag({}) is None and fmp.is_fund_flag(None) is None
+      and fmp.is_fund_flag({"isFund": "perhaps"}) is None)
 
 # It goes into stock_info under Derived, beside the other computed figures,
 # and it uses the raw market cap rather than the pence-normalised one: the
@@ -161,6 +239,13 @@ check("a non-numeric figure is skipped rather than crashing the loader",
 flat_bb = fmp.flatten({"Profile": {"marketCap": 100000.0, "currency": "GBp"},
                        "Quote": {}, "KeyMetrics": {}, "Ratios": {},
                        "CashFlowQuarters": quarters})
+said_flat = []
+fmp.flatten({"Profile": {"marketCap": 100000.0, "currency": "GBp"},
+             "Quote": {}, "KeyMetrics": {}, "Ratios": {},
+             "CashFlowQuarters": [period("2026-09-30", -90000.0)]},
+            log=said_flat.append)
+check("the loader is told when a yield was dropped for being absurd",
+      len(said_flat) == 1 and "cap" in said_flat[0], str(said_flat))
 check("the buyback yield is written under Derived",
       flat_bb.get("Derived.buybackYieldTTM") == 0.1,
       str(flat_bb.get("Derived.buybackYieldTTM")))

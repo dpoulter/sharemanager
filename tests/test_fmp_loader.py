@@ -142,6 +142,7 @@ def load_loader(query_result):
     fmp.fetch_reported_currency = lambda symbol, session=None: "GBP"
     fmp.fetch_fx_pair = lambda pair, session=None: None
     fmp.resolve_fx_rate = lambda ccy, get_pair, base="GBP": (None, "stubbed")
+    fmp.is_fund_flag = lambda profile: None
 
     def fetch_sections(symbol, session=None):
         calls["sections"] += 1
