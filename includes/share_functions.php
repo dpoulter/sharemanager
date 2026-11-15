@@ -2254,7 +2254,11 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 
 
 	
-	$score = query("SELECT s1.indicator,si.description, s1.value share_value,s1.percentile, sa.value market_value from statistics s1 ,screen_indicators si, statistic_averages sa where s1.indicator=si.name and s1.indicator=sa.indicator and sa.date=s1.date and type='MEDIAN' and sa.category='MARKET' and s1.symbol=?  and s1.exchange=? and sa.exchange=s1.exchange and s1.date=? and s1.indicator in ('shareholder_yield','pe','price_sales_ratio','price_book_ratio','enterprise_value_to_ebitda','price_free_cash_flow_per_share')",$symbol,session_exchange(),$asOfDate);
+	/* The same membership as the value score, from the same place: category
+	   12 with calc_rank='Y'. It was a hard-coded list naming two indicators
+	   that are not rows in screen_indicators at all, so the panel and the
+	   score could drift apart without anything saying so. */
+	$score = query("SELECT s1.indicator,si.description, s1.value share_value,s1.percentile, sa.value market_value from statistics s1 ,screen_indicators si, statistic_averages sa where s1.indicator=si.name and s1.indicator=sa.indicator and sa.date=s1.date and type='MEDIAN' and sa.category='MARKET' and s1.symbol=?  and s1.exchange=? and sa.exchange=s1.exchange and s1.date=? and si.category=12 and si.calc_rank='Y'",$symbol,session_exchange(),$asOfDate);
    
    
    	//write_log("get_scores.php","value score=".$score['value']);
@@ -3168,30 +3172,43 @@ function calc_buyback_yield($date,$symbol){
 }
 	
 //Calculate Shareholder Yield
+/**
+ * What a company handed back to its owners, as a fraction of its own price.
+ *
+ * Dividends plus buybacks: two ways of doing the same thing, so ranking them
+ * separately would score the choice rather than the amount. Both components
+ * are written by python/get_api_stats.py, which runs before this does, and
+ * both have already been converted out of the company's reporting currency -
+ * so nothing is converted here, or the rate would be applied twice.
+ *
+ * This wrote a constant zero for every share for years. Neither component was
+ * mapped to anything, so get_indicator_value() found nothing for either, and
+ * the function added nought to nought and stored it. shareholder_yield was
+ * then one of the six names in the value score's hard-coded list, where a row
+ * with no percentile counts as the neutral 50 - so it diluted every share's
+ * score by the same amount and said nothing about any of them.
+ *
+ * A zero is a real answer here: a company that pays no dividend and buys back
+ * no stock has a shareholder yield of nought. A missing one is not, so when
+ * neither component exists the row is cleared rather than written as zero -
+ * otherwise the old constant comes straight back.
+ */
 function calc_shareholder_yield($date,$symbol){
 
 	//write_log("calc_shareholder_yield","symbol=".$symbol." Date=".$date);
-	
-	//initialize shareholder yield
-	$shareholder_yield=0;
-	
-	//calculate shareholder yield as Buyback Yield plus Dividend Yield
-	$buyback_yield=get_indicator_value($symbol, 'buyback_yield',$date);	
-	$div_yield=get_indicator_value($symbol, 'div_yield',$date);
-	if (isset($buyback_yield))
-		$shareholder_yield=$shareholder_yield+$buyback_yield;
-	
-	//write_log('calc_shareholder_yield','shareholder_yield 1='.$shareholder_yield);
-	
-	
-	if (isset($div_yield))
-		$shareholder_yield=$shareholder_yield + $div_yield;	
-	
-	//write_log('calc_shareholder_yield','shareholder_yield 2='.$shareholder_yield);	        
-			
-	//update statistics
+
+	$buyback_yield = get_indicator_value($symbol, 'buyback_yield', $date);
+	$div_yield     = get_indicator_value($symbol, 'div_yield', $date);
+
+	if (!is_numeric($buyback_yield) && !is_numeric($div_yield)){
+		clear_statistic($symbol, 'shareholder_yield', $date);
+		return;
+	}
+
+	$shareholder_yield = (is_numeric($buyback_yield) ? (float) $buyback_yield : 0.0)
+	                   + (is_numeric($div_yield)     ? (float) $div_yield     : 0.0);
+
 	update_statistic($symbol, 'shareholder_yield', $shareholder_yield, $date);
-	
 }
 	
 //Calculate Piotroski F-score
@@ -3835,25 +3852,12 @@ function get_share_price($symbol, $date){
 }
 
 
-//Get Sector Average
-function get_sector_average($indicator,$date,$sector){
-	
-	//write_log('get_sector_average',"indicator=$indicator, date=$date, sector=$sector");	
-	
-	$row=query("SELECT value FROM `statistic_averages` s1 WHERE type='MEDIAN' and category='SECTOR' and date=? and sector=? and indicator=?",$date,$sector,$indicator);
-	if (count($row)>0)
-		return $row[0]['value'];
-	
-}
-
-//Get Industry Average
-function get_industry_average($indicator,$date,$industry){
-	
-	$row=query("SELECT value FROM `statistic_averages` s1 WHERE type='MEDIAN' and category='INDUSTRY' and date=? and industry=? and indicator=?",$date,$industry,$indicator);
-	if (count($row)>0)
-		return $row[0]['value'];
-	
-}
+/* get_sector_average() and get_industry_average() were here. Their only
+   caller was calc_implied_valuation(), which uses peer_median() now - a
+   leave-one-out median cannot be stored per sector, so it is worked out per
+   share instead. statistic_averages is still written and still read, by the
+   sector and market columns on the quote page, through the queries in
+   get_value_statistics() and its siblings. */
 
 //Implied Valuation
 function calc_implied_valuation ($date,$symbol){

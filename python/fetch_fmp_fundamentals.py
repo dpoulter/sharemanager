@@ -32,7 +32,8 @@ from fmp import (fetch_sections, flatten, fetch_reported_currency,
                  fetch_fx_pair, resolve_fx_rate, FX_BASE, FmpError)
 
 EXCHANGE = 'XLON'
-CALLS_PER_SYMBOL = 4
+# quote, profile, key-metrics-ttm, ratios-ttm and one quarterly cash flow.
+CALLS_PER_SYMBOL = 5
 
 # Stay comfortably inside the plan's ceiling. The limit is per minute, so this
 # is the floor on the gap between calls; going right to the edge risks 429s

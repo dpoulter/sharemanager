@@ -76,6 +76,9 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/fund_sectors.sql" > /dev/null || exit 1
 echo "applying sql/report_currency.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/report_currency.sql" > /dev/null || exit 1
 
+echo "applying sql/shareholder_yield.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/shareholder_yield.sql" > /dev/null || exit 1
+
 echo "running provider client tests (offline, no key needed)"
 python3 "$TESTS_DIR/test_eodhd.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp.py"        || PY_FAILED=1

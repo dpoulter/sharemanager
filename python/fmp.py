@@ -213,13 +213,73 @@ def resolve_fx_rate(quote_ccy, get_pair, base=FX_BASE):
     return None, "no " + base + quote_ccy + " rate, and no USD cross"
 
 
+# Quarters of cash flow summed for the trailing twelve month buyback figure.
+CASH_FLOW_QUARTERS = 4
+
+
 def fetch_sections(symbol, session=None):
-    """Fetch every section for one symbol. Returns {section: record}."""
+    """Fetch every section for one symbol. Returns {section: record}.
+
+    CashFlowQuarters is a list rather than a record, which flatten()'s field
+    loop skips; it is there for the buyback yield alone. One more call per
+    symbol - about 350 a night on this universe - rather than a cache with a
+    staleness rule, because the figure moves every quarter and the saving
+    would be a few hundred calls against a 600 a minute allowance.
+    """
     code = fmp_symbol(symbol)
     out = {}
     for section, path in SECTIONS:
         out[section] = _first(_get(path, session=session, symbol=code)) or {}
+    out["CashFlowQuarters"] = _get("cash-flow-statement", session=session,
+                                   symbol=code, period="quarter",
+                                   limit=CASH_FLOW_QUARTERS) or []
     return out
+
+
+def buyback_yield(quarters, market_cap):
+    """Trailing twelve month buybacks as a fraction of market capitalisation.
+
+    commonStockRepurchased is a cash outflow, so FMP reports it negative; the
+    sign is dropped because a yield is what was handed back, not a deficit. A
+    company that issued shares rather than buying them back reports a positive
+    number here, which is not a negative buyback yield - it is a different
+    thing - so only outflows count.
+
+    The sum is in the company's reporting currency and the market cap is in
+    the quote currency, which for a London line is pounds. That mismatch is
+    the same one FMP's own ratios have, and is corrected downstream by
+    fx_adjust='DIVIDE' rather than here, so one place owns the conversion.
+    """
+    if not isinstance(quarters, list) or not quarters or not market_cap:
+        return None
+
+    try:
+        market_cap = float(market_cap)
+    except (TypeError, ValueError):
+        return None
+    if market_cap <= 0:
+        return None
+
+    spent = 0.0
+    seen = False
+    for quarter in quarters:
+        if not isinstance(quarter, dict):
+            continue
+        value = quarter.get("commonStockRepurchased")
+        if value is None or value == "":
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        seen = True
+        if value < 0:
+            spent += -value
+
+    if not seen:
+        return None
+
+    return spent / market_cap
 
 
 def flatten(sections):
@@ -256,5 +316,15 @@ def flatten(sections):
     shares = shares_outstanding(profile, quote)
     if shares:
         flat["Derived.sharesOutstanding"] = shares
+
+    # Buybacks over the market cap. Not a figure FMP sends: it reports the
+    # dividend yield but not what a company handed back by buying its own
+    # shares, and the two together are the shareholder yield the value score
+    # ranks on. The raw market cap, not the pence-normalised one: the cash
+    # flow figures are in major units and so is marketCap.
+    buybacks = buyback_yield(sections.get("CashFlowQuarters"),
+                             profile.get("marketCap"))
+    if buybacks is not None:
+        flat["Derived.buybackYieldTTM"] = round(buybacks, 8)
 
     return flat

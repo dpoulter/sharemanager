@@ -317,6 +317,15 @@ How to answer:
 				"price_sales"       => $ratio('price_sales_ratio'),
 				"price_book"        => $ratio('price_book_ratio'),
 				"return_on_equity"  => $ratio('roe_ttm'),
+				/* What the company handed back, as a fraction of its own
+				   price: 0.0412 is 4.12%. The two components are sent as
+				   well, because "pays a dividend" and "buys back stock" are
+				   different facts about a company even though the value
+				   score only ranks the total. */
+				"dividend_yield"    => $ratio('div_yield'),
+				"buyback_yield"     => $ratio('buyback_yield'),
+				"shareholder_yield" => $ratio('shareholder_yield'),
+				"yield_note"        => "yields are fractions, not percentages: 0.0412 is 4.12%",
 				"percentile_note"   => "null percentile means deliberately unranked, not unknown",
 			],
 			"scores" => $is_fund

@@ -87,6 +87,37 @@ dashboard, the screens and the quote page resolve their as of date from, so
 running this by hand would have moved the whole application's idea of "today"
 onto whatever date it had just half-calculated.
 
+## archive/includes, second pass
+
+- `get_api_stats.php` - a PHP twin of `python/get_api_stats.py`, which is what
+  `refresh_all.sh` actually runs. `README.md` already called it deprecated. It
+  had fallen a long way behind: no currency correction, so it would write the
+  understated P/E, price/sales and price/book that FMP sends for every
+  non-sterling reporter, and running it by hand would have undone a night's
+  work silently.
+- `test_calc_valuation.php`, `test_earnings_growth.php`, `test_rank.php` -
+  scratch scripts, referenced by nothing. `test_rank.php` is the one that
+  mattered: it deletes and rewrites `value_score` and `momentum_score` rows
+  for yesterday's date, on its own old ranking SQL, with no exchange scoping
+  and no fund exclusion. Running it would have quietly replaced the
+  dashboard's scores with a different calculation's answers.
+- `share_functions.php.080418`, `share_functions.php.230623` - editor backups
+  of the library, 121 KB and 127 KB, committed in `includes/`. Both still
+  contain hard-coded API keys.
+
+## archive/templates
+
+- `share_functions.php` - a 55 KB duplicate of `includes/share_functions.php`
+  sitting in the templates directory. Nothing renders it and nothing includes
+  it: `include("share_functions.php")` resolves through the include path to
+  `includes/`, and `render()` is only ever called with page templates. The two
+  copies had diverged - this one still reads `div_yield` and
+  `previous_close`, indicators nothing has written for years.
+- `quote.php.111118` - an editor backup of the quote page, 40 KB.
+- `testheader.php` - an earlier draft of `templates/header.php`. Its typeahead
+  was the hardcoded `['AAA','BBB','CCC']` list that `templates/scripts.js`
+  describes; nothing renders it.
+
 ## Restoring
 
 ```sh

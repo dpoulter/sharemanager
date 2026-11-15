@@ -282,10 +282,29 @@
 		//Calculate Value Ranking
 		write_log("get_statistics.php","Calculate Value Ranking");
 		
-		/* not_fund_sql() leaves investment funds out: no value_score row is
-		   written for a fund at all, rather than one built from the neutral 50
-		   a missing percentile falls back to. See sql/fund_sectors.sql. */
-		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and indicator in ('shareholder_yield','pe','price_sales_ratio','price_book_ratio','enterprise_value_to_ebitda','price_free_cash_flow_per_share') ".not_fund_sql('s.symbol')."  group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		/* The components come from the database, not from this query: category
+		   12 with calc_rank='Y', which is the same shape the quality ranking
+		   below already uses with category 10. The list used to be six names
+		   written out here, and two of them - enterprise_value_to_ebitda and
+		   price_free_cash_flow_per_share - are not rows in screen_indicators
+		   at all, so the score was three ratios and a constant and nothing
+		   said so. Adding an indicator to the score is now a row.
+
+		   The average rather than the sum. A share missing one component - a
+		   company whose P/E could not be converted for want of an exchange
+		   rate, say - summed over fewer indicators and scored lower for it,
+		   which is a penalty for a gap in the data rather than for being
+		   expensive. Dividing by what was actually found makes the two
+		   comparable. The outer query ranks the result either way, so this
+		   changes nothing for a share that has the full set.
+
+		   A percentile of null is still the neutral 50: that is a row which
+		   exists and was deliberately left unranked, which is a different
+		   thing from a row that is not there.
+
+		   not_fund_sql() leaves investment funds out: no value_score row is
+		   written for a fund at all. See sql/fund_sectors.sql. */
+		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and si.enabled='Y' and si.category=12 and si.calc_rank='Y' ".not_fund_sql('s.symbol')."  group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/6) as percentile

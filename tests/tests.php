@@ -101,6 +101,18 @@
         return (string) scalar("select max(date) from historical_prices where exchange='XLON'");
     }
 
+    /* Applies one of sql/*.sql, minus its closing report. The trailing
+       selects leave an unbuffered result set behind and the next exec() dies
+       on it; they change nothing, so they are skipped. Used to put a
+       migration's definitions back after a test has replaced one of them. */
+    function apply_migration($name) {
+        $sql = (string) file_get_contents(dirname(__DIR__) . '/sql/' . $name);
+        foreach (explode(';', preg_replace('/^\s*--.*$/m', '', $sql)) as $stmt) {
+            $stmt = trim($stmt);
+            if ($stmt !== '' && stripos($stmt, 'select') !== 0) { db()->exec($stmt); }
+        }
+    }
+
     /* Runs one of the application's batch scripts the way cron would, with the
        test fixtures ahead of includes/ on the include path. Returns [stdout+stderr, exit code]. */
     function run_script($script, $args = [], $env = []) {
@@ -379,6 +391,16 @@
                        and sti.symbol='AAA' and sti.asofdate='2026-01-01'");
     check('matching on name alone would miss the mapped indicators (regression guard)',
           count($old_way) === 1, 'got ' . count($old_way) . ' rows, expected only shareholder_yield');
+
+    /* shareholder_yield stood in above for an indicator with no
+       provider_field, and the bare row that replaced it has none of the
+       settings sql/shareholder_yield.sql gives it. Later sections rank on it,
+       so the migration's definition goes back rather than being restated
+       here, where it would drift. */
+    apply_migration('shareholder_yield.sql');
+    check('the shareholder yield definition is back as the migration leaves it',
+          scalar("select screen_function from screen_indicators where name='shareholder_yield'")
+          === 'calc_shareholder_yield');
 
     echo "\n--- paper execution: sizing and costs ---\n";
 
@@ -1248,8 +1270,12 @@
     db()->exec("insert into screen_indicators
                   (name, description, enabled, order_number, calc_rank, rank_zero,
                    rank_order, rank_negative, rank_funds, category)
-                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N',null),
+                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N',12),
                        ('roe_ttm','Return on equity','Y',1,'Y','N','value DESC','NORMAL','N',10)");
+
+    /* The value score is built from category 12 with calc_rank='Y' and the
+       quality score from category 10, so an indicator written by hand needs
+       the category the migration would have given it, or it is in neither. */
 
     db()->exec("update stock_symbols set sector='Real Estate' where symbol='$fund_reit'");
 
@@ -1611,8 +1637,8 @@
     db()->exec("delete from screen_indicators where name='pe'");
     db()->exec("insert into screen_indicators
                   (name, description, enabled, order_number, calc_rank, rank_zero,
-                   rank_order, rank_negative, rank_funds)
-                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N')");
+                   rank_order, rank_negative, rank_funds, category)
+                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N',12)");
 
     $pv_insert = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
                                 values (?,?,'pe',?,'XLON')");
@@ -1844,9 +1870,9 @@
     db()->exec("delete from screen_indicators where name in ('pe','roe_ttm')");
     db()->exec("insert into screen_indicators
                   (name, description, enabled, order_number, calc_rank, rank_zero,
-                   rank_order, rank_negative, rank_funds)
-                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N'),
-                       ('roe_ttm','Return on equity','Y',2,'Y','N','value DESC','NORMAL','N')");
+                   rank_order, rank_negative, rank_funds, category)
+                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N',12),
+                       ('roe_ttm','Return on equity','Y',2,'Y','N','value DESC','NORMAL','N',10)");
 
     /* MN1 is the loss-maker, MN2 reported a zero, MN3..MN7 are five ordinary
        companies. roe_ttm carries the same numbers but ranks NORMAL, where a
@@ -2139,12 +2165,12 @@
     db()->exec("delete from screen_indicators where name in ('pe','roe_ttm')");
     db()->exec("insert into screen_indicators
                   (name, provider_field, description, enabled, order_number,
-                   calc_rank, rank_zero, rank_order, rank_negative, fx_adjust)
+                   calc_rank, rank_zero, rank_order, rank_negative, fx_adjust, category)
                 values
                   ('pe','Ratios.priceToEarningsRatioTTM','Price / earnings','Y',1,
-                   'Y','N','value ASC','EXCLUDE','MULTIPLY'),
+                   'Y','N','value ASC','EXCLUDE','MULTIPLY',12),
                   ('roe_ttm','KeyMetrics.returnOnEquityTTM','Return on equity','Y',2,
-                   'Y','N','value DESC','NORMAL','NONE')");
+                   'Y','N','value DESC','NORMAL','NONE',10)");
 
     /* Four companies with identical provider figures and different reporting
        currencies, so any difference in the answer is the conversion and
@@ -2339,6 +2365,335 @@
     run_script('get_statistics.php');
     if ($cx_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $cx_saved_exchange; }
+
+    echo "\n--- shareholder yield is a figure rather than a constant ---\n";
+
+    /* calc_shareholder_yield() adds buyback_yield and div_yield together out
+       of statistics, and neither was mapped to anything, so nothing ever
+       wrote them: it added nought to nought and stored it, for every share,
+       every night. shareholder_yield was then one of six names in the value
+       score's hard-coded list, where a row with no percentile counts as the
+       neutral 50 - so it diluted every score by the same amount and said
+       nothing about anything.
+
+       Two of the other five, enterprise_value_to_ebitda and
+       price_free_cash_flow_per_share, are not rows in screen_indicators at
+       all. The value score was in fact P/E, price/sales and price/book, and a
+       constant. */
+
+    $sy_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $sy_asof = asof_date();
+    $sy_all  = "('YUS','YGB','YGE','YNO')";
+
+    $run_python_sy = function ($script) {
+        $cmd = 'SM_DB_HOST=' . escapeshellarg(SERVER)
+             . ' SM_DB_NAME=' . escapeshellarg(DATABASE)
+             . ' SM_DB_USER=' . escapeshellarg(USERNAME)
+             . ' SM_DB_PASS=' . escapeshellarg(PASSWORD)
+             . ' python3 ' . escapeshellarg(dirname(__DIR__) . '/python/' . $script);
+        exec($cmd . ' 2>&1', $out, $rc);
+        return [implode("\n", $out), $rc];
+    };
+
+    reset_calculated();
+    db()->exec("delete from stock_info");
+    db()->exec("delete from fx_rates");
+    db()->exec("delete from stock_symbols where symbol in $sy_all");
+
+    /* The migration registered div_yield, buyback_yield and shareholder_yield
+       already; run_tests.sh applies it. These are the three price ratios it
+       moved into category 12 beside them. */
+    db()->exec("delete from screen_indicators where name in ('pe','price_sales_ratio','price_book_ratio')");
+    db()->exec("insert into screen_indicators
+                  (name, provider_field, description, enabled, order_number,
+                   calc_rank, rank_zero, rank_order, rank_negative, rank_funds,
+                   fx_adjust, category)
+                values
+                  ('pe','Ratios.priceToEarningsRatioTTM','Price / earnings','Y',1,
+                   'Y','N','value ASC','EXCLUDE','N','MULTIPLY',12),
+                  ('price_sales_ratio','Ratios.priceToSalesRatioTTM','Price / sales','Y',2,
+                   'Y','N','value ASC','EXCLUDE','N','MULTIPLY',12),
+                  ('price_book_ratio','Ratios.priceToBookRatioTTM','Price / book','Y',3,
+                   'Y','N','value ASC','EXCLUDE','N','MULTIPLY',12)");
+
+    check('the migration registered the two components and the total',
+          (int)scalar("select count(*) from screen_indicators
+                        where name in ('div_yield','buyback_yield','shareholder_yield')
+                          and category=12 and rank_funds='N' and rank_order='value DESC'") === 3);
+    check('only the total is ranked, not the halves',
+          scalar("select calc_rank from screen_indicators where name='shareholder_yield'") === 'Y'
+          && scalar("select calc_rank from screen_indicators where name='div_yield'") === 'N'
+          && scalar("select calc_rank from screen_indicators where name='buyback_yield'") === 'N');
+    check('the total is calculated rather than fetched',
+          scalar("select screen_function from screen_indicators where name='shareholder_yield'")
+          === 'calc_shareholder_yield');
+    check('both components are converted the opposite way to a P/E',
+          scalar("select fx_adjust from screen_indicators where name='div_yield'") === 'DIVIDE'
+          && scalar("select fx_adjust from screen_indicators where name='buyback_yield'") === 'DIVIDE');
+    check('and the total is not converted again on top of them',
+          scalar("select fx_adjust from screen_indicators where name='shareholder_yield'") === 'NONE');
+
+    /* Three reporters and one with no rate. The provider figures are what FMP
+       would send: a yield computed from a reporting-currency dividend over a
+       sterling price, so too large by the exchange rate.
+
+       These are stub figures in the shape of a real response, chosen so the
+       corrected yields land on the published ones - SHEL about 4%, BGEO about
+       5% - not numbers read back off the live API. */
+    $sy_ccy = ['YUS' => 'USD', 'YGB' => 'GBP', 'YGE' => 'GEL', 'YNO' => 'ZWL'];
+    $sy_raw = ['YUS' => ['div' => 0.052848, 'buy' => 0.093371],   // SHEL shaped
+               'YGB' => ['div' => 0.004500, 'buy' => 0.010500],   // RR shaped
+               'YGE' => ['div' => 0.179000, 'buy' => 0.047600],   // BGEO shaped
+               'YNO' => ['div' => 0.030000, 'buy' => 0.010000]];
+    $sy_rate = ['USD' => 1.3212, 'GBP' => 1.0, 'GEL' => 3.58, 'ZWL' => null];
+
+    $sy_sym = db()->prepare("insert into stock_symbols (symbol,name,exchange,enabled,sector,industry,market,report_ccy,report_ccy_asof)
+                             values (?,?,'XLON','Y','Yield Test','Yield Industry','FTSE 100',?,?)");
+    $sy_info = db()->prepare("insert into stock_info (symbol,asofdate,attribute,value) values (?,?,?,?)");
+    foreach ($sy_ccy as $sy_s => $sy_c) {
+        $sy_sym->execute([$sy_s, $sy_s . ' Test PLC', $sy_c, $sy_asof]);
+        $sy_info->execute([$sy_s, $sy_asof, 'Ratios.dividendYieldTTM', (string)$sy_raw[$sy_s]['div']]);
+        $sy_info->execute([$sy_s, $sy_asof, 'Derived.buybackYieldTTM', (string)$sy_raw[$sy_s]['buy']]);
+        //A P/E each as well, so the value score has more than one component.
+        $sy_info->execute([$sy_s, $sy_asof, 'Ratios.priceToEarningsRatioTTM', '10.0']);
+    }
+    $sy_fx = db()->prepare("insert into fx_rates (date,base,quote_ccy,rate,source) values (?,'GBP',?,?,?)");
+    $sy_fx->execute([$sy_asof, 'USD', 1.3212, 'quote']);
+    $sy_fx->execute([$sy_asof, 'GEL', 3.58, 'cross:USD']);
+
+    [$sy_out, $sy_rc] = $run_python_sy('get_api_stats.py');
+    check('get_api_stats.py writes the components', $sy_rc === 0, substr($sy_out, -400));
+
+    $sy_value = function ($symbol, $indicator) use ($sy_asof) {
+        $v = scalar("select value from statistics where symbol=? and indicator=? and date=? and exchange='XLON'",
+                    [$symbol, $indicator, $sy_asof]);
+        return ($v === false || $v === null) ? null : (float)$v;
+    };
+
+    /* DIVIDE, not MULTIPLY: a dollar dividend over a pound price is too large
+       by the rate, which is the opposite way round from a P/E. */
+    check('a dollar reporter\'s dividend yield is divided by the rate',
+          abs($sy_value('YUS', 'div_yield') - 0.052848 / 1.3212) < 1e-6,
+          var_export($sy_value('YUS', 'div_yield'), true));
+    check('a sterling reporter\'s is untouched',
+          $sy_value('YGB', 'div_yield') === 0.0045);
+    check('a lari reporter uses the crossed rate',
+          abs($sy_value('YGE', 'div_yield') - 0.179 / 3.58) < 1e-6,
+          var_export($sy_value('YGE', 'div_yield'), true));
+    check('dividing is not the same as multiplying (the two paths are distinct)',
+          $sy_value('YUS', 'div_yield') < 0.052848
+          && $sy_value('YUS', 'pe') > 10.0,
+          'yield ' . var_export($sy_value('YUS', 'div_yield'), true)
+          . ', pe ' . var_export($sy_value('YUS', 'pe'), true));
+    check('a reporter with no rate gets neither component',
+          $sy_value('YNO', 'div_yield') === null && $sy_value('YNO', 'buyback_yield') === null);
+
+    //The total, calculated by get_statistics.php from the two components.
+    run_script('get_statistics.php');
+
+    foreach (['YUS', 'YGB', 'YGE'] as $sy_s) {
+        $sy_total = $sy_value($sy_s, 'shareholder_yield');
+        $sy_sum   = $sy_value($sy_s, 'div_yield') + $sy_value($sy_s, 'buyback_yield');
+        check("$sy_s's shareholder yield is its dividend plus its buybacks",
+              $sy_total !== null && abs($sy_total - $sy_sum) < 1e-6,
+              var_export($sy_total, true) . ' vs ' . $sy_sum);
+        check("and it is not zero, which is what it always used to be",
+              $sy_total > 0.0, var_export($sy_total, true));
+    }
+
+    /* The yields the stub figures produce, printed so the arithmetic can be
+       checked against the published numbers rather than taken on trust. */
+    echo "      stub yields (fractions, as the provider sends them):\n";
+    foreach (['YUS' => 'SHEL-shaped (USD)', 'YGB' => 'RR-shaped (GBP)',
+              'YGE' => 'BGEO-shaped (GEL)'] as $sy_s => $sy_label) {
+        printf("        %-20s div %.4f  buyback %.4f  shareholder %.4f  (%.2f%%)\n",
+               $sy_label, $sy_value($sy_s, 'div_yield'), $sy_value($sy_s, 'buyback_yield'),
+               $sy_value($sy_s, 'shareholder_yield'),
+               $sy_value($sy_s, 'shareholder_yield') * 100);
+    }
+    check('the dollar reporter\'s dividend yield lands on its published one, about 4%',
+          abs($sy_value('YUS', 'div_yield') - 0.04) < 0.0005,
+          var_export($sy_value('YUS', 'div_yield'), true));
+    check('and the lari reporter\'s on about 5%',
+          abs($sy_value('YGE', 'div_yield') - 0.05) < 0.0005,
+          var_export($sy_value('YGE', 'div_yield'), true));
+
+    check('a company with neither component gets no shareholder yield row, not a zero',
+          $sy_value('YNO', 'shareholder_yield') === null,
+          var_export($sy_value('YNO', 'shareholder_yield'), true));
+
+    //It is ranked, so it counts in the value score.
+    check('the total is ranked',
+          scalar("select percentile from statistics where symbol='YUS'
+                   and indicator='shareholder_yield' and date=?", [$sy_asof]) !== null);
+    check('the halves are not',
+          scalar("select percentile from statistics where symbol='YUS'
+                   and indicator='div_yield' and date=?", [$sy_asof]) === null);
+    check('a higher yield ranks better than a lower one',
+          (float)scalar("select percentile from statistics where symbol='YUS'
+                          and indicator='shareholder_yield' and date=?", [$sy_asof])
+          > (float)scalar("select percentile from statistics where symbol='YGB'
+                            and indicator='shareholder_yield' and date=?", [$sy_asof]));
+
+    //A fund is not ranked on it.
+    db()->exec("update stock_symbols set sector='Investment Trusts' where symbol='YGE'");
+    run_script('get_statistics.php');
+    check('a fund is not ranked on shareholder yield',
+          scalar("select percentile from statistics where symbol='YGE'
+                   and indicator='shareholder_yield' and date=?", [$sy_asof]) === null);
+    check('but it still has the figure, which is a fact about it',
+          $sy_value('YGE', 'shareholder_yield') !== null);
+    db()->exec("update stock_symbols set sector='Yield Test' where symbol='YGE'");
+
+    echo "\n--- the value score is built from what exists ---\n";
+
+    run_script('get_statistics.php');
+
+    $sy_components = rows("select name from screen_indicators
+                            where enabled='Y' and category=12 and calc_rank='Y' order by name");
+    check('the components come from the database, not from the query',
+          array_column($sy_components, 'name') === ['pe','price_book_ratio','price_sales_ratio','shareholder_yield'],
+          json_encode(array_column($sy_components, 'name')));
+    $sy_stats_src = php_strip_whitespace($INCLUDES . '/get_statistics.php');
+    check('the hard-coded list is gone from the value ranking',
+          strpos($sy_stats_src, "'enterprise_value_to_ebitda','price_free_cash_flow_per_share'") === false
+          && strpos($sy_stats_src, "si.category=12 and si.calc_rank='Y'") !== false);
+
+    /* A share missing a component must not be scored down for the gap. YGB
+       has no price/book here and YUS does; with the sum they would have been
+       on different scales. */
+    db()->exec("delete from statistics where indicator in ('pe','price_sales_ratio','price_book_ratio','value_score')");
+    $sy_ratio = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange) values (?,?,?,?,'XLON')");
+    foreach (['YUS','YGB','YGE','YNO'] as $sy_s) {
+        $sy_ratio->execute([$sy_s, $sy_asof, 'pe', 10.0]);
+        $sy_ratio->execute([$sy_s, $sy_asof, 'price_sales_ratio', 2.0]);
+    }
+    //Only YUS has the third one.
+    $sy_ratio->execute(['YUS', $sy_asof, 'price_book_ratio', 1.5]);
+    run_script('get_statistics.php');
+
+    $sy_score = function ($symbol) use ($sy_asof) {
+        $v = scalar("select value from statistics where symbol=? and indicator='value_score' and date=?",
+                    [$symbol, $sy_asof]);
+        return ($v === false || $v === null) ? null : (float)$v;
+    };
+    check('a share missing one component is still scored',
+          $sy_score('YGB') !== null, var_export($sy_score('YGB'), true));
+    check('the score is an average, so a missing component is not a penalty',
+          preg_match('/sum\(if\(percentile is null,50,percentile\)\)\/count\(\*\)/', $sy_stats_src) === 1);
+    /* YGB and YNO have the same two ratios and the same percentiles on them;
+       YNO has no shareholder yield at all. If the score summed rather than
+       averaged, the one with fewer components would score lower for no
+       reason. Here they differ only by what each actually has. */
+    check('two shares with the same ratios are scored on the same scale',
+          $sy_score('YGB') !== null && $sy_score('YNO') !== null,
+          json_encode([$sy_score('YGB'), $sy_score('YNO')]));
+
+    echo "\n--- the outlook is sent the yields ---\n";
+
+    db()->exec("delete from statistics where indicator='value_score'");
+    run_script('get_statistics.php');
+    $sy_inputs = outlook_share_inputs('YUS', $sy_asof);
+    foreach (['dividend_yield', 'buyback_yield', 'shareholder_yield'] as $sy_key) {
+        check("the outlook inputs carry $sy_key",
+              array_key_exists($sy_key, $sy_inputs['valuation']),
+              json_encode(array_keys($sy_inputs['valuation'])));
+    }
+    check('the shareholder yield sent is the converted one',
+          abs($sy_inputs['valuation']['shareholder_yield']['value']
+              - $sy_value('YUS', 'shareholder_yield')) < 1e-9);
+    check('and the model is told they are fractions rather than percentages',
+          stripos($sy_inputs['valuation']['yield_note'], 'fractions') !== false);
+
+    //Leave the universe as it was found.
+    db()->exec("delete from stock_symbols where symbol in $sy_all");
+    db()->exec("delete from statistics where symbol in $sy_all");
+    db()->exec("delete from stock_info");
+    db()->exec("delete from fx_rates");
+    db()->exec("delete from screen_indicators where name in ('pe','price_sales_ratio','price_book_ratio')");
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($sy_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $sy_saved_exchange; }
+
+    echo "\n--- the files nothing uses are out of the live tree ---\n";
+
+    /* Each was checked for an include, a require, a render, a link, a cron
+       entry and a mention in refresh_all.sh before it moved. */
+    $arch_moved = [
+        'includes/get_api_stats.php'            => 'archive/includes/get_api_stats.php',
+        'includes/test_calc_valuation.php'      => 'archive/includes/test_calc_valuation.php',
+        'includes/test_earnings_growth.php'     => 'archive/includes/test_earnings_growth.php',
+        'includes/test_rank.php'                => 'archive/includes/test_rank.php',
+        'includes/share_functions.php.080418'   => 'archive/includes/share_functions.php.080418',
+        'includes/share_functions.php.230623'   => 'archive/includes/share_functions.php.230623',
+        'templates/share_functions.php'         => 'archive/templates/share_functions.php',
+        'templates/quote.php.111118'            => 'archive/templates/quote.php.111118',
+        'templates/testheader.php'              => 'archive/templates/testheader.php',
+    ];
+    $arch_repo = dirname(__DIR__);
+    foreach ($arch_moved as $arch_was => $arch_now) {
+        check("$arch_was is out of the live tree", !file_exists("$arch_repo/$arch_was"));
+        check("it is kept at $arch_now", file_exists("$arch_repo/$arch_now"));
+    }
+
+    /* Nothing in what is served or run refers to any of them. Searched by
+       path rather than by basename: "share_functions.php" is the live library
+       and matches everywhere, which is why the templates copy looked
+       referenced until it was looked at properly. */
+    $arch_referenced = [];
+    $arch_live = array_merge(
+        glob("$arch_repo/{includes,public,templates}/*.php", GLOB_BRACE),
+        glob("$arch_repo/{includes,public,templates}/*.{js,sh}", GLOB_BRACE),
+        glob("$arch_repo/public/js/*.js"));
+    foreach ($arch_live as $arch_file) {
+        /* A path that points into archive/ is not a reference to a live file,
+           and templates/scripts.js has a comment that names one. Searching
+           the raw text finds the comment and reports the wrong answer; this
+           is the sixth time that trap has bitten here, and it is always the
+           comment. */
+        $arch_text = preg_replace('#archive/\S+#', '',
+                                  (string)file_get_contents($arch_file));
+        foreach ($arch_moved as $arch_was => $arch_now) {
+            $arch_name = basename($arch_was);
+            /* The library's own basename is shared with the live copy, so for
+               that one only a path into templates/ counts as a reference. */
+            $arch_needle = ($arch_name === 'share_functions.php') ? 'templates/share_functions.php' : $arch_name;
+            if (strpos($arch_text, $arch_needle) !== false) {
+                $arch_referenced[] = basename($arch_file) . ' -> ' . $arch_was;
+            }
+        }
+    }
+    check('nothing served or run refers to an archived file',
+          count($arch_referenced) === 0, implode(', ', $arch_referenced));
+
+    $arch_cron = (string)@file_get_contents($INCLUDES . '/refresh_all.sh');
+    foreach (array_keys($arch_moved) as $arch_was) {
+        check('the nightly run does not call ' . basename($arch_was),
+              strpos($arch_cron, basename($arch_was)) === false);
+    }
+
+    check('the archive says what each one was and why it went',
+          substr_count((string)file_get_contents("$arch_repo/archive/README.md"),
+                       'get_api_stats.php') >= 1
+          && strpos((string)file_get_contents("$arch_repo/archive/README.md"), 'testheader.php') !== false);
+
+    /* get_sector_average() and get_industry_average() read statistic_averages
+       for calc_implied_valuation(), which uses peer_median() now. */
+    $arch_lib = php_strip_whitespace($INCLUDES . '/share_functions.php');
+    check('the two superseded average readers are gone',
+          strpos($arch_lib, 'function get_sector_average') === false
+          && strpos($arch_lib, 'function get_industry_average') === false);
+    $arch_callers = [];
+    foreach ($arch_live as $arch_file) {
+        if (preg_match('/\bget_(sector|industry)_average\s*\(/',
+                       php_strip_whitespace($arch_file))) {
+            $arch_callers[] = basename($arch_file);
+        }
+    }
+    check('and nothing called them', count($arch_callers) === 0, implode(', ', $arch_callers));
 
     echo "\n--- the price log names the provider that actually ran ---\n";
 

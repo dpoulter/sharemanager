@@ -12,7 +12,7 @@
  * the reason the tooltip setup at the bottom never ran either.
  *
  * It was dead code even so: no template contains a #btnAddrow button (only
- * templates/testheader.php, which nothing renders), and the row it built was
+ * archive/templates/testheader.php, which nothing renders), and the row it built was
  * never appended to anything - $("<tr>...") with no .appendTo() makes a
  * detached element and drops it.
  */

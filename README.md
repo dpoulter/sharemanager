@@ -72,7 +72,7 @@ scrape_key_statistics.php
 ---------------------------
 Scrape website morning star  (NO LONGER WORKS)
 
-get_api_stats.php (NO LONGER USED)
+get_api_stats.php (NO LONGER USED - moved to archive/includes/)
 ------------------
 Call get_key_ratios (share_functions.php) for each symbol to get stock statistics (NO LONGER WORKS as requires morning star)
 

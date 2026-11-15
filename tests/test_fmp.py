@@ -123,6 +123,53 @@ check("the derived figures are written under their own section",
 check("derived market cap is not confused with the provider's own",
       flat["Profile.marketCap"] != flat["Derived.marketCapInQuoteCurrency"])
 
+print("\n--- buyback yield ---")
+
+# FMP reports the dividend yield but not what a company handed back by buying
+# its own shares, and the two together are the shareholder yield the value
+# score ranks on. commonStockRepurchased is a cash outflow, so it arrives
+# negative.
+quarters = [{"commonStockRepurchased": -1000.0}, {"commonStockRepurchased": -2000.0},
+            {"commonStockRepurchased": -3000.0}, {"commonStockRepurchased": -4000.0}]
+check("four quarters are summed and the sign dropped",
+      fmp.buyback_yield(quarters, 100000.0) == 0.1,
+      str(fmp.buyback_yield(quarters, 100000.0)))
+check("a quarter with nothing in it is not a gap in the sum",
+      fmp.buyback_yield([{"commonStockRepurchased": -1000.0},
+                         {"commonStockRepurchased": None},
+                         {}], 100000.0) == 0.01)
+# A positive number here is stock issued, not a negative buyback.
+check("issuing shares is not a negative buyback yield",
+      fmp.buyback_yield([{"commonStockRepurchased": 5000.0},
+                         {"commonStockRepurchased": -1000.0}], 100000.0) == 0.01)
+check("a company that bought nothing back yields nothing, which is a real zero",
+      fmp.buyback_yield([{"commonStockRepurchased": 0.0}], 100000.0) == 0.0)
+check("no cash flow at all is no answer, not a zero",
+      fmp.buyback_yield([], 100000.0) is None
+      and fmp.buyback_yield([{}], 100000.0) is None
+      and fmp.buyback_yield(None, 100000.0) is None)
+check("no market cap is no answer either",
+      fmp.buyback_yield(quarters, None) is None
+      and fmp.buyback_yield(quarters, 0) is None)
+check("a non-numeric figure is skipped rather than crashing the loader",
+      fmp.buyback_yield([{"commonStockRepurchased": "n/a"},
+                         {"commonStockRepurchased": -1000.0}], 100000.0) == 0.01)
+
+# It goes into stock_info under Derived, beside the other computed figures,
+# and it uses the raw market cap rather than the pence-normalised one: the
+# cash flow figures are in major units and so is marketCap.
+flat_bb = fmp.flatten({"Profile": {"marketCap": 100000.0, "currency": "GBp"},
+                       "Quote": {}, "KeyMetrics": {}, "Ratios": {},
+                       "CashFlowQuarters": quarters})
+check("the buyback yield is written under Derived",
+      flat_bb.get("Derived.buybackYieldTTM") == 0.1,
+      str(flat_bb.get("Derived.buybackYieldTTM")))
+check("it is the raw market cap that is used, not the pence one",
+      flat_bb["Derived.marketCapInQuoteCurrency"] == 10000000.0
+      and flat_bb["Derived.buybackYieldTTM"] == 0.1)
+check("the quarterly list itself is not written out as fields",
+      not any(k.startswith("CashFlowQuarters") for k in flat_bb))
+
 print("\n--- reporting currency and the exchange rate ---")
 
 # FMP divides a sterling price by per-share figures from accounts kept in the
