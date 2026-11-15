@@ -92,10 +92,67 @@ $(document).ready(function () {
             },
             notFound: '<div class="tt-suggestion text-muted px-2">No matching share</div>'
         }
-    }).on('typeahead:select', function (ev, datum) {
-        //Submit the symbol on its own, so the server has nothing to parse.
-        $(this).typeahead('val', datum.symbol);
-        $(this).closest('form').trigger('submit');
+    });
+
+    /* Picking a suggestion has to run the lookup, not just fill the box.
+     *
+     * The submit is deliberately not $(form).trigger('submit'). That depends
+     * on jQuery choosing to call the native method afterwards, and it does
+     * nothing at all when a control in the form is named "submit", because
+     * form.submit is then that element rather than the method. Calling
+     * through the prototype cannot be shadowed and does not care which
+     * jQuery is loaded.
+     *
+     * requestSubmit() is preferred because it fires the submit event and
+     * honours validation the way a real button press does; submit() is the
+     * fallback for anything older.
+     */
+    function submitSearch(input, symbol) {
+        var $input = $(input);
+
+        //The bare symbol, so the server has nothing to parse. quote.php
+        //accepts the "SYMBOL Name" form too, so this is tidiness rather than
+        //something the lookup depends on.
+        if (symbol) { $input.typeahead('val', symbol); }
+
+        var form = $input.closest('form')[0] || document.getElementById('search');
+        if (!form) { return; }
+
+        //One submission per selection. The Enter handler below and the select
+        //event can both fire for the same keypress.
+        if (form.getAttribute('data-sm-submitting') === '1') { return; }
+        form.setAttribute('data-sm-submitting', '1');
+
+        var submit = HTMLFormElement.prototype.requestSubmit
+                  || HTMLFormElement.prototype.submit;
+        submit.call(form);
+    }
+
+    /* typeahead:select is 0.11; typeahead:selected is what 0.10 emits and 0.11
+     * still emits alongside it. Binding both means this works whichever
+     * version is vendored, and the autocomplete pair covers accepting the
+     * inline hint. The duplicate on 0.11 is absorbed by the guard above.
+     */
+    $('input.typeahead').on(
+        'typeahead:select typeahead:selected typeahead:autocomplete typeahead:autocompleted',
+        function (ev, datum) {
+            submitSearch(this, datum && datum.symbol);
+        });
+
+    /* Enter with a suggestion highlighted. typeahead calls preventDefault()
+     * on that keypress so it can select the suggestion itself, which stops
+     * the browser submitting the form - the box fills in and nothing happens.
+     *
+     * The timeout lets typeahead's own handler run first: when it selects a
+     * suggestion the handler above submits with the symbol, and this one then
+     * finds the guard set and does nothing. With no suggestion highlighted
+     * nothing cancels the keypress, the browser submits, and this is a
+     * harmless second attempt on a page that is already leaving.
+     */
+    $('input.typeahead').on('keydown', function (ev) {
+        if (ev.which !== 13 && ev.key !== 'Enter') { return; }
+        var input = this;
+        window.setTimeout(function () { submitSearch(input, null); }, 0);
     });
 });
 

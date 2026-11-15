@@ -1605,6 +1605,60 @@ STUB
               $anon_code === '302', "status $anon_code");
         @unlink($anon_jar);
 
+        /* ---------------- the search box, in a real browser ----------------
+
+           The checks below this read source, and both bugs in this box were
+           invisible to that: first a scripts.js that looked right and never
+           parsed, then a selection that filled the box without submitting.
+           Only a browser catches those, so one drives the box here when it
+           can.
+
+           Skipped unless node, playwright and the vendored front-end assets
+           are all present. public/js is in .gitignore and filled by
+           tools/fetch_assets.sh, so a fresh clone has no jQuery to run and
+           there is nothing to drive. */
+        $browser_js = dirname(__DIR__) . '/tests/typeahead_browser.js';
+        $assets = [dirname(__DIR__) . '/public/js/jquery-3.3.1.min.js',
+                   dirname(__DIR__) . '/public/js/typeahead.jquery.js',
+                   dirname(__DIR__) . '/public/js/bloodhound.min.js',
+                   dirname(__DIR__) . '/public/js/scripts.js'];
+        $missing = array_values(array_filter($assets, fn($f) => !file_exists($f)));
+
+        exec('command -v node >/dev/null 2>&1 && node -e "require(\'playwright\')" 2>&1 || echo NO_PLAYWRIGHT',
+             $pw_out, $pw_rc);
+        $no_playwright = in_array('NO_PLAYWRIGHT', $pw_out, true) || $pw_rc !== 0;
+
+        if ($no_playwright) {
+            echo "  \033[33mSKIP\033[0m  the search box in a browser (node or playwright not installed)\n";
+        }
+        elseif ($missing) {
+            echo "  \033[33mSKIP\033[0m  the search box in a browser (run tools/fetch_assets.sh first; missing "
+                 . implode(', ', array_map('basename', $missing)) . ")\n";
+        }
+        else {
+            /* The served copy of scripts.js is what the browser will load.
+               fetch_assets.sh makes it, but it is a copy, so refresh it here
+               rather than testing whatever was left behind by an earlier run. */
+            @copy(dirname(__DIR__) . '/templates/scripts.js', dirname(__DIR__) . '/public/js/scripts.js');
+            @copy(dirname(__DIR__) . '/templates/typeahead.css', dirname(__DIR__) . '/public/css/typeahead.css');
+
+            $cmd = 'node ' . escapeshellarg($browser_js) . ' ' . escapeshellarg($base)
+                 . ' tester testpass RR rol 2>&1';
+            $browser_out = [];
+            exec($cmd, $browser_out);
+            foreach ($browser_out as $line) {
+                if (strpos($line, 'PASS ') === 0)      { check(substr($line, 5), true); }
+                elseif (strpos($line, 'FAIL ') === 0)  {
+                    $parts = explode(': ', substr($line, 5), 2);
+                    check($parts[0], false, $parts[1] ?? '');
+                }
+            }
+            if (!array_filter($browser_out, fn($l) => strpos($l, 'PASS ') === 0 || strpos($l, 'FAIL ') === 0)) {
+                check('the browser run produced results', false,
+                      implode(' | ', array_slice($browser_out, 0, 4)));
+            }
+        }
+
         /* ---------------- the script that wires it up ---------------- */
 
         /* Comments are stripped before these string searches. The comment
