@@ -459,20 +459,38 @@
 
 		if ($best === null || $most < 1) { return null; }
 
-		/* Descend while one child still holds almost all of it. <body> wins
-		   the score on every page; the block that is only the announcement
-		   is somewhere below it, and this is how far down. */
+		/* Descend while one child still holds most of it. <body> wins the
+		   score on every page; the block that is only the announcement is
+		   somewhere below it, and this is how far down.
+
+		   Three quarters, which is a judgement rather than a measurement.
+		   Too high and the furniture a page wraps round the announcement
+		   keeps the walk one level up, which is the fault this is fixing:
+		   at nine tenths, a page whose navigation, sign-up blurb and AI
+		   summary come to a sixth of its text would be read whole. Too low
+		   and an announcement split between two blocks - a narrative and a
+		   table of figures, which a results statement is - loses the
+		   smaller one. At three quarters the most that can leak in is a
+		   quarter of the page, and the most that can be lost is a quarter
+		   of the announcement. Worth revisiting against a saved page: the
+		   proportion on the live one is not known here. */
 		for ($depth = 0; $depth < 40; $depth++) {
 
 			$winner = null;
+			$held   = 0;
+
+			/* The biggest child, not the first one over the line: two
+			   children either side of three quarters is impossible, but
+			   taking the first to clear it would still be an odd rule. */
 			foreach ($best->childNodes as $child) {
 				if (!($child instanceof DOMElement)) { continue; }
 				$length = mb_strlen(trim(preg_replace('~\s+~', ' ', $child->textContent)));
-				if ($length >= $most * 0.9) { $winner = $child; $most = $length; break; }
+				if ($length > $held) { $held = $length; $winner = $child; }
 			}
 
-			if ($winner === null) { break; }
+			if ($winner === null || $held < $most * 0.75) { break; }
 			$best = $winner;
+			$most = $held;
 		}
 
 		$out = '';

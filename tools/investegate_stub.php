@@ -130,7 +130,7 @@ function stub_default_listing($path) {
     }
 
     return '<html><head><title>' . htmlspecialchars($tidm) . ' announcements</title></head>'
-         . '<body><nav><a href="/login">Please sign in</a></nav>'
+         . '<body><div class="topbar"><a href="/login">Please sign in</a></div>'
          . '<h1>' . htmlspecialchars($tidm) . '</h1>'
          . '<table><thead><tr><th>Announcement</th><th>Date</th><th>Source</th></tr></thead>'
          . '<tbody>' . $rows . '</tbody></table></body></html>';
@@ -160,22 +160,30 @@ function stub_default_announcement() {
                   . '<p>The share buyback programme announced in February will end on '
                   . '25 February 2027.</p>';
 
+    /* The furniture is in plain divs, not in <nav>, <header>, <aside> and
+       <footer>. That is not a detail: the first parser removed those four
+       tags and the live page's navigation and sign-up blurb still came
+       through, which is only possible if the live markup does not use them.
+       A stub that wrapped its furniture in the tags being stripped would
+       let the same fault through the suite twice. */
     return '<!doctype html><html><head><title>Trading Update</title>'
          . '<style>.a{color:red}</style><script>var x=1;</script></head><body>'
-         . '<nav><ul><li><a href="/login">Please sign in</a></li>'
+         . '<div class="topbar"><ul><li><a href="/login">Please sign in</a></li>'
          . '<li><a href="/register">Register</a></li><li>Markets</li>'
-         . '<li>Companies</li><li>Announcements</li></ul></nav>'
-         . '<header><h1>Investegate</h1></header>'
+         . '<li>Companies</li><li>Announcements</li></ul></div>'
+         . '<div class="brand"><span>Investegate</span></div>'
          . '<div class="page">'
-         . '  <aside><h3>Sign up for free</h3><p>Create a free account for unlimited '
-         . '    announcements, email alerts and portfolio tracking. Join thousands of '
-         . '    private investors who follow the market with us every day.</p></aside>'
+         . '  <div class="promo"><h3>Sign up for free</h3><p>Create a free account for '
+         . '    unlimited announcements, email alerts and portfolio tracking. Join '
+         . '    thousands of private investors who follow the market with us every '
+         . '    day, and never miss an announcement from a company you hold.</p></div>'
          . '  <div class="announcement">'
          . '    <div class="ai-summary"><h3>Summary by AI BETA</h3><p>A machine wrote '
          . '      this bit and it should never reach the scorer.</p></div>'
          . '    <div class="rns-body"><h1>Trading Update</h1>' . $announcement . '</div>'
          . '  </div>'
          . '</div>'
-         . '<footer><p>Terms of use. Privacy policy. Investegate is a trading name.</p>'
-         . '</footer></body></html>';
+         . '<div class="site-footer"><p>Terms of use. Privacy policy. Cookies. '
+         . 'Investegate is a trading name and none of this is advice.</p>'
+         . '</div></body></html>';
 }

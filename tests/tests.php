@@ -4754,6 +4754,55 @@
     check('the same announcement linked twice is one announcement',
           count(rns_announcement_links($rns_listing . $rns_listing)) === 3);
 
+    /* The row reader earns its keep on a long row. Proximity gets the live
+       layout right only while a row is short enough for its own date to be
+       within the look-ahead; a long title, or another cell or two, puts the
+       date out of reach and the nearest one left is the row above's - the
+       live fault again, on a row that is merely longer. The row knows which
+       date is its own at any length. */
+    check('a long row still takes its own date, not the row above\'s',
+          (function () {
+              $long = '<table><tbody>'
+                    . '<tr><td><a href="/announcement/rns/x--AB./a/8831">Final Results</a></td>'
+                    . '<td>10 Nov 2026 07:00</td></tr>'
+                    . '<tr><td><a href="/announcement/rns/x--AB./b/8832">Director/PDMR '
+                    . 'Shareholding - Notification of Transactions by Persons Closely '
+                    . 'Associated with a Director of the Company and of the Grant and '
+                    . 'Vesting of Awards under the Long Term Incentive Plan</a></td>'
+                    . '<td>09 Nov 2026 16:35</td></tr>'
+                    . '</tbody></table>';
+              $links = rns_announcement_links($long);
+              return count($links) === 2
+                     && substr((string) $links[1]['published_at'], 0, 10) === '2026-11-09';
+          })(),
+          json_encode(array_column(rns_announcement_links('<table><tbody>'
+              . '<tr><td><a href="/announcement/rns/x--AB./a/8831">Final Results</a></td>'
+              . '<td>10 Nov 2026 07:00</td></tr>'
+              . '<tr><td><a href="/announcement/rns/x--AB./b/8832">Director/PDMR '
+              . 'Shareholding - Notification of Transactions by Persons Closely '
+              . 'Associated with a Director of the Company and of the Grant and '
+              . 'Vesting of Awards under the Long Term Incentive Plan</a></td>'
+              . '<td>09 Nov 2026 16:35</td></tr></tbody></table>'), 'published_at')));
+
+    /* And the fallback, for a listing that is not a table at all, must not
+       repeat the fault either: the date after a link is that link's, the
+       date before it belongs to the one above. */
+    check('a list with no table reads each date forwards, not backwards',
+          (function () {
+              $list = '<ul>'
+                    . '<li><a href="/announcement/rns/x--AB./a/8841">A</a> 09 Nov 2026 07:00</li>'
+                    . '<li><a href="/announcement/rns/x--AB./b/8842">B</a> 08 Nov 2026 07:00</li>'
+                    . '</ul>';
+              $links = rns_announcement_links($list);
+              return count($links) === 2
+                     && substr((string) $links[0]['published_at'], 0, 10) === '2026-11-09'
+                     && substr((string) $links[1]['published_at'], 0, 10) === '2026-11-08';
+          })(),
+          json_encode(array_column(rns_announcement_links('<ul>'
+              . '<li><a href="/announcement/rns/x--AB./a/8841">A</a> 09 Nov 2026 07:00</li>'
+              . '<li><a href="/announcement/rns/x--AB./b/8842">B</a> 08 Nov 2026 07:00</li>'
+              . '</ul>'), 'published_at')));
+
     /* Insurance, not a layout anybody has seen: if the dates ever move out
        of the row, rows alone would date nothing and the fetcher would store
        nothing at all. Reading the document and taking the nearest date is a
@@ -4785,14 +4834,22 @@
                . str_repeat('<p>The board reiterates the guidance given at the half year '
                . 'and expects the second half to be weighted towards the final quarter.</p>', 6);
 
+    /* The furniture is in plain divs. The first parser removed <nav>,
+       <header>, <aside> and <footer> and the live page's navigation and
+       sign-up blurb came through anyway, which is only possible if the live
+       markup does not use those tags. A fixture that used them would be
+       cleaned up by the tag stripping alone and would say nothing about
+       whether the announcement block is being found - the version of this
+       fixture that did use them passed with the block finder disabled. */
     $rns_page = '<!doctype html><html><head><title>Trading Update</title>'
               . '<style>.x{color:red}</style><script>var a=1;</script></head><body>'
-              . '<nav><ul><li><a href="/login">Please sign in</a></li>'
-              . '<li><a href="/register">Register</a></li><li>Markets</li></ul></nav>'
-              . '<header><h1>Investegate</h1></header>'
+              . '<div class="topbar"><ul><li><a href="/login">Please sign in</a></li>'
+              . '<li><a href="/register">Register</a></li><li>Markets</li></ul></div>'
+              . '<div class="brand"><span>Investegate</span></div>'
               . '<div class="page">'
-              . '  <aside><h3>Sign up for free</h3><p>Create a free account for unlimited '
-              . '    announcements and email alerts. Join thousands of private investors.</p></aside>'
+              . '  <div class="promo"><h3>Sign up for free</h3><p>Create a free account for '
+              . '    unlimited announcements and email alerts. Join thousands of private '
+              . '    investors.</p></div>'
               . '  <div class="announcement">'
               . '    <div class="ai-summary"><h3>Summary by AI BETA</h3><p>A machine wrote '
               . '      this and it must not reach the scorer.</p></div>'
@@ -4800,8 +4857,8 @@
               . '      <p>The buyback will end on 25 February 2027.</p></div>'
               . '  </div>'
               . '</div>'
-              . '<footer><p>Terms of use. Investegate is a trading name.</p></footer>'
-              . '</body></html>';
+              . '<div class="site-footer"><p>Terms of use. Investegate is a trading name.</p>'
+              . '</div></body></html>';
 
     $rns_body = rns_body($rns_page);
     check('the script and the style do not come out as words',
