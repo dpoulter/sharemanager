@@ -5537,10 +5537,14 @@ STUB
                              'https://example.invalid/c2', sha1('c2'), 0.4, 'product', 'A new thing.']);
         $ch_insert->execute([$ch_day2 . ' 09:00:00', 'Bad news for AAA', 'Reuters',
                              'https://example.invalid/c3', sha1('c3'), -0.6, 'policy', 'It went badly.']);
-        //One outside the range the test asks for.
+        /* One outside the range at each end. Both sides, because a bound that
+           is only tested from below is only half a bound. */
         $ch_insert->execute([date('Y-m-d', strtotime($ch_asof . ' -400 day')) . ' 09:00:00',
                              'Ancient history', 'Reuters', 'https://example.invalid/c4',
                              sha1('c4'), 0.1, 'other', 'Long ago.']);
+        $ch_insert->execute([date('Y-m-d', strtotime($ch_asof . ' +400 day')) . ' 09:00:00',
+                             'Not yet happened', 'Reuters', 'https://example.invalid/c4b',
+                             sha1('c4b'), 0.1, 'other', 'Later.']);
 
         $ch_from = date('Y-m-d', strtotime($ch_asof . ' -30 day'));
         $ch_json = json_decode((string) $curl(
@@ -5572,8 +5576,10 @@ STUB
         check('the kinds of news that day are listed, for the filter',
               in_array('earnings', $ch_by_day[$ch_day1]['impact_types'] ?? [], true)
               && in_array('product', $ch_by_day[$ch_day1]['impact_types'] ?? [], true));
-        check('an article outside the range is not in it',
+        check('an article before the range is not in it',
               strpos(json_encode($ch_markers), 'Ancient history') === false);
+        check('nor one after it',
+              strpos(json_encode($ch_markers), 'Not yet happened') === false);
         check('each headline carries what the panel shows',
               isset($ch_by_day[$ch_day1]['articles'][0]['summary'])
               && isset($ch_by_day[$ch_day1]['articles'][0]['bull_point'])
