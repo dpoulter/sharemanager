@@ -236,6 +236,42 @@ switch ($mode) {
         print(json_encode(stub_message($bad, false, $payload['model'] ?? 'claude-haiku-5-5')));
         break;
 
+    case 'explain_ok':
+    case 'explain_bad_source':
+        //An explanation that cites the first headline it was given, so the
+        //test can tell a citation that was matched back from one that was
+        //invented. explain_bad_source cites an id that was never sent.
+        $given = json_decode((string) ($payload['messages'][0]['content'] ?? ''), true);
+        $first = is_array($given) && isset($given['headlines'][0]['id'])
+               ? (string) $given['headlines'][0]['id'] : 'price action / market';
+        $drivers = [];
+        if (is_array($given) && count($given['headlines'] ?? [])) {
+            $drivers[] = ["date" => (string) $given['headlines'][0]['date'],
+                          "reason" => "The headline on that day.",
+                          "source" => $mode === 'explain_bad_source' ? '987654' : $first];
+        }
+        $drivers[] = ["date" => (string) ($given['to'] ?? '2026-11-13'),
+                      "reason" => "The rest is the market.",
+                      "source" => "price action / market"];
+        print(json_encode(stub_message([
+            "summary" => "The shares moved on the news in the range and on the market.",
+            "drivers" => $drivers,
+            "market_vs_stock" => "About half the move was the index.",
+            "confidence" => "medium",
+            "caveat" => "Only stored headlines were available.",
+        ], false, $payload['model'] ?? 'claude-fable-5-2')));
+        break;
+
+    case 'explain_no_news':
+        print(json_encode(stub_message([
+            "summary" => "There is nothing on record to explain this move.",
+            "drivers" => [],
+            "market_vs_stock" => "The index moved by about as much.",
+            "confidence" => "low",
+            "caveat" => "No headlines were stored for this share in this range.",
+        ], false, $payload['model'] ?? 'claude-fable-5-2')));
+        break;
+
     case 'unauthorized':
         http_response_code(401);
         print(json_encode(["type" => "error",

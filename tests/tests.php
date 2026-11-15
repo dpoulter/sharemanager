@@ -5507,6 +5507,351 @@ STUB
               strpos($header, 'navbar-toggler') !== false
               && strpos($header, 'data-bs-target="#navbarNavDropdown"') !== false);
 
+        echo "\n--- the chart data endpoint ---\n";
+
+        /* The quote page's chart is drawn in the browser now, from this.
+           It is behind the same login as every other page: config.php
+           redirects an anonymous request before it reaches a query. */
+        $ch_anon_jar = tempnam(sys_get_temp_dir(), 'smchart');
+        $ch_anon = (string) shell_exec('curl -s -m 30 -b ' . escapeshellarg($ch_anon_jar)
+                 . ' -c ' . escapeshellarg($ch_anon_jar) . ' -L '
+                 . escapeshellarg("$base/chart_data.php?symbol=AAA") . ' 2>/dev/null');
+        check('an anonymous request for the chart data does not get data',
+              strpos($ch_anon, '"prices"') === false, substr($ch_anon, 0, 200));
+        check('it is sent to the login page instead',
+              stripos($ch_anon, 'password') !== false, substr($ch_anon, 0, 200));
+        @unlink($ch_anon_jar);
+
+        $ch_asof = asof_date();
+        db()->exec("delete from news_articles where symbol='AAA'");
+        $ch_insert = db()->prepare("insert into news_articles
+            (symbol, published_at, title, publisher, link, url_hash, first_seen,
+             sentiment, impact_type, summary, bull_point, bear_point, scored_model, scored_at)
+            values ('AAA', ?, ?, ?, ?, ?, now(), ?, ?, ?, 'Bull side', 'Bear side', 'stub', now())");
+        //Two on one day and one on another, so the grouping has something to do.
+        $ch_day1 = date('Y-m-d', strtotime($ch_asof . ' -3 day'));
+        $ch_day2 = date('Y-m-d', strtotime($ch_asof . ' -10 day'));
+        $ch_insert->execute([$ch_day1 . ' 09:00:00', 'Good news for AAA', 'The Guardian',
+                             'https://example.invalid/c1', sha1('c1'), 0.8, 'earnings', 'It went well.']);
+        $ch_insert->execute([$ch_day1 . ' 15:00:00', 'More good news', 'Reuters',
+                             'https://example.invalid/c2', sha1('c2'), 0.4, 'product', 'A new thing.']);
+        $ch_insert->execute([$ch_day2 . ' 09:00:00', 'Bad news for AAA', 'Reuters',
+                             'https://example.invalid/c3', sha1('c3'), -0.6, 'policy', 'It went badly.']);
+        //One outside the range the test asks for.
+        $ch_insert->execute([date('Y-m-d', strtotime($ch_asof . ' -400 day')) . ' 09:00:00',
+                             'Ancient history', 'Reuters', 'https://example.invalid/c4',
+                             sha1('c4'), 0.1, 'other', 'Long ago.']);
+
+        $ch_from = date('Y-m-d', strtotime($ch_asof . ' -30 day'));
+        $ch_json = json_decode((string) $curl(
+            "$base/chart_data.php?symbol=AAA&from=$ch_from&to=$ch_asof"), true);
+
+        check('a logged in request gets the series', is_array($ch_json) && !empty($ch_json['ok']),
+              json_encode(array_slice((array) $ch_json, 0, 3)));
+        check('with prices in it', count($ch_json['prices'] ?? []) > 0);
+        check('every price is inside the range asked for',
+              count(array_filter($ch_json['prices'] ?? [],
+                    function ($p) use ($ch_from, $ch_asof) {
+                        return $p['time'] < $ch_from || $p['time'] > $ch_asof;
+                    })) === 0);
+        check('the two moving averages come from statistics, not recomputed',
+              array_key_exists('ma50', $ch_json) && array_key_exists('ma200', $ch_json));
+
+        $ch_markers = $ch_json['markers'] ?? [];
+        check('one marker per day with news, not one per headline',
+              count($ch_markers) === 2, count($ch_markers) . ' markers');
+        $ch_by_day = [];
+        foreach ($ch_markers as $m) { $ch_by_day[$m['date']] = $m; }
+        check('the day with two headlines says so',
+              ($ch_by_day[$ch_day1]['count'] ?? 0) === 2);
+        check('and carries the mean of their sentiment',
+              abs(($ch_by_day[$ch_day1]['sentiment'] ?? 0) - 0.6) < 0.0001,
+              var_export($ch_by_day[$ch_day1]['sentiment'] ?? null, true));
+        check('a bad day reads negative',
+              ($ch_by_day[$ch_day2]['sentiment'] ?? 0) < 0);
+        check('the kinds of news that day are listed, for the filter',
+              in_array('earnings', $ch_by_day[$ch_day1]['impact_types'] ?? [], true)
+              && in_array('product', $ch_by_day[$ch_day1]['impact_types'] ?? [], true));
+        check('an article outside the range is not in it',
+              strpos(json_encode($ch_markers), 'Ancient history') === false);
+        check('each headline carries what the panel shows',
+              isset($ch_by_day[$ch_day1]['articles'][0]['summary'])
+              && isset($ch_by_day[$ch_day1]['articles'][0]['bull_point'])
+              && isset($ch_by_day[$ch_day1]['articles'][0]['link']));
+
+        /* A headline is somebody else's text. It is JSON on the way out, so
+           json_encode escapes it, and the page puts it on screen with
+           textContent - never innerHTML - so there is nowhere for it to
+           become markup. */
+        db()->prepare("insert into news_articles
+            (symbol, published_at, title, publisher, link, url_hash, first_seen,
+             sentiment, impact_type, summary, scored_model, scored_at)
+            values ('AAA', ?, ?, 'Reuters', ?, ?, now(), 0.1, 'other', ?, 'stub', now())")
+            ->execute([$ch_day1 . ' 17:00:00',
+                       '<script>alert(1)</script> and "quotes"',
+                       'javascript:alert(1)', sha1('c5'),
+                       '</script><img src=x onerror=alert(1)>']);
+        $ch_raw = (string) $curl("$base/chart_data.php?symbol=AAA&from=$ch_from&to=$ch_asof");
+        check('a headline with markup in it is escaped in the JSON',
+              strpos($ch_raw, '<script>alert(1)</script>') === false
+              && strpos($ch_raw, '<script>') !== false,
+              substr($ch_raw, 0, 300));
+        /* The only assignment to innerHTML may be the empty string that
+           clears the panel. Anything else is a headline being parsed as
+           markup. */
+        $ch_js = (string) file_get_contents(dirname(__DIR__) . '/templates/chart.js');
+        preg_match_all('/innerHTML\s*=\s*([^;]+);/', $ch_js, $ch_writes);
+        check('and the page builds its text with textContent, never innerHTML',
+              count(array_filter($ch_writes[1] ?? [],
+                    function ($written) { return trim($written) !== '""'; })) === 0,
+              json_encode($ch_writes[1] ?? []));
+        check('it does use textContent, so that is not vacuous',
+              substr_count($ch_js, 'textContent') >= 2);
+        /* And a link out of a feed only reaches an href if it is http: a
+           javascript: or data: URL in a headline is the one thing in here
+           that could do something. */
+        check('only an http link reaches an href',
+              strpos($ch_js, 'safeHref') !== false
+              && strpos($ch_js, '^https?:') !== false,
+              'the scheme check is not the one expected');
+        db()->exec("delete from news_articles where url_hash=" . db()->quote(sha1('c5')));
+
+        //Parameters are checked rather than interpreted.
+        foreach (['yesterday', '2026-13-45', "2026-01-01' or '1'='1", '+1 month'] as $ch_bad) {
+            $ch_refused = json_decode((string) $curl(
+                "$base/chart_data.php?symbol=AAA&from=" . urlencode($ch_bad) . "&to=$ch_asof"), true);
+            check("a from date of '$ch_bad' is refused rather than interpreted",
+                  isset($ch_refused['ok']) && $ch_refused['ok'] === false,
+                  json_encode($ch_refused));
+        }
+        $ch_unknown = json_decode((string) $curl("$base/chart_data.php?symbol=NOSUCHSYM"), true);
+        check('an unknown symbol is a clear answer, not an empty chart',
+              isset($ch_unknown['ok']) && $ch_unknown['ok'] === false);
+        $ch_backwards = json_decode((string) $curl(
+            "$base/chart_data.php?symbol=AAA&from=$ch_asof&to=$ch_from"), true);
+        check('a range that ends before it starts is refused',
+              isset($ch_backwards['ok']) && $ch_backwards['ok'] === false);
+
+        echo "\n--- the chart on the page ---\n";
+
+        $ch_page = (string) $curl("$base/quote.php?symbol=AAA&page=quote_form.php");
+        check('the page has somewhere to draw the chart',
+              strpos($ch_page, 'id="price-chart"') !== false);
+        check('it loads the library from this server, not a CDN',
+              strpos($ch_page, '/js/lightweight-charts.standalone.production.js') !== false
+              && strpos($ch_page, 'unpkg.com') === false
+              && strpos($ch_page, 'cdn.jsdelivr.net') === false);
+        check('the old static chart is still there as the fallback',
+              strpos($ch_page, 'stockgraph.php?symbol=AAA') !== false
+              && strpos($ch_page, 'id="price-chart-fallback"') !== false);
+        check('and a browser with no JavaScript is told why',
+              strpos($ch_page, '<noscript>') !== false);
+        foreach (['30','91','182','365','1825'] as $ch_span) {
+            check("there is a $ch_span day timespan button",
+                  strpos($ch_page, 'data-chart-span="' . $ch_span . '"') !== false);
+        }
+        check('and a filter by the kind of news',
+              strpos($ch_page, 'id="news-filter"') !== false
+              && strpos($ch_page, '>Earnings<') !== false);
+        check('the panel the headlines are listed in is on the page',
+              strpos($ch_page, 'id="news-panel"') !== false);
+
+        /* The quote page is about half a second today and should stay under
+           a second. The chart is drawn from a second request, so the page
+           itself should not have got slower. */
+        $ch_started = microtime(true);
+        $curl("$base/quote.php?symbol=AAA&page=quote_form.php");
+        $ch_page_seconds = microtime(true) - $ch_started;
+        check('the quote page still loads in under a second',
+              $ch_page_seconds < 1.0, round($ch_page_seconds, 3) . 's');
+        $ch_started = microtime(true);
+        $curl("$base/chart_data.php?symbol=AAA&from=$ch_from&to=$ch_asof");
+        $ch_data_seconds = microtime(true) - $ch_started;
+        check('and the chart data comes back in under a second too',
+              $ch_data_seconds < 1.0, round($ch_data_seconds, 3) . 's');
+
+        db()->exec("delete from news_articles where symbol='AAA'");
+
+        echo "\n--- why did it move? ---\n";
+
+        /* The same pattern as the outlook panel: nothing happens until the
+           button is pressed, the answer is cached per range, and Regenerate
+           is the way to pay for it again. The stub answers, never the real
+           API. */
+
+        $ex_asof = asof_date();
+        $ex_to   = $ex_asof;
+        $ex_from = date('Y-m-d', strtotime($ex_asof . ' -14 day'));
+
+        db()->exec("delete from ai_explanations where symbol='AAA'");
+        db()->exec("delete from news_articles where symbol='AAA'");
+        $ex_insert = db()->prepare("insert into news_articles
+            (symbol, published_at, title, publisher, link, url_hash, first_seen,
+             sentiment, impact_type, summary, scored_model, scored_at)
+            values ('AAA', ?, ?, 'Reuters', ?, ?, now(), ?, 'earnings', ?, 'stub', now())");
+        $ex_day = date('Y-m-d', strtotime($ex_asof . ' -7 day'));
+        $ex_insert->execute([$ex_day . ' 09:00:00', 'AAA beats expectations',
+                             'https://example.invalid/e1', sha1('e1'), 0.9,
+                             'Profit ahead of forecast.']);
+        $ex_id = (int) scalar("select id from news_articles where url_hash=?", [sha1('e1')]);
+
+        //POST only: a link or a prefetch must not be able to spend money.
+        $ex_get = (string) $curl("$base/ai_explain.php?symbol=AAA");
+        check('the explain endpoint refuses a GET',
+              strpos($ex_get, '"ok":false') !== false
+              && stripos($ex_get, 'Use POST') !== false, substr($ex_get, 0, 200));
+
+        $ex_anon_jar = tempnam(sys_get_temp_dir(), 'smex');
+        $ex_anon = (string) shell_exec('curl -s -m 30 -b ' . escapeshellarg($ex_anon_jar)
+                 . ' -c ' . escapeshellarg($ex_anon_jar) . ' -L -d '
+                 . escapeshellarg("symbol=AAA&from=$ex_from&to=$ex_to") . ' '
+                 . escapeshellarg("$base/ai_explain.php") . ' 2>/dev/null');
+        check('an anonymous request never reaches the API',
+              strpos($ex_anon, '"explanation"') === false, substr($ex_anon, 0, 200));
+        @unlink($ex_anon_jar);
+
+        foreach (['yesterday', '', '2026-02-30'] as $ex_bad) {
+            $ex_refused = json_decode((string) $curl("$base/ai_explain.php",
+                "symbol=AAA&from=" . urlencode($ex_bad) . "&to=$ex_to"), true);
+            check("a from date of '$ex_bad' is refused rather than interpreted",
+                  isset($ex_refused['ok']) && $ex_refused['ok'] === false,
+                  json_encode($ex_refused));
+        }
+
+        file_put_contents("$ai_dir/mode", 'explain_ok');
+        $ex_first = json_decode((string) $curl("$base/ai_explain.php",
+            "symbol=AAA&from=$ex_from&to=$ex_to"), true);
+
+        check('an explanation comes back', !empty($ex_first['ok']),
+              json_encode(array_slice((array) $ex_first, 0, 3)));
+        check('it is not from the cache the first time', ($ex_first['cached'] ?? null) === false);
+        check('with a summary and a confidence',
+              trim((string) ($ex_first['explanation']['summary'] ?? '')) !== ''
+              && in_array($ex_first['explanation']['confidence'] ?? '', ['low','medium','high'], true));
+        check('and how much of it was the market',
+              trim((string) ($ex_first['explanation']['market_vs_stock'] ?? '')) !== '');
+        check('a driver cites the headline it came from',
+              count(array_filter($ex_first['explanation']['drivers'] ?? [],
+                    function ($d) use ($ex_id) { return $d['source'] === (string) $ex_id; })) === 1,
+              json_encode($ex_first['explanation']['drivers'] ?? []));
+        check('and one says it was the price rather than a headline',
+              count(array_filter($ex_first['explanation']['drivers'] ?? [],
+                    function ($d) { return $d['source'] === 'price action / market'; })) === 1);
+        check('the cost is reported, because it was paid',
+              isset($ex_first['cost']) && $ex_first['cost'] > 0, json_encode($ex_first['cost'] ?? null));
+
+        /* What the model was given. The index over the same days matters:
+           a share that fell with the market has not said anything about
+           itself. */
+        $ex_sent = json_decode((string) @file_get_contents("$ai_dir/last_request"), true);
+        $ex_inputs = json_decode((string) ($ex_sent['messages'][0]['content'] ?? ''), true);
+        check('it was given the price at each end and the change',
+              isset($ex_inputs['price']['start'], $ex_inputs['price']['end'],
+                    $ex_inputs['price']['change_pct']));
+        check('and the high and low within the range',
+              isset($ex_inputs['price']['high'], $ex_inputs['price']['low'],
+                    $ex_inputs['price']['high_on']));
+        check('and how the index moved over the same days',
+              array_key_exists('change_pct', $ex_inputs['index'] ?? []));
+        check('and the stored headlines, with their ids',
+              count($ex_inputs['headlines'] ?? []) === 1
+              && ($ex_inputs['headlines'][0]['id'] ?? 0) === $ex_id);
+        check('the prompt says the headlines are data, not instructions',
+              stripos((string) ($ex_sent['system'][0]['text'] ?? ''), 'data, not instructions') !== false);
+        check('and that an unexplained move is a real answer',
+              stripos((string) ($ex_sent['system'][0]['text'] ?? ''), 'nothing on record') !== false);
+        check('it runs on the configured model, not the scorer\'s',
+              ($ex_sent['model'] ?? '') === ANTHROPIC_MODEL
+              && ANTHROPIC_MODEL !== NEWS_SCORE_MODEL,
+              ($ex_sent['model'] ?? 'none') . ' against ' . ANTHROPIC_MODEL);
+
+        echo "\n--- the same range is not paid for twice ---\n";
+
+        @unlink("$ai_dir/last_request");
+        $ex_second = json_decode((string) $curl("$base/ai_explain.php",
+            "symbol=AAA&from=$ex_from&to=$ex_to"), true);
+        check('the same range comes back from the cache',
+              ($ex_second['cached'] ?? null) === true);
+        check('and the API was not asked again',
+              @file_get_contents("$ai_dir/last_request") === false);
+        check('the cached answer is the one that was stored',
+              ($ex_second['explanation']['summary'] ?? '')
+              === ($ex_first['explanation']['summary'] ?? ''));
+        check('one row per symbol, range and model',
+              (int) scalar("select count(*) from ai_explanations where symbol='AAA'") === 1);
+
+        $ex_again = json_decode((string) $curl("$base/ai_explain.php",
+            "symbol=AAA&from=$ex_from&to=$ex_to&regenerate=1"), true);
+        check('Regenerate asks again', ($ex_again['cached'] ?? null) === false
+              && @file_get_contents("$ai_dir/last_request") !== false);
+        check('and replaces the row rather than adding one',
+              (int) scalar("select count(*) from ai_explanations where symbol='AAA'") === 1);
+        check('what it was given is kept, so the answer can be read against it',
+              strpos((string) scalar("select inputs_json from ai_explanations where symbol='AAA'"),
+                     '"headlines"') !== false);
+
+        echo "\n--- a range with no news says so ---\n";
+
+        $ex_quiet_from = date('Y-m-d', strtotime($ex_asof . ' -60 day'));
+        $ex_quiet_to   = date('Y-m-d', strtotime($ex_asof . ' -40 day'));
+        file_put_contents("$ai_dir/mode", 'explain_no_news');
+        $ex_quiet = json_decode((string) $curl("$base/ai_explain.php",
+            "symbol=AAA&from=$ex_quiet_from&to=$ex_quiet_to"), true);
+        check('a range with no stored headlines is still answered',
+              !empty($ex_quiet['ok']), json_encode(array_slice((array) $ex_quiet, 0, 3)));
+        check('with no drivers rather than invented ones',
+              count($ex_quiet['explanation']['drivers'] ?? []) === 0);
+        $ex_quiet_sent = json_decode((string) @file_get_contents("$ai_dir/last_request"), true);
+        $ex_quiet_inputs = json_decode((string) ($ex_quiet_sent['messages'][0]['content'] ?? ''), true);
+        check('and the model was told there were none',
+              count($ex_quiet_inputs['headlines'] ?? []) === 0
+              && stripos((string) ($ex_quiet_inputs['headline_note'] ?? ''), 'no headlines') !== false);
+
+        echo "\n--- a citation that goes nowhere is dropped ---\n";
+
+        /* A driver citing an id that was never sent reads as evidence and is
+           not. Dropped rather than shown. */
+        db()->exec("delete from ai_explanations where symbol='AAA'");
+        db()->exec("truncate message_log");
+        file_put_contents("$ai_dir/mode", 'explain_bad_source');
+        $ex_bad = json_decode((string) $curl("$base/ai_explain.php",
+            "symbol=AAA&from=$ex_from&to=$ex_to"), true);
+        check('the invented citation is not shown',
+              strpos(json_encode($ex_bad['explanation']['drivers'] ?? []), '987654') === false,
+              json_encode($ex_bad['explanation']['drivers'] ?? []));
+        check('the real driver survives it',
+              count($ex_bad['explanation']['drivers'] ?? []) === 1);
+        check('and the drop is logged',
+              (int) scalar("select count(*) from message_log
+                             where message_text like '%dropped a driver citing headline%'") > 0);
+
+        file_put_contents("$ai_dir/mode", 'ok');
+
+        echo "\n--- the explain panel on the page ---\n";
+
+        $ex_page = (string) $curl("$base/quote.php?symbol=AAA&page=quote_form.php");
+        check('there is a button to ask', strpos($ex_page, 'id="explain-go"') !== false);
+        check('and a from and a to to ask about',
+              strpos($ex_page, 'id="explain-from"') !== false
+              && strpos($ex_page, 'id="explain-to"') !== false);
+        check('and somewhere to put the answer', strpos($ex_page, 'id="explain-panel"') !== false);
+        check('and a Regenerate button', strpos($ex_page, 'id="explain-again"') !== false);
+        $ex_js = (string) file_get_contents(dirname(__DIR__) . '/templates/chart.js');
+        check('nothing is asked for until the button is pressed',
+              strpos($ex_js, 'go.addEventListener') !== false);
+        check('the cost and the caveat are shown with the answer',
+              strpos($ex_js, 'Not financial advice') !== false
+              && strpos($ex_js, 'Cost $') !== false);
+        check('the endpoint closes the session before the call, like the outlook',
+              strpos(php_strip_whitespace(dirname(__DIR__) . '/public/ai_explain.php'),
+                     'session_write_close') !== false);
+        check('and turns a fatal into a message rather than HTML',
+              strpos(php_strip_whitespace(dirname(__DIR__) . '/public/ai_explain.php'),
+                     'register_shutdown_function') !== false);
+
+        db()->exec("delete from news_articles where symbol='AAA'");
+        db()->exec("delete from ai_explanations where symbol='AAA'");
+
         /* Tooltips are opt-in in both 4 and 5: the quote page marks them up and
            nothing initialised them, so they never worked. */
         $js = (string)file_get_contents(dirname(__DIR__) . '/templates/scripts.js');

@@ -167,10 +167,39 @@ sudo mariadb sharemanager < sql/fmp_scores.sql
 sudo mariadb sharemanager < sql/news.sql
 ```
 
+`tools/fetch_assets.sh` now also downloads TradingView Lightweight Charts
+(Apache-2.0) into `public/js/` and copies `templates/chart.js` beside it. Run
+it after this deploy, or the quote page keeps the old `stockgraph.php` image
+- which is what the chart falls back to when the library is not there.
+
 Every `sql/*.sql` above is re-runnable, so a later `git pull` can just run
 them all again rather than working out which are new. Two currently need it
 on a database that already has the others: `sql/fund_sectors.sql` adds
 `stock_symbols.is_fund`, and `sql/fmp_scores.sql` is new.
+
+## News features, and what was left out
+
+The headline store, the chart markers and the "why did it move?" panel are
+modelled on PokieTicker (github.com/owengetinfo-design/PokieTicker, MIT).
+
+Two of its features are deliberately not here:
+
+- **The XGBoost direction prediction.** It needs a labelled history to train
+  on and this application has none: Google News returns only recent items and
+  FMP has no news for `.L` tickers, so there is no backfill and the store
+  starts empty the day `includes/fetch_news.php` first runs. A model trained
+  on a few weeks of headlines would produce a number with a decimal point on
+  it and nothing behind it, which is worse than no number at all. Revisit
+  when there is a year of history and a way to score the predictions
+  honestly.
+- **"Similar past periods".** Same reason, and the same trap in sharper form:
+  with months rather than years of data every period looks similar to every
+  other, and the feature would be most confident when it had least to go on.
+
+The sentiment indicators are registered with `calc_rank='N'` for the same
+reason. They are shown, screenable and sent to the AI outlook, and they are
+not part of the value, quality or overall scores until there is history to
+justify it.
 
 `sql/report_currency.sql` is the one that matters most to get in before the
 next nightly run. Until it is applied, `stock_symbols.report_ccy` does not

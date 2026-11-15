@@ -39,6 +39,8 @@ mkdir -p "$PUBLIC/css" "$PUBLIC/js" "$PUBLIC/img" "$PUBLIC/fonts" "$PUBLIC/webfo
 copy_repo_assets() {
   cp "$REPO_DIR/templates/scripts.js"   "$PUBLIC/js/scripts.js"
   echo "  js/scripts.js          copied from templates/"
+  cp "$REPO_DIR/templates/chart.js"     "$PUBLIC/js/chart.js"
+  echo "  js/chart.js            copied from templates/"
   cp "$REPO_DIR/templates/typeahead.css" "$PUBLIC/css/typeahead.css"
   echo "  css/typeahead.css      copied from templates/"
 }
@@ -85,6 +87,18 @@ fetch "$CDN/bootstrap/5.3.3/js/bootstrap.bundle.min.js"           "$PUBLIC/js/bo
 fetch "$CDN/jquery/3.7.1/jquery.min.js"                           "$PUBLIC/js/jquery-3.3.1.min.js"       50000 || failed=1
 fetch "$CDN/typeahead.js/0.11.1/bloodhound.min.js"                "$PUBLIC/js/bloodhound.min.js"          5000 || failed=1
 fetch "$CDN/typeahead.js/0.11.1/typeahead.jquery.min.js"          "$PUBLIC/js/typeahead.jquery.js"        5000 || failed=1
+
+# TradingView Lightweight Charts (Apache-2.0), for the price chart and its
+# news markers on the quote page. Served from here rather than from a CDN
+# like everything else: a chart that stops working when somebody else's CDN
+# does is not an improvement on a PNG, and the content security policy on the
+# server allows script-src 'self' and nothing more.
+#
+# The standalone build, because the page has no bundler and loads plain
+# script tags. If this file is missing the quote page keeps the old
+# stockgraph.php image, which is what templates/chart.js falls back to.
+fetch "$CDN/lightweight-charts/4.2.0/lightweight-charts.standalone.production.js" \
+      "$PUBLIC/js/lightweight-charts.standalone.production.js"                  40000 || failed=1
 # Font Awesome 6. header.php loads this locally now rather than from the
 # fontawesome CDN, so the page needs nothing at request time from a third party.
 fetch "$CDN/font-awesome/6.5.2/css/all.min.css"                   "$PUBLIC/css/fontawesome.min.css"      20000 || failed=1

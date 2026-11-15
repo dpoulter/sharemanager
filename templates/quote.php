@@ -48,7 +48,65 @@
 					<div class="row">
 						<div class="card card-default">
 							<div class="card-body">
-								<img src="stockgraph.php?symbol=<?=$symbol?>&timespan=<?=$timespan?>"></img>
+								<?php /* The interactive chart, with a dot on every day that had
+								         news. templates/chart.js draws it; the old stockgraph.php
+								         image stays underneath as the fallback and is hidden by
+								         the script once the library has loaded, so a browser with
+								         JavaScript off - or a server where fetch_assets.sh has not
+								         run - still gets a chart. */ ?>
+								<div class="d-flex justify-content-between align-items-center mb-2">
+									<div class="btn-group btn-group-sm" role="group" aria-label="Timespan">
+										<button type="button" class="btn btn-outline-secondary" data-chart-span="30">1M</button>
+										<button type="button" class="btn btn-outline-secondary" data-chart-span="91">3M</button>
+										<button type="button" class="btn btn-outline-secondary" data-chart-span="182">6M</button>
+										<button type="button" class="btn btn-outline-secondary active" data-chart-span="365">1Y</button>
+										<button type="button" class="btn btn-outline-secondary" data-chart-span="1825">5Y</button>
+									</div>
+									<div>
+										<label class="visually-hidden" for="news-filter">Kind of news</label>
+										<select id="news-filter" class="form-select form-select-sm">
+											<option value="">All news</option>
+											<option value="market">Market</option>
+											<option value="earnings">Earnings</option>
+											<option value="product">Product</option>
+											<option value="policy">Policy</option>
+											<option value="competition">Competition</option>
+											<option value="management">Management</option>
+											<option value="other">Other</option>
+										</select>
+									</div>
+								</div>
+								<div id="price-chart" data-symbol="<?=htmlspecialchars($symbol)?>"></div>
+								<small id="chart-status" class="text-body-secondary d-block mt-1"></small>
+								<div id="price-chart-fallback">
+									<noscript><p class="text-body-secondary">The interactive chart needs JavaScript; this is the static one.</p></noscript>
+									<img src="stockgraph.php?symbol=<?=urlencode($symbol)?>&timespan=<?=urlencode($timespan)?>" alt="Price chart"></img>
+								</div>
+								<?php /* Why did it move? The same pattern as the outlook panel:
+								         nothing happens until the button is pressed, the answer is
+								         cached per range, and Regenerate is the way to pay for it
+								         again. The dates default to what is on screen. */ ?>
+								<div class="d-flex flex-wrap align-items-end gap-2 mt-2">
+									<div>
+										<label class="form-label mb-0" for="explain-from"><small>From</small></label>
+										<input type="date" id="explain-from" class="form-control form-control-sm">
+									</div>
+									<div>
+										<label class="form-label mb-0" for="explain-to"><small>To</small></label>
+										<input type="date" id="explain-to" class="form-control form-control-sm">
+									</div>
+									<button type="button" id="explain-go" class="btn btn-sm btn-outline-primary"
+									        data-symbol="<?=htmlspecialchars($symbol)?>">Explain this move</button>
+									<button type="button" id="explain-again" class="btn btn-sm btn-outline-secondary"
+									        style="display:none">Regenerate</button>
+								</div>
+								<div id="explain-panel" class="mt-2"></div>
+								<div id="news-panel" class="mt-2"></div>
+								<?php /* After the container, so the script finds it. Only on this
+								         page: a charting library on every page is a download
+								         nobody else needs. */ ?>
+								<script src="/js/lightweight-charts.standalone.production.js"></script>
+								<script src="/js/chart.js"></script>
 							</div>
 							<form action="quote.php">
 							 <input type="hidden" value="<?=$symbol?>" name="symbol"></input>
