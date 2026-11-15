@@ -2532,6 +2532,88 @@ function get_industry_valuation($symbol){
 
 }
 
+/* ---------------------------------------------------------------------------
+   Peer medians for the relative valuations.
+
+   The implied price in price_valuation.value is sector median ratio divided by
+   the share's own ratio, times the price: what the share would cost if it were
+   valued like the rest of its sector. That only says anything if "the rest of
+   its sector" is a real comparison set, and it was not:
+
+   - The median included the share itself. Aerospace & Defense has four members
+     on the live FTSE 350 - BAB 23.3, BA 26.9, MRO 37.9, RR 37.5 - and the
+     median the old query returned for RR was RR's own 37.52, so the implied
+     price came back as the current price and the whole figure was circular.
+   - Four members is not a sample. A median over two or three peers moves
+     wholesale when one of them reports.
+   - The old query took the upper of the two middle values for an even count
+     (HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5), which is a
+     member's own value rather than a median.
+
+   So the comparison set is the peers: the share is excluded, there have to be
+   at least PEER_MEDIAN_MIN_PEERS of them, and an even count averages the two
+   middle values.
+   --------------------------------------------------------------------------- */
+
+/* Below this many peers the median says more about which companies happen to
+   be listed than about the price of anything, so nothing is written. Five
+   leaves two values either side of the middle. */
+if (!defined('PEER_MEDIAN_MIN_PEERS')) { define('PEER_MEDIAN_MIN_PEERS', 5); }
+
+/**
+ * The median of one indicator across a share's peers, or null.
+ *
+ * $group is 'sector' or 'industry'. $symbol is the share being valued and is
+ * left out of its own comparison set. Funds are left out as well, the same way
+ * they are left out of the rankings, and so are the zero values rank_zero
+ * excludes - which is what the statistic_averages medians already did.
+ *
+ * Returns null when there are fewer than $min_peers peers with a value, which
+ * the caller treats as "no comparison to make" rather than as a zero.
+ */
+function peer_median($indicator, $date, $group, $group_value, $symbol,
+                     $min_peers = PEER_MEDIAN_MIN_PEERS) {
+
+	/* Interpolated into the query below, so it is checked against what it is
+	   allowed to be rather than trusted. */
+	if ($group !== 'sector' && $group !== 'industry') {
+		write_log('peer_median', "unknown grouping '".$group."'");
+		return null;
+	}
+
+	if ($group_value === null || trim((string) $group_value) === '')
+		return null;
+
+	$rows = query("select s.value
+	                 from statistics s, stock_symbols ss, screen_indicators si
+	                where s.symbol = ss.symbol
+	                  and s.exchange = ss.exchange
+	                  and si.name = s.indicator
+	                  and s.indicator = ?
+	                  and s.date = ?
+	                  and s.exchange = ?
+	                  and ss.".$group." = ?
+	                  and ss.enabled = 'Y'
+	                  and ss.symbol <> ?
+	                  and if(s.value=0,if(si.rank_zero='N',0,1),1)=1
+	                  ".not_fund_sql('ss.symbol')."
+	                order by s.value",
+	              $indicator, $date, session_exchange(), $group_value, $symbol);
+
+	$values = array_map('floatval', array_column($rows, 'value'));
+	$n = count($values);
+
+	if ($n < $min_peers)
+		return null;
+
+	/* A true median: the middle value, or the mean of the two middle values
+	   when the count is even. */
+	$middle = intdiv($n, 2);
+
+	return ($n % 2 === 1) ? $values[$middle]
+	                      : ($values[$middle - 1] + $values[$middle]) / 2;
+}
+
 //Get Price valuation indicators for Relative to Sector
 function get_relative_to_sector($symbol){
 	//Get statistics job date
@@ -3577,6 +3659,21 @@ function calc_implied_valuation ($date,$symbol){
 		
 	write_log('calc_implied_valuation','symbol='.$symbol);
 
+	/* Clear this date's working before recalculating it. The inserts below had
+	   no delete in front of them, so every run appended another copy: eight
+	   runs of get_statistics.php left 15,888 rows in price_valuation where
+	   there are 1,986 distinct ones, and the AI outlook was sent twenty-four
+	   relative_to_sector rows for RR instead of three.
+
+	   Before the fund check, not after it, so a symbol that has moved into a
+	   fund sector loses the rows it was given as a company. The two
+	   relative_* statistics go the same way: they are written only when a
+	   valuation can be worked out, so without clearing them first a share that
+	   stops qualifying keeps yesterday's answer for ever. */
+	query("delete from price_valuation where symbol=? and date=?", $symbol, $date);
+	clear_statistic($symbol, 'relative_valuation', $date);
+	clear_statistic($symbol, 'relative_industry_valuation', $date);
+
 	/* Funds are out of the sector and industry medians this works from, so a
 	   fund has no comparison set of its own: its sector is all funds and now
 	   has no median at all, and valuing a trust off the median price/book of
@@ -3622,8 +3719,10 @@ function calc_implied_valuation ($date,$symbol){
 		
 				if (isset($indicator_value)&&($indicator_value>0)){
 					
-					//Get Sector Average
-					$avg=get_sector_average($indicator,$date,$sector);
+					//Get the median of the share's sector peers, excluding
+					//the share itself. Null means too few peers to compare
+					//against, which is not the same as a zero.
+					$avg=peer_median($indicator,$date,'sector',$sector,$symbol);
 				
 					write_log('calc_implied_valuation','avg='.$avg);
 				
@@ -3677,6 +3776,13 @@ function calc_implied_valuation ($date,$symbol){
 			
 			//Reset indicator values array
 			$indicator_values=[];
+
+			/* And the valuation itself. It is only assigned when there is
+			   something to average, so the sector figure above was still in
+			   scope here: an industry with nothing to compare against had the
+			   sector's implied price written as its own. With a minimum peer
+			   count that case is no longer rare. */
+			unset($valuation);
 			
 			//Loop though indicators
 		
@@ -3689,8 +3795,9 @@ function calc_implied_valuation ($date,$symbol){
 		
 				if (isset($indicator_value)&&($indicator_value>0)){
 					
-					//Get Industry Average
-					$avg=get_industry_average($indicator,$date,$industry);
+					//Get the median of the share's industry peers, excluding
+					//the share itself.
+					$avg=peer_median($indicator,$date,'industry',$industry,$symbol);
 				
 					//write_log('calc_implied_valuation','avg='.$avg);
 				

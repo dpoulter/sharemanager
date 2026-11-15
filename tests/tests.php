@@ -1537,6 +1537,247 @@
     if ($fund_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $fund_saved_exchange; }
 
+    echo "\n--- the relative valuations are safe to re-run ---\n";
+
+    /* calc_implied_valuation() inserted into price_valuation with no delete in
+       front of it, so every run appended another copy of every row. On the
+       live database eight runs of get_statistics.php left 15,888 rows where
+       there are 1,986 distinct ones, and the AI outlook was handed twenty-four
+       relative_to_sector rows for RR instead of three.
+
+       statistic_averages had the same shape of bug from the other end: the
+       INDUSTRY insert left exchange null while the clean-up deleted "where
+       date<=? and exchange=?", so industry rows were never removed - 5,704
+       rows for one date where there are 920 distinct ones. */
+
+    $pv_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $pv_asof = date('Y-m-d', strtotime('-1 day'));
+    $pv_symbols = ['AAA','BBB','CCC','DDD','EEE','FFF','GGG','HHH','III','JJJ','KKK','LLL'];
+
+    reset_calculated();
+    db()->exec("truncate price_valuation");
+
+    /* One sector and one industry wide enough to have a median. The seed
+       spreads twelve symbols over three sectors of four, and four members is
+       three peers, which is below the floor. */
+    db()->exec("update stock_symbols set sector='Peer Sector', industry='Peer Industry'
+                 where exchange='XLON'");
+
+    db()->exec("delete from screen_indicators where name='pe'");
+    db()->exec("insert into screen_indicators
+                  (name, description, enabled, order_number, calc_rank, rank_zero,
+                   rank_order, rank_negative, rank_funds)
+                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N')");
+
+    $pv_insert = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                                values (?,?,'pe',?,'XLON')");
+    foreach ($pv_symbols as $pv_i => $pv_sym) {
+        $pv_insert->execute([$pv_sym, $pv_asof, 5 + $pv_i * 2]);
+    }
+
+    run_script('get_statistics.php');
+
+    $pv_count = function ($table) use ($pv_asof) {
+        return (int)scalar("select count(*) from $table where date=?", [$pv_asof]);
+    };
+    $pv_before = $pv_count('price_valuation');
+    $sa_before = $pv_count('statistic_averages');
+    check('the first run writes relative valuations at all', $pv_before > 0);
+    check('the first run writes medians at all', $sa_before > 0);
+
+    run_script('get_statistics.php');
+
+    check('re-running the date leaves price_valuation the same size',
+          $pv_count('price_valuation') === $pv_before,
+          $pv_before . ' rows then ' . $pv_count('price_valuation'));
+    check('re-running the date leaves statistic_averages the same size',
+          $pv_count('statistic_averages') === $sa_before,
+          $sa_before . ' rows then ' . $pv_count('statistic_averages'));
+
+    /* Counting rows is not enough on its own: a run that wrote nothing at all
+       would also leave the count unchanged. */
+    check('no symbol has two price_valuation rows for the same indicator and type',
+          (int)scalar("select count(*) from (select symbol,date,indicator,type from price_valuation
+                        group by symbol,date,indicator,type having count(*)>1) d") === 0);
+    check('no average is published twice for the same group and indicator',
+          (int)scalar("select count(*) from (select date,category,indicator,sector,industry,exchange
+                         from statistic_averages group by date,category,indicator,sector,industry,exchange
+                        having count(*)>1) d") === 0);
+
+    /* The industry rows specifically, because they were the ones the delete
+       never matched. */
+    $pv_industry = (int)scalar("select count(*) from statistic_averages
+                                 where category='INDUSTRY' and date=?", [$pv_asof]);
+    check('industry medians are written', $pv_industry > 0);
+    run_script('get_statistics.php');
+    check('industry medians are cleared on a re-run rather than appended',
+          (int)scalar("select count(*) from statistic_averages
+                        where category='INDUSTRY' and date=?", [$pv_asof]) === $pv_industry,
+          $pv_industry . ' rows then '
+          . scalar("select count(*) from statistic_averages where category='INDUSTRY' and date=?", [$pv_asof]));
+    check('every average row carries the exchange the delete matches on',
+          (int)scalar("select count(*) from statistic_averages where exchange is null") === 0,
+          scalar("select count(*) from statistic_averages where exchange is null") . ' rows with none');
+
+    echo "\n--- a peer median excludes the share and needs a real sample ---\n";
+
+    /* Aerospace & Defense has four members on the live FTSE 350 - BAB 23.3,
+       BA 26.9, MRO 37.9, RR 37.5 - and the old query, which took the upper of
+       the two middle values and counted the share itself, returned RR's own
+       37.52 as the sector median for RR. The implied price then came back as
+       the current price, 1351, and the figure meant nothing. */
+
+    $pm_all = "('PM1','PM2','PM3','PM4','PM5','PM6','PM7')";
+    db()->exec("delete from statistics where symbol in $pm_all");
+    db()->exec("delete from stock_symbols where symbol in $pm_all");
+
+    $pm_values = ['PM1' => 1.0, 'PM2' => 2.0, 'PM3' => 3.0, 'PM4' => 4.0,
+                  'PM5' => 5.0, 'PM6' => 100.0, 'PM7' => 6.0];
+    $pm_symbol = db()->prepare("insert into stock_symbols (symbol,name,exchange,enabled,sector,industry)
+                                values (?,?,'XLON','Y','Median Test','Median Industry')");
+    $pm_stat = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                              values (?,?,'pe',?,'XLON')");
+    foreach ($pm_values as $pm_sym => $pm_v) {
+        $pm_symbol->execute([$pm_sym, $pm_sym . ' Test PLC']);
+        $pm_stat->execute([$pm_sym, $pv_asof, $pm_v]);
+    }
+
+    /* Seven members, so any one of them has six peers. For PM6 those are
+       1,2,3,4,5,6: an even count, and neither middle value is the answer. */
+    check('an even number of peers takes the mean of the two middle values',
+          peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM6') === 3.5,
+          var_export(peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM6'), true));
+
+    /* For PM3 the peers are 1,2,4,5,6,100 and the median is 4.5. Counting PM3
+       itself would make it seven values and 4.0, so this says the share is
+       left out rather than merely that the arithmetic is a median. */
+    check('the share is left out of its own median',
+          peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM3') === 4.5,
+          var_export(peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM3'), true));
+
+    check('the industry grouping works the same way',
+          peer_median('pe', $pv_asof, 'industry', 'Median Industry', 'PM6') === 3.5);
+
+    //Six members, so five peers for PM6: 1,2,3,4,5, an odd count.
+    db()->exec("delete from statistics where symbol='PM7'");
+    db()->exec("delete from stock_symbols where symbol='PM7'");
+    check('an odd number of peers takes the middle value',
+          peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM6') === 3.0,
+          var_export(peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM6'), true));
+    check('five peers is enough to publish a median',
+          peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM6') !== null);
+
+    //Five members, so four peers: below the floor.
+    db()->exec("delete from statistics where symbol='PM5'");
+    db()->exec("delete from stock_symbols where symbol='PM5'");
+    check('four peers is not a sample, so nothing is published',
+          peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM6') === null,
+          var_export(peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM6'), true));
+    check('the floor is five peers', PEER_MEDIAN_MIN_PEERS === 5);
+
+    /* A disabled symbol is not a peer, and neither is a fund. */
+    db()->exec("update stock_symbols set enabled='N' where symbol='PM4'");
+    check('a disabled symbol is not counted as a peer',
+          peer_median('pe', $pv_asof, 'sector', 'Median Test', 'PM6') === null);
+    db()->exec("update stock_symbols set enabled='Y' where symbol='PM4'");
+
+    db()->exec("delete from statistics where symbol in $pm_all");
+    db()->exec("delete from stock_symbols where symbol in $pm_all");
+
+    echo "\n--- too few peers means no implied price, not a circular one ---\n";
+
+    /* End to end: back to the seed's three sectors of four, where every group
+       is below the floor, and nothing should be written at all. */
+    db()->exec("truncate price_valuation");
+    foreach ($pv_symbols as $pv_i => $pv_sym) {
+        db()->prepare("update stock_symbols set sector=?, industry=? where symbol=?")
+            ->execute(['Small ' . ($pv_i % 3), 'Small Industry ' . ($pv_i % 3), $pv_sym]);
+    }
+    run_script('get_statistics.php');
+    check('a four member sector produces no relative valuation',
+          $pv_count('price_valuation') === 0,
+          $pv_count('price_valuation') . ' rows');
+    check('and no relative_valuation statistic is left over from the wider run',
+          (int)scalar("select count(*) from statistics
+                        where date=? and indicator in ('relative_valuation','relative_industry_valuation')",
+                      [$pv_asof]) === 0);
+
+    echo "\n--- the outlook is told what the implied price is ---\n";
+
+    /* The model was sent price_valuation.value under the name "relative",
+       beside the ratios it is derived from, and said the figures did not
+       reconcile. It is an implied price in pence: what the share would cost
+       if its ratio matched the median of its peers. */
+    db()->exec("update stock_symbols set sector='Peer Sector', industry='Peer Industry'
+                 where exchange='XLON'");
+    run_script('get_statistics.php');
+
+    $pv_inputs = outlook_share_inputs('AAA', $pv_asof);
+    check('the outlook gets relative valuations to talk about',
+          count($pv_inputs['relative_to_sector']) > 0);
+
+    $pv_row = $pv_inputs['relative_to_sector'][0];
+    check('the implied price is named as an implied price in pence',
+          array_key_exists('implied_price_pence', $pv_row)
+          && !array_key_exists('relative', $pv_row),
+          json_encode(array_keys($pv_row)));
+    check('the distance from the current price is given rather than left to the model',
+          array_key_exists('pct_vs_price', $pv_row), json_encode(array_keys($pv_row)));
+
+    $pv_close = $pv_inputs['price']['close'];
+    check('pct_vs_price is the implied price against the close the panel also shows',
+          $pv_close !== null && $pv_row['implied_price_pence'] !== null
+          && abs($pv_row['pct_vs_price']
+                 - round((($pv_row['implied_price_pence'] / $pv_close) - 1) * 100, 2)) < 0.005,
+          json_encode([$pv_row['implied_price_pence'], $pv_close, $pv_row['pct_vs_price']]));
+
+    $pv_prompt = outlook_system_prompt('share');
+    check('the prompt says what the implied price is, and is not',
+          stripos($pv_prompt, 'implied_price_pence') !== false
+          && stripos($pv_prompt, 'not a forecast') !== false);
+
+    /* The quote page says the same thing in words rather than leaving the
+       reader to work out what a bare number in a column headed "Price" is. */
+    $pv_quote = (string)file_get_contents(dirname(__DIR__) . '/templates/quote.php');
+    check('the quote page labels the sector figure an implied price',
+          strpos($pv_quote, 'Implied price at sector median') !== false);
+    check('the quote page labels the industry figure an implied price',
+          strpos($pv_quote, 'Implied price at industry median') !== false);
+
+    echo "\n--- get_statistics_test.php is out of the live tree ---\n";
+
+    /* An earlier copy of the sector median loop, referenced by nothing. It
+       wrote a get_statistics_asof row into jobs, which is the marker the
+       dashboard, the screens and the quote page resolve their as of date
+       from, so running it by hand would have moved the whole application's
+       idea of today. */
+    check('get_statistics_test.php is no longer in includes',
+          !file_exists($INCLUDES . '/get_statistics_test.php'));
+    check('it is kept in the archive',
+          file_exists(dirname(__DIR__) . '/archive/includes/get_statistics_test.php'));
+    $pv_referenced = [];
+    foreach (glob(dirname(__DIR__) . '/{includes,public,templates}/*.php', GLOB_BRACE) as $pv_file) {
+        if (strpos((string)file_get_contents($pv_file), 'get_statistics_test') !== false) {
+            $pv_referenced[] = basename($pv_file);
+        }
+    }
+    check('nothing in the live tree refers to it', count($pv_referenced) === 0,
+          implode(', ', $pv_referenced));
+
+    //Leave the universe as it was found.
+    foreach ($pv_symbols as $pv_i => $pv_sym) {
+        db()->prepare("update stock_symbols set sector=?, industry=? where symbol=?")
+            ->execute(['Sector ' . ($pv_i % 3), 'Industry ' . ($pv_i % 4), $pv_sym]);
+    }
+    db()->exec("delete from screen_indicators where name='pe'");
+    db()->exec("truncate price_valuation");
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($pv_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $pv_saved_exchange; }
+
     echo "\n--- the price log names the provider that actually ran ---\n";
 
     /* An FMP run logged "EODHD 2021-11-15 to 2026-11-13: 350 symbols loaded". */

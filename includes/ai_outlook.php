@@ -105,6 +105,11 @@ How to answer:
 - A percentile of null means the figure was deliberately left unranked, not
   that it is zero or unknown. A negative valuation ratio is unranked because
   the ratio has no meaning for a loss-making company, not because it is cheap.
+- relative_to_sector compares one ratio at a time. implied_price_pence is
+  what the share would cost if that ratio matched the median of its sector
+  peers, and pct_vs_price is how far that sits from today's close. It is
+  arithmetic on one ratio, not a forecast or a target, and the entry is
+  absent where there were too few peers to compare against.
 - is_fund true means an investment trust or fund, not an operating company.
   Its P/E, price/sales, price/book and return on equity describe a portfolio
   seen through a share price and a discount, not a business, so do not read
@@ -249,12 +254,20 @@ How to answer:
 			            "average_cost" => $held[0]['avg_cost'] === null ? null : (float) $held[0]['avg_cost']];
 		}
 
+		/* price_valuation.value is not a ratio and not a score: it is what the
+		   share would cost if its ratio matched the median of its sector
+		   peers, in pence. Sent as "relative" it read as a number that should
+		   line up with the ratios beside it, and the model said the figures
+		   did not reconcile. The name says what it is, and pct_vs_price saves
+		   the model working out the only thing anyone does with it. */
 		$relative = [];
 		foreach ((array) @get_relative_to_sector($symbol) as $row) {
+			$implied = $row['value'] === null ? null : (float) $row['value'];
 			$relative[] = ["indicator" => $row['indicator'],
 			               "share" => $row['share_stat'] === null ? null : (float) $row['share_stat'],
 			               "sector" => $row['sector_stat'] === null ? null : (float) $row['sector_stat'],
-			               "relative" => $row['value'] === null ? null : (float) $row['value']];
+			               "implied_price_pence" => $implied,
+			               "pct_vs_price" => outlook_pct_from($implied, $close["value"])];
 		}
 
 		return [

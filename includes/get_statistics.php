@@ -33,8 +33,17 @@
 		
 		//write_log("get_statistics.php","Clear all Average statistics before As of date");
 		
-	    // Clear all Average statistics before as of date
-		query("delete from statistic_averages where date<=? and exchange=?",date_format($asOfDate,'Y-m-d'),$_SESSION["exchange"]);
+	    /* Clear all Average statistics before as of date.
+	
+	       The INDUSTRY insert below used to leave exchange null while this
+	       delete matched on it, so industry rows were never cleared and every
+	       run added another set: 5,704 rows for one date where there are 920
+	       distinct ones. The insert now writes the exchange like the other
+	       two, and this also clears any row that still has none, which is
+	       exactly the rows that bug left behind - so the live table tidies
+	       itself on the next run rather than needing a migration. Once those
+	       are gone the "or exchange is null" arm matches nothing and can go. */
+		query("delete from statistic_averages where date<=? and (exchange=? or exchange is null)",date_format($asOfDate,'Y-m-d'),$_SESSION["exchange"]);
 			
 		//write_log("get_statistics.php","Calculate Market Median for all statistics");
 			
@@ -94,7 +103,7 @@
 				GROUP BY x.indicator,x.value, ssx.industry HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5
 				LIMIT 1",date_format($asOfDate,'Y-m-d'),$indicator['name'],$industry['industry'],$_SESSION["exchange"]);
 				if(count($avg)>0) {
-					query("insert into statistic_averages (date, category, indicator,type, value, industry) values (?,?,?,?,?,?)",date_format($asOfDate,'Y-m-d'),'INDUSTRY',$avg[0]['indicator'],'MEDIAN',$avg[0]['value'],$avg[0]['industry']);
+					query("insert into statistic_averages (date, category, indicator,type, value, industry, exchange) values (?,?,?,?,?,?,?)",date_format($asOfDate,'Y-m-d'),'INDUSTRY',$avg[0]['indicator'],'MEDIAN',$avg[0]['value'],$avg[0]['industry'],$_SESSION["exchange"]);
 				}
 			}
 	 		

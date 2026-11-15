@@ -75,6 +75,18 @@ does not recognise the `.php~` extension serves the file as plain text, which
 publishes the source, and these copies still contain the old hard-coded API
 keys.
 
+## archive/includes
+
+`get_statistics_test.php` - an earlier copy of the sector median loop out of
+`get_statistics.php`, 38 lines, referenced by nothing: no include, no cron
+entry, no link, and no caller anywhere in the tree. It had drifted a long way
+from the live copy - no exchange scoping on any of its queries or on the row it
+wrote, no fund exclusion, and the old upper-middle median - and it ended by
+inserting a `get_statistics_asof` row into `jobs`. That marker is what the
+dashboard, the screens and the quote page resolve their as of date from, so
+running this by hand would have moved the whole application's idea of "today"
+onto whatever date it had just half-calculated.
+
 ## Restoring
 
 ```sh

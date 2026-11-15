@@ -252,6 +252,7 @@
 	  				<div class="card card-default">
 	  					<div class="card-header">
 							Price Valuation
+							<small class="text-body-secondary d-block">Implied price if the share were valued like its peers</small>
 						</div>
 						<div class="card-body">
 							<table class="table table-borderless table-sm">
@@ -272,7 +273,7 @@
 									<a data-bs-toggle="modal" href="#RelativeSectorModal" >Relative to Sector</a>  <?php $valuation['ratio']?>
 								</td>	
 		  						<td style="text-align:right">
-		  							<span data-bs-toggle="tooltip" title="<?php print($ratio)?>%" class="badge <?php print($label_color)?>"><?php print($valuation["value"])?></span>
+		  							<span data-bs-toggle="tooltip" title="Implied price at sector median: <?php print($ratio)?>% of the current price" class="badge <?php print($label_color)?>"><?php print($valuation["value"])?></span>
 								</td>
 							</tr>
 							<tr>
@@ -293,7 +294,7 @@
 									<a data-bs-toggle="modal" href="#RelativeIndustryModal" >Relative to Industry</a>  <?php $industry_valuation['ratio']?>
 								</td>	
 		  						<td style="text-align:right">
-		  							<span data-bs-toggle="tooltip" title="<?php print($ratio)?>%" class="badge <?php print($label_color)?>"><?php print($industry_valuation["value"])?></span>
+		  							<span data-bs-toggle="tooltip" title="Implied price at industry median: <?php print($ratio)?>% of the current price" class="badge <?php print($label_color)?>"><?php print($industry_valuation["value"])?></span>
 								</td>
 							</tr>
 							</table>
@@ -732,7 +733,7 @@
 					<div class="modal-body">
 						<table class="table borderless">
 			    
-						<th>Ratio</th><th>Share</th><th>Sector</th><th>Price</th>
+						<th>Ratio</th><th>Share</th><th>Sector median (peers)</th><th>Implied price at sector median</th>
 						<tbody>
 							<?php foreach($relative_sector_valuations as $sector_valuation): ?>
 							<tr>
@@ -773,7 +774,7 @@
 					<div class="modal-body">
 						<table class="table borderless">
 			    
-						<th>Ratio</th><th>Share</th><th>Industry</th><th>Price</th>
+						<th>Ratio</th><th>Share</th><th>Industry median (peers)</th><th>Implied price at industry median</th>
 						<tbody>
 							<?php foreach($relative_industry_valuations as $valuation): ?>
 							<tr>
