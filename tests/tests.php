@@ -2881,7 +2881,7 @@
     $hs_saved_exchange = $_SESSION["exchange"] ?? null;
     $_SESSION["exchange"] = 'XLON';
     $hs_asof = asof_date();
-    $hs_all  = "('HMAN','HBNK','HLOW')";
+    $hs_all  = "('HMAN','HBNK','HLOW','HMID')";
 
     $run_python_hs = function ($script) {
         $cmd = 'SM_DB_HOST=' . escapeshellarg(SERVER)
@@ -2927,8 +2927,23 @@
                 values ('roe_ttm','KeyMetrics.returnOnEquityTTM','Return on equity','Y',2,
                         'Y','N','value DESC','NORMAL','N','NONE',10)");
 
-    $hs_rows = ['HMAN' => ['sector' => 'Industrials',        'p' => 7, 'z' => 3.09, 'roe' => 0.20],
-                'HBNK' => ['sector' => 'Financial Services', 'p' => 6, 'z' => 0.40, 'roe' => 0.18],
+    /* Arranged so that summing and averaging disagree about the order, which
+       is the only way to show that the quality score averages. The component
+       percentiles that follow from these, over four symbols for roe and
+       Piotroski and three for Altman:
+
+                  roe   piotroski   altman      average   sum
+         HBNK      75          75   (excluded)       75   150
+         HMID      50          50          67        56   167
+         HMAN      25          25          33        28    83
+         HLOW       0           0           0         0     0
+
+       So the bank, scored on the two measures that apply to it, is first on
+       an average and second on a sum - behind a company that is worse on
+       both of them and has one more figure. */
+    $hs_rows = ['HMAN' => ['sector' => 'Industrials',        'p' => 7, 'z' => 3.09, 'roe' => 0.10],
+                'HMID' => ['sector' => 'Industrials',        'p' => 8, 'z' => 4.00, 'roe' => 0.20],
+                'HBNK' => ['sector' => 'Financial Services', 'p' => 9, 'z' => 0.40, 'roe' => 0.30],
                 'HLOW' => ['sector' => 'Industrials',        'p' => 2, 'z' => 1.10, 'roe' => 0.05]];
     $hs_sym  = db()->prepare("insert into stock_symbols (symbol,name,exchange,enabled,sector,industry,market,report_ccy,report_ccy_asof,is_fund)
                               values (?,?,'XLON','Y',?,'Health Industry','FTSE 250','GBP',?,'N')");
@@ -3018,25 +3033,36 @@
                                and s.percentile is not null", [$symbol, $hs_asof]);
     };
     check('the bank is scored on two components and the manufacturers on three',
-          $hs_components('HBNK') === 2 && $hs_components('HMAN') === 3,
-          json_encode([$hs_components('HBNK'), $hs_components('HMAN')]));
+          $hs_components('HBNK') === 2 && $hs_components('HMAN') === 3
+          && $hs_components('HMID') === 3,
+          json_encode([$hs_components('HBNK'), $hs_components('HMAN'), $hs_components('HMID')]));
 
     $hs_quality = function ($symbol) use ($hs_asof) {
         $v = scalar("select value from statistics where symbol=? and indicator='quality_score' and date=?",
                     [$symbol, $hs_asof]);
         return ($v === false || $v === null) ? null : (float)$v;
     };
-    check('all three are scored',
+    check('all four are scored',
           $hs_quality('HMAN') !== null && $hs_quality('HBNK') !== null
-          && $hs_quality('HLOW') !== null,
-          json_encode([$hs_quality('HMAN'), $hs_quality('HBNK'), $hs_quality('HLOW')]));
-    /* HBNK's two applicable measures are both better than HLOW's three, so
-       on an average it beats it. On a sum HLOW's extra component could carry
-       it past, which is the penalty for a gap this removes. */
-    check('a bank with good figures beats a weak manufacturer with more of them',
-          $hs_quality('HBNK') > $hs_quality('HLOW'),
+          && $hs_quality('HMID') !== null && $hs_quality('HLOW') !== null,
+          json_encode([$hs_quality('HMAN'), $hs_quality('HMID'),
+                       $hs_quality('HBNK'), $hs_quality('HLOW')]));
+    check('the components ranked as the table above assumes',
+          $hs_pct('HBNK', 'roe_ttm') === 75.0 && $hs_pct('HMID', 'roe_ttm') === 50.0
+          && $hs_pct('HBNK', 'piotroski_score') === 75.0
+          && $hs_pct('HMID', 'piotroski_score') === 50.0
+          && $hs_pct('HMID', 'altman_z') === 67.0,
+          json_encode([$hs_pct('HBNK','roe_ttm'), $hs_pct('HMID','roe_ttm'),
+                       $hs_pct('HBNK','piotroski_score'), $hs_pct('HMID','piotroski_score'),
+                       $hs_pct('HMID','altman_z')]));
+    /* The bank is better than HMID on both measures that apply to it. On an
+       average it is first; on a sum HMID's third component carries it past,
+       which is a reward for having a figure rather than for being sound. */
+    check('a bank beats a company that is worse on both measures that apply to it',
+          $hs_quality('HBNK') > $hs_quality('HMID'),
           'HBNK ' . var_export($hs_quality('HBNK'), true)
-          . ', HLOW ' . var_export($hs_quality('HLOW'), true));
+          . ', HMID ' . var_export($hs_quality('HMID'), true)
+          . ' - summing rather than averaging puts HMID first on count alone');
     check('the quality score is an average in the query, not only in its effect',
           preg_match('/category = 10[^"]*sum\(if\(percentile is null,50,percentile\)\)\/count\(\*\)/s', $hs_job) === 1
           || preg_match('/sum\(if\(percentile is null,50,percentile\)\)\/count\(\*\)[^"]*category = 10/s', $hs_job) === 1);
