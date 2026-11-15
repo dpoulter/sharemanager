@@ -162,6 +162,72 @@
     //has no published limit and answers 429 when it has had enough.
     define("NEWS_FETCH_INTERVAL",     (float) (getenv("NEWS_FETCH_INTERVAL") ?: 1.0));
 
+    //----------------------------------------------------------------------
+    //Regulatory announcements (RNS), from Investegate.
+    //----------------------------------------------------------------------
+
+    //Where the announcements come from. Overridable so the suite can point
+    //the fetcher at tools/investegate_stub.php rather than the real site: no
+    //test makes a live request.
+    define("RNS_BASE_URL",  getenv("RNS_BASE_URL") ?: "https://www.investegate.co.uk");
+
+    //Seconds between requests. Two, not one: Investegate is a small site
+    //serving full documents rather than a feed, 350 company pages at this
+    //rate is twelve minutes, and there is nothing to be gained by going
+    //faster than a person reading.
+    define("RNS_FETCH_INTERVAL", (float) (getenv("RNS_FETCH_INTERVAL") ?: 2.0));
+
+    //A User-Agent that says what this is and whose it is. A site owner who
+    //wants it to stop should be able to tell who to ask; a generic browser
+    //string would be hiding.
+    define("RNS_USER_AGENT", getenv("RNS_USER_AGENT")
+           ?: "sharemanager/1.0 (private portfolio tool; one request per 2s)");
+
+    //How far back the first run goes. After that the nightly run only needs
+    //yesterday, but the table starts empty and a month of history is what
+    //makes the first "In the news" page worth looking at.
+    define("RNS_BACKFILL_DAYS", (int) (getenv("RNS_BACKFILL_DAYS") ?: 30));
+
+    //How much of a document is sent to the scorer. A set of annual results
+    //runs to tens of thousands of words of accounting policies; the
+    //highlights, the outlook and the chief executive's statement are at the
+    //front. Truncation is recorded on the row so a summary built from half a
+    //document is not mistaken for one built from all of it.
+    define("RNS_BODY_MAX_CHARS", (int) (getenv("RNS_BODY_MAX_CHARS") ?: 12000));
+
+    //How much text a page must hold before it counts as an announcement
+    //rather than as the site's limit modal. The modal is a few lines; the
+    //shortest real RNS - a one-line board change - still runs to a few
+    //hundred characters of boilerplate.
+    define("RNS_MIN_BODY_CHARS", (int) (getenv("RNS_MIN_BODY_CHARS") ?: 400));
+
+    //How many announcements one run may score. Lower than the headline cap
+    //because each one is a document rather than a title: a request here is
+    //thousands of input tokens, not twenty.
+    define("RNS_SCORE_MAX_PER_RUN", (int) (getenv("RNS_SCORE_MAX_PER_RUN") ?: 300));
+
+    //How many consecutive fetches may fail, or come back as a limit page,
+    //before the run gives up for the night and leaves the rest for tomorrow.
+    define("RNS_MAX_REFUSALS", (int) (getenv("RNS_MAX_REFUSALS") ?: 3));
+
+    //The first back-off after a refusal, in seconds, multiplied by how many
+    //refusals have happened. A site answering 429 wants less traffic, not the
+    //same traffic a second later. Zero in the suite, which has no real site
+    //to be polite to.
+    define("RNS_BACKOFF_SECONDS", (int) (getenv("RNS_BACKOFF_SECONDS") ?: 5));
+
+    //When the London market closes, in London time. An announcement at or
+    //after this is measured from the same day's close; one before it - which
+    //is most of them, since RNS goes out around 07:00 - is measured from the
+    //previous trading day's close.
+    define("RNS_MARKET_CLOSE", getenv("RNS_MARKET_CLOSE") ?: "16:30");
+
+    //The zone the market keeps. published_at is stored UTC, and in summer
+    //London is an hour ahead of it: a 07:00 BST release is 06:00 UTC, and
+    //comparing that against a clock time without converting would put some
+    //announcements on the wrong side of the close.
+    define("RNS_MARKET_TZ", getenv("RNS_MARKET_TZ") ?: "Europe/London");
+
     //Output tokens per generation, thinking included. Raise it for a model
     //that thinks at length; it cannot go below 4000, because a budget too
     //small to finish in does not save money, it buys truncated answers.

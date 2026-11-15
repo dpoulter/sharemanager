@@ -87,12 +87,18 @@ fi
 # screen reading a sentiment indicator sees today's figure rather than
 # yesterday's.
 #
-# This one talks to Google at a request a second and to Anthropic in batches
-# of twenty, so it is the slowest job here - about six minutes for 350
-# symbols - and the one most likely to be refused by the other end. It is
-# allowed to fail without taking the run with it: no headlines is a worse
-# dashboard, not a broken one.
-"$PHP" "$APP_DIR/includes/fetch_news.php" || echo "refresh_all: news failed" >&2
+# This one talks to Investegate at a request every two seconds and to
+# Anthropic once per announcement, so it is the slowest job here - a quarter
+# of an hour for 350 companies on a normal night, longer while the first
+# month is being backfilled - and the one most likely to be refused by the
+# other end. It is allowed to fail without taking the run with it: no
+# announcements is a worse dashboard, not a broken one.
+#
+# It replaced fetch_news.php, which read Google News headlines. That source
+# is retired rather than deleted: includes/fetch_news.php still runs by hand
+# and news_articles still holds what it collected. Of 1,600 scored headlines
+# 85% scored nought, which is what regulatory announcements are here to fix.
+"$PHP" "$APP_DIR/includes/fetch_rns.php" || echo "refresh_all: announcements failed" >&2
 
 # Incremental by default (most recent as of date per symbol). To rebuild
 # history run manually with a date range, e.g.

@@ -23,7 +23,7 @@
 	require_once("constants.php");
 	require_once("llm.php");
 	require_once("vault.php");
-	require_once("news.php");
+	require_once("rns.php");
 
 	/**
 	 * The shape the answer must take.
@@ -471,48 +471,40 @@ How to answer:
 	}
 
 	/**
-	 * Headlines for the prompt, in the same shape the News tab renders.
+	 * The company's recent announcements, for the prompt.
+	 *
+	 * Scored regulatory announcements from the last thirty days, which is
+	 * what this used to get from the Google headline store and before that
+	 * from the live feed. The shape is unchanged - date, sentiment,
+	 * impact_type, summary, source - so the prompt and the panel did not
+	 * need touching; what changed is that the summaries are now of a
+	 * company's own words rather than of somebody's article about them.
+	 *
+	 * Still summaries rather than full text, for two reasons: a results
+	 * statement would eat the whole prompt, and a summary the scorer
+	 * produced from text it was told to treat as data is a smaller injection
+	 * surface than the document itself.
+	 *
+	 * No fallback to the live headline feed any more. It is retired, and
+	 * reaching for Google News to pad out a panel about regulatory news
+	 * would be putting back the thing this replaced. An empty list is the
+	 * honest answer for a company that has announced nothing, and
+	 * outlook_wanted_tags() and the prompt both already handle one.
 	 */
 	function outlook_headlines($symbol, $limit = 8) {
 
-		/* Scored headlines out of the store, where there are any. A summary
-		   somebody has already read the article for is shorter than the
-		   title it came from, says more, and is a smaller injection surface:
-		   the scorer was told the headline was data and the model here is
-		   reading its answer rather than the raw feed.
-
-		   Falling back to the live feed keeps the panel working on the day
-		   this ships, before the nightly job has stored anything, and on a
-		   symbol the feed has nothing for. */
 		$out = [];
-		foreach ((array) @news_recent_scored($symbol, $limit) as $article) {
-			$out[] = ["date"        => (string) $article['published'],
-			          "sentiment"   => $article['sentiment'] === null
-			                           ? null : (float) $article['sentiment'],
-			          "impact_type" => (string) $article['impact_type'],
-			          "summary"     => (string) $article['summary'],
-			          "source"      => (string) $article['publisher']];
+		foreach ((array) @rns_recent_scored($symbol, 30, $limit) as $announcement) {
+			$out[] = ["date"            => (string) $announcement['published'],
+			          "sentiment"       => $announcement['sentiment'] === null
+			                               ? null : (float) $announcement['sentiment'],
+			          "impact_type"     => (string) $announcement['ann_type'],
+			          "vs_expectations" => (string) $announcement['vs_expectations'],
+			          "summary"         => (string) $announcement['summary'],
+			          "source"          => (string) $announcement['source']];
 		}
 
-		if (count($out)) { return $out; }
-
-		foreach ((array) @get_articles($symbol) as $article) {
-			$out[] = ["title" => (string) $article['title'],
-			          "date"  => (string) $article['pubdate'],
-			          "source"=> outlook_article_source($article)];
-			if (count($out) >= $limit) { break; }
-		}
 		return $out;
-	}
-
-	/**
-	 * Google News puts the publication after a dash in the title and again in
-	 * the description; the title is the reliable one.
-	 */
-	function outlook_article_source($article) {
-		$title = (string) ($article['title'] ?? '');
-		$at = strrpos($title, ' - ');
-		return $at === false ? '' : trim(substr($title, $at + 3));
 	}
 
 	/**

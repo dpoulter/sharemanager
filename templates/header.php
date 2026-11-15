@@ -70,6 +70,7 @@ header("Expires: 0"); // Proxies.
 		<!--<li class="dropdown"><a href="#" class="dropdown-toggle" data-bs-toggle="dropdown" role="button" aria-expanded="false">Screens<span class="caret"></span></a>
           		<ul class="dropdown-menu" role="menu">
 				<li><a href="screen_list.php">List Screens</a></li>
+				<li><a href="in_the_news.php">In the news</a></li>
 				</ul>
         </li>          		
 		-->
@@ -109,6 +110,9 @@ header("Expires: 0"); // Proxies.
       </li>
       <li class="nav-item active">
         <a class="nav-link" href="screen_list.php">Screens<span class="visually-hidden">(current)</span></a>
+      </li>
+      <li class="nav-item active">
+        <a class="nav-link" href="in_the_news.php">In the news<span class="visually-hidden">(current)</span></a>
       </li>
       <li class="nav-item active">
         <a class="nav-link" href="logout.php">Log Out<span class="visually-hidden">(current)</span></a>

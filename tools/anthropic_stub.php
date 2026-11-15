@@ -207,7 +207,62 @@ function stub_news_scores($payload, $shift_ids = false) {
     return ["scores" => $scores];
 }
 
+/* A score for one regulatory announcement, derived from the text that was
+   sent so a test can predict it: a document that says "ahead of" is good
+   news and one that says "below" is not. */
+function stub_rns_score($payload) {
+
+    $text = '';
+    foreach ((array) ($payload['messages'] ?? []) as $message) {
+        $content = $message['content'] ?? '';
+        $text .= is_string($content) ? $content : json_encode($content);
+    }
+
+    $good = preg_match('~\bahead of\b|\babove the top end\b|\bcontract win\b~i', $text);
+    $bad  = preg_match('~\bbelow\b|\bprofit warning\b|\bshortfall\b~i', $text);
+
+    $type = 'other';
+    if (preg_match('~trading update~i', $text))  { $type = 'trading update'; }
+    if (preg_match('~profit warning~i', $text))  { $type = 'profit warning'; }
+    if (preg_match('~purchase of shares|director~i', $text)) { $type = 'director dealing'; }
+
+    return [
+        "sentiment"       => $bad ? -0.6 : ($good ? 0.6 : 0.0),
+        "type"            => $type,
+        "vs_expectations" => $good ? 'beat' : ($bad ? 'missed' : 'not stated'),
+        "summary"         => "A stubbed reading of the announcement that was sent.",
+        "key_figures"     => preg_match('~1\.2bn~', $text)
+                             ? ["revenue +7% to GBP1.2bn"] : [],
+        "bull_point"      => "The stub found something to like.",
+        "bear_point"      => "The stub found something to worry about.",
+    ];
+}
+
 switch ($mode) {
+
+    case 'rns_ok':
+        //One score for one announcement, read off the text that was sent.
+        print(json_encode(stub_message(stub_rns_score($payload), false,
+                                       $payload['model'] ?? 'claude-haiku-5-5')));
+        break;
+
+    case 'rns_bad_fields':
+        //The right shape with values the schema would not have allowed: a
+        //type outside the list and a verdict that is not one of the four.
+        $bad = stub_rns_score($payload);
+        $bad['type'] = 'vibes';
+        $bad['vs_expectations'] = 'probably fine';
+        print(json_encode(stub_message($bad, false,
+                                       $payload['model'] ?? 'claude-haiku-5-5')));
+        break;
+
+    case 'rns_long_summary':
+        //Sixty words where forty were asked for. Trimmed, not refused.
+        $long = stub_rns_score($payload);
+        $long['summary'] = trim(str_repeat('word ', 60));
+        print(json_encode(stub_message($long, false,
+                                       $payload['model'] ?? 'claude-haiku-5-5')));
+        break;
 
     case 'news_ok':
         //One score per id, matched back to the headline it is about.

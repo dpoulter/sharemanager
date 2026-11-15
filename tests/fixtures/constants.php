@@ -61,6 +61,30 @@
     define("NEWS_SCORE_MAX_PER_RUN",  (int) (getenv("NEWS_SCORE_MAX_PER_RUN") ?: 1000));
     define("NEWS_SCORE_BATCH",        (int) (getenv("NEWS_SCORE_BATCH") ?: 20));
     define("NEWS_FETCH_INTERVAL",     (float) (getenv("NEWS_FETCH_INTERVAL") ?: 1.0));
+    // Regulatory announcements. RNS_BASE_URL points at the stub in the suite.
+    define("RNS_BASE_URL",  getenv("RNS_BASE_URL") ?: "https://www.investegate.co.uk");
+    define("RNS_FETCH_INTERVAL", (float) (getenv("RNS_FETCH_INTERVAL") ?: 2.0));
+    define("RNS_USER_AGENT", getenv("RNS_USER_AGENT")
+           ?: "sharemanager/1.0 (private portfolio tool; one request per 2s)");
+    define("RNS_BACKFILL_DAYS", (int) (getenv("RNS_BACKFILL_DAYS") ?: 30));
+    define("RNS_BODY_MAX_CHARS", (int) (getenv("RNS_BODY_MAX_CHARS") ?: 12000));
+    //How much text a page must hold before it counts as an announcement
+    //rather than as the site's limit modal. The modal is a few lines; the
+    //shortest real RNS - a one-line board change - still runs to a few
+    //hundred characters of boilerplate.
+    define("RNS_MIN_BODY_CHARS", (int) (getenv("RNS_MIN_BODY_CHARS") ?: 400));
+
+    define("RNS_SCORE_MAX_PER_RUN", (int) (getenv("RNS_SCORE_MAX_PER_RUN") ?: 300));
+    define("RNS_MAX_REFUSALS", (int) (getenv("RNS_MAX_REFUSALS") ?: 3));
+    //The first back-off after a refusal, in seconds, multiplied by how many
+    //refusals have happened. A site answering 429 wants less traffic, not the
+    //same traffic a second later. Zero in the suite, which has no real site
+    //to be polite to.
+    define("RNS_BACKOFF_SECONDS", (int) (getenv("RNS_BACKOFF_SECONDS") ?: 5));
+
+    define("RNS_MARKET_CLOSE", getenv("RNS_MARKET_CLOSE") ?: "16:30");
+    define("RNS_MARKET_TZ", getenv("RNS_MARKET_TZ") ?: "Europe/London");
+
     define("ANTHROPIC_TIMEOUT", (int)(getenv('ANTHROPIC_TIMEOUT') ?: 90));
     define("ANTHROPIC_MAX_TOKENS", (int)(getenv('ANTHROPIC_MAX_TOKENS') ?: 4000));
 

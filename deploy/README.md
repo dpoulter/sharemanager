@@ -166,6 +166,7 @@ sudo mariadb sharemanager < sql/shareholder_yield.sql
 sudo mariadb sharemanager < sql/fmp_scores.sql
 sudo mariadb sharemanager < sql/news.sql
 sudo mariadb sharemanager < sql/trending_value.sql
+sudo mariadb sharemanager < sql/rns.sql
 ```
 
 `sql/trending_value.sql` changes the Value score on the home page and the
@@ -188,6 +189,91 @@ Every `sql/*.sql` above is re-runnable, so a later `git pull` can just run
 them all again rather than working out which are new. Two currently need it
 on a database that already has the others: `sql/fund_sectors.sql` adds
 `stock_symbols.is_fund`, and `sql/fmp_scores.sql` is new.
+
+## Regulatory announcements, and Investegate's terms
+
+The nightly news job reads companies' own regulatory announcements from
+Investegate instead of Google News headlines. `includes/fetch_rns.php`
+replaced `includes/fetch_news.php` in `refresh_all.sh`; the headline job and
+the `news_articles` table are both still there and can still be run and read
+by hand.
+
+**The terms matter and they shape the design.** Investegate's terms of use are
+for private investors using the site in a personal capacity: extracts may be
+kept for personal reference, and redistribution, republishing and commercial
+use are forbidden. This application fits that - it is one person's portfolio
+tool, behind Authelia, reachable over Tailscale only - and it has to stay
+fitting it:
+
+- announcement text is stored to be scored and to be shown inside the app, and
+  nowhere else;
+- nothing that shows announcement text may be served outside the login. The
+  suite checks that `public/in_the_news.php` redirects an anonymous request
+  and that no announcement text reaches it;
+- if this is ever opened up beyond Tailscale, the announcement text has to
+  stop being served first.
+
+Investegate shows signed-out readers an announcement limit. The fetcher looks
+for it on every page and **stops the run for the night** when it finds one,
+leaving the rest for tomorrow - so the first month's backfill may take several
+nights. That is the intended behaviour. Do not add a login and do not work
+round the limit.
+
+Rate: one request every two seconds (`RNS_FETCH_INTERVAL`), a User-Agent that
+names the application (`RNS_USER_AGENT`), robots.txt fetched and honoured
+before anything else, and a refusal count (`RNS_MAX_REFUSALS`) that ends the
+run on repeated 429s or 5xx. About a quarter of an hour for 350 companies on
+a normal night.
+
+### What has not been checked against a real page
+
+This was written in a session with no network route to investegate.co.uk, so
+the parsing was built to depend on as little of the markup as possible and
+tested against fixtures of the documented shape. Two things to check on the
+first run, in this order:
+
+1. **`rns_body()` in `includes/rns.php`** - how the announcement text is
+   pulled out of the page. It uses no class names or ids, so the likely
+   failure is not "no text" but "the text plus some navigation". Read one
+   saved announcement page through it before trusting a month of scores. A
+   page that yields less than `RNS_MIN_BODY_CHARS` of text is not stored, so
+   a total failure shows up as nothing being collected rather than as rubbish
+   being scored.
+2. **The TIDM.** `stock_symbols.tidm` starts empty. The fetcher tries the
+   symbol, then the symbol with a trailing dot (Rolls-Royce is `RR` here and
+   `RR.` on Investegate), and writes back whichever answered. Check the column
+   fills up over the first run or two; fill in by hand anything stubborn,
+   `BT.A` being the obvious candidate.
+
+Also unverified: whether Investegate has a full-day announcements index that
+would replace 350 company-page requests with one. The brief's own note said
+`/today-announcements/` served five links without JavaScript. The fetcher
+takes the company-page route, which is known to work; everything downstream of
+`rns_announcement_links()` is indifferent to where the links came from, so
+switching is a change to one loop.
+
+### Tuning what gets skipped
+
+Most of an RNS feed is housekeeping - buyback paperwork, voting rights,
+holdings notices. `rns_skip_rules` holds the list, so tuning it is an update
+rather than a deploy:
+
+```sql
+-- stop skipping something
+update rns_skip_rules set enabled='N' where pattern='Notice of AGM';
+-- skip something new
+insert into rns_skip_rules (pattern, keep_if, description, enabled)
+values ('Quarterly Filing', null, 'Routine.', 'Y');
+```
+
+`keep_if` is the exception: `Director/PDMR Shareholding` is skipped unless the
+title says purchase, sale, bought or sold, because a director spending their
+own money is one of the few real signals in the feed.
+
+After the first night, read a sample by eye and check the cost: the per-call
+tokens and cost are on each row (`input_tokens`, `output_tokens`, `cost_usd`),
+so `select sum(cost_usd), count(*) from rns_announcements where scored_at is
+not null` is the real figure to set `RNS_SCORE_MAX_PER_RUN` from.
 
 ## News features, and what was left out
 

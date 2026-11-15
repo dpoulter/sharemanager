@@ -1,7 +1,8 @@
 <?php
 
     // configuration
-    require("../includes/config.php"); 
+    require("../includes/config.php");
+    require_once("../includes/rns.php"); 
 
 	
 	// if form was submitted
@@ -151,9 +152,12 @@
 			write_log("quote.php","Get category_indicators");
 			$category_indicators=get_indicators();
 
-			//The News tab. get_articles() fetches an external feed, so it comes
-			//back empty on a host with no outbound network and the tab says so.
-			$articles=get_articles($symbol);
+			/* The News tab. Stored regulatory announcements, newest first -
+			   the company's own words, already read and scored by the nightly
+			   job - rather than a live Google News call on every page load.
+			   Nothing is fetched while somebody waits for the page, and the
+			   tab shows the same rows as the "In the news" page. */
+			$announcements = rns_recent($symbol, 10);
 
 
 			//render form
@@ -166,7 +170,7 @@
 					, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"screen_id"=>$screen_id,"incomestatement"=>$income_statement
 					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
 					,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks
-					,"qualityranks"=>$qualityranks,"articles"=>$articles,"health_scores"=>$health_scores
+					,"qualityranks"=>$qualityranks,"announcements"=>$announcements,"health_scores"=>$health_scores
 					,"currency_note"=>$currency_note]);
 			 else
 				render("quote.php", ["title" => session_exchange().":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
@@ -176,7 +180,7 @@
 					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics
 					,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics
 					,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks,"qualityranks"=>$qualityranks
-					,"articles"=>$articles
+					,"announcements"=>$announcements
 					,"health_scores"=>$health_scores,"currency_note"=>$currency_note]);
 
 			

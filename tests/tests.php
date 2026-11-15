@@ -18,6 +18,7 @@
     require_once("llm.php");
     require_once("vault.php");
     require_once("news.php");
+    require_once("rns.php");
     require_once("ai_outlook.php");
 
     $INCLUDES = dirname(__DIR__) . '/includes';
@@ -3567,11 +3568,17 @@
         }
         return -1;
     };
-    check('the news job is in the nightly run', $nw_line('fetch_news.php') >= 0);
+    /* The nightly run fetches announcements now, not headlines. These three
+       checks moved with it rather than being deleted: what they are about is
+       that the news job runs after the prices - because its as of date is the
+       newest date in historical_prices - and that it cannot take the run down
+       with it. Both are still true of the job that replaced it, and the
+       announcements section further down asserts the swap itself. */
+    check('the news job is in the nightly run', $nw_line('fetch_rns.php') >= 0);
     check('after the prices, which is where its as of date comes from',
-          $nw_line('get_share_prices.php') < $nw_line('fetch_news.php'));
+          $nw_line('get_share_prices.php') < $nw_line('fetch_rns.php'));
     check('and it is allowed to fail without taking the run with it',
-          preg_match('/fetch_news\.php" \|\| echo/', $nw_cron) === 1);
+          preg_match('/fetch_rns\.php" \|\| echo/', $nw_cron) === 1);
 
     //Leave the universe as it was found.
     if ($nw_feed_pid > 0) { exec("kill $nw_feed_pid 2>/dev/null"); }
@@ -4653,6 +4660,619 @@
     if ($tv_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $tv_saved_exchange; }
 
+
+    echo "\n--- reading an announcement listing ---\n";
+
+    /* Investegate's own announcements, read in full, in place of Google
+       headlines. Of 1,600 scored headlines 85% scored nought and a good
+       number were not news at all - quote pages, broker profiles. An RNS is
+       the primary source and says what happened.
+    
+       Everything here runs against tools/investegate_stub.php and
+       tools/anthropic_stub.php. No test makes a live request: Investegate's
+       terms are for a private investor reading in a personal capacity, which
+       a suite hammering it on every run is not, and a suite that depends on
+       somebody else's site fails on a Sunday for reasons of its own.
+    
+       The parsers below were built without sight of a real page - this
+       session has no route to investegate.co.uk - so they are written to
+       depend on as little of the markup as possible: the announcement URL
+       pattern, and a date somewhere near the link. */
+
+    $rns_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+
+    $rns_listing = '<html><body><nav><a href="/login">Sign in</a></nav>'
+                 . '<table><tbody>'
+                 . '<tr><td>14 Nov 2026 07:00</td><td><a href="/announcement/rns/rolls-royce--RR./trading-update/9001">Trading Update</a></td></tr>'
+                 . '<tr><td>13 Nov 2026 16:35</td><td><a href="/announcement/rns/rolls-royce--RR./transaction-in-own-shares/9002">Transaction in Own Shares</a></td></tr>'
+                 . '<tr><td>12/11/2026</td><td><a href="/announcement/eqs/rolls-royce--RR./director-pdmr-shareholding/9003">Director/PDMR Shareholding</a></td></tr>'
+                 . '</tbody></table></body></html>';
+
+    $rns_links = rns_announcement_links($rns_listing);
+    check('every announcement on the page is found', count($rns_links) === 3,
+          count($rns_links) . ' links');
+    check('and each one carries the id Investegate keys it by',
+          array_column($rns_links, 'announcement_id') === ['9001','9002','9003'],
+          json_encode(array_column($rns_links, 'announcement_id')));
+    check('the wire it came over is read from the URL, not guessed',
+          array_column($rns_links, 'source') === ['RNS','RNS','EQS']);
+    check('the ticker Investegate uses is read from the URL, trailing dot and all',
+          $rns_links[0]['tidm'] === 'RR.', $rns_links[0]['tidm']);
+    check('the URL is absolute, so the fetcher can ask for it',
+          strpos($rns_links[0]['url'], 'http') === 0
+          && substr($rns_links[0]['url'], -5) === '/9001', $rns_links[0]['url']);
+
+    /* The dates. Three spellings in that listing, and the one the row
+       carries has to win over the one in the row above it. */
+    check('the date beside each link is the one used',
+          array_map(fn($l) => substr((string) $l['published_at'], 0, 10), $rns_links)
+            === ['2026-11-14','2026-11-13','2026-11-12'],
+          json_encode(array_column($rns_links, 'published_at')));
+    check('a time beside the date is kept, because it decides which close to measure from',
+          $rns_links[0]['published_at'] === '2026-11-14 07:00:00',
+          (string) $rns_links[0]['published_at']);
+    check('a day-first date is not read as an American one',
+          substr((string) $rns_links[2]['published_at'], 0, 10) === '2026-11-12',
+          (string) $rns_links[2]['published_at']);
+
+    check('a page with no announcements on it yields none, rather than guessing',
+          rns_announcement_links('<html><body><p>Nothing here</p></body></html>') === []);
+    check('the same announcement linked twice is one announcement',
+          count(rns_announcement_links($rns_listing . $rns_listing)) === 3);
+
+    echo "\n--- reading the announcement itself ---\n";
+
+    $rns_page = '<html><head><style>.x{color:red}</style><script>var a=1;</script></head>'
+              . '<body><nav><a href="/login">Sign in</a></nav>'
+              . '<h1>Trading Update</h1>'
+              . '<div><h3>Summary by AI BETA</h3><p>A machine wrote this and it must not '
+              . 'reach the scorer.</p></div>'
+              . '<p>14 November 2026 07:00</p>'
+              . '<p>Example Company plc announces&nbsp;a trading update. Revenue grew 7% '
+              . 'to &pound;1.2bn and trading has been ahead of expectations.</p>'
+              . '<footer>Investegate</footer></body></html>';
+
+    $rns_body = rns_body($rns_page);
+    check('the script and the style do not come out as words',
+          strpos($rns_body, 'color:red') === false && strpos($rns_body, 'var a') === false,
+          $rns_body);
+    check('nor does the navigation',
+          strpos($rns_body, 'Sign in') === false);
+    check('the announcement does',
+          strpos($rns_body, 'Revenue grew 7%') !== false);
+    check('entities are decoded, so a figure reads as a figure',
+          strpos($rns_body, "\xc2\xa31.2bn") !== false, $rns_body);
+    check('a non-breaking space is a space',
+          strpos($rns_body, 'announces a trading update') !== false);
+
+    $rns_clean = rns_strip_ai_summary($rns_body);
+    check("the site's own AI summary is removed before scoring",
+          strpos($rns_clean, 'A machine wrote this') === false, $rns_clean);
+    check('and so is its heading',
+          stripos($rns_clean, 'Summary by AI') === false);
+    check("but the company's own words survive it",
+          strpos($rns_clean, 'ahead of expectations') !== false);
+
+    check("the release date is read from the document, which knows when it was issued",
+          rns_body_date($rns_clean) === '2026-11-14 07:00:00',
+          var_export(rns_body_date($rns_clean), true));
+
+    echo "\n--- the limit page is a stop signal, not an obstacle ---\n";
+
+    /* Investegate shows signed-out readers a limit. The only correct
+       response is to stop: the run ends, the rest waits for tomorrow, and
+       nobody logs in or works round it. */
+    check('the limit modal is recognised',
+          rns_limit_page('<html><body><h2>Announcement limit reached</h2>'
+                       . '<p>You have reached your limit.</p></body></html>') !== null);
+    check('so is a login page',
+          rns_limit_page('<html><body><h1>Sign in</h1>'
+                       . '<p>Please sign in to continue.</p></body></html>') !== null);
+    /* The wording has to be one of the ones actually looked for, or this
+       tests nothing: the first version of this check used a page whose nav
+       said only "Sign in", which matches no marker, so the length guard it
+       was meant to exercise was never reached. Found by removing the guard
+       and watching the suite stay green. */
+    $rns_real = '<html><body><nav><a href="/login">Please sign in</a></nav>'
+              . '<h1>Final Results</h1><p>' . str_repeat('More of the announcement. ', 40)
+              . '</p></body></html>';
+    check('the wording alone is looked for, so this page would trip a naive check',
+          stripos($rns_real, 'please sign in') !== false);
+    check('but a real announcement carrying it is not mistaken for a limit page',
+          rns_limit_page($rns_real) === null);
+    check('while the same wording with no announcement under it is',
+          rns_limit_page('<html><body><nav><a href="/login">Please sign in</a></nav>'
+                       . '</body></html>') !== null);
+    check('and nor is an ordinary page',
+          rns_limit_page('<html><body><p>' . str_repeat('Words. ', 200) . '</p></body></html>')
+            === null);
+
+    echo "\n--- what not to read ---\n";
+
+    /* Most of an RNS feed is housekeeping, and the decision has to be made
+       from the URL slug before the document is fetched - which is the whole
+       point of having a skip list. So every case is checked twice: once as a
+       title, once as a slug reads it. */
+    $rns_cases = [
+        ['Trading Update',                                   null],
+        ['Transaction in Own Shares',                        'skipped'],
+        ['Total Voting Rights',                              'skipped'],
+        ['Block Listing Six Monthly Return',                 'skipped'],
+        ['Holding(s) in Company',                            'skipped'],
+        ['Net Asset Value(s)',                               'skipped'],
+        ['Publication of Prospectus',                        'skipped'],
+        ['Notice of AGM',                                    'skipped'],
+        ['Result of AGM',                                    'skipped'],
+        ['Form 8.3A - Example plc',                          'skipped'],
+        ['Rule 8.3 Disclosure',                              'skipped'],
+        ['Half-year Report',                                 null],
+        ['Final Results',                                    null],
+        ['Contract Award',                                   null],
+    ];
+    $rns_wrong = [];
+    foreach ($rns_cases as [$title, $expected]) {
+        $as_title = rns_skip_reason($title) === null ? null : 'skipped';
+        $as_slug  = rns_skip_reason(rns_title_from_slug(
+                        strtolower(preg_replace('~[^A-Za-z0-9]+~', '-', $title)))) === null
+                  ? null : 'skipped';
+        if ($as_title !== $expected) { $rns_wrong[] = "$title as a title gave $as_title"; }
+        if ($as_slug  !== $expected) { $rns_wrong[] = "$title as a slug gave $as_slug"; }
+    }
+    check('the skip list reads the same whether it sees a title or a URL slug',
+          count($rns_wrong) === 0, implode('; ', $rns_wrong));
+
+    /* The one rule with an exception, and the reason the whole thing is in a
+       table rather than in code. */
+    check('a share award to a director says nothing, so it is skipped',
+          rns_skip_reason('Director/PDMR Shareholding') !== null);
+    check('and so does a vesting',
+          rns_skip_reason('Director/PDMR Shareholding - Vesting of Awards') !== null);
+    check('but a director buying with their own money is kept',
+          rns_skip_reason('Director/PDMR Shareholding - Purchase of Shares') === null);
+    check('and so is a sale',
+          rns_skip_reason('Director/PDMR Shareholding - Sale of Shares') === null);
+    check('the exception survives the slug spelling too',
+          rns_skip_reason('Director Pdmr Shareholding Purchase Of Shares') === null);
+
+    check('NAV is matched as a word, so Navigator is not skipped for being called that',
+          rns_skip_reason('Navigator Holdings - Q3 Results') === null);
+    check('while an actual NAV is',
+          rns_skip_reason('NAV as at 31 October 2026') !== null);
+
+    check('the rules come from the table, so the list can be tuned without a deploy',
+          (int) scalar("select count(*) from rns_skip_rules where enabled='Y'") >= 10);
+    /* Tuning the list is an update, not a deploy - so an added rule has to
+       apply and a disabled one has to stop applying. */
+    db()->exec("delete from rns_skip_rules where pattern='Quarterly Pointless Filing'");
+    db()->exec("insert into rns_skip_rules (pattern, keep_if, description, enabled)
+                values ('Quarterly Pointless Filing', null, 'added by the suite', 'Y')");
+    rns_skip_rules_reset();
+    check('a rule added to the table applies without a code change',
+          rns_skip_reason('Quarterly Pointless Filing') !== null);
+
+    db()->exec("update rns_skip_rules set enabled='N' where pattern='Quarterly Pointless Filing'");
+    rns_skip_rules_reset();
+    check('and a disabled rule stops applying',
+          rns_skip_reason('Quarterly Pointless Filing') === null);
+    db()->exec("delete from rns_skip_rules where pattern='Quarterly Pointless Filing'");
+    rns_skip_rules_reset();
+
+    echo "\n--- the close before an announcement ---\n";
+
+    /* RNS goes out at 07:00, an hour before the market opens, so for most
+       announcements the close to measure from is the previous trading day's.
+       The rule is the market's clock, which means three things have to be
+       right: the close time, the trading calendar, and the time zone.
+    
+       A separate exchange with a calendar made by hand, because the seed
+       gives XLON a price on every calendar day and a market that never
+       closes cannot show what happens when it does. */
+    db()->exec("delete from historical_prices where exchange='XTST'");
+    db()->exec("delete from stock_symbols where exchange='XTST'");
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market)
+                   values ('RNB','RNS Baseline PLC','RNS Baseline PLC','XTST','Y','Industrials','Main Market')")
+        ->execute();
+
+    /* Thu 5, Fri 6, then the weekend shut, Mon 9, Tue 10 November 2026.
+       July as well, because in summer London is an hour ahead of UTC. */
+    $rns_cal = ['2026-11-05' => 100.0, '2026-11-06' => 102.0,
+                '2026-11-09' => 105.0, '2026-11-10' => 110.0,
+                '2026-07-09' => 200.0, '2026-07-10' => 210.0];
+    $rns_price = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                                values ('RNB','XTST',?,?)");
+    foreach ($rns_cal as $d => $p) { $rns_price->execute([$d, $p]); }
+
+    $rns_base = fn($when) => rns_baseline_date($when, 'XTST');
+
+    check('an announcement before the open is measured from the previous close',
+          $rns_base('2026-11-06 07:00:00') === '2026-11-05',
+          var_export($rns_base('2026-11-06 07:00:00'), true));
+    check('one during the session is too, because that close has not happened yet',
+          $rns_base('2026-11-06 10:30:00') === '2026-11-05',
+          var_export($rns_base('2026-11-06 10:30:00'), true));
+    check('one after the close is measured from that day',
+          $rns_base('2026-11-06 17:00:00') === '2026-11-06',
+          var_export($rns_base('2026-11-06 17:00:00'), true));
+    check('and one right on the close counts as after it',
+          $rns_base('2026-11-06 16:30:00') === '2026-11-06');
+    check('a Saturday announcement is measured from Friday, whatever time of day',
+          $rns_base('2026-11-07 09:00:00') === '2026-11-06'
+          && $rns_base('2026-11-07 18:00:00') === '2026-11-06',
+          var_export([$rns_base('2026-11-07 09:00:00'), $rns_base('2026-11-07 18:00:00')], true));
+    check('a Monday morning announcement skips the weekend',
+          $rns_base('2026-11-09 07:00:00') === '2026-11-06',
+          var_export($rns_base('2026-11-09 07:00:00'), true));
+    check('an announcement before any price at all has no baseline, rather than a wrong one',
+          $rns_base('2020-01-02 07:00:00') === null);
+
+    /* The time zone. In July a 16:00 UTC release is 17:00 in London, which is
+       after the close; read as UTC it would be before it, and the move would
+       be measured from the wrong day for half the year. */
+    check('the close is compared in London time, not UTC',
+          $rns_base('2026-07-10 16:00:00') === '2026-07-10',
+          var_export($rns_base('2026-07-10 16:00:00'), true));
+    check('and a summer morning release is still before the open',
+          $rns_base('2026-07-10 06:00:00') === '2026-07-09',
+          var_export($rns_base('2026-07-10 06:00:00'), true));
+
+    check('the move is from that close to the latest one',
+          rns_price_move('RNB', '2026-11-06 07:00:00', '2026-11-10', 'XTST') === 10.0,
+          var_export(rns_price_move('RNB', '2026-11-06 07:00:00', '2026-11-10', 'XTST'), true));
+    check('and from the other side of the close it is a different move, which is the point',
+          rns_price_move('RNB', '2026-11-06 17:00:00', '2026-11-10', 'XTST') === 7.84,
+          var_export(rns_price_move('RNB', '2026-11-06 17:00:00', '2026-11-10', 'XTST'), true));
+    check('an unknown baseline is an unknown move, not a flat one',
+          rns_price_move('RNB', '2020-01-02 07:00:00', '2026-11-10', 'XTST') === null);
+
+    db()->exec("delete from historical_prices where exchange='XTST'");
+    db()->exec("delete from stock_symbols where exchange='XTST'");
+
+    echo "\n--- the nightly job ---\n";
+
+    $rns_dir = sys_get_temp_dir() . '/smrns' . getmypid();
+    exec('rm -rf ' . escapeshellarg($rns_dir));
+    @mkdir($rns_dir, 0777, true);
+
+    $rns_site_port = 8351;
+    $rns_ai_port   = 8352;
+    $rns_site_pid = (int) trim((string) shell_exec(
+        'SM_STUB_DIR=' . escapeshellarg($rns_dir) . ' php -S 127.0.0.1:' . $rns_site_port . ' '
+        . escapeshellarg(dirname(__DIR__) . '/tools/investegate_stub.php')
+        . ' > /dev/null 2>&1 & echo $!'));
+    $rns_ai_pid = (int) trim((string) shell_exec(
+        'SM_STUB_DIR=' . escapeshellarg($rns_dir) . ' php -S 127.0.0.1:' . $rns_ai_port . ' '
+        . escapeshellarg(dirname(__DIR__) . '/tools/anthropic_stub.php')
+        . ' > /dev/null 2>&1 & echo $!'));
+    usleep(900000);
+
+    file_put_contents("$rns_dir/site_mode", 'ok');
+    file_put_contents("$rns_dir/mode", 'rns_ok');
+    file_put_contents("$rns_dir/requests", '');
+
+    /* One symbol, so the counts are about the fetcher rather than about how
+       many the seed happens to have. */
+    db()->exec("truncate rns_announcements");
+    db()->exec("delete from stock_symbols where symbol like 'RNX%'");
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market,industry_group,industry)
+                   values ('RNX','RNS Test PLC','RNS Test PLC','XLON','Y','Industrials','Main Market','Industrials','Aerospace')")
+        ->execute();
+    $rns_others = rows("select symbol from stock_symbols where enabled='Y' and exchange='XLON' and symbol<>'RNX'");
+    db()->exec("update stock_symbols set enabled='N' where exchange='XLON' and symbol<>'RNX'");
+
+    $rns_env = ['RNS_BASE_URL'           => "http://127.0.0.1:$rns_site_port",
+                'ANTHROPIC_BASE_URL'     => "http://127.0.0.1:$rns_ai_port",
+                'ANTHROPIC_API_KEY'      => 'test-key',
+                'RNS_FETCH_INTERVAL'     => '0',
+                'RNS_BACKOFF_SECONDS'    => '0',
+                'RNS_SCORE_MAX_PER_RUN'  => '50'];
+
+    [$rns_out1, $rns_rc1] = run_script('fetch_rns.php', [], $rns_env);
+    check('the announcements job runs', $rns_rc1 === 0, substr($rns_out1, -600));
+
+    $rns_requests = array_values(array_filter(explode("\n",
+                        (string) @file_get_contents("$rns_dir/requests"))));
+    check('robots.txt is asked for before anything else',
+          count($rns_requests) && strpos($rns_requests[0], '/robots.txt') !== false,
+          $rns_requests[0] ?? '(nothing)');
+    check('the User-Agent says what this is, rather than pretending to be a browser',
+          strpos((string) ($rns_requests[0] ?? ''), 'sharemanager/') !== false,
+          $rns_requests[0] ?? '');
+
+    $rns_rows = rows("select announcement_id, skipped, skip_rule, ann_type, sentiment,
+                             summary, body_truncated, scored_at, length(body) body_length,
+                             date(published_at) published
+                        from rns_announcements order by announcement_id");
+    check('three announcements were listed and all three are on record',
+          count($rns_rows) === 3, json_encode(array_column($rns_rows, 'announcement_id')));
+
+    $rns_by_id = [];
+    foreach ($rns_rows as $r) { $rns_by_id[$r['announcement_id']] = $r; }
+
+    check('the trading update was read and scored',
+          ($rns_by_id['9001']['skipped'] ?? '') === 'N'
+          && (int) ($rns_by_id['9001']['body_length'] ?? 0) > 400
+          && $rns_by_id['9001']['scored_at'] !== null,
+          json_encode($rns_by_id['9001'] ?? null));
+    check('and the scorer read the announcement, not the site\'s summary of it',
+          strpos((string) ($rns_by_id['9001']['summary'] ?? ''), 'machine wrote') === false);
+    check('its type came back as something from the list',
+          in_array((string) ($rns_by_id['9001']['ann_type'] ?? ''), rns_types(), true),
+          (string) ($rns_by_id['9001']['ann_type'] ?? ''));
+
+    check('the buyback paperwork was skipped, with the rule that skipped it',
+          ($rns_by_id['9002']['skipped'] ?? '') === 'Y'
+          && stripos((string) ($rns_by_id['9002']['skip_rule'] ?? ''), 'own shares') !== false,
+          json_encode($rns_by_id['9002'] ?? null));
+    check('and its text was never fetched, which is the point of skipping before the request',
+          (int) ($rns_by_id['9002']['body_length'] ?? 0) === 0);
+    check('a skipped announcement is not scored',
+          ($rns_by_id['9002']['scored_at'] ?? null) === null);
+
+    check('the director purchase was kept, because it is a signal',
+          ($rns_by_id['9003']['skipped'] ?? '') === 'N'
+          && $rns_by_id['9003']['scored_at'] !== null,
+          json_encode($rns_by_id['9003'] ?? null));
+
+    $rns_fetched = array_values(array_filter($rns_requests,
+                       fn($line) => strpos($line, '/announcement/') !== false));
+    check('only the two worth reading were fetched, not all three',
+          count($rns_fetched) === 2, implode(' | ', $rns_fetched));
+
+    check('the ticker that answered is remembered, so tomorrow asks once',
+          (string) scalar("select tidm from stock_symbols where symbol='RNX'") !== '',
+          var_export(scalar("select tidm from stock_symbols where symbol='RNX'"), true));
+
+    /* A re-run. The listing is the same, so nothing is new and nothing is
+       fetched again. */
+    file_put_contents("$rns_dir/requests", '');
+    [$rns_out2, $rns_rc2] = run_script('fetch_rns.php', [], $rns_env);
+    check('a second run completes', $rns_rc2 === 0, substr($rns_out2, -400));
+    check('and stores nothing new, because the announcement id is the key',
+          (int) scalar("select count(*) from rns_announcements") === 3,
+          scalar("select count(*) from rns_announcements") . ' rows');
+    $rns_refetched = array_values(array_filter(explode("\n",
+                         (string) @file_get_contents("$rns_dir/requests")),
+                         fn($line) => strpos($line, '/announcement/') !== false));
+    check('and asks for no announcement it already has',
+          count($rns_refetched) === 0, implode(' | ', $rns_refetched));
+
+    echo "\n--- when the site says it has had enough ---\n";
+
+    /* The limit, mid-run. Everything already stored stays; nothing new is
+       taken; the run says why and leaves the rest for tomorrow. */
+    db()->exec("truncate rns_announcements");
+    /* Every seeded symbol back on, so stopping after the first company is
+       something the request log can actually show. With one symbol enabled
+       "it stopped early" and "it finished" look identical. */
+    db()->exec("update stock_symbols set enabled='Y' where exchange='XLON'");
+    file_put_contents("$rns_dir/site_mode", 'limit');
+    file_put_contents("$rns_dir/requests", '');
+    [$rns_out3, $rns_rc3] = run_script('fetch_rns.php', [], $rns_env);
+    check('the job does not fail when it meets the limit', $rns_rc3 === 0, substr($rns_out3, -400));
+    check('it stores nothing from a limit page',
+          (int) scalar("select count(*) from rns_announcements") === 0);
+    check('it says it stopped early, so a short night is not a mystery',
+          stripos($rns_out3, 'stopped early') !== false, substr($rns_out3, -300));
+    $rns_asked = count(array_filter(explode("\n", (string) @file_get_contents("$rns_dir/requests")),
+                       fn($l) => strpos($l, '/company/') !== false));
+    check('and it stops asking rather than working through the universe',
+          $rns_asked === 1 && count($rns_others) >= 5,
+          $rns_asked . ' company pages asked for, of ' . (count($rns_others) + 1) . ' enabled');
+
+    /* A login page is the same signal in different words. */
+    file_put_contents("$rns_dir/site_mode", 'login');
+    [$rns_out4, ] = run_script('fetch_rns.php', [], $rns_env);
+    check('a login page is treated the same way',
+          stripos($rns_out4, 'stopped early') !== false
+          && (int) scalar("select count(*) from rns_announcements") === 0);
+
+    /* Being throttled. Backs off, gives up, keeps the rest. */
+    file_put_contents("$rns_dir/site_mode", '429');
+    [$rns_out5, $rns_rc5] = run_script('fetch_rns.php', [],
+                                       array_merge($rns_env, ['RNS_MAX_REFUSALS' => '2']));
+    check('a 429 does not fail the job either', $rns_rc5 === 0, substr($rns_out5, -400));
+    check('it gives up after the refusals it is allowed',
+          stripos($rns_out5, 'refusal') !== false, substr($rns_out5, -300));
+    check('and stores nothing',
+          (int) scalar("select count(*) from rns_announcements") === 0);
+
+    /* Back to one symbol, so what follows is about the scorer rather than
+       about how many companies the seed has. */
+    db()->exec("update stock_symbols set enabled='N' where exchange='XLON' and symbol<>'RNX'");
+
+    echo "\n--- scoring order, the cap, and what comes back ---\n";
+
+    /* Newest first, which is the opposite of the headline scorer. An
+       announcement is worth most on the day it is made: if the queue is
+       longer than the cap, today's results are what should be scored tonight
+       and last month's can wait. */
+    db()->exec("truncate rns_announcements");
+    /* An empty listing, so the job finds no new work and the only thing
+       under test is the scorer. */
+    file_put_contents("$rns_dir/site_mode", 'empty');
+    $rns_insert = db()->prepare("insert into rns_announcements
+        (announcement_id, symbol, source, title, published_at, url, body, body_hash,
+         skipped, first_seen)
+        values (?, 'RNX', 'RNS', ?, ?, 'https://example.invalid/a', ?, sha1(?), 'N', now())");
+    foreach ([['7001', 'Oldest',  '-9 day'],
+              ['7002', 'Middle',  '-5 day'],
+              ['7003', 'Newest',  '-1 day']] as [$id, $title, $ago]) {
+        $text = $title . ' announcement. ' . str_repeat('Trading has been ahead of expectations. ', 20);
+        $rns_insert->execute([$id, $title, gmdate('Y-m-d H:i:s', strtotime($ago)), $text, $text]);
+    }
+
+    /* Through the job, not by calling the scorer here: llm_generate() reads
+       ANTHROPIC_BASE_URL out of the constants this process was started with,
+       so a call from inside the suite would go to whatever that is rather
+       than to the stub. run_script() sets the environment. */
+    file_put_contents("$rns_dir/mode", 'rns_ok');
+    /* array_merge, not +: PHP's + keeps the left operand's value for a
+       duplicate key, so $rns_env + [cap => 1] quietly kept the 50 already in
+       $rns_env and the cap was never tested at all. */
+    [$rns_cap_out, ] = run_script('fetch_rns.php', [],
+                                  array_merge($rns_env, ['RNS_SCORE_MAX_PER_RUN' => '1']));
+    check('the cap is honoured exactly',
+          (int) scalar("select count(*) from rns_announcements where scored_at is not null") === 1,
+          substr($rns_cap_out, -300));
+    check('and the newest announcement is the one that got scored',
+          (string) scalar("select announcement_id from rns_announcements
+                            where scored_at is not null") === '7003',
+          (string) scalar("select announcement_id from rns_announcements where scored_at is not null"));
+    check('the run says it was capped, so a backlog is visible',
+          stripos($rns_cap_out, 'capped') !== false
+          || (int) scalar("select count(*) from rns_announcements where scored_at is null") === 2,
+          substr($rns_cap_out, -300));
+    check('what it cost is recorded per announcement, not just per run',
+          (float) scalar("select cost_usd from rns_announcements where announcement_id='7003'") > 0
+          && (int) scalar("select input_tokens from rns_announcements where announcement_id='7003'") > 0,
+          json_encode(rows("select cost_usd, input_tokens, output_tokens from rns_announcements
+                             where announcement_id='7003'")));
+
+    [$rns_rest_out, ] = run_script('fetch_rns.php', [], $rns_env);
+    check('the rest are scored on the next pass',
+          (int) scalar("select count(*) from rns_announcements where scored_at is not null") === 3,
+          substr($rns_rest_out, -300));
+    check('and nothing is left unscored',
+          (int) scalar("select count(*) from rns_announcements where scored_at is null") === 0);
+
+    /* The schema constrains the answer and the code checks it again. A stub,
+       a future model or a changed API could all send something else, and a
+       bad value here ends up averaged into a figure a screen selects on. */
+    db()->exec("update rns_announcements set scored_at=null, ann_type=null,
+                    vs_expectations=null where announcement_id='7001'");
+    file_put_contents("$rns_dir/mode", 'rns_bad_fields');
+    run_script('fetch_rns.php', [], $rns_env);
+    check('a type outside the list is refused rather than stored',
+          (string) scalar("select ifnull(ann_type,'(null)') from rns_announcements
+                            where announcement_id='7001'") === '(null)',
+          (string) scalar("select ifnull(ann_type,'(null)') from rns_announcements where announcement_id='7001'"));
+    check('and the announcement stays unscored, so it comes round again',
+          scalar("select scored_at from rns_announcements where announcement_id='7001'") === null);
+
+    file_put_contents("$rns_dir/mode", 'rns_long_summary');
+    run_script('fetch_rns.php', [], $rns_env);
+    $rns_summary = (string) scalar("select summary from rns_announcements where announcement_id='7001'");
+    check('a summary over forty words is trimmed rather than the answer thrown away',
+          $rns_summary !== ''
+          && count(preg_split('/\s+/', $rns_summary, -1, PREG_SPLIT_NO_EMPTY)) === 40,
+          count(preg_split('/\s+/', $rns_summary, -1, PREG_SPLIT_NO_EMPTY)) . ' words');
+
+    echo "\n--- the figures the rest of the app reads ---\n";
+
+    /* Same three indicator names as before, so a screen or a chart reading
+       them does not care that the source changed. What changes is that they
+       now mean something. */
+    db()->exec("truncate rns_announcements");
+    $rns_asof = asof_date();
+    $rns_ind = db()->prepare("insert into rns_announcements
+        (announcement_id, symbol, source, title, published_at, url, body, skipped,
+         sentiment, ann_type, vs_expectations, summary, scored_model, scored_at, first_seen)
+        values (?, 'RNX', 'RNS', 'T', ?, 'https://example.invalid/a', 'text', ?,
+                ?, 'results', 'not stated', 'A summary', 'stub', now(), now())");
+    //Today strongly bad, nine days ago mildly good, and one skipped filing.
+    $rns_ind->execute(['6001', $rns_asof . ' 07:00:00', 'N', -0.8]);
+    $rns_ind->execute(['6002', date('Y-m-d', strtotime($rns_asof . ' -9 day')) . ' 07:00:00', 'N', 0.4]);
+    $rns_ind->execute(['6003', $rns_asof . ' 08:00:00', 'Y', 0.9]);
+
+    $rns_7d  = rns_sentiment('RNX', $rns_asof, 7);
+    $rns_30d = rns_sentiment('RNX', $rns_asof, 30);
+    check('the seven day figure sees only what is inside seven days',
+          abs($rns_7d - (-0.8)) < 0.0001, var_export($rns_7d, true));
+    check('the thirty day figure takes in the older one, weighted towards the recent',
+          $rns_30d !== null && $rns_30d > -0.8 && $rns_30d < 0.4,
+          var_export($rns_30d, true));
+    check('a skipped filing is not in either, because it was never read',
+          abs($rns_7d - (-0.8)) < 0.0001);
+    check('the count is of announcements worth reading, not of filings',
+          rns_count('RNX', $rns_asof, 7) === 1, (string) rns_count('RNX', $rns_asof, 7));
+
+    $rns_written = rns_write_indicators($rns_asof, 'XLON');
+    check('the indicators are written', $rns_written > 0, (string) $rns_written);
+    check('and into the rows the screens already read',
+          abs((float) scalar("select value from statistics where symbol='RNX'
+                               and indicator='news_sentiment_7d' and date=?", [$rns_asof]) - (-0.8)) < 0.001,
+          var_export(scalar("select value from statistics where symbol='RNX'
+                              and indicator='news_sentiment_7d' and date=?", [$rns_asof]), true));
+    check('a company that has announced nothing gets no sentiment row, not a neutral one',
+          rns_sentiment('AAA', $rns_asof, 7) === null);
+
+    /* The outlook, the chart and the explanation all read announcements now. */
+    $rns_outlook = outlook_headlines('RNX', 8);
+    check('the outlook is given announcements rather than headlines',
+          count($rns_outlook) === 2, json_encode($rns_outlook));
+    check('with the type and the verdict the announcement carried',
+          ($rns_outlook[0]['impact_type'] ?? '') === 'results'
+          && array_key_exists('vs_expectations', $rns_outlook[0]),
+          json_encode($rns_outlook[0] ?? null));
+    check('and it no longer reaches for the retired headline feed',
+          strpos(php_strip_whitespace($INCLUDES . '/ai_outlook.php'), 'get_articles') === false);
+
+    $rns_range = rns_in_range('RNX', date('Y-m-d', strtotime($rns_asof . ' -30 day')), $rns_asof);
+    check('the chart and the explanation read the same announcements',
+          count($rns_range) === 2, (string) count($rns_range));
+    check('and the skipped filing is not a marker on the chart',
+          !in_array('6003', array_column($rns_range, 'announcement_id'), true));
+
+    check('the chart endpoint reads announcements, not headlines',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/public/chart_data.php'),
+                 'rns_in_range') !== false
+          && strpos(php_strip_whitespace(dirname(__DIR__) . '/public/chart_data.php'),
+                 'news_in_range') === false);
+
+    echo "\n--- the headline feed is retired, not deleted ---\n";
+
+    $rns_cron = implode("\n", array_filter(
+        explode("\n", (string) file_get_contents($INCLUDES . '/refresh_all.sh')),
+        fn($line) => strpos(ltrim($line), '#') !== 0));
+    check('the nightly run fetches announcements',
+          strpos($rns_cron, 'fetch_rns.php') !== false);
+    check('and no longer fetches headlines',
+          strpos($rns_cron, 'fetch_news.php') === false);
+    check('but the headline store is still there, so a year of history is not thrown away',
+          (int) scalar("select count(*) from information_schema.tables
+                         where table_schema=database() and table_name='news_articles'") === 1);
+    check('and the headline job still exists to be run by hand',
+          file_exists($INCLUDES . '/fetch_news.php'));
+
+    echo "\n--- Investegate's terms, in the code ---\n";
+
+    /* Their terms allow a private investor to keep extracts for personal
+       reference and forbid redistribution. Two things follow, and both are
+       the kind of thing that gets quietly undone. */
+    $rns_src = (string) file_get_contents($INCLUDES . '/rns.php');
+    check('the fetcher identifies itself',
+          strpos($rns_src, 'RNS_USER_AGENT') !== false
+          && strpos((string) RNS_USER_AGENT, 'sharemanager') === 0);
+    check('robots.txt is read before anything is fetched',
+          strpos(php_strip_whitespace($INCLUDES . '/fetch_rns.php'), 'rns_robots_allows') !== false);
+    check('the job refuses to run if robots.txt disallows what it needs',
+          strpos((string) file_get_contents($INCLUDES . '/fetch_rns.php'),
+                 'robots.txt disallows') !== false);
+    check('and there is no login anywhere in it',
+          stripos($rns_src, 'password') === false
+          && !preg_match('~\blogin\s*\(~i', $rns_src));
+
+    check('robots.txt is honoured rather than assumed',
+          rns_robots_allows('/company/RR.', "http://127.0.0.1:$rns_site_port") === true
+          && rns_robots_allows('/login', "http://127.0.0.1:$rns_site_port") === false);
+
+    //Leave the universe as it was found.
+    if ($rns_site_pid > 0) { exec("kill $rns_site_pid 2>/dev/null"); }
+    if ($rns_ai_pid > 0)   { exec("kill $rns_ai_pid 2>/dev/null"); }
+    exec('rm -rf ' . escapeshellarg($rns_dir));
+    foreach ($rns_others as $rns_other) {
+        db()->prepare("update stock_symbols set enabled='Y' where symbol=?")
+            ->execute([$rns_other['symbol']]);
+    }
+    db()->exec("delete from stock_symbols where symbol like 'RNX%'");
+    db()->exec("truncate rns_announcements");
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($rns_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $rns_saved_exchange; }
+
     echo "\n--- pages render without a fatal ---\n";
 
     /* Drives the site over HTTP as a logged in user. Everything above tests the
@@ -4752,7 +5372,7 @@
                   'criteria_list.php','screen_criteria.php','sector_companies.php',
                   'strategies.php','sell.php','buy.php','backtest.php',
                   'backtest_results.php','statistics.php','statistics_form.php','download_prices.php',
-                  'register.php','reset_passwd.php'];
+                  'register.php','reset_passwd.php','in_the_news.php'];
         $fatal = [];
         foreach ($pages as $page) {
             $body = (string)$curl("$base/$page");
@@ -4760,6 +5380,122 @@
         }
         check(count($pages) . ' pages render without a fatal', count($fatal) === 0,
               'fatal: ' . implode(', ', $fatal));
+
+        /* ---------------- "In the news" ---------------- */
+
+        /* Announcement text is Investegate's, kept under terms that let a
+           private investor read it and forbid redistribution. Behind the
+           login that is somebody reading their own research; served to the
+           world it would be republishing. So the gate is checked first, and
+           checked on the page that shows the most of it. */
+        $itn_jar = tempnam(sys_get_temp_dir(), 'smanon');
+        $itn_anon = (string) shell_exec('curl -s -m 30 -b ' . escapeshellarg($itn_jar)
+                                        . ' -c ' . escapeshellarg($itn_jar) . ' '
+                                        . escapeshellarg("$base/in_the_news.php") . ' 2>/dev/null');
+        $itn_code = trim((string) shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 30 '
+                                             . escapeshellarg("$base/in_the_news.php") . ' 2>/dev/null'));
+        check('an anonymous request for the news page is redirected to login',
+              $itn_code === '302', "status $itn_code");
+        check('and no announcement text reaches it',
+              stripos($itn_anon, 'ahead of expectations') === false
+              && stripos($itn_anon, 'investegate.co.uk/announcement') === false,
+              json_encode(substr($itn_anon, 0, 160)));
+        @unlink($itn_jar);
+
+        /* Now with something to show. One good announcement, one bad, and one
+           routine filing that must not appear at all. */
+        db()->exec("truncate rns_announcements");
+        $itn_asof = asof_date();
+        $itn_insert = db()->prepare("insert into rns_announcements
+            (announcement_id, symbol, source, title, published_at, url, body, skipped,
+             sentiment, ann_type, vs_expectations, summary, key_figures,
+             bull_point, bear_point, scored_model, scored_at, first_seen)
+            values (?, ?, 'RNS', ?, ?, ?, 'text', ?, ?, ?, ?, ?, ?, ?, ?, 'stub', now(), now())");
+        $itn_insert->execute(['5001', 'AAA', 'Trading Update', $itn_asof . ' 07:00:00',
+                              'https://www.investegate.co.uk/announcement/rns/a--AAA/t/5001',
+                              'N', 0.7, 'trading update', 'beat',
+                              'Trading ahead of expectations and guidance raised.',
+                              json_encode(['revenue +7% to GBP1.2bn']),
+                              'Guidance went up.', 'The comparative was weak.']);
+        $itn_insert->execute(['5002', 'BBB', 'Profit Warning', $itn_asof . ' 07:00:00',
+                              'https://www.investegate.co.uk/announcement/rns/b--BBB/p/5002',
+                              'N', -0.8, 'profit warning', 'missed',
+                              'Profit will be materially below guidance.',
+                              json_encode([]), '', 'Guidance cut.']);
+        $itn_insert->execute(['5003', 'CCC', 'Transaction in Own Shares', $itn_asof . ' 07:00:00',
+                              'https://www.investegate.co.uk/announcement/rns/c--CCC/t/5003',
+                              'Y', null, null, null, null, json_encode([]), '', '']);
+
+        $itn = (string) $curl("$base/in_the_news.php");
+        check('the news page renders without a fatal',
+              !preg_match('/(Fatal error|Parse error)/i', $itn), substr($itn, 0, 300));
+        check('it shows the announcements that were read',
+              strpos($itn, 'Trading ahead of expectations') !== false
+              && strpos($itn, 'materially below guidance') !== false);
+        check('and not the routine filing, which was never read',
+              strpos($itn, 'Transaction in Own Shares') === false);
+        check('each row says what kind of announcement it was',
+              strpos($itn, 'trading update') !== false && strpos($itn, 'profit warning') !== false);
+        check('and what the company said about expectations',
+              strpos($itn, 'beat') !== false && strpos($itn, 'missed') !== false);
+        check('the key figures and both sides are there to open',
+              strpos($itn, 'revenue +7% to GBP1.2bn') !== false
+              && strpos($itn, 'Guidance went up.') !== false
+              && strpos($itn, 'The comparative was weak.') !== false);
+        check('the original is linked, with no referrer and no window handle',
+              strpos($itn, 'investegate.co.uk/announcement/rns/a--AAA/t/5001') !== false
+              && strpos($itn, 'rel="noopener noreferrer"') !== false);
+        check('the quote page is linked from the share',
+              strpos($itn, 'quote.php?symbol=AAA') !== false);
+        check('whose terms the text is under is on the page',
+              stripos($itn, 'Investegate') !== false
+              && stripos($itn, 'personal reference') !== false);
+        check('the week is summarised both ways',
+              stripos($itn, 'Worst news') !== false && stripos($itn, 'Best news') !== false);
+        check('a sentiment band is drawn rather than a bare number',
+              strpos($itn, 'border-radius:3px;background:#') !== false);
+
+        /* The filters. Each one is a value the page offered, and the type
+           filter is the one that proves the query is parameterised rather
+           than concatenated. */
+        $itn_pos = (string) $curl("$base/in_the_news.php?tone=positive");
+        check('the positive filter leaves out the bad news',
+              strpos($itn_pos, 'Trading ahead of expectations') !== false
+              && strpos($itn_pos, 'materially below guidance') === false);
+        $itn_type = (string) $curl("$base/in_the_news.php?type=profit+warning");
+        check('the type filter narrows to that type',
+              strpos($itn_type, 'materially below guidance') !== false
+              && strpos($itn_type, 'Trading ahead of expectations') === false);
+        $itn_odd = (string) $curl("$base/in_the_news.php?type=" . urlencode("' or 1=1 -- "));
+        check('a type that was never offered selects nothing and breaks nothing',
+              !preg_match('/(Fatal error|SQLSTATE|You have an error)/i', $itn_odd)
+              && strpos($itn_odd, 'Trading ahead of expectations') === false,
+              substr($itn_odd, 0, 200));
+        $itn_days = (string) $curl("$base/in_the_news.php?days=99999");
+        check('a period nobody offered falls back to the week rather than reading everything',
+              strpos($itn_days, 'Last 7 trading days') !== false
+              && !preg_match('/(Fatal error|Parse error)/i', $itn_days));
+        $itn_sort = (string) $curl("$base/in_the_news.php?sort=drop+table");
+        check('a sort nobody offered falls back to the date',
+              !preg_match('/(Fatal error|SQLSTATE)/i', $itn_sort)
+              && strpos($itn_sort, 'Trading ahead of expectations') !== false);
+
+        check('the menu links to it',
+              strpos((string) $curl("$base/index.php"), 'in_the_news.php') !== false);
+
+        /* A headline is somebody else's text; an announcement is somebody
+           else's text read by a model. Both ends escaped. */
+        db()->prepare("update rns_announcements set summary=?, bull_point=? where announcement_id='5001'")
+            ->execute(['<script>alert(1)</script> and "quotes"',
+                       '</td><img src=x onerror=alert(1)>']);
+        $itn_xss = (string) $curl("$base/in_the_news.php");
+        check('markup in a summary is shown, not run',
+              strpos($itn_xss, '<script>alert(1)</script>') === false
+              && strpos($itn_xss, '&lt;script&gt;alert(1)&lt;/script&gt;') !== false);
+        check('and markup in a bull point cannot close the row it is in',
+              strpos($itn_xss, '</td><img src=x') === false);
+
+        db()->exec("truncate rns_announcements");
 
         /* The crawl above only ever loaded quote.php bare, with no symbol, so it
            never reached get_share_info() and missed three defects at once: a
@@ -4977,7 +5713,8 @@ STUB
         }
         check('the news tab renders rather than being commented out',
               strpos($q, 'id="news"') !== false
-              && preg_match('/id="news".{0,400}(No news articles|<a href=)/s', $q) === 1);
+              && preg_match('/id="news".{0,600}(No regulatory announcements|<table|<a href=)/s', $q) === 1,
+              substr($q, max(0, strpos($q, 'id="news"')), 300));
 
         /* index.php also renders templates/quote.php when given a symbol, and
            passed six of the thirty variables the template reads: every panel it
@@ -6011,29 +6748,42 @@ STUB
               stripos($ch_anon, 'password') !== false, substr($ch_anon, 0, 200));
         @unlink($ch_anon_jar);
 
+        /* Announcements, not headlines: the markers read rns_announcements
+           now. The fixture moved with the source rather than the checks
+           being weakened - what a marker is has changed, what it has to show
+           has not. */
         $ch_asof = asof_date();
-        db()->exec("delete from news_articles where symbol='AAA'");
-        $ch_insert = db()->prepare("insert into news_articles
-            (symbol, published_at, title, publisher, link, url_hash, first_seen,
-             sentiment, impact_type, summary, bull_point, bear_point, scored_model, scored_at)
-            values ('AAA', ?, ?, ?, ?, ?, now(), ?, ?, ?, 'Bull side', 'Bear side', 'stub', now())");
+        db()->exec("delete from rns_announcements where symbol='AAA'");
+        $ch_insert = db()->prepare("insert into rns_announcements
+            (announcement_id, symbol, source, title, published_at, url, body, skipped,
+             sentiment, ann_type, vs_expectations, summary, key_figures,
+             bull_point, bear_point, scored_model, scored_at, first_seen)
+            values (?, 'AAA', ?, ?, ?, ?, 'text', 'N', ?, ?, 'not stated', ?, '[]',
+                    'Bull side', 'Bear side', 'stub', now(), now())");
         //Two on one day and one on another, so the grouping has something to do.
         $ch_day1 = date('Y-m-d', strtotime($ch_asof . ' -3 day'));
         $ch_day2 = date('Y-m-d', strtotime($ch_asof . ' -10 day'));
-        $ch_insert->execute([$ch_day1 . ' 09:00:00', 'Good news for AAA', 'The Guardian',
-                             'https://example.invalid/c1', sha1('c1'), 0.8, 'earnings', 'It went well.']);
-        $ch_insert->execute([$ch_day1 . ' 15:00:00', 'More good news', 'Reuters',
-                             'https://example.invalid/c2', sha1('c2'), 0.4, 'product', 'A new thing.']);
-        $ch_insert->execute([$ch_day2 . ' 09:00:00', 'Bad news for AAA', 'Reuters',
-                             'https://example.invalid/c3', sha1('c3'), -0.6, 'policy', 'It went badly.']);
+        $ch_insert->execute(['c1', 'RNS', 'Good news for AAA', $ch_day1 . ' 09:00:00',
+                             'https://example.invalid/c1', 0.8, 'results', 'It went well.']);
+        $ch_insert->execute(['c2', 'RNS', 'More good news', $ch_day1 . ' 15:00:00',
+                             'https://example.invalid/c2', 0.4, 'contract or product', 'A new thing.']);
+        $ch_insert->execute(['c3', 'RNS', 'Bad news for AAA', $ch_day2 . ' 09:00:00',
+                             'https://example.invalid/c3', -0.6, 'regulatory or legal', 'It went badly.']);
         /* One outside the range at each end. Both sides, because a bound that
            is only tested from below is only half a bound. */
-        $ch_insert->execute([date('Y-m-d', strtotime($ch_asof . ' -400 day')) . ' 09:00:00',
-                             'Ancient history', 'Reuters', 'https://example.invalid/c4',
-                             sha1('c4'), 0.1, 'other', 'Long ago.']);
-        $ch_insert->execute([date('Y-m-d', strtotime($ch_asof . ' +400 day')) . ' 09:00:00',
-                             'Not yet happened', 'Reuters', 'https://example.invalid/c4b',
-                             sha1('c4b'), 0.1, 'other', 'Later.']);
+        $ch_insert->execute(['c4', 'RNS', 'Ancient history',
+                             date('Y-m-d', strtotime($ch_asof . ' -400 day')) . ' 09:00:00',
+                             'https://example.invalid/c4', 0.1, 'other', 'Long ago.']);
+        $ch_insert->execute(['c4b', 'RNS', 'Not yet happened',
+                             date('Y-m-d', strtotime($ch_asof . ' +400 day')) . ' 09:00:00',
+                             'https://example.invalid/c4b', 0.1, 'other', 'Later.']);
+        /* And a routine filing, which the chart must not mark at all: a dot
+           on the price for a buyback's paperwork is exactly the noise this
+           whole change was about. */
+        $ch_insert->execute(['c4c', 'RNS', 'Transaction in Own Shares', $ch_day1 . ' 08:00:00',
+                             'https://example.invalid/c4c', 0.0, 'other', 'Paperwork.']);
+        db()->exec("update rns_announcements set skipped='Y', skip_rule='Transaction in Own Shares',
+                        scored_at=null, sentiment=null where announcement_id='c4c'");
 
         $ch_from = date('Y-m-d', strtotime($ch_asof . ' -30 day'));
         $ch_json = json_decode((string) $curl(
@@ -6063,8 +6813,13 @@ STUB
         check('a bad day reads negative',
               ($ch_by_day[$ch_day2]['sentiment'] ?? 0) < 0);
         check('the kinds of news that day are listed, for the filter',
-              in_array('earnings', $ch_by_day[$ch_day1]['impact_types'] ?? [], true)
-              && in_array('product', $ch_by_day[$ch_day1]['impact_types'] ?? [], true));
+              in_array('results', $ch_by_day[$ch_day1]['impact_types'] ?? [], true)
+              && in_array('contract or product', $ch_by_day[$ch_day1]['impact_types'] ?? [], true),
+              json_encode($ch_by_day[$ch_day1]['impact_types'] ?? null));
+        check('and a routine filing is not marked on the chart at all',
+              strpos(json_encode($ch_markers), 'Paperwork') === false
+              && ($ch_by_day[$ch_day1]['count'] ?? 0) === 2,
+              json_encode($ch_by_day[$ch_day1]['count'] ?? null));
         check('an article before the range is not in it',
               strpos(json_encode($ch_markers), 'Ancient history') === false);
         check('nor one after it',
@@ -6078,13 +6833,14 @@ STUB
            json_encode escapes it, and the page puts it on screen with
            textContent - never innerHTML - so there is nowhere for it to
            become markup. */
-        db()->prepare("insert into news_articles
-            (symbol, published_at, title, publisher, link, url_hash, first_seen,
-             sentiment, impact_type, summary, scored_model, scored_at)
-            values ('AAA', ?, ?, 'Reuters', ?, ?, now(), 0.1, 'other', ?, 'stub', now())")
-            ->execute([$ch_day1 . ' 17:00:00',
-                       '<script>alert(1)</script> and "quotes"',
-                       'javascript:alert(1)', sha1('c5'),
+        db()->prepare("insert into rns_announcements
+            (announcement_id, symbol, source, title, published_at, url, body, skipped,
+             sentiment, ann_type, vs_expectations, summary, key_figures, scored_model, scored_at, first_seen)
+            values ('c5', 'AAA', 'RNS', ?, ?, ?, 'text', 'N', 0.1, 'other', 'not stated',
+                    ?, '[]', 'stub', now(), now())")
+            ->execute(['<script>alert(1)</script> and "quotes"',
+                       $ch_day1 . ' 17:00:00',
+                       'javascript:alert(1)',
                        '</script><img src=x onerror=alert(1)>']);
         $ch_raw = (string) $curl("$base/chart_data.php?symbol=AAA&from=$ch_from&to=$ch_asof");
         check('a headline with markup in it is escaped in the JSON',
@@ -6109,7 +6865,7 @@ STUB
               strpos($ch_js, 'safeHref') !== false
               && strpos($ch_js, '^https?:') !== false,
               'the scheme check is not the one expected');
-        db()->exec("delete from news_articles where url_hash=" . db()->quote(sha1('c5')));
+        db()->exec("delete from rns_announcements where announcement_id='c5'");
 
         //Parameters are checked rather than interpreted.
         foreach (['yesterday', '2026-13-45', "2026-01-01' or '1'='1", '+1 month'] as $ch_bad) {
@@ -6165,7 +6921,7 @@ STUB
         check('and the chart data comes back in under a second too',
               $ch_data_seconds < 1.0, round($ch_data_seconds, 3) . 's');
 
-        db()->exec("delete from news_articles where symbol='AAA'");
+        db()->exec("delete from rns_announcements where symbol='AAA'");
 
         echo "\n--- why did it move? ---\n";
 
@@ -6179,16 +6935,17 @@ STUB
         $ex_from = date('Y-m-d', strtotime($ex_asof . ' -14 day'));
 
         db()->exec("delete from ai_explanations where symbol='AAA'");
-        db()->exec("delete from news_articles where symbol='AAA'");
-        $ex_insert = db()->prepare("insert into news_articles
-            (symbol, published_at, title, publisher, link, url_hash, first_seen,
-             sentiment, impact_type, summary, scored_model, scored_at)
-            values ('AAA', ?, ?, 'Reuters', ?, ?, now(), ?, 'earnings', ?, 'stub', now())");
+        db()->exec("delete from rns_announcements where symbol='AAA'");
+        $ex_insert = db()->prepare("insert into rns_announcements
+            (announcement_id, symbol, source, title, published_at, url, body, skipped,
+             sentiment, ann_type, vs_expectations, summary, key_figures, scored_model, scored_at, first_seen)
+            values (?, 'AAA', 'RNS', ?, ?, ?, 'text', 'N', ?, 'results', ?, ?, '[]',
+                    'stub', now(), now())");
         $ex_day = date('Y-m-d', strtotime($ex_asof . ' -7 day'));
-        $ex_insert->execute([$ex_day . ' 09:00:00', 'AAA beats expectations',
-                             'https://example.invalid/e1', sha1('e1'), 0.9,
+        $ex_insert->execute(['e1', 'AAA beats expectations', $ex_day . ' 09:00:00',
+                             'https://example.invalid/e1', 0.9, 'beat',
                              'Profit ahead of forecast.']);
-        $ex_id = (int) scalar("select id from news_articles where url_hash=?", [sha1('e1')]);
+        $ex_id = (int) scalar("select id from rns_announcements where announcement_id='e1'");
 
         //POST only: a link or a prefetch must not be able to spend money.
         $ex_get = (string) $curl("$base/ai_explain.php?symbol=AAA");
@@ -6344,7 +7101,7 @@ STUB
               strpos(php_strip_whitespace(dirname(__DIR__) . '/public/ai_explain.php'),
                      'register_shutdown_function') !== false);
 
-        db()->exec("delete from news_articles where symbol='AAA'");
+        db()->exec("delete from rns_announcements where symbol='AAA'");
         db()->exec("delete from ai_explanations where symbol='AAA'");
 
         /* Tooltips are opt-in in both 4 and 5: the quote page marks them up and

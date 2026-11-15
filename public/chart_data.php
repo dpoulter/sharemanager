@@ -21,7 +21,7 @@
      */
 
     require("../includes/config.php");
-    require_once("../includes/news.php");
+    require_once("../includes/rns.php");
 
     header("Content-Type: application/json");
     header("X-Content-Type-Options: nosniff");
@@ -93,7 +93,11 @@
     /* The markers: one per day with news, whatever the day held. Grouped
        here rather than in the browser so the page gets what it draws. */
     $days = [];
-    foreach (news_in_range($symbol, $from, $to) as $article) {
+    /* Announcements, not headlines. The keys below keep the names the
+       browser already reads - impact_type, publisher, link - so
+       templates/chart.js needed no change: what a marker means has changed,
+       not what shape it arrives in. */
+    foreach (rns_in_range($symbol, $from, $to) as $article) {
 
         $day = (string) $article['published'];
 
@@ -110,7 +114,7 @@
                                            + (float) $article['sentiment'];
         }
 
-        $impact = (string) $article['impact_type'];
+        $impact = (string) $article['ann_type'];
         if ($impact !== '' && !in_array($impact, $days[$day]["impact_types"], true)) {
             $days[$day]["impact_types"][] = $impact;
         }
@@ -118,8 +122,8 @@
         $days[$day]["articles"][] = [
             "id"          => (int) $article['id'],
             "title"       => (string) $article['title'],
-            "link"        => (string) $article['link'],
-            "publisher"   => (string) $article['publisher'],
+            "link"        => (string) $article['url'],
+            "publisher"   => (string) $article['source'],
             "sentiment"   => $article['sentiment'] === null ? null : (float) $article['sentiment'],
             "impact_type" => $impact,
             "summary"     => (string) $article['summary'],

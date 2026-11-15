@@ -442,17 +442,58 @@
 					
 	 				<div class="tab-pane" id="news">
 						<div class="container">
-						<?php if (empty($articles)): ?>
-							<p>No news articles for <?=htmlspecialchars($symbol)?>.</p>
+						<?php
+							/* The company's own regulatory announcements, scored.
+							   Same rows as the "In the news" page, by design: the
+							   two should never disagree about what a day's news
+							   was. Everything that came from an announcement goes
+							   out through htmlspecialchars() - it is somebody
+							   else's text relayed by a model, which makes it
+							   somebody else's text twice over. */
+						?>
+						<?php if (empty($announcements)): ?>
+							<p>No regulatory announcements stored for <?=htmlspecialchars($symbol)?>.
+							   The nightly job collects them; routine filings are left out.</p>
 						<?php else: ?>
-							<?php foreach($articles as $article): ?>
-								<div class="row">
-									<div class="col-md-12">
-										<a href="<?=htmlspecialchars($article["link"])?>" target="_blank" rel="noopener noreferrer"><?=htmlspecialchars($article["title"])?></a>
-										<div class="text-muted small"><?=htmlspecialchars($article["pubdate"])?></div>
-									</div>
-								</div>
+							<table class="table table-sm table-hover">
+							<?php foreach($announcements as $announcement): ?>
+								<?php [$band_colour, $band_word] = rns_band($announcement["sentiment"]); ?>
+								<tr>
+									<td style="white-space: nowrap"><?=htmlspecialchars((string)$announcement["published"])?></td>
+									<td style="white-space: nowrap">
+										<span title="<?=htmlspecialchars((string)$announcement["sentiment"])?>"
+										      style="display:inline-block;width:40px;height:11px;border-radius:3px;background:<?=$band_colour?>"></span>
+										<small><?=$band_word?></small>
+									</td>
+									<td><small class="text-muted"><?=htmlspecialchars((string)$announcement["ann_type"])?></small></td>
+									<td>
+										<details>
+											<summary><?=htmlspecialchars((string)($announcement["summary"] ?: $announcement["title"]))?></summary>
+											<div class="mt-2">
+												<div><strong><?=htmlspecialchars((string)$announcement["title"])?></strong></div>
+												<?php foreach (rns_key_figures($announcement["key_figures"]) as $figure): ?>
+													<div><?=htmlspecialchars($figure)?></div>
+												<?php endforeach ?>
+												<?php if (trim((string)$announcement["vs_expectations"]) !== '' && $announcement["vs_expectations"] !== 'not stated'): ?>
+													<div>Against expectations: <?=htmlspecialchars((string)$announcement["vs_expectations"])?></div>
+												<?php endif ?>
+												<?php if (trim((string)$announcement["bull_point"]) !== ''): ?>
+													<div><span style="color:#15803d">&plus;</span> <?=htmlspecialchars((string)$announcement["bull_point"])?></div>
+												<?php endif ?>
+												<?php if (trim((string)$announcement["bear_point"]) !== ''): ?>
+													<div><span style="color:#b91c1c">&minus;</span> <?=htmlspecialchars((string)$announcement["bear_point"])?></div>
+												<?php endif ?>
+												<div class="mt-1">
+													<a href="<?=htmlspecialchars((string)$announcement["url"])?>" target="_blank" rel="noopener noreferrer">The announcement on Investegate</a>
+												</div>
+											</div>
+										</details>
+									</td>
+								</tr>
 							<?php endforeach?>
+							</table>
+							<p class="text-muted"><small>Announcement text is from Investegate and
+							   is kept for personal reference only.</small></p>
 						<?php endif?>
 						</div>
 			      	</div>

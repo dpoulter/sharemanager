@@ -18,7 +18,7 @@
 
 	require_once("constants.php");
 	require_once("llm.php");
-	require_once("news.php");
+	require_once("rns.php");
 
 	/**
 	 * The index the move is compared against.
@@ -148,14 +148,25 @@ How to answer:
 		                   (float) $index[count($index) - 1]['price'])
 		            : null;
 
+		/* Announcements, not headlines. The key stays 'headlines' because
+		   that is what the prompt, the schema and the panel call the list,
+		   and renaming it would be a change to the cached system block for
+		   no gain - but what is in it is now a company's own words read in
+		   full rather than somebody's piece about them.
+
+		   vs_expectations goes in as well, where the announcement itself
+		   said it. "Ahead of expectations" is the single most useful thing
+		   an explanation can know about a results day, and it is the one
+		   thing the model must not supply from memory. */
 		$headlines = [];
-		foreach (news_in_range($symbol, $from, $to) as $article) {
+		foreach (rns_in_range($symbol, $from, $to) as $article) {
 			$headlines[] = [
 				"id"          => (int) $article['id'],
 				"date"        => (string) $article['published'],
 				"sentiment"   => $article['sentiment'] === null
 				                 ? null : (float) $article['sentiment'],
-				"impact_type" => (string) $article['impact_type'],
+				"impact_type" => (string) $article['ann_type'],
+				"vs_expectations" => (string) $article['vs_expectations'],
 				"summary"     => $article['scored_at'] === null
 				                 ? (string) $article['title'] : (string) $article['summary'],
 				"scored"      => $article['scored_at'] !== null,
