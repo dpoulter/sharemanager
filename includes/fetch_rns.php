@@ -92,15 +92,19 @@
 		                   where enabled='Y' and exchange=? order by symbol", $exchange);
 
 		$counts = ["companies" => 0, "listed" => 0, "new" => 0, "skipped" => 0,
-		           "duplicate" => 0, "undated" => 0, "thin" => 0, "refused" => 0];
+		           "duplicate" => 0, "corrected" => 0, "undated" => 0, "thin" => 0,
+		           "refused" => 0];
 		$refusals = 0;
 		$stop     = null;
 		$started  = microtime(true);
 		$last     = 0.0;
 
 		/* One request, throttled from the end of the previous one. Returns
-		   [status, body] or null when the run must stop. */
-		$fetch = function ($url) use (&$last, &$refusals, &$counts, &$stop) {
+		   [status, body] or null when the run must stop. $kind says which
+		   sort of page was asked for, so the limit check knows what the page
+		   failing to carry would make it a limit page. */
+		$fetch = function ($url, $kind = 'announcement')
+		         use (&$last, &$refusals, &$counts, &$stop) {
 
 			$wait = RNS_FETCH_INTERVAL - (microtime(true) - $last);
 			if ($wait > 0) { usleep((int) round($wait * 1000000)); }
@@ -128,7 +132,7 @@
 				return null;
 			}
 
-			$limit = rns_limit_page($body);
+			$limit = rns_limit_page($body, $kind);
 			if ($limit !== null) {
 				$stop = "the site showed its announcement limit ('".$limit."')";
 				return null;
@@ -147,7 +151,7 @@
 
 			foreach (rns_tidm_candidates($symbol) as $candidate) {
 
-				$answer = $fetch(rns_company_url($candidate));
+				$answer = $fetch(rns_company_url($candidate), 'listing');
 				if ($answer === null) { break; }
 
 				$found = rns_announcement_links($answer[1]);
@@ -184,9 +188,24 @@
 				   the window means the rest are too. */
 				if (substr($link['published_at'], 0, 10) < $from) { break; }
 
+				/* Already on record. Still handed to rns_store(), which
+				   compares the listing's date with the stored one and
+				   corrects it if they differ - that is how the rows stored
+				   by the version that dated every announcement a row out get
+				   repaired, by being seen again. No body is fetched: the text
+				   has not changed, only what was believed about when it was
+				   published. */
 				if (count(query("select id from rns_announcements where announcement_id=?",
 				                $link['announcement_id']))) {
-					$counts['duplicate']++;
+
+					$was = rns_store([
+						"announcement_id" => $link['announcement_id'],
+						"symbol"          => $symbol,
+						"published_at"    => $link['published_at'],
+					]);
+
+					if ($was === 'corrected') { $counts['corrected']++; }
+					else                      { $counts['duplicate']++; }
 					continue;
 				}
 
@@ -228,9 +247,10 @@
 					"source"          => $link['source'],
 					"category"        => '',
 					"title"           => $title,
-					/* The document's own date beats the listing's: the
-					   announcement says when it was issued. */
-					"published_at"    => rns_body_date($body) ?: $link['published_at'],
+					/* The listing row's date, and only that. Reading one out
+					   of the document dated a trading update to the end of a
+					   buyback programme in 2027. */
+					"published_at"    => $link['published_at'],
 					"url"             => $link['url'],
 					"body"            => $body,
 				]);
@@ -246,12 +266,14 @@
 		print_r("read ".$counts['companies']." companies, ".$counts['listed']
 		        ." announcements listed, ".$counts['new']." stored, "
 		        .$counts['skipped']." skipped, ".$counts['duplicate']." already had, "
+		        .$counts['corrected']." dates corrected, "
 		        .$elapsed."s\r\n");
 		write_log("fetch_rns", "companies=".$counts['companies']
 		                      ." listed=".$counts['listed']
 		                      ." new=".$counts['new']
 		                      ." skipped=".$counts['skipped']
 		                      ." duplicate=".$counts['duplicate']
+		                      ." corrected=".$counts['corrected']
 		                      ." undated=".$counts['undated']
 		                      ." thin=".$counts['thin']
 		                      ." refused=".$counts['refused']

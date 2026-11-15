@@ -115,37 +115,67 @@ function stub_default_listing($path) {
         ['9003', 'eqs', 'director-pdmr-shareholding-purchase-of-shares', stub_when(2)],
     ];
 
+    /* Title first, then the date - which is the order the live page uses,
+       and the reason the first parser dated every announcement a row out.
+       A stub with the date in front of the link would have let that fault
+       through the suite, which is what happened. */
     foreach ($items as [$id, $source, $title, $when]) {
-        $rows .= '<tr><td class="date">' . $when . '</td>'
+        $rows .= '<tr>'
                . '<td><a href="/announcement/' . $source . '/' . $slug . '--'
                . rawurlencode($tidm) . '/' . $title . '/' . $id . '">'
-               . ucwords(str_replace('-', ' ', $title)) . '</a></td></tr>';
+               . ucwords(str_replace('-', ' ', $title)) . '</a></td>'
+               . '<td class="date">' . $when . '</td>'
+               . '<td class="src">' . strtoupper($source) . '</td>'
+               . '</tr>';
     }
 
     return '<html><head><title>' . htmlspecialchars($tidm) . ' announcements</title></head>'
-         . '<body><nav><a href="/login">Sign in</a></nav>'
+         . '<body><nav><a href="/login">Please sign in</a></nav>'
          . '<h1>' . htmlspecialchars($tidm) . '</h1>'
-         . '<table><tbody>' . $rows . '</tbody></table></body></html>';
+         . '<table><thead><tr><th>Announcement</th><th>Date</th><th>Source</th></tr></thead>'
+         . '<tbody>' . $rows . '</tbody></table></body></html>';
 }
 
 function stub_default_announcement() {
 
-    /* Long enough to pass RNS_MIN_BODY_CHARS, with a date at the top, an
-       Investegate AI summary to be stripped, and a figure to be picked up. */
-    return '<html><head><style>.a{color:red}</style><script>var x=1;</script></head>'
-         . '<body><nav><a href="/login">Sign in</a></nav>'
-         . '<h1>Trading Update</h1>'
-         . '<div><h3>Summary by AI BETA</h3><p>A machine wrote this bit and it should '
-         . 'never reach the scorer.</p></div>'
-         . '<p>' . stub_when(0, '07:00', 'j F Y') . '</p>'
-         . '<p>Example Company plc ("the Company") today announces a trading update for '
-         . 'the four months ended 31 October 2026.</p>'
-         . '<p>Trading has been ahead of the board&rsquo;s expectations. Revenue for the '
-         . 'period grew 7% to &pound;1.2bn, with order intake of &pound;1.8bn. The board '
-         . 'now expects underlying operating profit for the full year to be above the top '
-         . 'end of the range previously guided.</p>'
-         . '<p>The Company continues to expect free cash flow of around &pound;300m and '
-         . 'remains confident in its medium term targets. A further update will be given '
-         . 'with the full year results in March 2027.</p>'
-         . '<footer>Investegate</footer></body></html>';
+    /* Shaped like the real page the live test found: the announcement in one
+       block, with navigation, a sign-up block and Investegate's own AI
+       summary around it, and a date in the text - the end of a buyback
+       programme - that is not the release date. The first parser took all of
+       that as the announcement and read 2027 as the release date. */
+    $announcement = '<p>Example Company plc ("the Company") today announces a trading '
+                  . 'update for the four months ended 31 October 2026.</p>'
+                  . '<p>Trading has been ahead of the board&rsquo;s expectations. Revenue '
+                  . 'for the period grew 7% to &pound;1.2bn, with order intake of '
+                  . '&pound;1.8bn. The board now expects underlying operating profit for '
+                  . 'the full year to be above the top end of the range previously '
+                  . 'guided.</p>'
+                  . '<p>The Company continues to expect free cash flow of around '
+                  . '&pound;300m and remains confident in its medium term targets. A '
+                  . 'further update will be given with the full year results in March '
+                  . '2027.</p>'
+                  . str_repeat('<p>The board reiterates the guidance given at the half '
+                  . 'year and expects the second half to be weighted towards the final '
+                  . 'quarter in line with previous years.</p>', 6)
+                  . '<p>The share buyback programme announced in February will end on '
+                  . '25 February 2027.</p>';
+
+    return '<!doctype html><html><head><title>Trading Update</title>'
+         . '<style>.a{color:red}</style><script>var x=1;</script></head><body>'
+         . '<nav><ul><li><a href="/login">Please sign in</a></li>'
+         . '<li><a href="/register">Register</a></li><li>Markets</li>'
+         . '<li>Companies</li><li>Announcements</li></ul></nav>'
+         . '<header><h1>Investegate</h1></header>'
+         . '<div class="page">'
+         . '  <aside><h3>Sign up for free</h3><p>Create a free account for unlimited '
+         . '    announcements, email alerts and portfolio tracking. Join thousands of '
+         . '    private investors who follow the market with us every day.</p></aside>'
+         . '  <div class="announcement">'
+         . '    <div class="ai-summary"><h3>Summary by AI BETA</h3><p>A machine wrote '
+         . '      this bit and it should never reach the scorer.</p></div>'
+         . '    <div class="rns-body"><h1>Trading Update</h1>' . $announcement . '</div>'
+         . '  </div>'
+         . '</div>'
+         . '<footer><p>Terms of use. Privacy policy. Investegate is a trading name.</p>'
+         . '</footer></body></html>';
 }

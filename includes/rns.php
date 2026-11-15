@@ -61,28 +61,66 @@
 	/* -----------------------------------------------------------------------
 	   Reading a page.
 
-	   Everything in this section works on the markup Investegate serves, and
-	   it is the part of this file that could not be checked against a real
-	   page: the repository session has no route to investegate.co.uk, so
-	   these were built from the URL shapes in the brief and tested against
-	   fixtures of that shape. rns_announcement_links() and rns_limit_page()
-	   do not depend on the markup at all, which is deliberate. rns_body()
-	   does. Check it against a saved announcement page before the backfill.
+	   Rewritten after the first live test on the N100 found three faults in
+	   the version built blind. What they had in common is worth keeping in
+	   mind: each one came from guessing at structure rather than reading it.
+
+	     Every announcement took the date of the row above it. The proximity
+	     read looked behind the link first, on the assumption that a table
+	     puts its date column before its title column. Investegate puts it
+	     after, so the nearest date behind each link was the previous row's.
+	     Now the rows are read as rows - one announcement, one date, no
+	     question of which belongs to which.
+
+	     The text carried the navigation, the sign-up blurb and the site's
+	     own AI summary. Taking the whole page and subtracting furniture
+	     meant every piece of furniture had to be known in advance. Now the
+	     one block that holds the announcement is found by looking for it.
+
+	     The release date was read out of the document and picked up a
+	     buyback's end date in 2027. The listing row's date is the one that
+	     is actually the release date, and it is now the only one used.
 	   ----------------------------------------------------------------------- */
 
+	/** The announcement URL shape, which is the site's own routing. */
+	function rns_link_pattern() {
+		return '~/announcement/([a-z0-9-]+)/([^/"\'\s<>]*?)--([A-Za-z0-9.]+)/([^/"\'\s<>]*)/(\d+)~i';
+	}
+
+	/** One link match, as an announcement. */
+	function rns_link_from_match(array $m) {
+		return [
+			"announcement_id" => (string) $m[5],
+			"source"          => strtoupper($m[1]),
+			"company_slug"    => $m[2],
+			"tidm"            => strtoupper($m[3]),
+			"title_slug"      => $m[4],
+			"url"             => RNS_BASE_URL . '/announcement/' . $m[1] . '/'
+			                     . $m[2] . '--' . $m[3] . '/' . $m[4] . '/' . (string) $m[5],
+			"published_at"    => null,
+		];
+	}
+
 	/**
-	 * Every announcement linked from a page, by the shape of its URL.
+	 * Every announcement listed on a page, read a row at a time.
 	 *
 	 *   /announcement/rns/<company-slug>--<tidm>/<title-slug>/<id>
 	 *
-	 * Read with a pattern over the raw HTML rather than by walking the DOM
-	 * for a container class. That is not laziness: a class name is a design
-	 * decision somebody else makes on a Tuesday, where this URL shape is the
-	 * site's own routing and changing it would break every link anybody has
-	 * ever saved. The parser that depends on less is the parser that survives.
+	 * The URL shape is still what identifies an announcement - it is the
+	 * site's own routing, where a class name is a design decision somebody
+	 * else makes on a Tuesday. What changed after the live test is where the
+	 * date comes from.
 	 *
-	 * Returns one entry per distinct id, in the order found - which on a
-	 * company page is newest first.
+	 * A company page is a table, one announcement per row, and the date and
+	 * the link are in the same row. Reading the row settles which date
+	 * belongs to which announcement; the previous version measured the
+	 * distance from the link to the nearest date instead and was wrong for
+	 * every row on the page, because Investegate puts the date column after
+	 * the title column and the nearest date behind a link is the row above's.
+	 * Proximity was never going to answer this. Containment does.
+	 *
+	 * Returns one entry per distinct id, in page order - newest first on a
+	 * company page.
 	 */
 	function rns_announcement_links($html) {
 
@@ -90,9 +128,57 @@
 		$found = [];
 		$seen  = [];
 
-		$pattern = '~/announcement/([a-z0-9-]+)/([^/"\'\s<>]*?)--([A-Za-z0-9.]+)/([^/"\'\s<>]*)/(\d+)~i';
+		/* Table rows first. Non-greedy to the next </tr>, so a nested table
+		   inside a cell ends the row early rather than swallowing the rest
+		   of the page: a short row that holds one link and one date is still
+		   the right answer. */
+		if (preg_match_all('~<tr\b[^>]*>(.*?)</tr>~is', $html, $rows, PREG_SET_ORDER)) {
 
-		if (!preg_match_all($pattern, $html, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+			foreach ($rows as $row) {
+
+				if (!preg_match_all(rns_link_pattern(), $row[1], $matches, PREG_SET_ORDER)) {
+					continue;
+				}
+
+				/* The date for this row, wherever in the row it sits. One
+				   announcement to one row means there is nothing to choose
+				   between. */
+				$published = rns_find_date(rns_text_of($row[1]));
+
+				foreach ($matches as $m) {
+					$id = (string) $m[5];
+					if (isset($seen[$id])) { continue; }
+					$seen[$id] = true;
+					$link = rns_link_from_match($m);
+					$link['published_at'] = $published;
+					$found[] = $link;
+				}
+			}
+		}
+
+		/* Rows are the answer only if they carried dates as well as links.
+		   If the markup ever moves the dates out of the row, every
+		   announcement would come back undated and nothing would be stored;
+		   reading the document instead is a worse answer than a row but a
+		   much better one than no answer. A row list where only some rows
+		   are dated is left alone: the undated ones are a header or a
+		   "nothing to show" row, not a different layout. */
+		$dated = 0;
+		foreach ($found as $link) {
+			if ($link['published_at'] !== null) { $dated++; }
+		}
+		if ($dated) { return $found; }
+		$found = [];
+		$seen  = [];
+
+		/* No rows carried a dated announcement. Either the page lists them
+		   some other way or it lists none at all; fall back to reading the
+		   whole document and taking the date nearest each link. This has
+		   never run against Investegate - the company page is a table - and
+		   it looks ahead of the link before behind it, which is the order
+		   the live page turned out to want. */
+		if (!preg_match_all(rns_link_pattern(), $html, $matches,
+		                    PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
 			return $found;
 		}
 
@@ -102,19 +188,28 @@
 			if (isset($seen[$id])) { continue; }
 			$seen[$id] = true;
 
-			$found[] = [
-				"announcement_id" => $id,
-				"source"          => strtoupper($m[1][0]),
-				"company_slug"    => $m[2][0],
-				"tidm"            => strtoupper($m[3][0]),
-				"title_slug"      => $m[4][0],
-				"url"             => RNS_BASE_URL . '/announcement/' . $m[1][0] . '/'
-				                     . $m[2][0] . '--' . $m[3][0] . '/' . $m[4][0] . '/' . $id,
-				"published_at"    => rns_date_near($html, (int) $m[0][1]),
-			];
+			$flat = [];
+			foreach ($m as $i => $capture) { $flat[$i] = $capture[0]; }
+
+			$link = rns_link_from_match($flat);
+			$link['published_at'] = rns_date_near($html, (int) $m[0][1]);
+			$found[] = $link;
 		}
 
 		return $found;
+	}
+
+	/**
+	 * The text of a fragment of markup, with tags becoming spaces.
+	 *
+	 * Spaces rather than nothing: strip_tags() joins the text of adjacent
+	 * elements, so one cell's "16:35" and the next cell's "12/11/2026"
+	 * arrive as one run of digits and the date then has no word boundary in
+	 * front of it and is not found at all.
+	 */
+	function rns_text_of($html) {
+		return trim(preg_replace('~\s+~', ' ',
+		       preg_replace('~<[^>]*>~', ' ', (string) $html)));
 	}
 
 	/**
@@ -148,10 +243,15 @@
 		$before = $strip(substr($html, $start, $offset - $start));
 		$after  = $strip(substr($html, $offset, $ahead));
 
-		$found = rns_find_date($before, true);
+		/* Ahead of the link before behind it. The live page puts the date
+		   after the title, so the nearest date behind a link belongs to the
+		   announcement above it - which is exactly the fault the row reader
+		   above replaced. This path is the fallback for a listing that is
+		   not a table at all, and it should not repeat the mistake. */
+		$found = rns_find_date($after, false);
 		if ($found !== null) { return $found; }
 
-		return rns_find_date($after, false);
+		return rns_find_date($before, true);
 	}
 
 	/**
@@ -218,17 +318,16 @@
 		return null;
 	}
 
-	/**
-	 * The release date out of an announcement's own text, which beats the
-	 * listing's when they disagree: the document says when it was issued.
-	 *
-	 * Only the first part is read. An announcement's body is full of dates -
-	 * period ends, comparatives, meeting dates - and the one at the top is
-	 * the release.
-	 */
-	function rns_body_date($body) {
-		return rns_find_date(mb_substr((string) $body, 0, 1200), false);
-	}
+	/* There was a rns_body_date() here, which read the release date out of
+	   the document and preferred it to the listing's on the grounds that the
+	   document knows when it was issued. On the first live test it dated
+	   Rolls-Royce's trading update 25 February 2027, which is when the
+	   buyback it mentions ends.
+
+	   An announcement is full of dates - period ends, comparatives, meeting
+	   dates, the end of a programme - and "the first one" is not the release
+	   date, it is just the first one. The listing row's date is the release
+	   date, the site puts it there, and it is now the only one used. */
 
 	/**
 	 * A title read back from the slug in the URL, for the skip test.
@@ -259,7 +358,7 @@
 	 * because the one thing worse than stopping early is storing a modal as
 	 * the text of an announcement and scoring it.
 	 */
-	function rns_limit_page($html) {
+	function rns_limit_page($html, $kind = 'announcement') {
 
 		$text = strtolower((string) $html);
 		$hit  = null;
@@ -273,32 +372,141 @@
 		if ($hit === null) { return null; }
 
 		/* The wording alone is not enough. "Sign in" lives in the navigation
-		   of every page on the site, including the ones that did serve an
-		   announcement, and a false limit would stop the run every night and
+		   of every page on the site, including the ones that did serve what
+		   was asked for, and a false limit would stop the run every night and
 		   look exactly like being throttled. A limit page is the wording AND
-		   no announcement: the modal is a few lines, a results statement is
-		   thousands of words. */
+		   nothing of what was asked for - and what was asked for depends on
+		   which page it is, which is why the caller says.
+
+		   A company listing carries almost no prose of its own: a page of
+		   links and dates is a few hundred characters of text whether the
+		   limit is showing or not, so judging it by length stopped the run
+		   on the first company every night. Its rows are what it was asked
+		   for, so they are what settles it. */
+		if ($kind === 'listing') {
+			return count(rns_announcement_links($html)) ? null : $hit;
+		}
+
+		/* An announcement page, judged by its text: the modal is a few
+		   lines, a results statement is thousands of words. */
 		if (mb_strlen(rns_body($html)) >= RNS_MIN_BODY_CHARS) { return null; }
 
 		return $hit;
 	}
 
 	/**
+	 * The markup of the block that holds the most text on the page, or null
+	 * when the page cannot be parsed or has no such block.
+	 *
+	 * Walks the document, scores every candidate container by how much text
+	 * it holds, takes the best, and then descends: while one child still
+	 * holds almost all of the parent's text, that child is the better answer
+	 * - otherwise the winner is always <body>, which is the whole page and
+	 * the problem this is solving.
+	 *
+	 * The furniture comes out first. Not because the score would pick it -
+	 * a nav bar is not 13,000 characters - but because a nav inside the
+	 * winning block would otherwise ride along inside it.
+	 *
+	 * php-xml is already a dependency (get_articles() needs simplexml) but
+	 * this degrades rather than fatals if it is missing: null here means
+	 * rns_body() falls back to reading the whole page, which is what it did
+	 * before and is worse rather than broken.
+	 */
+	function rns_main_block($html) {
+
+		if (!class_exists('DOMDocument')) {
+			write_log("rns", "no DOMDocument: reading the whole page instead of"
+			                ." the announcement block");
+			return null;
+		}
+
+		$html = (string) $html;
+		if (trim($html) === '') { return null; }
+
+		$doc = new DOMDocument();
+
+		/* Investegate serves UTF-8; say so, because libxml assumes Latin-1
+		   for a fragment with no declaration and a pound sign then arrives
+		   as two characters. */
+		$previous = libxml_use_internal_errors(true);
+		$loaded = $doc->loadHTML('<?xml encoding="UTF-8">' . $html);
+		libxml_clear_errors();
+		libxml_use_internal_errors($previous);
+
+		if (!$loaded) { return null; }
+
+		/* The furniture, by tag. A page's nav is not the announcement
+		   whether it is inside the winning block or outside it. */
+		foreach (['script','style','noscript','svg','form','select','button',
+		          'nav','header','footer','aside','iframe'] as $tag) {
+			$nodes = $doc->getElementsByTagName($tag);
+			for ($i = $nodes->length - 1; $i >= 0; $i--) {
+				$node = $nodes->item($i);
+				if ($node && $node->parentNode) { $node->parentNode->removeChild($node); }
+			}
+		}
+
+		$best  = null;
+		$most  = 0;
+
+		foreach (['div','section','article','main','td','body'] as $tag) {
+			foreach ($doc->getElementsByTagName($tag) as $node) {
+				$length = mb_strlen(trim(preg_replace('~\s+~', ' ', $node->textContent)));
+				if ($length > $most) { $most = $length; $best = $node; }
+			}
+		}
+
+		if ($best === null || $most < 1) { return null; }
+
+		/* Descend while one child still holds almost all of it. <body> wins
+		   the score on every page; the block that is only the announcement
+		   is somewhere below it, and this is how far down. */
+		for ($depth = 0; $depth < 40; $depth++) {
+
+			$winner = null;
+			foreach ($best->childNodes as $child) {
+				if (!($child instanceof DOMElement)) { continue; }
+				$length = mb_strlen(trim(preg_replace('~\s+~', ' ', $child->textContent)));
+				if ($length >= $most * 0.9) { $winner = $child; $most = $length; break; }
+			}
+
+			if ($winner === null) { break; }
+			$best = $winner;
+		}
+
+		$out = '';
+		foreach ($best->childNodes as $child) { $out .= $doc->saveHTML($child); }
+
+		return $out === '' ? null : $out;
+	}
+
+	/**
 	 * The announcement's own words, as plain text.
 	 *
-	 * Built to depend on as little of the page as possible: the scripts,
-	 * styles and the furniture come out, the block tags become newlines, and
-	 * what is left is the text. No class names, no ids, no assumption about
-	 * where on the page the announcement sits.
+	 * The first version took the whole page and subtracted the furniture:
+	 * scripts, styles, nav, header, footer, aside. On a real page that left
+	 * the navigation, the sign-up blurb and Investegate's own AI summary in
+	 * the text, because subtracting furniture only removes the furniture
+	 * somebody thought of. Every page has one more piece of it.
 	 *
-	 * THIS IS THE ONE FUNCTION HERE THAT HAS NOT BEEN RUN AGAINST A REAL
-	 * PAGE. It is markup-agnostic by design, so the likely failure is not
-	 * "no text" but "the text plus some navigation". Read one saved
-	 * announcement page through it before trusting a month of scores.
+	 * So this looks for the announcement instead of looking for everything
+	 * that is not the announcement. An announcement sits in one block on the
+	 * page - 13.6k characters of it for a Rolls-Royce trading update, where
+	 * nothing else on the page is close - so the block with the most text in
+	 * it is the announcement, and the tightest such block is the one without
+	 * the page wrapped around it.
+	 *
+	 * Still no class names and no ids. "The biggest block of prose" is a
+	 * property of the document; "div.announcement-body" is a decision
+	 * somebody else can revisit.
 	 */
 	function rns_body($html) {
 
 		$html = (string) $html;
+
+		$block = rns_main_block($html);
+		if ($block !== null) { $html = $block; }
 
 		/* Anything that is not prose. svg and form included: a chart's path
 		   data and a search box's labels both come out as words otherwise. */
@@ -475,12 +683,26 @@
 	   ----------------------------------------------------------------------- */
 
 	/**
-	 * Store one announcement. Returns 'new', 'skipped' or 'duplicate'.
+	 * Store one announcement. Returns 'new', 'skipped', 'corrected' or
+	 * 'duplicate'.
 	 *
 	 * Dedupe is on Investegate's own announcement id, which is the last
 	 * segment of the URL and the site's own key for the document. A re-run
 	 * over the same company page stores nothing and does not fetch a body it
 	 * already has.
+	 *
+	 * Except for the date. An announcement already on record whose listing
+	 * date has changed gets the new one, which is how a run made before the
+	 * row-by-row fix repairs itself: the first version dated every
+	 * announcement a row out, and those rows are corrected by being seen
+	 * again rather than by anybody going through the table. The time is
+	 * included in the comparison, because the time is what decides which
+	 * close the price move is measured from.
+	 *
+	 * Nothing else is corrected. A changed title means Investegate reissued
+	 * the document, which is a different thing from a date being wrong, and
+	 * silently rewriting a scored announcement's text under its score would
+	 * leave a summary of something nobody can see any more.
 	 *
 	 * A skipped announcement is stored too, with its title and category and
 	 * nothing else. That is on purpose: without the row, every run would
@@ -491,8 +713,24 @@
 		$id = trim((string) ($ann['announcement_id'] ?? ''));
 		if ($id === '') { return 'duplicate'; }
 
-		$existing = query("select id from rns_announcements where announcement_id=?", $id);
-		if (count($existing)) { return 'duplicate'; }
+		$existing = query("select id, published_at from rns_announcements
+		                    where announcement_id=?", $id);
+
+		if (count($existing)) {
+
+			$stored = (string) $existing[0]['published_at'];
+			$listed = (string) ($ann['published_at'] ?? '');
+
+			if ($listed !== '' && $stored !== $listed) {
+				query("update rns_announcements set published_at=? where announcement_id=?",
+				      $listed, $id);
+				write_log("rns", "corrected the date on announcement ".$id
+				                ." from ".$stored." to ".$listed);
+				return 'corrected';
+			}
+
+			return 'duplicate';
+		}
 
 		$title    = trim((string) ($ann['title'] ?? ''));
 		$category = trim((string) ($ann['category'] ?? ''));

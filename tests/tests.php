@@ -4682,11 +4682,17 @@
     $rns_saved_exchange = $_SESSION["exchange"] ?? null;
     $_SESSION["exchange"] = 'XLON';
 
-    $rns_listing = '<html><body><nav><a href="/login">Sign in</a></nav>'
-                 . '<table><tbody>'
-                 . '<tr><td>14 Nov 2026 07:00</td><td><a href="/announcement/rns/rolls-royce--RR./trading-update/9001">Trading Update</a></td></tr>'
-                 . '<tr><td>13 Nov 2026 16:35</td><td><a href="/announcement/rns/rolls-royce--RR./transaction-in-own-shares/9002">Transaction in Own Shares</a></td></tr>'
-                 . '<tr><td>12/11/2026</td><td><a href="/announcement/eqs/rolls-royce--RR./director-pdmr-shareholding/9003">Director/PDMR Shareholding</a></td></tr>'
+    /* The live layout: the title first and the date after it. That order is
+       the whole of the first fault - the parser measured the distance from
+       each link to the nearest date and the nearest date behind a link is
+       the row above's, so every announcement on the page was dated a day
+       early. The fixture is written this way round because the one that had
+       the date first let the fault through the suite. */
+    $rns_listing = '<html><body><nav><a href="/login">Please sign in</a></nav>'
+                 . '<table><thead><tr><th>Announcement</th><th>Date</th></tr></thead><tbody>'
+                 . '<tr><td><a href="/announcement/rns/rolls-royce--RR./trading-update/9001">Trading Update</a></td><td>14 Nov 2026 07:00</td></tr>'
+                 . '<tr><td><a href="/announcement/rns/rolls-royce--RR./transaction-in-own-shares/9002">Transaction in Own Shares</a></td><td>13 Nov 2026 16:35</td></tr>'
+                 . '<tr><td><a href="/announcement/eqs/rolls-royce--RR./director-pdmr-shareholding/9003">Director/PDMR Shareholding</a></td><td>12/11/2026</td></tr>'
                  . '</tbody></table></body></html>';
 
     $rns_links = rns_announcement_links($rns_listing);
@@ -4703,9 +4709,10 @@
           strpos($rns_links[0]['url'], 'http') === 0
           && substr($rns_links[0]['url'], -5) === '/9001', $rns_links[0]['url']);
 
-    /* The dates. Three spellings in that listing, and the one the row
-       carries has to win over the one in the row above it. */
-    check('the date beside each link is the one used',
+    /* The dates. Each announcement takes its own row's date, which is the
+       fault the live test found: with the date after the title, measuring to
+       the nearest one gave every announcement the date of the row above. */
+    check('each announcement takes the date from its own row',
           array_map(fn($l) => substr((string) $l['published_at'], 0, 10), $rns_links)
             === ['2026-11-14','2026-11-13','2026-11-12'],
           json_encode(array_column($rns_links, 'published_at')));
@@ -4716,47 +4723,141 @@
           substr((string) $rns_links[2]['published_at'], 0, 10) === '2026-11-12',
           (string) $rns_links[2]['published_at']);
 
+    /* The fault, named. Each of these is the date of the row above the one
+       it would be put on, and none of them may appear. */
+    check('no announcement takes the date of the row above it',
+          substr((string) $rns_links[1]['published_at'], 0, 10) !== '2026-11-14'
+          && substr((string) $rns_links[2]['published_at'], 0, 10) !== '2026-11-13',
+          json_encode(array_column($rns_links, 'published_at')));
+
+    /* A table with a header row, which has no announcement in it, must not
+       shift everything by one either. */
+    check('a header row is not an announcement',
+          count($rns_links) === 3, count($rns_links) . ' links');
+
+    /* And the row is what settles it, not the distance. A row whose date
+       comes first still works, because the row is read as a row. */
+    check('a listing with the date before the title reads the same',
+          (function () {
+              $other = '<table><tbody>'
+                     . '<tr><td>09 Nov 2026 07:00</td><td><a href="/announcement/rns/x--AB./a/8801">A</a></td></tr>'
+                     . '<tr><td>08 Nov 2026 07:00</td><td><a href="/announcement/rns/x--AB./b/8802">B</a></td></tr>'
+                     . '</tbody></table>';
+              $links = rns_announcement_links($other);
+              return count($links) === 2
+                     && substr((string) $links[0]['published_at'], 0, 10) === '2026-11-09'
+                     && substr((string) $links[1]['published_at'], 0, 10) === '2026-11-08';
+          })());
+
     check('a page with no announcements on it yields none, rather than guessing',
           rns_announcement_links('<html><body><p>Nothing here</p></body></html>') === []);
     check('the same announcement linked twice is one announcement',
           count(rns_announcement_links($rns_listing . $rns_listing)) === 3);
 
+    /* Insurance, not a layout anybody has seen: if the dates ever move out
+       of the row, rows alone would date nothing and the fetcher would store
+       nothing at all. Reading the document and taking the nearest date is a
+       worse answer than a row and a much better one than none, so that is
+       what happens - and only when no row was dated, so the live layout
+       never reaches it. */
+    check('links in rows with the dates outside them still come back dated',
+          (function () {
+              $odd = '<table><tbody>'
+                   . '<tr><td><a href="/announcement/rns/x--AB./a/8811">A</a></td></tr>'
+                   . '</tbody></table><p class="when">09 Nov 2026 07:00</p>';
+              $links = rns_announcement_links($odd);
+              return count($links) === 1
+                     && substr((string) $links[0]['published_at'], 0, 10) === '2026-11-09';
+          })(),
+          json_encode(rns_announcement_links('<table><tbody>'
+              . '<tr><td><a href="/announcement/rns/x--AB./a/8811">A</a></td></tr>'
+              . '</tbody></table><p class="when">09 Nov 2026 07:00</p>')));
+
     echo "\n--- reading the announcement itself ---\n";
 
-    $rns_page = '<html><head><style>.x{color:red}</style><script>var a=1;</script></head>'
-              . '<body><nav><a href="/login">Sign in</a></nav>'
-              . '<h1>Trading Update</h1>'
-              . '<div><h3>Summary by AI BETA</h3><p>A machine wrote this and it must not '
-              . 'reach the scorer.</p></div>'
-              . '<p>14 November 2026 07:00</p>'
-              . '<p>Example Company plc announces&nbsp;a trading update. Revenue grew 7% '
-              . 'to &pound;1.2bn and trading has been ahead of expectations.</p>'
-              . '<footer>Investegate</footer></body></html>';
+    /* The live page's shape: the announcement in one block, with the
+       navigation, a sign-up block and Investegate's own AI summary around
+       it. The first version took the whole page and subtracted the furniture
+       it had been told about, and on the real page that left the navigation,
+       the sign-up blurb and the AI summary in the text. */
+    $rns_prose = '<p>Example Company plc announces&nbsp;a trading update. Revenue grew 7% '
+               . 'to &pound;1.2bn and trading has been ahead of expectations.</p>'
+               . str_repeat('<p>The board reiterates the guidance given at the half year '
+               . 'and expects the second half to be weighted towards the final quarter.</p>', 6);
+
+    $rns_page = '<!doctype html><html><head><title>Trading Update</title>'
+              . '<style>.x{color:red}</style><script>var a=1;</script></head><body>'
+              . '<nav><ul><li><a href="/login">Please sign in</a></li>'
+              . '<li><a href="/register">Register</a></li><li>Markets</li></ul></nav>'
+              . '<header><h1>Investegate</h1></header>'
+              . '<div class="page">'
+              . '  <aside><h3>Sign up for free</h3><p>Create a free account for unlimited '
+              . '    announcements and email alerts. Join thousands of private investors.</p></aside>'
+              . '  <div class="announcement">'
+              . '    <div class="ai-summary"><h3>Summary by AI BETA</h3><p>A machine wrote '
+              . '      this and it must not reach the scorer.</p></div>'
+              . '    <div class="rns-body"><h1>Trading Update</h1>' . $rns_prose
+              . '      <p>The buyback will end on 25 February 2027.</p></div>'
+              . '  </div>'
+              . '</div>'
+              . '<footer><p>Terms of use. Investegate is a trading name.</p></footer>'
+              . '</body></html>';
 
     $rns_body = rns_body($rns_page);
     check('the script and the style do not come out as words',
           strpos($rns_body, 'color:red') === false && strpos($rns_body, 'var a') === false,
-          $rns_body);
+          substr($rns_body, 0, 200));
     check('nor does the navigation',
-          strpos($rns_body, 'Sign in') === false);
+          strpos($rns_body, 'Please sign in') === false && strpos($rns_body, 'Markets') === false,
+          substr($rns_body, 0, 200));
+    check('nor the invitation to sign up, which is what the live page added',
+          stripos($rns_body, 'Create a free account') === false
+          && stripos($rns_body, 'Sign up for free') === false,
+          substr($rns_body, 0, 200));
+    check('nor the footer',
+          stripos($rns_body, 'Terms of use') === false
+          && stripos($rns_body, 'trading name') === false);
     check('the announcement does',
           strpos($rns_body, 'Revenue grew 7%') !== false);
     check('entities are decoded, so a figure reads as a figure',
-          strpos($rns_body, "\xc2\xa31.2bn") !== false, $rns_body);
+          strpos($rns_body, "\xc2\xa31.2bn") !== false, substr($rns_body, 0, 200));
     check('a non-breaking space is a space',
           strpos($rns_body, 'announces a trading update') !== false);
 
+    /* Nearly all of what comes back is the announcement. On the live page
+       the block was 13.6k characters and nothing else came close; a reading
+       that is mostly furniture would pass every check above and still be
+       wrong, so the proportion is checked too. */
+    check('what comes back is the announcement rather than the page around it',
+          mb_strlen($rns_body) > 500
+          && mb_strlen($rns_body) < mb_strlen(strip_tags($rns_page)) * 0.95,
+          mb_strlen($rns_body) . ' of ' . mb_strlen(strip_tags($rns_page)));
+
     $rns_clean = rns_strip_ai_summary($rns_body);
     check("the site's own AI summary is removed before scoring",
-          strpos($rns_clean, 'A machine wrote this') === false, $rns_clean);
+          strpos($rns_clean, 'A machine wrote this') === false, substr($rns_clean, 0, 300));
     check('and so is its heading',
           stripos($rns_clean, 'Summary by AI') === false);
     check("but the company's own words survive it",
           strpos($rns_clean, 'ahead of expectations') !== false);
 
-    check("the release date is read from the document, which knows when it was issued",
-          rns_body_date($rns_clean) === '2026-11-14 07:00:00',
-          var_export(rns_body_date($rns_clean), true));
+    /* The AI summary inside the same block as the announcement, which is
+       where the block finder cannot exclude it: the strip has to. */
+    $rns_inline = rns_strip_ai_summary(rns_body(
+        '<html><body><div class="only"><h3>Summary by AI BETA</h3>'
+        . '<p>A machine wrote this one too.</p>' . $rns_prose . '</div></body></html>'));
+    check('an AI summary inside the announcement block is still removed',
+          strpos($rns_inline, 'A machine wrote this one too') === false,
+          substr($rns_inline, 0, 200));
+    check('and the announcement around it is not',
+          strpos($rns_inline, 'Revenue grew 7%') !== false);
+
+    /* A page that cannot be read as blocks still yields its text, rather
+       than nothing: the block finder is an improvement on reading the whole
+       page, not a precondition for reading it. */
+    check('a page with no block structure still gives up its text',
+          strpos(rns_body('Example Company plc announces a trading update.'),
+                 'announces a trading update') !== false);
 
     echo "\n--- the limit page is a stop signal, not an obstacle ---\n";
 
@@ -4787,6 +4888,23 @@
     check('and nor is an ordinary page',
           rns_limit_page('<html><body><p>' . str_repeat('Words. ', 200) . '</p></body></html>')
             === null);
+
+    /* A company listing is a page of links and dates: a few hundred
+       characters of text whether the limit is showing or not. Judged by
+       length it looked like a limit page, so the run stopped on the first
+       company and stored nothing - which is what the live pages did until
+       the stub was made to carry a sign-in link in its nav, as they do. */
+    $rns_listing = '<html><body><nav><a href="/login">Please sign in</a></nav>'
+                 . '<table><tr><td><a href="/announcement/rns/example--RNX/final-results/7701">'
+                 . 'Final Results</a></td><td>12 Nov 2026 07:00</td></tr></table></body></html>';
+    check('a listing is judged by its rows, not its length, so the sign-in nav does not stop the run',
+          rns_limit_page($rns_listing, 'listing') === null,
+          var_export(rns_limit_page($rns_listing, 'listing'), true));
+    check('and that same page would read as a limit page if judged as an announcement',
+          rns_limit_page($rns_listing) !== null);
+    check('but a listing with the wall and no announcements on it is a limit page',
+          rns_limit_page('<html><body><nav><a href="/login">Please sign in</a></nav>'
+                       . '<p>You have reached your limit.</p></body></html>', 'listing') !== null);
 
     echo "\n--- what not to read ---\n";
 
@@ -5014,6 +5132,32 @@
           && $rns_by_id['9003']['scored_at'] !== null,
           json_encode($rns_by_id['9003'] ?? null));
 
+    /* The release date is the listing row's. The stub's announcement text
+       ends with a buyback that runs to 25 February 2027, which is the date
+       the first version read out of the document and filed the Rolls-Royce
+       trading update under. */
+    check('the stored date is the listing row\'s, not one found in the text',
+          ($rns_by_id['9001']['published'] ?? '') === gmdate('Y-m-d'),
+          json_encode([$rns_by_id['9001']['published'] ?? null, gmdate('Y-m-d')]));
+    check('and no announcement is dated from the buyback end date in its text',
+          count(array_filter($rns_rows,
+                fn($r) => substr((string) $r['published'], 0, 4) === '2027')) === 0,
+          json_encode(array_column($rns_rows, 'published')));
+    check('each one keeps its own row\'s date, a day apart as the listing has them',
+          ($rns_by_id['9001']['published'] ?? '') === gmdate('Y-m-d')
+          && ($rns_by_id['9002']['published'] ?? '') === gmdate('Y-m-d', strtotime('-1 day'))
+          && ($rns_by_id['9003']['published'] ?? '') === gmdate('Y-m-d', strtotime('-2 day')),
+          json_encode(array_combine(array_column($rns_rows, 'announcement_id'),
+                                    array_column($rns_rows, 'published'))));
+    check('and the text that was scored is the announcement, not the page round it',
+          (int) ($rns_by_id['9001']['body_length'] ?? 0) > 400
+          && (string) scalar("select body from rns_announcements where announcement_id='9001'")
+             !== ''
+          && stripos((string) scalar("select body from rns_announcements
+                                       where announcement_id='9001'"), 'Create a free account')
+             === false,
+          substr((string) scalar("select body from rns_announcements where announcement_id='9001'"), 0, 200));
+
     $rns_fetched = array_values(array_filter($rns_requests,
                        fn($line) => strpos($line, '/announcement/') !== false));
     check('only the two worth reading were fetched, not all three',
@@ -5036,6 +5180,35 @@
                          fn($line) => strpos($line, '/announcement/') !== false));
     check('and asks for no announcement it already has',
           count($rns_refetched) === 0, implode(' | ', $rns_refetched));
+
+    /* A date already on record that the listing disagrees with is corrected
+       by the next run. This is how the rows stored by the version that dated
+       every announcement a row out repair themselves - by being seen again,
+       rather than by anybody going through the table by hand. */
+    db()->exec("update rns_announcements set published_at='2020-01-02 07:00:00'
+                 where announcement_id='9001'");
+    file_put_contents("$rns_dir/requests", '');
+    [$rns_fix_out, ] = run_script('fetch_rns.php', [], $rns_env);
+    check('a wrong date already on record is corrected on the next run',
+          (string) scalar("select date(published_at) from rns_announcements
+                            where announcement_id='9001'") === gmdate('Y-m-d'),
+          (string) scalar("select published_at from rns_announcements
+                            where announcement_id='9001'"));
+    check('the run says how many it corrected, so a repair is not silent',
+          stripos($rns_fix_out, 'corrected') !== false, substr($rns_fix_out, -300));
+    check('and it did not refetch the document to do it',
+          count(array_filter(explode("\n", (string) @file_get_contents("$rns_dir/requests")),
+                fn($l) => strpos($l, '/announcement/') !== false)) === 0);
+    check('the announcement is not rescored for a date change',
+          (string) scalar("select scored_model from rns_announcements
+                            where announcement_id='9001'") !== '');
+
+    /* And a date that agrees is left alone, so an unchanged listing is not
+       reported as a repair every night. */
+    [$rns_same_out, ] = run_script('fetch_rns.php', [], $rns_env);
+    check('a date that already agrees is not reported as a correction',
+          preg_match('/0 dates corrected/', $rns_same_out) === 1,
+          substr($rns_same_out, -300));
 
     echo "\n--- when the site says it has had enough ---\n";
 
