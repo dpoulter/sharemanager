@@ -155,9 +155,14 @@ check("a half-yearly reporter's year is two periods, not four",
 check("and the sum is the trailing twelve months, not two years",
       fmp.buyback_yield(half_yearly, 1000000.0) == 0.172,
       str(fmp.buyback_yield(half_yearly, 1000000.0)))
-check("summing all four would have given almost twice that",
-      abs(304000.0 / 1000000.0 - 0.304) < 1e-9
-      and fmp.buyback_yield(half_yearly, 1000000.0) < 0.304 * 0.6)
+# Summing all four would be 0.304 - which is also over the sanity cap, so
+# the old code would hand back nothing here rather than a wrong number. The
+# comparison is written to survive either answer so that a regression reports
+# as a failure rather than a TypeError three lines later.
+all_four = fmp.buyback_yield(half_yearly, 1000000.0)
+check("summing all four would have given almost twice that, or nothing at all",
+      all_four is not None and all_four < 0.304 * 0.6,
+      "summing all four is {}".format(304000.0 / 1000000.0))
 
 # An annual reporter: one period is the year.
 annual = [period("2026-03-31", -5000.0), period("2025-03-31", -6000.0)]
