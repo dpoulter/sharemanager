@@ -269,6 +269,13 @@
     $score_date = scalar("select max(date) from statistics where indicator='momentum_score'");
     check('the as of marker matches the date the scores were written at',
           $resolved !== false && $resolved === $score_date, "resolved=$resolved scores=$score_date");
+    /* Named here so that a job calculating for a different date than the one
+       the fixtures are written at says so, rather than surfacing three
+       sections later as an empty array in some unrelated assertion. */
+    check('the job calculates for the date the fixtures are written at',
+          $resolved === asof_date(),
+          "job says $resolved, fixtures are written at " . asof_date());
+
     $wrong = scalar("select max(job_date) from jobs where job_name='get_statistics'");
     check('resolving the run row instead would miss the scores (regression guard)',
           (int)scalar("select count(*) from statistics where date=?", [$wrong]) === 0,
@@ -768,10 +775,17 @@
     }
 
     /* The headline requirement: a negative P/E must not outrank a positive one. */
-    $worst_positive = min(array_filter([$pct['CCC'], $pct['DDD'], $pct['EEE']],
-                                       fn($p) => $p !== null));
+    /* Guarded: if nothing was ranked at all, min() of an empty list is a fatal
+       and the suite stops with a PHP error instead of a failing check. */
+    $ranked_positives = array_filter([$pct['CCC'], $pct['DDD'], $pct['EEE']],
+                                     fn($p) => $p !== null);
+    check('the positives were ranked at all, so the comparison below means something',
+          count($ranked_positives) === 3,
+          'ranked ' . count($ranked_positives) . ' of 3 for ' . $asof);
+    $worst_positive = count($ranked_positives) ? min($ranked_positives) : null;
     $negatives_above = array_filter(['AAA' => $pct['AAA'], 'BBB' => $pct['BBB']],
-                                    fn($p) => $p !== null && $p > $worst_positive);
+                                    fn($p) => $p !== null && $worst_positive !== null
+                                              && $p > $worst_positive);
     check('a negative P/E does not rank above a positive one',
           count($negatives_above) === 0,
           'negatives ' . json_encode($negatives_above) . ' beat ' . $worst_positive);
@@ -2083,6 +2097,248 @@
     run_script('get_statistics.php');
     if ($mn_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $mn_saved_exchange; }
+
+    echo "\n--- FMP's price ratios are converted out of the reporting currency ---\n";
+
+    /* FMP's ratios-ttm and key-metrics-ttm divide the London price by
+       per-share figures taken from accounts kept in the company's own
+       currency, and nothing converted between them. Sterling reporters were
+       right and everyone else was understated by the whole exchange rate:
+
+         RR    reports GBP   P/E 37.52   correct
+         SHEL  reports USD   P/E  8.43   true about 11.1
+         BGEO  reports GEL   P/E  2.38   true about  8.6
+
+       62 of 272 companies with statements report in something other than
+       sterling, and seven of the thirty places in the value, quality and
+       overall top tens were held by one of them. */
+
+    $cx_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $cx_asof = asof_date();
+    $cx_all  = "('CGB','CUS','CGE','CNO')";
+
+    /* Runs one of the Python jobs against the test database. They read the
+       SM_DB_* names; run_tests.sh configures the throwaway database under
+       SM_TEST_*. */
+    $run_python = function ($script, $args = []) {
+        $cmd = 'SM_DB_HOST=' . escapeshellarg(SERVER)
+             . ' SM_DB_NAME=' . escapeshellarg(DATABASE)
+             . ' SM_DB_USER=' . escapeshellarg(USERNAME)
+             . ' SM_DB_PASS=' . escapeshellarg(PASSWORD)
+             . ' python3 ' . escapeshellarg(dirname(__DIR__) . '/python/' . $script);
+        foreach ($args as $a) { $cmd .= ' ' . escapeshellarg($a); }
+        exec($cmd . ' 2>&1', $out, $rc);
+        return [implode("\n", $out), $rc];
+    };
+
+    reset_calculated();
+    db()->exec("delete from stock_info");
+    db()->exec("delete from fx_rates");
+    db()->exec("delete from stock_symbols where symbol in $cx_all");
+    db()->exec("delete from screen_indicators where name in ('pe','roe_ttm')");
+    db()->exec("insert into screen_indicators
+                  (name, provider_field, description, enabled, order_number,
+                   calc_rank, rank_zero, rank_order, rank_negative, fx_adjust)
+                values
+                  ('pe','Ratios.priceToEarningsRatioTTM','Price / earnings','Y',1,
+                   'Y','N','value ASC','EXCLUDE','MULTIPLY'),
+                  ('roe_ttm','KeyMetrics.returnOnEquityTTM','Return on equity','Y',2,
+                   'Y','N','value DESC','NORMAL','NONE')");
+
+    /* Four companies with identical provider figures and different reporting
+       currencies, so any difference in the answer is the conversion and
+       nothing else. CNO reports in a currency no rate could be found for. */
+    $cx_ccy = ['CGB' => 'GBP', 'CUS' => 'USD', 'CGE' => 'GEL', 'CNO' => 'ZWL'];
+    $cx_sym = db()->prepare("insert into stock_symbols (symbol,name,exchange,enabled,sector,industry,market,report_ccy,report_ccy_asof)
+                             values (?,?,'XLON','Y','Currency Test','Currency Industry','FTSE 250',?,?)");
+    $cx_info = db()->prepare("insert into stock_info (symbol,asofdate,attribute,value) values (?,?,?,?)");
+    foreach ($cx_ccy as $cx_s => $cx_c) {
+        $cx_sym->execute([$cx_s, $cx_s . ' Test PLC', $cx_c, $cx_asof]);
+        $cx_info->execute([$cx_s, $cx_asof, 'Ratios.priceToEarningsRatioTTM', '8.43']);
+        $cx_info->execute([$cx_s, $cx_asof, 'KeyMetrics.returnOnEquityTTM', '0.25']);
+    }
+
+    /* GBPUSD is quoted on the plan. GBPGEL is not - the endpoint answers [] -
+       so the loader crosses it through the dollar and records that it did. */
+    $cx_rate = db()->prepare("insert into fx_rates (date,base,quote_ccy,rate,source) values (?,'GBP',?,?,?)");
+    $cx_rate->execute([$cx_asof, 'USD', 1.3212, 'quote']);
+    $cx_rate->execute([$cx_asof, 'GEL', 3.5, 'cross:USD']);
+
+    [$cx_out, $cx_rc] = $run_python('get_api_stats.py');
+    check('get_api_stats.py runs against the database', $cx_rc === 0, substr($cx_out, -500));
+
+    $cx_value = function ($symbol, $indicator) use ($cx_asof) {
+        $v = scalar("select value from statistics where symbol=? and indicator=? and date=? and exchange='XLON'",
+                    [$symbol, $indicator, $cx_asof]);
+        return ($v === false || $v === null) ? null : (float)$v;
+    };
+
+    check('a sterling reporter is untouched',
+          $cx_value('CGB', 'pe') === 8.43, var_export($cx_value('CGB', 'pe'), true));
+    check('a dollar reporter is multiplied by GBPUSD',
+          $cx_value('CUS', 'pe') === 11.137716, var_export($cx_value('CUS', 'pe'), true));
+    check('and that is the figure the provider did not give',
+          $cx_value('CUS', 'pe') !== 8.43);
+    check('a lari reporter is multiplied by the crossed rate',
+          $cx_value('CGE', 'pe') === 29.505, var_export($cx_value('CGE', 'pe'), true));
+    check('the crossed rate is recorded as crossed, not as a quote',
+          scalar("select source from fx_rates where date=? and quote_ccy='GEL'", [$cx_asof]) === 'cross:USD');
+
+    /* No rate means no value. Writing the provider's figure anyway would rank
+       the company a third cheaper than it is, which is worse than leaving it
+       out of that ranking for the day. */
+    check('a reporter with no rate gets no price ratio at all',
+          $cx_value('CNO', 'pe') === null, var_export($cx_value('CNO', 'pe'), true));
+    check('it is reported rather than passed over in silence',
+          stripos($cx_out, 'NO RATE') !== false && strpos($cx_out, 'ZWL') !== false,
+          substr($cx_out, -400));
+
+    /* A ratio that is one currency over the same currency is not touched, and
+       a missing rate must not suppress it either. */
+    foreach (array_keys($cx_ccy) as $cx_s) {
+        check("return on equity is unchanged for $cx_s",
+              $cx_value($cx_s, 'roe_ttm') === 0.25, var_export($cx_value($cx_s, 'roe_ttm'), true));
+    }
+
+    /* The rate that was used, beside the values it was used on. */
+    check('the rate used is recorded against the symbol',
+          $cx_value('CUS', 'fx_rate') === 1.3212 && $cx_value('CGE', 'fx_rate') === 3.5);
+    check('a sterling reporter gets no rate row, because none was applied',
+          $cx_value('CGB', 'fx_rate') === null);
+
+    /* The provider's own figure is still on record: stock_info is written by
+       the loader and the correction happens on the way into statistics, so
+       raw value, rate and reporting currency are all still there to check
+       the arithmetic against. */
+    check("the provider's raw value is kept for auditing",
+          scalar("select value from stock_info where symbol='CUS' and asofdate=? and attribute='Ratios.priceToEarningsRatioTTM'",
+                 [$cx_asof]) === '8.43');
+
+    //Re-running must not convert twice.
+    $run_python('get_api_stats.py');
+    check('a second run leaves the converted value alone rather than converting it again',
+          $cx_value('CUS', 'pe') === 11.137716, var_export($cx_value('CUS', 'pe'), true));
+    check('and writes no second row for the same symbol and indicator',
+          (int)scalar("select count(*) from statistics where symbol='CUS' and indicator='pe' and date=?",
+                      [$cx_asof]) === 1);
+
+    /* The rankings see the corrected figures, because the correction happens
+       before get_statistics.php ever looks: on the live data the cheapest P/E
+       in the index was a dollar reporter that is not cheap. */
+    run_script('get_statistics.php');
+    $cx_rank = function ($symbol) use ($cx_asof) {
+        return scalar("select percentile from statistics where symbol=? and indicator='pe' and date=?",
+                      [$symbol, $cx_asof]);
+    };
+    check('the dollar reporter is ranked on the converted figure, behind the sterling one',
+          $cx_rank('CGB') !== null && $cx_rank('CUS') !== null
+          && (float)$cx_rank('CGB') > (float)$cx_rank('CUS'),
+          'CGB ' . var_export($cx_rank('CGB'), true) . ', CUS ' . var_export($cx_rank('CUS'), true));
+    check('the reporter with no rate is not ranked on that ratio at all',
+          $cx_rank('CNO') === null || $cx_rank('CNO') === false);
+
+    echo "\n--- the page and the model are told about the conversion ---\n";
+
+    check('the reporting currency is read back from the symbol',
+          report_currency('CUS') === 'USD' && report_currency('CGB') === 'GBP');
+    check('the rate is read back for the date',
+          fx_rate_for($cx_asof, 'USD') === 1.3212
+          && fx_rate_for($cx_asof, 'GBP') === 1.0);
+    check('a currency with no rate for the date reads as no rate, not as one',
+          fx_rate_for($cx_asof, 'ZWL') === null);
+
+    $cx_note = report_currency_note('CUS', $cx_asof);
+    check('a non-sterling reporter has a note to show',
+          is_array($cx_note) && $cx_note['currency'] === 'USD' && $cx_note['rate'] === 1.3212,
+          json_encode($cx_note));
+    check('a sterling reporter has nothing to say',
+          report_currency_note('CGB', $cx_asof) === null);
+
+    $cx_quote_src = php_strip_whitespace(dirname(__DIR__) . '/templates/quote.php');
+    check('the quote page says what the company reports in and at what rate',
+          strpos($cx_quote_src, 'Reports in ') !== false
+          && strpos($cx_quote_src, 'ratios converted at ') !== false);
+    check('and says so only when something was converted',
+          preg_match('/if\s*\(\s*!empty\(\$currency_note\)/', $cx_quote_src) === 1);
+
+    $cx_inputs = outlook_share_inputs('CUS', $cx_asof);
+    check('the outlook inputs carry the reporting currency',
+          ($cx_inputs['report_ccy'] ?? null) === 'USD', json_encode($cx_inputs['report_ccy'] ?? null));
+    check('and the rate the ratios were converted at',
+          ($cx_inputs['fx_rate_from_gbp'] ?? null) === 1.3212,
+          json_encode($cx_inputs['fx_rate_from_gbp'] ?? null));
+    $cx_gbp_inputs = outlook_share_inputs('CGB', $cx_asof);
+    check('a sterling reporter is sent GBP and a rate of one',
+          ($cx_gbp_inputs['report_ccy'] ?? null) === 'GBP'
+          && ($cx_gbp_inputs['fx_rate_from_gbp'] ?? null) === 1.0);
+    $cx_prompt = outlook_system_prompt('share');
+    check('the model is told the ratios are already converted',
+          stripos($cx_prompt, 'already been converted') !== false
+          && stripos($cx_prompt, 'Do not convert them again') !== false);
+
+    echo "\n--- the price load comes before anything that resolves a date ---\n";
+
+    /* The as of date is the newest date in historical_prices, so the session's
+       prices have to be loaded before the fundamentals: the loader stamps
+       stock_info with that date and get_api_stats.py reads it back at exactly
+       that date. With the price load last, the Python half of the run keyed on
+       the previous session and the PHP half on the new one, and the join
+       between them finds nothing when they disagree. */
+    $cx_cron = implode("\n", array_filter(
+        explode("\n", (string) @file_get_contents($INCLUDES . '/refresh_all.sh')),
+        function ($line) { return !preg_match('/^\s*#/', $line) && trim($line) !== ''; }));
+    $cx_line = function ($needle) use ($cx_cron) {
+        foreach (explode("\n", $cx_cron) as $i => $line) {
+            if (strpos($line, $needle) !== false) { return $i; }
+        }
+        return -1;
+    };
+    check('the nightly run loads prices before the fundamentals',
+          $cx_line('get_share_prices.php') >= 0
+          && $cx_line('get_share_prices.php') < $cx_line('fetch_fmp_fundamentals.py')
+          && $cx_line('get_share_prices.php') < $cx_line('fetch_eodhd_fundamentals.py'),
+          'prices on line ' . $cx_line('get_share_prices.php')
+          . ', fmp on ' . $cx_line('fetch_fmp_fundamentals.py'));
+    check('and before the job that reads the loader back',
+          $cx_line('get_share_prices.php') < $cx_line('get_api_stats.py'));
+    check('and before the statistics job that ranks the result',
+          $cx_line('get_share_prices.php') < $cx_line('get_statistics.php'));
+
+    echo "\n--- the currency settings are configuration, not code ---\n";
+
+    $cx_migration = (string)file_get_contents(dirname(__DIR__) . '/sql/report_currency.sql');
+    check('the migration matches indicators by name, not by id',
+          preg_match('/indicator_id/i', $cx_migration) !== 1);
+    foreach (['pe' => 'MULTIPLY', 'price_sales_ratio' => 'MULTIPLY',
+              'price_book_ratio' => 'MULTIPLY', 'roe_ttm' => 'NONE'] as $cx_ind => $cx_mode) {
+        check("$cx_ind is configured $cx_mode",
+              preg_match('/fx_adjust=\'' . $cx_mode . '\'[^;]*\b' . preg_quote($cx_ind, '/') . '\b/s',
+                         $cx_migration) === 1);
+    }
+    /* Applying it twice must change nothing. */
+    $cx_statements = array_filter(array_map('trim',
+        explode(';', preg_replace('/^\s*--.*$/m', '', $cx_migration))),
+        function ($stmt) { return $stmt !== '' && stripos($stmt, 'select') !== 0; });
+    foreach ([1, 2] as $cx_pass) {
+        foreach ($cx_statements as $cx_stmt) { db()->exec($cx_stmt); }
+    }
+    check('the migration is re-runnable',
+          (int)scalar("select count(*) from screen_indicators where name='pe' and fx_adjust='MULTIPLY'") === 1);
+    check('enterprise_value_to_ebitda is left alone, with the reason written down',
+          stripos($cx_migration, 'enterprise_value_to_ebitda is left at NONE') !== false);
+
+    //Leave the universe as it was found.
+    db()->exec("delete from stock_symbols where symbol in $cx_all");
+    db()->exec("delete from statistics where symbol in $cx_all");
+    db()->exec("delete from stock_info");
+    db()->exec("delete from fx_rates");
+    db()->exec("delete from screen_indicators where name in ('pe','roe_ttm')");
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($cx_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $cx_saved_exchange; }
 
     echo "\n--- the price log names the provider that actually ran ---\n";
 

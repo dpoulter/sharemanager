@@ -122,6 +122,11 @@
 			write_log("quote.php","12");
 			$scores = get_scores($symbol);
 			//$scores = null;
+			/* Null for a sterling reporter: nothing was converted, so the page
+			   says nothing. For everyone else the ratios on this page have
+			   been multiplied by the rate on the way in, and a figure that has
+			   been adjusted should say so. */
+			$currency_note = report_currency_note($symbol);
 			write_log("quote.php","13");
 			$valueranks=get_value_rank($symbol);
 			//$valueranks=null;
@@ -166,7 +171,8 @@
 					, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"screen_id"=>$screen_id,"incomestatement"=>$income_statement
 					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
 					,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks
-					,"qualityranks"=>$qualityranks,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman,"articles"=>$articles]);
+					,"qualityranks"=>$qualityranks,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman,"articles"=>$articles
+					,"currency_note"=>$currency_note]);
 			 else
 				render("quote.php", ["title" => session_exchange().":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
 					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
@@ -175,7 +181,8 @@
 					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics
 					,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics
 					,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks,"qualityranks"=>$qualityranks
-					,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman,"articles"=>$articles]);
+					,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman,"articles"=>$articles
+					,"currency_note"=>$currency_note]);
 
 			
 			write_log("quote.php","End render form");

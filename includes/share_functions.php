@@ -86,6 +86,77 @@ function not_fund_sql($symbol_expr) {
 }
 
 /* ---------------------------------------------------------------------------
+   Reporting currency.
+
+   FMP's price ratios divide the London price by per-share figures from
+   accounts kept in the company's own currency, and nothing converted between
+   them: SHEL reports in dollars and came back with a P/E of 8.43 where it is
+   about 11.1, BGEO reports in lari with a P/E of 2.38 where it is about 8.6.
+   python/get_api_stats.py multiplies by the rate on the way into statistics,
+   so everything downstream - the rankings, the peer medians, the implied
+   prices, this page and the AI outlook - sees one currency.
+
+   These two read back what was done, so the page can say so. See
+   sql/report_currency.sql.
+   --------------------------------------------------------------------------- */
+
+/**
+ * What a company keeps its accounts in, or null if it is not known.
+ */
+function report_currency($symbol) {
+
+	$rows = query("select report_ccy from stock_symbols where symbol=? and exchange=?",
+	              $symbol, session_exchange());
+
+	if (!count($rows) || $rows[0]['report_ccy'] === null)
+		return null;
+
+	$currency = strtoupper(trim((string) $rows[0]['report_ccy']));
+
+	return $currency === '' ? null : $currency;
+}
+
+/**
+ * Quote units per pound on a date, or null if no rate was stored.
+ */
+function fx_rate_for($date, $currency, $base = 'GBP') {
+
+	$currency = strtoupper(trim((string) $currency));
+
+	if ($currency === '' || $currency === $base)
+		return 1.0;
+
+	$rows = query("select rate from fx_rates where date=? and base=? and quote_ccy=?",
+	              $date, $base, $currency);
+
+	return count($rows) ? (float) $rows[0]['rate'] : null;
+}
+
+/**
+ * The currency note for a share, or null when there is nothing to say.
+ *
+ * Null for a sterling reporter and for one whose currency is not known: in
+ * both cases the figures on the page are the provider's own and no
+ * conversion happened.
+ */
+function report_currency_note($symbol, $date = null) {
+
+	$currency = report_currency($symbol);
+
+	if ($currency === null || $currency === 'GBP')
+		return null;
+
+	if ($date === null) {
+		$rows = query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
+		$date = count($rows) ? $rows[0]['job_date'] : null;
+	}
+
+	return ["currency" => $currency,
+	        "rate"     => $date === null ? null : fx_rate_for($date, $currency),
+	        "date"     => $date];
+}
+
+/* ---------------------------------------------------------------------------
    The as of date.
 
    The date the nightly job calculates for, and the date every page that shows

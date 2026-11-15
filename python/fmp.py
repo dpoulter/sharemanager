@@ -144,6 +144,75 @@ SECTIONS = (
 )
 
 
+# The currency the price is quoted in has nothing to do with the currency the
+# accounts are kept in. FMP's ratios-ttm and key-metrics-ttm divide the one by
+# the other without converting, so a dollar reporter's P/E came back smaller
+# than it is by the whole exchange rate: SHEL at 8.43 where it is about 11.1.
+FX_BASE = "GBP"
+
+
+def fetch_reported_currency(symbol, session=None):
+    """The currency a company keeps its accounts in, or None.
+
+    One income statement is enough - the field is the same on every period -
+    and the loader only asks when it has no answer stored or a stale one, so
+    this is not a call per symbol per night.
+    """
+    record = _first(_get("income-statement", session=session,
+                         symbol=fmp_symbol(symbol), limit=1))
+    currency = (record or {}).get("reportedCurrency")
+    currency = str(currency).strip().upper() if currency else ""
+    return currency if len(currency) == 3 and currency.isalpha() else None
+
+
+def fetch_fx_pair(pair, session=None):
+    """The price of one currency pair, e.g. GBPUSD, or None.
+
+    FMP answers an unquoted pair with an empty list rather than an error, so
+    "no such pair" and "nothing to say about it" arrive the same way and both
+    mean the caller has to find the rate another way.
+    """
+    record = _first(_get("quote", session=session, symbol=pair))
+    price = (record or {}).get("price")
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
+def resolve_fx_rate(quote_ccy, get_pair, base=FX_BASE):
+    """(rate, how) for base -> quote_ccy, or (None, reason).
+
+    Quoted directly where the plan quotes the pair, and crossed through the
+    dollar where it does not: GBPGEL returns [] but GBPUSD and USDGEL are both
+    quoted, so a pound buys GBPUSD x USDGEL lari.
+
+    get_pair is passed in rather than called directly so the arithmetic can be
+    tested without an API key or a network.
+    """
+    quote_ccy = str(quote_ccy or "").strip().upper()
+
+    if not quote_ccy:
+        return None, "no currency"
+    if quote_ccy == base:
+        return 1.0, "same currency"
+
+    direct = get_pair(base + quote_ccy)
+    if direct:
+        return direct, "quote"
+
+    if quote_ccy == "USD":
+        return None, "no " + base + "USD rate"
+
+    base_usd = get_pair(base + "USD")
+    usd_quote = get_pair("USD" + quote_ccy)
+    if base_usd and usd_quote:
+        return base_usd * usd_quote, "cross:USD"
+
+    return None, "no " + base + quote_ccy + " rate, and no USD cross"
+
+
 def fetch_sections(symbol, session=None):
     """Fetch every section for one symbol. Returns {section: record}."""
     code = fmp_symbol(symbol)

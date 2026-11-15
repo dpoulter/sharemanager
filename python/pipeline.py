@@ -102,3 +102,70 @@ def pipeline_resolve_asofdate(requested=None, query_fn=None,
         return None
 
     return requested
+
+
+# ---------------------------------------------------------------------------
+# Reporting currency.
+# ---------------------------------------------------------------------------
+
+# How long a reporting currency is trusted before the loader looks it up
+# again. A company changes its reporting currency about once a decade; asking
+# every night would be a call per symbol for an answer that does not move.
+REPORT_CCY_MAX_AGE_DAYS = 30
+
+
+def report_ccy_is_stale(currency, looked_up_on, today=None,
+                        max_age_days=REPORT_CCY_MAX_AGE_DAYS):
+    """Whether the loader should ask FMP what this company reports in."""
+    if not currency:
+        return True
+    if looked_up_on is None:
+        return True
+    if isinstance(looked_up_on, str):
+        try:
+            looked_up_on = datetime.datetime.strptime(
+                looked_up_on[:10], '%Y-%m-%d').date()
+        except ValueError:
+            return True
+    if hasattr(looked_up_on, 'date') and not isinstance(looked_up_on, datetime.date):
+        looked_up_on = looked_up_on.date()
+
+    today = today or datetime.date.today()
+    return (today - looked_up_on).days >= max_age_days
+
+
+def fx_correct(value, mode, rate):
+    """One provider value in the currency the price is quoted in.
+
+    FMP divides a sterling price by per-share figures from accounts kept in
+    the company's own currency. Where those differ the ratio is wrong by the
+    exchange rate, and which way depends on which side of the division the
+    price is on:
+
+      MULTIPLY  price over a per-share figure - a P/E, price/sales,
+                price/book. Understated, so multiplied by the rate.
+      DIVIDE    a per-share figure over the price - a yield. Overstated.
+      anything else   left exactly as it arrived.
+
+    Returns None when a correction is needed and cannot be made, which the
+    caller treats as "write nothing for this one": an uncorrected ratio
+    alongside corrected ones is worse than a gap, because it ranks.
+    """
+    mode = str(mode or 'NONE').strip().upper()
+
+    if mode not in ('MULTIPLY', 'DIVIDE'):
+        return value
+
+    if rate is None:
+        return None
+
+    try:
+        number = float(value)
+        rate = float(rate)
+    except (TypeError, ValueError):
+        return None
+
+    if rate <= 0:
+        return None
+
+    return number * rate if mode == 'MULTIPLY' else number / rate

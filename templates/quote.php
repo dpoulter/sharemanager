@@ -253,6 +253,16 @@
 	  					<div class="card-header">
 							Price Valuation
 							<small class="text-body-secondary d-block">Implied price if the share were valued like its peers</small>
+							<?php if (!empty($currency_note)): ?>
+							<small class="text-body-secondary d-block">
+								Reports in <?=htmlspecialchars($currency_note['currency'])?>;
+								<?php if ($currency_note['rate'] !== null): ?>
+									ratios converted at <?=htmlspecialchars(rtrim(rtrim(number_format($currency_note['rate'], 4), '0'), '.'))?>
+								<?php else: ?>
+									no rate was available, so its price ratios are not shown or ranked today
+								<?php endif?>
+							</small>
+							<?php endif?>
 						</div>
 						<div class="card-body">
 							<table class="table table-borderless table-sm">
@@ -413,7 +423,11 @@
 								
 										<div class="col-md-6">
 											<div class="card card-default">
-							  					<div class="card-header"><?= $category_indicator["category"]["description"]?></div>
+							  					<div class="card-header"><?= $category_indicator["category"]["description"]?>
+							  						<?php if (!empty($currency_note) && $currency_note['rate'] !== null): ?>
+							  						<small class="text-body-secondary d-block">Reports in <?=htmlspecialchars($currency_note['currency'])?>; ratios converted at <?=htmlspecialchars(rtrim(rtrim(number_format($currency_note['rate'], 4), '0'), '.'))?></small>
+							  						<?php endif?>
+							  					</div>
 							  					<div class="card-body">
 							  						<table class="table table-striped table-bordered table-sm">
 											    

@@ -27,8 +27,9 @@ import time
 import mysql.connector
 
 from functions import query, db_config
-from pipeline import pipeline_resolve_asofdate
-from fmp import fetch_sections, flatten, FmpError
+from pipeline import pipeline_resolve_asofdate, report_ccy_is_stale
+from fmp import (fetch_sections, flatten, fetch_reported_currency,
+                 fetch_fx_pair, resolve_fx_rate, FX_BASE, FmpError)
 
 EXCHANGE = 'XLON'
 CALLS_PER_SYMBOL = 4
@@ -58,6 +59,56 @@ def parse_args(argv):
     return pipeline_resolve_asofdate(asofdate), limit
 
 
+def store_fx_rates(cursor, connection, asofdate):
+    """One rate per currency the universe reports in, for this date.
+
+    Pounds per... the other way round: quote units per pound, which is what a
+    ratio built from a sterling price over a foreign per-share figure has to be
+    multiplied by. GBPGEL is not quoted on this plan, so resolve_fx_rate()
+    crosses it through the dollar.
+
+    A currency with no rate is reported and left out of the table, which
+    leaves the ratios for its companies unwritten rather than wrong. Rewritten
+    for the date on every run, so a second run for the same date replaces the
+    rates instead of failing on the primary key.
+    """
+    cursor.execute(
+        "select distinct report_ccy from stock_symbols "
+        "where enabled=%s and exchange=%s and report_ccy is not null "
+        "and report_ccy <> %s", ('Y', EXCHANGE, FX_BASE))
+    currencies = sorted(row[0] for row in cursor.fetchall() if row[0])
+
+    if not currencies:
+        print("fx: every reporter is in " + FX_BASE + ", no rates needed")
+        return
+
+    stored, missing = 0, []
+    for currency in currencies:
+        try:
+            rate, how = resolve_fx_rate(currency, fetch_fx_pair)
+        except FmpError as e:
+            rate, how = None, str(e)
+        if rate is None:
+            missing.append("{} ({})".format(currency, how))
+            continue
+        cursor.execute(
+            "replace into fx_rates (date, base, quote_ccy, rate, source) "
+            "values (%s,%s,%s,%s,%s)",
+            (asofdate, FX_BASE, currency, round(float(rate), 8), how))
+        stored += 1
+        print("  fx {}{} = {:.6f} ({})".format(FX_BASE, currency, rate, how))
+    connection.commit()
+
+    print("fx: {} of {} rates stored for {}".format(stored, len(currencies), asofdate))
+    if missing:
+        # Named, because the consequence is silent otherwise: every company
+        # reporting in one of these keeps no corrected ratio and drops out of
+        # the value and quality rankings for the day.
+        print("fx: NO RATE for " + ", ".join(missing)
+              + " - companies reporting in those currencies will not be ranked "
+                "on their price ratios today")
+
+
 def main():
     asofdate, limit = parse_args(sys.argv[1:])
 
@@ -65,8 +116,8 @@ def main():
         print("no prices for the requested as-of date - refusing to run")
         return 1
 
-    rows = query("select symbol from stock_symbols where enabled='Y' "
-                 "and exchange='" + EXCHANGE + "' order by symbol")
+    rows = query("select symbol, report_ccy, report_ccy_asof from stock_symbols "
+                 "where enabled='Y' and exchange='" + EXCHANGE + "' order by symbol")
 
     # query() hands back tuples from a plain cursor, so the symbol is row[0];
     # indexing it by name raises "tuple indices must be integers". It also
@@ -76,6 +127,7 @@ def main():
         print("could not read stock_symbols; see the database error above")
         return 1
     symbols = [row[0] for row in rows]
+    reported = dict((row[0], (row[1], row[2])) for row in rows)
     if limit:
         symbols = symbols[:limit]
     if not symbols:
@@ -90,10 +142,33 @@ def main():
     cursor = connection.cursor()
 
     loaded = skipped = failed = 0
+    currencies_read = 0
     started = time.time()
 
     for n, symbol in enumerate(symbols, 1):
         turn = time.time()
+
+        # What the company keeps its accounts in. One extra call, and only for
+        # a symbol with no answer stored or one over a month old - the figure
+        # changes about once a decade. Without it the ratios below cannot be
+        # corrected, and an uncorrected dollar reporter looks a third cheaper
+        # than it is.
+        stored_ccy, stored_on = reported.get(symbol, (None, None))
+        if report_ccy_is_stale(stored_ccy, stored_on):
+            try:
+                found = fetch_reported_currency(symbol)
+            except FmpError as e:
+                found = None
+                print("  {}: reporting currency: {}".format(symbol, e))
+            if found:
+                cursor.execute(
+                    "update stock_symbols set report_ccy=%s, report_ccy_asof=%s "
+                    "where symbol=%s and exchange=%s",
+                    (found, asofdate, symbol, EXCHANGE))
+                connection.commit()
+                reported[symbol] = (found, asofdate)
+                currencies_read += 1
+
         try:
             flat = flatten(fetch_sections(symbol))
         except FmpError as e:
@@ -134,11 +209,14 @@ def main():
         if spent < MIN_INTERVAL:
             time.sleep(MIN_INTERVAL - spent)
 
+    store_fx_rates(cursor, connection, asofdate)
+
     cursor.close()
     connection.close()
 
-    print("as of {}: {} loaded, {} with no data, {} failed, {:.0f}s"
-          .format(asofdate, loaded, skipped, failed, time.time() - started))
+    print("as of {}: {} loaded, {} with no data, {} failed, {} currencies read, {:.0f}s"
+          .format(asofdate, loaded, skipped, failed, currencies_read,
+                  time.time() - started))
     # A run where nothing loaded is a failure worth a non-zero exit, so cron
     # reports it rather than looking like a clean night.
     return 1 if loaded == 0 else 0

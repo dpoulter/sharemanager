@@ -161,11 +161,21 @@ sudo mariadb sharemanager < sql/password_resets.sql
 sudo mariadb sharemanager < sql/trend_screens.sql
 sudo mariadb sharemanager < sql/ai_outlook.sql
 sudo mariadb sharemanager < sql/fund_sectors.sql
+sudo mariadb sharemanager < sql/report_currency.sql
 ```
 
-`sql/trend_screens.sql`, `sql/ai_outlook.sql` and `sql/fund_sectors.sql` are
-all re-runnable, so a later `git pull` can just run them again rather than
-working out whether they were applied.
+`sql/trend_screens.sql`, `sql/ai_outlook.sql`, `sql/fund_sectors.sql` and
+`sql/report_currency.sql` are all re-runnable, so a later `git pull` can just
+run them again rather than working out whether they were applied.
+
+`sql/report_currency.sql` is the one that matters most to get in before the
+next nightly run. Until it is applied, `stock_symbols.report_ccy` does not
+exist, the fundamentals loader cannot record what each company reports in, and
+every non-sterling reporter keeps the understated P/E, price/sales and
+price/book that FMP sends. The first run after it lands spends one extra call
+per symbol reading reporting currencies, and about one call per currency
+reading exchange rates; after that it refreshes a currency only when it is
+over a month old.
 
 `deploy/deploy.sh` does not run migrations, so after pulling a change that
 brings a new one, run it by hand. Until `sql/fund_sectors.sql` has been

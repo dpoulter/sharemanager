@@ -11,6 +11,8 @@ No database, no network and no API key are needed.
 """
 
 import os
+import contextlib
+import io
 import sys
 import types
 import importlib.util
@@ -123,6 +125,10 @@ def load_loader(query_result):
 
     pipeline = types.ModuleType("pipeline")
     pipeline.pipeline_asofdate = lambda *a, **k: "2026-11-13"
+    # Every symbol's reporting currency is already known and fresh here, so
+    # the loader makes no extra call for it. The staleness rule has its own
+    # tests in test_eodhd.py.
+    pipeline.report_ccy_is_stale = lambda *a, **k: False
     # The loader resolves its date through this now: a date on the command
     # line has to be one prices were loaded for, and 2020-01-01 stands for one
     # that was not.
@@ -132,6 +138,10 @@ def load_loader(query_result):
     sys.modules["pipeline"] = pipeline
 
     fmp = types.ModuleType("fmp")
+    fmp.FX_BASE = "GBP"
+    fmp.fetch_reported_currency = lambda symbol, session=None: "GBP"
+    fmp.fetch_fx_pair = lambda pair, session=None: None
+    fmp.resolve_fx_rate = lambda ccy, get_pair, base="GBP": (None, "stubbed")
 
     def fetch_sections(symbol, session=None):
         calls["sections"] += 1
@@ -185,6 +195,65 @@ check("the pace stays under the plan's rate limit",
       abs(60.0 / loader.MIN_INTERVAL * loader.CALLS_PER_SYMBOL - loader.RATE_PER_MINUTE) < 1,
       "{:.0f} calls/min".format(60.0 / loader.MIN_INTERVAL * loader.CALLS_PER_SYMBOL))
 check("the pace leaves headroom below 750", loader.RATE_PER_MINUTE < 750)
+
+print("\n--- the night's exchange rates ---")
+
+# One rate per currency the universe reports in, written for the as-of date.
+# A currency with no rate is named rather than passed over: every company
+# reporting in it loses its price ratios for the day.
+
+
+class FakeCursor(object):
+    def __init__(self, currencies):
+        self.currencies = currencies
+        self.writes = []
+        self.rows = []
+
+    def execute(self, sql, params=None):
+        if "select distinct report_ccy" in sql:
+            self.rows = [(c,) for c in self.currencies]
+        else:
+            self.writes.append((sql, params))
+
+    def fetchall(self):
+        return self.rows
+
+
+class FakeConnection(object):
+    def commit(self):
+        pass
+
+
+rates = {"USD": (1.3212, "quote"), "GEL": (3.5, "cross:USD"), "ZWL": (None, "no rate")}
+loader.resolve_fx_rate = lambda ccy, get_pair, base="GBP": rates[ccy]
+
+cursor = FakeCursor(["USD", "GEL", "ZWL"])
+said = io.StringIO()
+with contextlib.redirect_stdout(said):
+    loader.store_fx_rates(cursor, FakeConnection(), "2026-11-13")
+said = said.getvalue()
+
+written = dict((params[2], params) for sql, params in cursor.writes)
+check("a rate is stored for every currency one could be found for",
+      sorted(written) == ["GEL", "USD"], sorted(written))
+check("the rate is quote units per pound, with the date and base recorded",
+      written["USD"][0] == "2026-11-13" and written["USD"][1] == "GBP"
+      and abs(written["USD"][3] - 1.3212) < 1e-9, str(written.get("USD")))
+check("a crossed rate records that it was crossed",
+      written["GEL"][4] == "cross:USD" and written["USD"][4] == "quote")
+check("the rows replace rather than insert, so a second run for the date works",
+      all("replace into fx_rates" in sql for sql, params in cursor.writes))
+check("a currency with no rate is not stored as one",
+      "ZWL" not in written)
+check("and is named, because the consequence is silent otherwise",
+      "NO RATE" in said and "ZWL" in said, said)
+
+cursor = FakeCursor([])
+said = io.StringIO()
+with contextlib.redirect_stdout(said):
+    loader.store_fx_rates(cursor, FakeConnection(), "2026-11-13")
+check("an all-sterling universe needs no rates and asks for none",
+      cursor.writes == [] and "no rates needed" in said.getvalue(), said.getvalue())
 
 print()
 if failed:

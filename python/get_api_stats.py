@@ -10,7 +10,7 @@ import sys
 import datetime
 from datetime import timedelta
 from functions import query
-from pipeline import pipeline_asofdate
+from pipeline import pipeline_asofdate, fx_correct
 from share_functions import insert_statistic
 
 # Set exchange
@@ -29,28 +29,82 @@ print("As of date:", date)
 
 
 
-# Get symbols
-rows = query("select symbol from stock_symbols where enabled='Y' and exchange='" +exchange+ "'  order by symbol")
+# Get symbols, and what each one keeps its accounts in.
+rows = query("select symbol, report_ccy from stock_symbols where enabled='Y' and exchange='" +exchange+ "'  order by symbol")
 
+report_ccy = dict((row[0], (row[1] or '').strip().upper()) for row in rows)
+
+# Today's rates, quote units per pound, written by the loader. A currency that
+# is not in here has no rate for the day, which is not the same as a rate of 1.
+fx_rows = query("select quote_ccy, rate from fx_rates where date='" + date + "' and base='GBP'")
+fx = dict((row[0], float(row[1])) for row in (fx_rows or []))
+print("fx rates for {}: {}".format(date, fx or "none"))
+
+# FMP's price ratios divide a sterling price by per-share figures from accounts
+# kept in the company's own currency, with no conversion. SHEL reports in
+# dollars and came back with a P/E of 8.43 where it is about 11.1; BGEO reports
+# in lari, P/E 2.38 where it is about 8.6. 62 of 272 companies with statements
+# report in something other than sterling, and seven of the thirty places in
+# the value, quality and overall top tens were held by one of them.
+#
+# screen_indicators.fx_adjust says what each indicator needs: MULTIPLY for a
+# price over a per-share figure, DIVIDE for the same ratio inverted, NONE for
+# anything that is one currency over the same currency. Corrected here rather
+# than in the loader so stock_info keeps the provider's own numbers and the
+# correction stays auditable: raw value, rate and reporting currency are all
+# still on record.
 
 written = 0
+corrected = 0
 symbols_with_data = 0
+unconvertible = {}
 
 for row in rows:
 
     symbol = row[0]
+    currency = report_ccy.get(symbol, '')
+    # GBP reporters need no conversion; an unknown currency is left alone
+    # rather than assumed to be sterling.
+    rate = 1.0 if currency in ('', 'GBP') else fx.get(currency)
 
-    indicator_stats = query("select sti.symbol, sci.name, sti.value from screen_indicators sci, stock_info sti where sci.enabled='Y' and sti.attribute = coalesce(nullif(sci.provider_field,''), sci.name) and sti.symbol='"+symbol+"' and sti.asofdate = '"+date+"' order by order_number")
+    indicator_stats = query("select sti.symbol, sci.name, sti.value, ifnull(nullif(sci.fx_adjust,''),'NONE') from screen_indicators sci, stock_info sti where sci.enabled='Y' and sti.attribute = coalesce(nullif(sci.provider_field,''), sci.name) and sti.symbol='"+symbol+"' and sti.asofdate = '"+date+"' order by order_number")
 
     if indicator_stats:
         symbols_with_data += 1
-    print("  {:8s} {} indicators".format(symbol, len(indicator_stats)))
 
+    skipped_here = 0
     for stat in indicator_stats:
-        insert_statistic(stat[0], exchange, stat[1], date, stat[2])
+        value = fx_correct(stat[2], stat[3], rate)
+        if value is None:
+            # No rate for this currency. Writing the provider's figure anyway
+            # would rank a company a third cheaper than it is, which is worse
+            # than leaving it out of that ranking for the day.
+            skipped_here += 1
+            unconvertible[currency] = unconvertible.get(currency, 0) + 1
+            continue
+        if str(value) != str(stat[2]):
+            corrected += 1
+        insert_statistic(stat[0], exchange, stat[1], date, value)
         written += 1
 
-print("{}: {} statistics written for {} of {} symbols".format(date, written, symbols_with_data, len(rows)))
+    # The rate that was used, beside the values it was used on, so "why is
+    # SHEL's P/E 11.14 when FMP says 8.43" is answerable from one table.
+    if currency not in ('', 'GBP') and rate:
+        insert_statistic(symbol, exchange, 'fx_rate', date, rate)
+
+    print("  {:8s} {} indicators{}{}".format(
+        symbol, len(indicator_stats),
+        "" if currency in ('', 'GBP') else "  [" + currency + "]",
+        "" if not skipped_here else "  {} not written, no rate".format(skipped_here)))
+
+print("{}: {} statistics written for {} of {} symbols, {} converted from another currency"
+      .format(date, written, symbols_with_data, len(rows), corrected))
+
+if unconvertible:
+    print("NO RATE: " + ", ".join(
+        "{} ({} values not written)".format(ccy or "unknown currency", n)
+        for ccy, n in sorted(unconvertible.items())))
+    print("         Those companies are not ranked on their price ratios today.")
 
 # Finding nothing is not success. This used to pass silently, which is how a
 # one day disagreement between the loader's asofdate and this date could have

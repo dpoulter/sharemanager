@@ -123,6 +123,89 @@ check("the derived figures are written under their own section",
 check("derived market cap is not confused with the provider's own",
       flat["Profile.marketCap"] != flat["Derived.marketCapInQuoteCurrency"])
 
+print("\n--- reporting currency and the exchange rate ---")
+
+# FMP divides a sterling price by per-share figures from accounts kept in the
+# company's own currency and converts nothing, so every non-sterling reporter
+# read cheaper than it is by the whole exchange rate. SHEL reports in dollars:
+# P/E 8.43 where it is about 11.1. BGEO reports in lari, and GBPGEL is not
+# quoted on this plan - the endpoint answers [] - so it has to be crossed
+# through the dollar.
+
+quoted = {"GBPUSD": 1.3212, "USDGEL": 2.71, "GBPEUR": 1.1403}
+
+
+def pair(code):
+    return quoted.get(code)
+
+
+rate, how = fmp.resolve_fx_rate("USD", pair)
+check("a quoted pair is used directly", rate == 1.3212 and how == "quote", how)
+rate, how = fmp.resolve_fx_rate("EUR", pair)
+check("so is another one", rate == 1.1403 and how == "quote")
+
+rate, how = fmp.resolve_fx_rate("GEL", pair)
+check("an unquoted pair is crossed through the dollar",
+      abs(rate - 1.3212 * 2.71) < 1e-9 and how == "cross:USD",
+      "{} ({})".format(rate, how))
+
+rate, how = fmp.resolve_fx_rate("GBP", pair)
+check("the base currency needs no rate", rate == 1.0, how)
+
+rate, how = fmp.resolve_fx_rate("XYZ", pair)
+check("a currency with neither a pair nor a cross has no rate",
+      rate is None, "{} ({})".format(rate, how))
+check("and it says why, so the log names the currency",
+      "XYZ" in how, how)
+
+rate, how = fmp.resolve_fx_rate("USD", lambda code: None)
+check("a missing GBPUSD is not silently crossed with itself", rate is None, how)
+rate, how = fmp.resolve_fx_rate("GEL", lambda code: 2.71 if code == "USDGEL" else None)
+check("a cross needs both legs", rate is None, "{} ({})".format(rate, how))
+check("an empty currency is no currency", fmp.resolve_fx_rate("", pair)[0] is None)
+check("the currency is matched whatever case it arrives in",
+      fmp.resolve_fx_rate("usd", pair)[0] == 1.3212)
+
+# What the company reports in, read off one income statement.
+saved_get = fmp._get
+try:
+    fmp._get = lambda path, session=None, **params: (
+        [{"reportedCurrency": "usd ", "symbol": params.get("symbol")}]
+        if path == "income-statement" else [])
+    check("the reporting currency is read from the income statement",
+          fmp.fetch_reported_currency("SHEL") == "USD")
+
+    fmp._get = lambda path, session=None, **params: [{"reportedCurrency": ""}]
+    check("an empty reporting currency is no currency",
+          fmp.fetch_reported_currency("SHEL") is None)
+    fmp._get = lambda path, session=None, **params: [{"reportedCurrency": "Pounds"}]
+    check("something that is not a three letter code is refused",
+          fmp.fetch_reported_currency("SHEL") is None)
+    fmp._get = lambda path, session=None, **params: []
+    check("a symbol with no statements has no reporting currency",
+          fmp.fetch_reported_currency("MNO") is None)
+
+    # The pair endpoint. FMP answers an unquoted pair with [] rather than an
+    # error, which is why GBPGEL has to be crossed rather than retried.
+    fmp._get = lambda path, session=None, **params: (
+        [{"price": 1.3212}] if params.get("symbol") == "GBPUSD" else [])
+    check("a quoted pair comes back as a number", fmp.fetch_fx_pair("GBPUSD") == 1.3212)
+    check("an unquoted pair comes back as nothing", fmp.fetch_fx_pair("GBPGEL") is None)
+    fmp._get = lambda path, session=None, **params: [{"price": 0}]
+    check("a zero rate is not a rate", fmp.fetch_fx_pair("GBPUSD") is None)
+    fmp._get = lambda path, session=None, **params: [{"price": "n/a"}]
+    check("a non-numeric rate is not a rate", fmp.fetch_fx_pair("GBPUSD") is None)
+finally:
+    fmp._get = saved_get
+
+# The market cap is normalised on the currency the PRICE is quoted in, which
+# is a different question from the one the accounts are kept in. A dollar
+# reporter listed in London is still quoted in pence, so the hundredfold
+# conversion applies and the exchange rate does not.
+check("market cap is normalised on the quote currency, not the reporting one",
+      fmp.normalise_market_cap(100.0, "GBp") == 10000.0
+      and fmp.normalise_market_cap(100.0, "USD") == 100.0)
+
 print("\n--- a symbol the provider has nothing for ---")
 empty = fmp.flatten({"Quote": {}, "Profile": {}, "KeyMetrics": {}, "Ratios": {}})
 check("yields nothing rather than raising", empty == {})

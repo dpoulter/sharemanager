@@ -134,6 +134,49 @@ check("the reader takes its date from the shared function",
 check("neither derives an as-of date from the calendar any more",
       'timedelta(days=1)' not in loader and 'timedelta(days=1)' not in reader)
 
+# The conversion itself, which both halves of the pipeline go through.
+from pipeline import fx_correct, report_ccy_is_stale                   # noqa: E402
+
+# SHEL: FMP says 8.43, the pound buys 1.3212 dollars, so the real multiple is
+# about 11.1. BGEO: 2.38 lari-denominated earnings against a sterling price,
+# 3.58 lari to the pound, about 8.5.
+check("a dollar reporter's P/E is multiplied by the rate",
+      abs(fx_correct("8.43", "MULTIPLY", 1.3212) - 11.1377) < 0.001,
+      str(fx_correct("8.43", "MULTIPLY", 1.3212)))
+check("a sterling reporter's is untouched",
+      fx_correct("37.52", "MULTIPLY", 1.0) == 37.52)
+check("an indicator that needs no conversion is left exactly as it arrived",
+      fx_correct("0.1234", "NONE", 1.3212) == "0.1234")
+check("an unknown mode is treated as no conversion",
+      fx_correct("0.1234", "", 1.3212) == "0.1234"
+      and fx_correct("0.1234", None, 1.3212) == "0.1234")
+check("a yield is divided rather than multiplied",
+      fx_correct("4.0", "DIVIDE", 2.0) == 2.0)
+check("no rate means no value, so the ratio is not ranked at all",
+      fx_correct("8.43", "MULTIPLY", None) is None)
+check("a nonsense rate is refused rather than used",
+      fx_correct("8.43", "MULTIPLY", 0) is None
+      and fx_correct("8.43", "MULTIPLY", -1.3) is None)
+check("a value that is not a number is not corrected into one",
+      fx_correct("n/a", "MULTIPLY", 1.3212) is None)
+check("converting twice is not the same as converting once (the job must not)",
+      fx_correct(fx_correct("8.43", "MULTIPLY", 1.3212), "MULTIPLY", 1.3212)
+      != fx_correct("8.43", "MULTIPLY", 1.3212))
+
+# How often the loader asks what a company reports in.
+check("a currency that has never been looked up is stale",
+      report_ccy_is_stale(None, None) is True)
+check("one looked up today is not",
+      report_ccy_is_stale("USD", datetime.date.today()) is False)
+check("one looked up five days ago is not",
+      report_ccy_is_stale("USD", datetime.date.today() - datetime.timedelta(days=5)) is False)
+check("one looked up forty days ago is",
+      report_ccy_is_stale("USD", datetime.date.today() - datetime.timedelta(days=40)) is True)
+check("a date stored as a string is read rather than rejected",
+      report_ccy_is_stale("USD", datetime.date.today().strftime('%Y-%m-%d')) is False)
+check("an unreadable date is treated as stale rather than trusted",
+      report_ccy_is_stale("USD", "not a date") is True)
+
 check("bare codes get the LSE suffix", eodhd_symbol("VOD") == "VOD.LSE")
 check("an already-suffixed code is left alone", eodhd_symbol("VOD.LSE") == "VOD.LSE")
 

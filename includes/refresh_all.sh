@@ -57,6 +57,19 @@ fi
 PROVIDER="${SM_DATA_PROVIDER:-eodhd}"
 echo "refresh_all: $(date '+%Y-%m-%d %H:%M:%S') provider=$PROVIDER app=$APP_DIR"
 
+# Prices first. The as of date every later job keys on is the newest date in
+# historical_prices, so the session's prices have to be in before anything
+# resolves it: the fundamentals loader stamps stock_info with that date,
+# get_api_stats.py reads stock_info back at exactly that date, and
+# get_statistics.php ranks it. Loading the prices after them left the Python
+# half of the run a day behind the PHP half, and the join between them finds
+# nothing when they disagree.
+#
+# If the price load fails, every job behind it keys on the previous session
+# instead, which is the right way to degrade: a complete set of figures for
+# the last day the market was open beats half a set for today.
+"$PHP" "$APP_DIR/includes/get_share_prices.php"
+
 # Fundamentals, from whichever provider is configured. Both are supported; see
 # python/README-fmp.md and python/README-eodhd.md. fetch_stock_info.py
 # (yfinance) is kept as a fallback but is no longer run.
@@ -67,8 +80,6 @@ else
 fi
 
 "$PYTHON" "$APP_DIR/python/get_api_stats.py"
-
-"$PHP" "$APP_DIR/includes/get_share_prices.php"
 
 # Incremental by default (most recent as of date per symbol). To rebuild
 # history run manually with a date range, e.g.

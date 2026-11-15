@@ -110,6 +110,11 @@ How to answer:
   peers, and pct_vs_price is how far that sits from today's close. It is
   arithmetic on one ratio, not a forecast or a target, and the entry is
   absent where there were too few peers to compare against.
+- report_ccy is the currency the company's accounts are in. Where it is not
+  GBP the price ratios above have already been converted into sterling terms
+  at fx_rate_from_gbp, so they are comparable with every other share and with
+  the sector medians. Do not convert them again, and do not read a foreign
+  reporting currency as a reason to distrust them.
 - is_fund true means an investment trust or fund, not an operating company.
   Its P/E, price/sales, price/book and return on equity describe a portfolio
   seen through a share price and a discount, not a business, so do not read
@@ -247,6 +252,9 @@ How to answer:
 		   worth for a fund. */
 		$is_fund = is_fund($symbol);
 
+		$report_ccy = report_currency($symbol) ?: 'GBP';
+		$fx_rate    = fx_rate_for($as_of, $report_ccy);
+
 		//Holdings, if any. avg_cost comes from the purchase history.
 		$holding = null;
 		$held = query("select shares, avg_cost from shares where symbol=? and shares is not null and shares>0", $symbol);
@@ -284,6 +292,14 @@ How to answer:
 			   data on every single share. */
 			"index"      => $info['market'],
 			"is_fund"    => $is_fund,
+			/* What the accounts are kept in, and the rate the ratios below
+			   were converted at. FMP divides a sterling price by per-share
+			   figures in this currency without converting, so the figures
+			   reaching the model have already been multiplied by the rate -
+			   and a number that has been adjusted should say so rather than
+			   look like the provider's own. */
+			"report_ccy" => $report_ccy,
+			"fx_rate_from_gbp" => $fx_rate,
 			"price" => [
 				"close"           => $close["value"],
 				"ma50"            => $ma50["value"],
