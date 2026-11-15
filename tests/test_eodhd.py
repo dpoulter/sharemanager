@@ -77,23 +77,62 @@ check("a malformed document yields nothing rather than raising",
 # an exact match, so the two must agree. They were separate expressions in
 # separate files and drifted: the loader used today, the reader yesterday, so
 # the join matched nothing and the fundamentals never reached statistics. Both
-# now call the same function; these tests pin that it stays one function and
-# stays yesterday.
+# now call the same function; these tests pin that it stays one function, and
+# that the date is the last trading day rather than the calendar's yesterday -
+# which on a Sunday is a Saturday, with no prices and no fundamentals at all.
 import datetime                                                        # noqa: E402
-from pipeline import pipeline_asofdate                                 # noqa: E402
+from pipeline import (pipeline_asofdate,                               # noqa: E402
+                      pipeline_last_trading_date,
+                      pipeline_resolve_asofdate)
 
-expected = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-check("the pipeline as-of date is yesterday", pipeline_asofdate() == expected,
-      "{} != {}".format(pipeline_asofdate(), expected))
+# A stand-in for functions.query. Friday 13 November 2026 is the last day with
+# prices; the 14th is the Saturday after it.
+asked = []
+
+
+def fake_query(sql):
+    asked.append(sql)
+    if 'max(date)' in sql:
+        return [('2026-11-13',)]
+    if 'count(*)' in sql:
+        return [(1,)] if "date='2026-11-13'" in sql else [(0,)]
+    return []
+
+
+check("the as-of date is the last day prices were loaded for",
+      pipeline_asofdate(fake_query) == '2026-11-13',
+      str(pipeline_asofdate(fake_query)))
+check("it is read from historical_prices, not worked out from the clock",
+      any('historical_prices' in sql for sql in asked))
+check("it is scoped to the exchange",
+      any("exchange='XLON'" in sql for sql in asked))
+check("a date object comes back as a plain date string",
+      pipeline_last_trading_date(lambda sql: [(datetime.date(2026, 11, 13),)])
+      == '2026-11-13')
+check("no prices at all is reported rather than guessed at",
+      pipeline_last_trading_date(lambda sql: [(None,)]) is None)
+
+check("a requested date with prices is accepted",
+      pipeline_resolve_asofdate('2026-11-13', fake_query) == '2026-11-13')
+check("the Saturday after the last session is refused",
+      pipeline_resolve_asofdate('2026-11-14', fake_query) is None)
+check("nothing requested falls back to the last trading day",
+      pipeline_resolve_asofdate(None, fake_query) == '2026-11-13')
+for bad in ['yesterday', '13/11/2026', '2026-11-13 00:00:00', '2026-02-30',
+            '2026-2-3', '']:
+    check("a date spelled {!r} is refused rather than interpreted".format(bad),
+          pipeline_resolve_asofdate(bad, fake_query) != bad)
 
 loader = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
                            'python', 'fetch_eodhd_fundamentals.py')).read()
 reader = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
                            'python', 'get_api_stats.py')).read()
 check("the loader takes its date from the shared function",
-      'pipeline_asofdate()' in loader and 'date.today()' not in loader)
+      'pipeline_resolve_asofdate(' in loader and 'date.today()' not in loader)
 check("the reader takes its date from the shared function",
       'pipeline_asofdate()' in reader and 'timedelta(days=1)' not in reader)
+check("neither derives an as-of date from the calendar any more",
+      'timedelta(days=1)' not in loader and 'timedelta(days=1)' not in reader)
 
 check("bare codes get the LSE suffix", eodhd_symbol("VOD") == "VOD.LSE")
 check("an already-suffixed code is left alone", eodhd_symbol("VOD.LSE") == "VOD.LSE")

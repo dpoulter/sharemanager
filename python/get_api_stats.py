@@ -17,8 +17,13 @@ from share_functions import insert_statistic
 exchange = 'XLON'
 
 # Get current date. Shared with the loader: it stamps stock_info.asofdate with
-# the same value and the join below needs an exact match.
+# the same value and the join below needs an exact match. The last trading day,
+# the same rule get_statistics.php uses, rather than the calendar's yesterday -
+# which on a Sunday is a Saturday and has no prices or fundamentals at all.
 date = pipeline_asofdate()
+if date is None:
+    print("no prices have been loaded for", exchange, "- refusing to run")
+    sys.exit(2)
 print("As of date:", date)
 
 

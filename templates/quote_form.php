@@ -84,7 +84,11 @@
 			<div class="card card-default">
 				<div class="card-header">System Messages</div>		
 				<div class="card-body">
-				<p>Statistics Refreshed: <?php echo $last_update?> <p>	
+				<?php /* The as of date and the run time are different facts.
+				         "Statistics Refreshed: 2026-11-14 09:12:03" read as one
+				         timestamp and was neither: the date was the day the
+				         prices came from, the time was when the job started. */ ?>
+				<p>Prices as of <?php echo htmlspecialchars((string) $last_update) ?: 'no run yet'?><?php if ($last_run): ?> &middot; updated <?php echo htmlspecialchars((string) $last_run)?><?php endif?> <p>	
 				</div>
 			</div>
 		</div>

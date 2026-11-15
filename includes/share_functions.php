@@ -85,6 +85,65 @@ function not_fund_sql($symbol_expr) {
 	                            and fund_ss.sector = fund_fs.sector) ";
 }
 
+/* ---------------------------------------------------------------------------
+   The as of date.
+
+   The date the nightly job calculates for, and the date every page that shows
+   a statistic resolves through the get_statistics_asof marker.
+
+   It used to be the calendar day before the run. Run by hand on Sunday 15
+   November it wrote a set of statistics for Saturday the 14th: no ratios,
+   because no fundamentals are loaded for a Saturday, and so an overall score
+   that was momentum alone - and the dashboard moved onto that date, because
+   the marker said it was the newest. The prices themselves are the only thing
+   that knows when the market was last open, so they are what the date comes
+   from.
+   --------------------------------------------------------------------------- */
+
+/**
+ * The last date prices were loaded for, or null if there are none.
+ */
+function last_trading_date($exchange = null) {
+
+	$rows = query("select max(date) last_date from historical_prices where exchange=?",
+	              $exchange === null ? session_exchange() : $exchange);
+
+	if (!count($rows) || $rows[0]['last_date'] === null)
+		return null;
+
+	return substr((string) $rows[0]['last_date'], 0, 10);
+}
+
+/**
+ * The as of date for a run, or null if there is not one to use.
+ *
+ * With no argument it is the last trading day. With one it has to be a date
+ * prices were actually loaded for: a job asked to calculate for a day the
+ * market was shut would write a half set of statistics and then tell every
+ * page that that is the newest date there is, which is the failure this
+ * exists to stop. Null means refuse - the caller says so and writes nothing.
+ */
+function resolve_asof_date($requested = null, $exchange = null) {
+
+	$exchange = ($exchange === null) ? session_exchange() : $exchange;
+
+	if ($requested === null || trim((string) $requested) === '')
+		return last_trading_date($exchange);
+
+	$requested = trim((string) $requested);
+
+	/* A real date in the one format, not "yesterday", not 15/11/2026, and not
+	   2026-02-30 - which DateTime would silently roll into March. */
+	$parsed = DateTime::createFromFormat('Y-m-d', $requested);
+	if ($parsed === false || $parsed->format('Y-m-d') !== $requested)
+		return null;
+
+	$rows = query("select count(*) n from historical_prices where exchange=? and date=?",
+	              $exchange, $requested);
+
+	return ((int) $rows[0]['n'] > 0) ? $requested : null;
+}
+
 /**
  * True when this symbol sits in one of the fund sectors.
  */
@@ -2533,56 +2592,88 @@ function get_industry_valuation($symbol){
 }
 
 /* ---------------------------------------------------------------------------
-   Peer medians for the relative valuations.
+   Medians.
 
-   The implied price in price_valuation.value is sector median ratio divided by
-   the share's own ratio, times the price: what the share would cost if it were
-   valued like the rest of its sector. That only says anything if "the rest of
-   its sector" is a real comparison set, and it was not:
+   Two medians are published, and they answer different questions:
+
+     peer_median()   the median of a share's peers, for the implied price in
+                     price_valuation. The share is left out of it, because the
+                     question is what the rest of the sector says this one is
+                     worth.
+     group_median()  the median of a whole group, for the sector, industry and
+                     market columns in statistic_averages. The share is in it,
+                     because the question is what the group looks like.
+
+   Everything else about them is the same, and is in median_sample(): the same
+   universe, the same exclusions, the same arithmetic. They were two different
+   definitions until now - the stored ones came from a SQL expression that took
+   the upper of the two middle values for an even count
+   (HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5), which is a
+   member's own figure rather than a median - so the quote page showed two
+   numbers both labelled "sector" that did not agree.
+
+   What the implied price was before this:
 
    - The median included the share itself. Aerospace & Defense has four members
      on the live FTSE 350 - BAB 23.3, BA 26.9, MRO 37.9, RR 37.5 - and the
-     median the old query returned for RR was RR's own 37.52, so the implied
-     price came back as the current price and the whole figure was circular.
+     median returned for RR was RR's own 37.52, so the implied price came back
+     as the current price and the whole figure was circular.
    - Four members is not a sample. A median over two or three peers moves
      wholesale when one of them reports.
-   - The old query took the upper of the two middle values for an even count
-     (HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5), which is a
-     member's own value rather than a median.
-
-   So the comparison set is the peers: the share is excluded, there have to be
-   at least PEER_MEDIAN_MIN_PEERS of them, and an even count averages the two
-   middle values.
    --------------------------------------------------------------------------- */
 
 /* Below this many peers the median says more about which companies happen to
    be listed than about the price of anything, so nothing is written. Five
-   leaves two values either side of the middle. */
+   leaves two values either side of the middle. Counted after the exclusions
+   below, not before: four usable peers and one loss-maker is still four. */
 if (!defined('PEER_MEDIAN_MIN_PEERS')) { define('PEER_MEDIAN_MIN_PEERS', 5); }
 
 /**
- * The median of one indicator across a share's peers, or null.
+ * The values one median is taken over, sorted.
  *
- * $group is 'sector' or 'industry'. $symbol is the share being valued and is
- * left out of its own comparison set. Funds are left out as well, the same way
- * they are left out of the rankings, and so are the zero values rank_zero
- * excludes - which is what the statistic_averages medians already did.
+ * $group is 'sector', 'industry', or 'market' for the whole exchange, in which
+ * case $group_value is ignored. $exclude_symbol is left out when given.
  *
- * Returns null when there are fewer than $min_peers peers with a value, which
- * the caller treats as "no comparison to make" rather than as a zero.
+ * What is left out, and why:
+ *
+ *   funds           an investment trust's P/E is its holdings' earnings seen
+ *                   through a discount; it is not a price for anything the
+ *                   other members of the sector sell. Same rule as the
+ *                   rankings - see sql/fund_sectors.sql.
+ *   disabled        not in the universe.
+ *   zero            where rank_zero says a zero is a missing value rather
+ *                   than a real one.
+ *   non-positive    where rank_negative is EXCLUDE. A negative P/E does not
+ *                   mean cheap and it does not mean dear: the ratio has no
+ *                   meaning for a company with no earnings, so it has no
+ *                   business dragging the median its peers are measured
+ *                   against. This is the same rule the rankings already
+ *                   apply, where leaving negatives in had a loss-maker
+ *                   scoring as the cheapest share in the index.
  */
-function peer_median($indicator, $date, $group, $group_value, $symbol,
-                     $min_peers = PEER_MEDIAN_MIN_PEERS) {
+function median_sample($indicator, $date, $group, $group_value, $exclude_symbol = null) {
 
 	/* Interpolated into the query below, so it is checked against what it is
 	   allowed to be rather than trusted. */
-	if ($group !== 'sector' && $group !== 'industry') {
-		write_log('peer_median', "unknown grouping '".$group."'");
-		return null;
+	if ($group !== 'sector' && $group !== 'industry' && $group !== 'market') {
+		write_log('median_sample', "unknown grouping '".$group."'");
+		return [];
 	}
 
-	if ($group_value === null || trim((string) $group_value) === '')
-		return null;
+	$params = [$indicator, $date, session_exchange()];
+	$where  = "";
+
+	if ($group !== 'market') {
+		if ($group_value === null || trim((string) $group_value) === '')
+			return [];
+		$where   .= " and ss.".$group." = ?";
+		$params[] = $group_value;
+	}
+
+	if ($exclude_symbol !== null) {
+		$where   .= " and ss.symbol <> ?";
+		$params[] = $exclude_symbol;
+	}
 
 	$rows = query("select s.value
 	                 from statistics s, stock_symbols ss, screen_indicators si
@@ -2592,26 +2683,65 @@ function peer_median($indicator, $date, $group, $group_value, $symbol,
 	                  and s.indicator = ?
 	                  and s.date = ?
 	                  and s.exchange = ?
-	                  and ss.".$group." = ?
 	                  and ss.enabled = 'Y'
-	                  and ss.symbol <> ?
 	                  and if(s.value=0,if(si.rank_zero='N',0,1),1)=1
-	                  ".not_fund_sql('ss.symbol')."
+	                  and if(ifnull(nullif(si.rank_negative,''),'NORMAL')='EXCLUDE',
+	                         s.value > 0, 1)=1
+	                  ".not_fund_sql('ss.symbol').$where."
 	                order by s.value",
-	              $indicator, $date, session_exchange(), $group_value, $symbol);
+	              ...$params);
 
-	$values = array_map('floatval', array_column($rows, 'value'));
-	$n = count($values);
+	return array_map('floatval', array_column($rows, 'value'));
+}
 
-	if ($n < $min_peers)
+/**
+ * The median of a sorted list, or null if it is empty.
+ *
+ * The middle value, or the mean of the two middle values when the count is
+ * even. Taking the upper of the two, which is what the old SQL did, returns a
+ * member's own figure and is not a median.
+ */
+function median_of(array $sorted) {
+
+	$n = count($sorted);
+
+	if ($n === 0)
 		return null;
 
-	/* A true median: the middle value, or the mean of the two middle values
-	   when the count is even. */
 	$middle = intdiv($n, 2);
 
-	return ($n % 2 === 1) ? $values[$middle]
-	                      : ($values[$middle - 1] + $values[$middle]) / 2;
+	return ($n % 2 === 1) ? $sorted[$middle]
+	                      : ($sorted[$middle - 1] + $sorted[$middle]) / 2;
+}
+
+/**
+ * The median of one indicator across a share's peers, or null.
+ *
+ * $symbol is the share being valued and is left out of its own comparison set.
+ * Returns null when fewer than $min_peers peers are left once median_sample()
+ * has done its excluding, which the caller treats as "no comparison to make"
+ * rather than as a zero.
+ */
+function peer_median($indicator, $date, $group, $group_value, $symbol,
+                     $min_peers = PEER_MEDIAN_MIN_PEERS) {
+
+	$values = median_sample($indicator, $date, $group, $group_value, $symbol);
+
+	return (count($values) < $min_peers) ? null : median_of($values);
+}
+
+/**
+ * The median of one indicator across a whole group, or null.
+ *
+ * This is what statistic_averages stores and the sector and market columns on
+ * the quote page show. No minimum: a group of one has a median, and saying so
+ * is the behaviour the column has always had. The share being looked at is in
+ * it, which is the difference from peer_median() and is why the two are
+ * labelled differently on the page.
+ */
+function group_median($indicator, $date, $group, $group_value = null) {
+
+	return median_of(median_sample($indicator, $date, $group, $group_value));
 }
 
 //Get Price valuation indicators for Relative to Sector

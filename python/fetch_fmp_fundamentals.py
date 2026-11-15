@@ -27,7 +27,7 @@ import time
 import mysql.connector
 
 from functions import query, db_config
-from pipeline import pipeline_asofdate
+from pipeline import pipeline_resolve_asofdate
 from fmp import fetch_sections, flatten, FmpError
 
 EXCHANGE = 'XLON'
@@ -53,11 +53,17 @@ def parse_args(argv):
         i += 1
     if rest:
         asofdate = rest[0]
-    return asofdate or pipeline_asofdate(), limit
+    # None when the date asked for has no prices, which main() refuses on. The
+    # default is the last trading day, the same rule get_statistics.php uses.
+    return pipeline_resolve_asofdate(asofdate), limit
 
 
 def main():
     asofdate, limit = parse_args(sys.argv[1:])
+
+    if asofdate is None:
+        print("no prices for the requested as-of date - refusing to run")
+        return 1
 
     rows = query("select symbol from stock_symbols where enabled='Y' "
                  "and exchange='" + EXCHANGE + "' order by symbol")

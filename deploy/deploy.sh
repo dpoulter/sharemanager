@@ -38,12 +38,19 @@ fi
 echo "deploy: $APP_DIR"
 echo "deploy: was at $(git log -1 --oneline)"
 
-# A dirty tree means someone edited the server by hand. Stop rather than
-# throw their change away or produce a confusing merge failure halfway
+# An edited tracked file means someone changed the server by hand. Stop rather
+# than throw their change away or produce a confusing merge failure halfway
 # through; they need to see it and decide.
-if [ -n "$(git status --porcelain)" ]; then
-  echo "deploy: refusing to pull, there are uncommitted changes here:" >&2
-  git status --short >&2
+#
+# Only tracked files. This was "git status --porcelain", which also reports
+# untracked ones, so public/webfonts/ - fetched by tools/fetch_assets.sh, which
+# is deliberately not in the repository - made the tree look dirty and the
+# deploy refused to run at all. A file git is not tracking cannot be lost by a
+# pull, so it is not a reason to stop. Those directories are in .gitignore now
+# as well, which is the belt to this braces.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "deploy: refusing to pull, there are uncommitted changes to tracked files:" >&2
+  git status --short --untracked-files=no >&2
   echo "deploy: commit, stash or discard them first." >&2
   exit 1
 fi

@@ -16,7 +16,7 @@ from datetime import date
 import mysql.connector
 
 from functions import query, db_config
-from pipeline import pipeline_asofdate
+from pipeline import pipeline_resolve_asofdate
 from eodhd import get_fundamentals, flatten_fundamentals, EodhdError
 
 EXCHANGE = 'XLON'
@@ -40,8 +40,13 @@ session = None
 
 def main():
     # Must match what get_api_stats.py reads, or the join finds nothing and the
-    # fundamentals never reach statistics. Shared rather than restated.
-    asofdate = sys.argv[1] if len(sys.argv) > 1 else pipeline_asofdate()
+    # fundamentals never reach statistics. Shared rather than restated. A date
+    # given on the command line has to be one prices were loaded for, the same
+    # rule get_statistics.php applies.
+    asofdate = pipeline_resolve_asofdate(sys.argv[1] if len(sys.argv) > 1 else None)
+    if asofdate is None:
+        print("no prices for the requested as-of date - refusing to run")
+        return 2
 
     rows = query("select symbol from stock_symbols where enabled='Y' "
                  "and exchange='" + EXCHANGE + "' order by symbol")

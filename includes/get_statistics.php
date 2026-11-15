@@ -6,16 +6,36 @@
 	
 	log_job("get_statistics");
 
-	$asOfDate=new DateTime();
-    $asOfDate->sub(new DateInterval('P1D'));
-	print_r( "Asofdate=".date_format($asOfDate,'Y-m-d')."\r\n");
+	/* Optional as of date:  php includes/get_statistics.php 2026-11-13
 	
+	   It has to be a date prices were loaded for. Without an argument the job
+	   calculates for the last trading day, which is what the prices say rather
+	   than what the calendar says - see resolve_asof_date() in
+	   share_functions.php. Run on Sunday 15 November the old "yesterday" wrote
+	   a half set of statistics for Saturday the 14th and then told every page
+	   that that was the newest date there was. */
+	$requestedDate = (PHP_SAPI === 'cli' && isset($argv[1])) ? $argv[1] : null;
+
 	//Set Exchanges
 	$exchanges = array("XLON");
 	
 	foreach ($exchanges as $exchange){
 	    
 		$_SESSION["exchange"]=$exchange;
+
+		$asOf = resolve_asof_date($requestedDate, $exchange);
+
+		if ($asOf === null){
+			$why = ($requestedDate === null)
+			     ? "no prices have been loaded for ".$exchange
+			     : "there are no ".$exchange." prices for '".$requestedDate."'";
+			fwrite(STDERR, "get_statistics: refusing to run, ".$why."\n");
+			write_log("get_statistics.php","refusing to run: ".$why);
+			exit(2);
+		}
+
+		$asOfDate = new DateTime($asOf);
+		print_r( "Asofdate=".date_format($asOfDate,'Y-m-d')."\r\n");
 	
 		//write_log("get_statistics.php","Get statistics to calculate");
 		
@@ -45,71 +65,54 @@
 	       are gone the "or exchange is null" arm matches nothing and can go. */
 		query("delete from statistic_averages where date<=? and (exchange=? or exchange is null)",date_format($asOfDate,'Y-m-d'),$_SESSION["exchange"]);
 			
-		//write_log("get_statistics.php","Calculate Market Median for all statistics");
-			
-		//Calculate Market Median for all statistics
-		$indicators=query("select name indicator from screen_indicators where enabled='Y'");
-		foreach ($indicators as $indicator){
-			$avg = query("SELECT x.indicator, x.value from statistics x, screen_indicators si,statistics y 
-				where x.date=? and x.indicator=? and x.exchange=? and x.date=y.date and x.indicator=y.indicator and y.exchange=x.exchange and si.name=x.indicator and if(x.value=0,if(rank_zero='N',0,1),1)=1
-				GROUP BY x.indicator,x.value HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5
-				LIMIT 1",date_format($asOfDate,'Y-m-d'),$indicator['indicator'],$_SESSION["exchange"]);
-			
-			if (count($avg)>0){
-				write_log("get_statistics.php","insert into statistic_averages (date, category, indicator,type, value, exchange) values ('".date_format($asOfDate,'Y-m-d')."','".$avg[0]['indicator']."',"."'MARKET'".","."'MEDIAN'".",".$avg[0]['value'].",'".$_SESSION["exchange"]."')");
-				
-				if (!query("insert into statistic_averages (date, category, indicator,type, value, exchange) values (?,?,?,?,?,?)",date_format($asOfDate,'Y-m-d'),'MARKET',$avg[0]['indicator'],'MEDIAN',$avg[0]['value'],$_SESSION["exchange"]))
-					write_log("get_statistics.php","Insert failed for indicator".$avg[0]['indicator']);
-			}
-		}
-		
-		write_log("get_statistics.php","Calculate Sector Medians for all statistics");
-		
-		/* Sector and industry medians are the comparison sets the relative
-		   valuations on the quote page are worked out against, so funds are
-		   left out of both sides of them: a trust must not drag the median
-		   price/book of the companies it shares an industry with. A fund
-		   sector contains nothing but funds, so it now has no median at all,
-		   which is why calc_implied_valuation() skips funds outright. */
+		write_log("get_statistics.php","Calculate Medians for all statistics");
 
-		//Calculate Sector Medians for all statistics
+		/* One definition of a median, in group_median(), for all three
+		   categories. These were three variants of a SQL expression that took
+		   the upper of the two middle values for an even count, counted funds,
+		   and counted a negative P/E as if the ratio meant something - so the
+		   "Sector" column on the quote page disagreed with the peer median
+		   beside it, and a loss-maker dragged down the median its peers were
+		   measured against. See median_sample() in share_functions.php for
+		   what is left out and why.
+
+		   The averages are the comparison sets the quote page shows and, for
+		   sector and industry, what calc_implied_valuation() used to work
+		   from. It uses peer_median() now, which is the same arithmetic over
+		   the same universe with the share itself removed. */
+
+		$median_indicators = query("select name from screen_indicators where enabled='Y'");
+
+		//Market: the whole exchange.
+		foreach ($median_indicators as $indicator){
+			$median = group_median($indicator['name'], date_format($asOfDate,'Y-m-d'), 'market');
+			if ($median !== null)
+				query("insert into statistic_averages (date, category, indicator, type, value, exchange) values (?,?,?,?,?,?)",
+				      date_format($asOfDate,'Y-m-d'),'MARKET',$indicator['name'],'MEDIAN',$median,$_SESSION["exchange"]);
+		}
+
+		//Sector.
 		$sectors=query('select distinct sector from stock_symbols where exchange=?',$_SESSION["exchange"]);
 		foreach ($sectors as $sector){
-			$indicators=query("select name from screen_indicators where enabled='Y'");
-	   		foreach ($indicators as $indicator){
-				$avg = query("SELECT x.indicator, x.value, ssx.sector from statistics x,screen_indicators si, statistics y , stock_symbols ssx, stock_symbols ssy
-				where x.date=? and x.indicator=? and ssx.sector=? and ssx.exchange=? and x.date=y.date and x.indicator=y.indicator and si.name=x.indicator 
-				and x.symbol=ssx.symbol and y.symbol=ssy.symbol and ssx.sector = ssy.sector and ssy.enabled='Y' and if(x.value=0,if(rank_zero='N',0,1),1)=1
-				".not_fund_sql('ssx.symbol').not_fund_sql('ssy.symbol')."
-				GROUP BY x.indicator,x.value, ssx.sector HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5
-				LIMIT 1",date_format($asOfDate,'Y-m-d'),$indicator['name'],$sector['sector'],$_SESSION["exchange"]);
-				if(count($avg)>0) {
-					query("insert into statistic_averages (date, category, indicator,type, value, sector,exchange) values (?,?,?,?,?,?,?)",date_format($asOfDate,'Y-m-d'),'SECTOR',$avg[0]['indicator'],'MEDIAN',$avg[0]['value'],$avg[0]['sector'],$_SESSION["exchange"]);
-				}
+			foreach ($median_indicators as $indicator){
+				$median = group_median($indicator['name'], date_format($asOfDate,'Y-m-d'), 'sector', $sector['sector']);
+				if ($median !== null)
+					query("insert into statistic_averages (date, category, indicator, type, value, sector, exchange) values (?,?,?,?,?,?,?)",
+					      date_format($asOfDate,'Y-m-d'),'SECTOR',$indicator['name'],'MEDIAN',$median,$sector['sector'],$_SESSION["exchange"]);
 			}
-	 		
-			
 		}
-	
-	//Calculate Industry Medians for all statistics
+
+		//Industry.
 		$industries=query('select distinct industry from stock_symbols where exchange=?',$_SESSION["exchange"]);
 		foreach ($industries as $industry){
-			$indicators=query("select name from screen_indicators where enabled='Y'");
-	   		foreach ($indicators as $indicator){
-				$avg = query("SELECT x.indicator, x.value, ssx.industry from statistics x,screen_indicators si, statistics y , stock_symbols ssx, stock_symbols ssy
-				where x.date=? and x.indicator=? and ssx.industry=? and x.exchange=? and x.date=y.date and x.indicator=y.indicator and si.name=x.indicator 
-				and x.symbol=ssx.symbol and y.symbol=ssy.symbol and ssx.industry = ssy.industry and ssx.enabled='Y' and if(x.value=0,if(rank_zero='N',0,1),1)=1
-				".not_fund_sql('ssx.symbol').not_fund_sql('ssy.symbol')."
-				GROUP BY x.indicator,x.value, ssx.industry HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5
-				LIMIT 1",date_format($asOfDate,'Y-m-d'),$indicator['name'],$industry['industry'],$_SESSION["exchange"]);
-				if(count($avg)>0) {
-					query("insert into statistic_averages (date, category, indicator,type, value, industry, exchange) values (?,?,?,?,?,?,?)",date_format($asOfDate,'Y-m-d'),'INDUSTRY',$avg[0]['indicator'],'MEDIAN',$avg[0]['value'],$avg[0]['industry'],$_SESSION["exchange"]);
-				}
+			foreach ($median_indicators as $indicator){
+				$median = group_median($indicator['name'], date_format($asOfDate,'Y-m-d'), 'industry', $industry['industry']);
+				if ($median !== null)
+					query("insert into statistic_averages (date, category, indicator, type, value, industry, exchange) values (?,?,?,?,?,?,?)",
+					      date_format($asOfDate,'Y-m-d'),'INDUSTRY',$indicator['name'],'MEDIAN',$median,$industry['industry'],$_SESSION["exchange"]);
 			}
-	 		
-			
 		}
-		
+
 		//Calculate Price Valuation for each share
 		$rows = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",$_SESSION["exchange"]);
 		foreach($rows as $row) 
@@ -356,6 +359,12 @@
 		//marker from the log_job("get_statistics") row above, which records when
 		//the job ran: log_job writes NOW, this writes the as of date, and the
 		//pages that display statistics need the as of date.
+		//
+		//The time of day here is always midnight, because the as of date is a
+		//trading day rather than a moment. It used to carry the time the job
+		//started, which is how the dashboard came to show "Statistics
+		//Refreshed: <the previous day> <this morning's time>" - two different
+		//things reported as one.
 		write_log("get_statistics.php","insert record into jobs");
 		
 		query("insert into jobs (job_name, job_date) values (?,?)",'get_statistics_asof',date_format($asOfDate,'Y-m-d H:i:s'));

@@ -84,6 +84,23 @@
     function reset_calculated() { db()->exec("truncate statistics"); db()->exec("truncate message_log");
                                   db()->exec("truncate jobs"); db()->exec("truncate statistic_averages"); }
 
+    /* The date the nightly job calculates for: the last day prices were
+       loaded, which is what get_statistics.php resolves through
+       resolve_asof_date(). Every test that writes statistics by hand needs
+       the same date the job will rank.
+
+       It used to be spelled "yesterday" in seven places, which agreed with
+       the job only because the job said yesterday too. Run on a Sunday both
+       were wrong together - and then the job was fixed to follow the prices
+       and the suite was the only thing still asking for a Saturday.
+
+       Queried each time rather than cached: fixtures in the trend section add
+       and remove price history, and a stale answer here would rank one date
+       while the test asserted on another. */
+    function asof_date() {
+        return (string) scalar("select max(date) from historical_prices where exchange='XLON'");
+    }
+
     /* Runs one of the application's batch scripts the way cron would, with the
        test fixtures ahead of includes/ on the include path. Returns [stdout+stderr, exit code]. */
     function run_script($script, $args = [], $env = []) {
@@ -230,8 +247,19 @@
     $asof_row = scalar("select max(job_date) from jobs where job_name='get_statistics_asof'");
     check('log_job records when the job ran', $run_row !== false && $run_row !== null);
     check('the as of date is recorded under its own job_name', $asof_row !== false && $asof_row !== null);
-    check('the run row and the as of row are different dates',
-          substr((string)$run_row, 0, 10) !== substr((string)$asof_row, 0, 10),
+    /* The as of row is a trading day; the run row is a moment. They used to be
+       told apart by being different dates, which held only because the as of
+       date was the calendar day before the run. It is the last trading day
+       now, so on a weekday with prices loaded for today the two share a date
+       and the difference is the time of day: the marker is midnight because a
+       trading day has no time of day, and the run row is when the job started.
+
+       This is also the bug behind "Statistics Refreshed: 2026-11-14 09:12:03"
+       on the dashboard - the marker carried the run's clock, so the page
+       printed one date and another date's time as though they were one fact. */
+    check('the as of row is a date and the run row is a timestamp',
+          substr((string)$asof_row, 11) === '00:00:00'
+          && substr((string)$run_row, 11) !== '00:00:00',
           "run=$run_row asof=$asof_row");
 
     /* The regression this guards: readers must resolve the as of marker, not the
@@ -241,8 +269,10 @@
     $score_date = scalar("select max(date) from statistics where indicator='momentum_score'");
     check('the as of marker matches the date the scores were written at',
           $resolved !== false && $resolved === $score_date, "resolved=$resolved scores=$score_date");
-    $wrong = scalar("select date(max(job_date)) from jobs where job_name='get_statistics'");
-    check('resolving the run row instead would miss the scores (regression guard)', $wrong !== $score_date);
+    $wrong = scalar("select max(job_date) from jobs where job_name='get_statistics'");
+    check('resolving the run row instead would miss the scores (regression guard)',
+          (int)scalar("select count(*) from statistics where date=?", [$wrong]) === 0,
+          "the run row $wrong matched statistics rows");
 
     /* get_statistics_asof carries the as of date itself, so subtracting a day
        from it lands a day before the statistics and returns nothing. The quote
@@ -723,7 +753,7 @@
                    rank_order, rank_negative)
                 values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE')");
 
-    $asof = date('Y-m-d', strtotime('-1 day'));
+    $asof = asof_date();
     $pes = ['AAA' => -527.0, 'BBB' => -3.0, 'CCC' => 5.0, 'DDD' => 12.0, 'EEE' => 40.0];
     foreach ($pes as $sym => $v) {
         db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
@@ -808,7 +838,7 @@
                    rank_order, rank_negative)
                 values ('pe','Price / earnings','Y',1,'Y','N','value ASC','NORMAL')");
 
-    $asof2 = date('Y-m-d', strtotime('-1 day'));
+    $asof2 = asof_date();
     $pes2 = ['AAA' => -527.0, 'BBB' => -3.0, 'CCC' => 5.0, 'DDD' => 12.0, 'EEE' => 40.0];
     foreach ($pes2 as $sym => $v) {
         db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
@@ -950,7 +980,7 @@
        These four series are built by hand so the expected averages can be
        worked out on paper rather than read back out of the thing under test. */
     $trend_exchange = 'XLON';
-    $trend_asof = date('Y-m-d', strtotime('-1 day'));   // the date the job uses
+    $trend_asof = asof_date();   // the date the job uses
 
     /* [symbol, [prices oldest..newest]]. Linear series, so the mean of any
        tail is just the mean of its ends. */
@@ -1209,7 +1239,7 @@
 
     db()->exec("update stock_symbols set sector='Real Estate' where symbol='$fund_reit'");
 
-    $fund_asof = date('Y-m-d', strtotime('-1 day'));
+    $fund_asof = asof_date();
 
     /* The fund is the cheapest P/E and the best return on equity of the lot,
        so leaving it in changes both the order and the denominator. A test
@@ -1552,7 +1582,7 @@
 
     $pv_saved_exchange = $_SESSION["exchange"] ?? null;
     $_SESSION["exchange"] = 'XLON';
-    $pv_asof = date('Y-m-d', strtotime('-1 day'));
+    $pv_asof = asof_date();
     $pv_symbols = ['AAA','BBB','CCC','DDD','EEE','FFF','GGG','HHH','III','JJJ','KKK','LLL'];
 
     reset_calculated();
@@ -1777,6 +1807,282 @@
     run_script('get_statistics.php');
     if ($pv_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $pv_saved_exchange; }
+
+    echo "\n--- a peer median leaves out a ratio that has no meaning ---\n";
+
+    /* rank_negative='EXCLUDE' says a negative P/E does not mean cheap and does
+       not mean dear: the ratio has no meaning for a company with no earnings.
+       The rankings have applied that since the EXCLUDE work, but the medians
+       the peers are measured against still counted the loss-maker, so it
+       dragged the comparison down for everyone in the sector.
+
+       The floor is counted after that filter, not before: four usable peers
+       and a loss-maker is four peers. */
+
+    $mn_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $mn_asof = asof_date();
+    $mn_all  = "('MN1','MN2','MN3','MN4','MN5','MN6','MN7')";
+
+    reset_calculated();
+    db()->exec("delete from statistics where symbol in $mn_all");
+    db()->exec("delete from stock_symbols where symbol in $mn_all");
+    db()->exec("delete from screen_indicators where name in ('pe','roe_ttm')");
+    db()->exec("insert into screen_indicators
+                  (name, description, enabled, order_number, calc_rank, rank_zero,
+                   rank_order, rank_negative, rank_funds)
+                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N'),
+                       ('roe_ttm','Return on equity','Y',2,'Y','N','value DESC','NORMAL','N')");
+
+    /* MN1 is the loss-maker, MN2 reported a zero, MN3..MN7 are five ordinary
+       companies. roe_ttm carries the same numbers but ranks NORMAL, where a
+       negative return is a real figure and stays in. */
+    $mn_pe  = ['MN1' => -5.0, 'MN2' => 0.0, 'MN3' => 1.0, 'MN4' => 2.0,
+               'MN5' => 3.0, 'MN6' => 4.0, 'MN7' => 5.0];
+    $mn_roe = ['MN1' => -5.0, 'MN3' => 1.0, 'MN4' => 2.0,
+               'MN5' => 3.0, 'MN6' => 4.0, 'MN7' => 5.0];
+
+    $mn_symbol = db()->prepare("insert into stock_symbols (symbol,name,exchange,enabled,sector,industry,market)
+                                values (?,?,'XLON','Y','Median Test','Median Industry','FTSE 250')");
+    foreach (array_keys($mn_pe) as $mn_sym) { $mn_symbol->execute([$mn_sym, $mn_sym . ' Test PLC']); }
+    $mn_stat = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                              values (?,?,?,?,'XLON')");
+    foreach ($mn_pe as $mn_sym => $mn_v)  { $mn_stat->execute([$mn_sym, $mn_asof, 'pe', $mn_v]); }
+    foreach ($mn_roe as $mn_sym => $mn_v) { $mn_stat->execute([$mn_sym, $mn_asof, 'roe_ttm', $mn_v]); }
+
+    /* From MN1's point of view the peers are MN2 (a zero, which rank_zero
+       already dropped) and MN3..MN7: five values, 1 to 5, median 3. */
+    check('the five ordinary peers are what the median is taken over',
+          count(median_sample('pe', $mn_asof, 'sector', 'Median Test', 'MN1')) === 5,
+          json_encode(median_sample('pe', $mn_asof, 'sector', 'Median Test', 'MN1')));
+    check('a loss-maker gets the median of the companies that have earnings',
+          peer_median('pe', $mn_asof, 'sector', 'Median Test', 'MN1') === 3.0,
+          var_export(peer_median('pe', $mn_asof, 'sector', 'Median Test', 'MN1'), true));
+
+    /* From MN3's point of view the usable peers are MN4..MN7: four of them, so
+       nothing is published. Counting the loss-maker and the zero would make it
+       six and hand back 2.5 - which is the answer this is here to refuse. */
+    check('a non-positive peer is left out where the ratio has no meaning',
+          !in_array(-5.0, median_sample('pe', $mn_asof, 'sector', 'Median Test', 'MN3'), true)
+          && !in_array(0.0, median_sample('pe', $mn_asof, 'sector', 'Median Test', 'MN3'), true),
+          json_encode(median_sample('pe', $mn_asof, 'sector', 'Median Test', 'MN3')));
+    check('the five peer floor is applied after that filter, not before',
+          peer_median('pe', $mn_asof, 'sector', 'Median Test', 'MN3') === null,
+          var_export(peer_median('pe', $mn_asof, 'sector', 'Median Test', 'MN3'), true));
+
+    /* The same share, on an indicator that ranks NORMAL: a negative return on
+       equity is a real number and counts, so MN3 has five peers and a median. */
+    check('a negative value still counts where rank_negative is not EXCLUDE',
+          in_array(-5.0, median_sample('roe_ttm', $mn_asof, 'sector', 'Median Test', 'MN3'), true)
+          && peer_median('roe_ttm', $mn_asof, 'sector', 'Median Test', 'MN3') === 3.0,
+          json_encode(median_sample('roe_ttm', $mn_asof, 'sector', 'Median Test', 'MN3')));
+
+    echo "\n--- the stored medians are the same medians ---\n";
+
+    /* statistic_averages came from a SQL expression that took the upper of the
+       two middle values for an even count, counted funds and counted a
+       negative P/E. So the "Sector" column on the quote page and the peer
+       median beside it were two different definitions wearing one word. */
+
+    check('a whole-group median includes the share, which is the difference',
+          count(median_sample('pe', $mn_asof, 'sector', 'Median Test', null))
+          === count(median_sample('pe', $mn_asof, 'sector', 'Median Test', 'MN3')) + 1);
+
+    /* Six usable values, 1 to 5 plus one more: an even count, and the answer
+       is not a member's own figure. */
+    db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                   values ('MN2',?,'pe',6.0,'XLON')")->execute([$mn_asof]);
+    db()->exec("delete from statistics where symbol='MN2' and indicator='pe' and value=0");
+    check('an even count averages the two middle values rather than taking the upper',
+          group_median('pe', $mn_asof, 'sector', 'Median Test') === 3.5,
+          var_export(group_median('pe', $mn_asof, 'sector', 'Median Test'), true));
+    check('the upper of the two middle values, which is what the old SQL returned, is not it',
+          group_median('pe', $mn_asof, 'sector', 'Median Test') !== 4.0);
+
+    check('a market median is the same arithmetic over the whole exchange',
+          group_median('pe', $mn_asof, 'market') === median_of(median_sample('pe', $mn_asof, 'market', null)));
+
+    db()->exec("delete from statistics where symbol in $mn_all");
+    db()->exec("delete from stock_symbols where symbol in $mn_all");
+
+    /* End to end, on the seeded universe: twelve symbols in one sector with
+       P/Es 5, 7 ... 27. The median of twelve values is the mean of the sixth
+       and seventh, 16. The old rule returned the seventh, 17. */
+    $mn_symbols = ['AAA','BBB','CCC','DDD','EEE','FFF','GGG','HHH','III','JJJ','KKK','LLL'];
+    reset_calculated();
+    db()->exec("truncate price_valuation");
+    db()->exec("update stock_symbols set sector='Peer Sector', industry='Peer Industry'
+                 where exchange='XLON'");
+    $mn_insert = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                                values (?,?,'pe',?,'XLON')");
+    foreach ($mn_symbols as $mn_i => $mn_sym) { $mn_insert->execute([$mn_sym, $mn_asof, 5 + $mn_i * 2]); }
+    run_script('get_statistics.php');
+
+    $mn_stored = function ($category) use ($mn_asof) {
+        $v = scalar("select value from statistic_averages
+                      where category=? and indicator='pe' and date=?", [$category, $mn_asof]);
+        return $v === false || $v === null ? null : (float)$v;
+    };
+    check('the stored sector median is the mean of the two middle values',
+          $mn_stored('SECTOR') === 16.0, var_export($mn_stored('SECTOR'), true));
+    check('it is not the upper middle value the old query returned',
+          $mn_stored('SECTOR') !== 17.0);
+    check('the stored market median is worked out the same way',
+          $mn_stored('MARKET') === 16.0, var_export($mn_stored('MARKET'), true));
+    check('and so is the industry median',
+          $mn_stored('INDUSTRY') === 16.0, var_export($mn_stored('INDUSTRY'), true));
+
+    /* Funds are out of the stored medians too. Taking the highest P/E out
+       leaves eleven values and a median of 15. */
+    db()->exec("update stock_symbols set sector='Investment Trusts' where symbol='LLL'");
+    run_script('get_statistics.php');
+    check('a fund is not counted in the stored market median',
+          $mn_stored('MARKET') === 15.0, var_export($mn_stored('MARKET'), true));
+    db()->exec("update stock_symbols set sector='Peer Sector' where symbol='LLL'");
+
+    /* And a negative P/E is out of them, for the same reason it is out of the
+       peer median: AAA at -50 would otherwise pull the median down a place. */
+    db()->prepare("update statistics set value=-50 where symbol='AAA' and indicator='pe' and date=?")
+        ->execute([$mn_asof]);
+    run_script('get_statistics.php');
+    check('a negative P/E is not counted in the stored median either',
+          $mn_stored('MARKET') === 17.0, var_export($mn_stored('MARKET'), true));
+    db()->prepare("update statistics set value=5 where symbol='AAA' and indicator='pe' and date=?")
+        ->execute([$mn_asof]);
+
+    /* The two columns are labelled, so the page says which median is which. */
+    $mn_quote = (string)file_get_contents(dirname(__DIR__) . '/templates/quote.php');
+    check('the whole-group columns say "median"',
+          strpos($mn_quote, 'Sector median') !== false
+          && strpos($mn_quote, 'Market median') !== false);
+    check('the peer columns say the share is left out of them',
+          substr_count($mn_quote, 'peer median (excl. this share)') === 2,
+          substr_count($mn_quote, 'peer median (excl. this share)') . ' occurrences');
+
+    echo "\n--- the as of date is the last trading day, not yesterday ---\n";
+
+    /* Run by hand on Sunday 15 November, "today - 1" wrote a set of statistics
+       for Saturday the 14th: no fundamentals are loaded for a Saturday, so no
+       ratios, so an overall score that was momentum alone - and the dashboard
+       moved onto that date, because the marker said it was the newest there
+       was. The prices are the only thing that knows when the market was last
+       open. */
+
+    db()->exec("delete from historical_prices where exchange='TSTX'");
+    $td_price = db()->prepare("insert into historical_prices (symbol,exchange,date,price) values ('TST','TSTX',?,?)");
+    //Monday 9 to Friday 13 November 2026. Nothing on the 14th or the 15th.
+    foreach (['2026-11-09','2026-11-10','2026-11-11','2026-11-12','2026-11-13'] as $td_i => $td_date) {
+        $td_price->execute([$td_date, 100 + $td_i]);
+    }
+
+    check('the as of date is the last day prices were loaded for',
+          last_trading_date('TSTX') === '2026-11-13', var_export(last_trading_date('TSTX'), true));
+    check('a run the day after the weekend starts lands on the Friday, not the Saturday',
+          resolve_asof_date(null, 'TSTX') === '2026-11-13',
+          var_export(resolve_asof_date(null, 'TSTX'), true));
+    check('the Saturday is refused if it is asked for by name',
+          resolve_asof_date('2026-11-14', 'TSTX') === null);
+    check('a date with prices is accepted',
+          resolve_asof_date('2026-11-11', 'TSTX') === '2026-11-11');
+    foreach (['yesterday', '13/11/2026', '2026-11-13 00:00:00', '2026-02-30',
+              '2026-2-3', '; drop table statistics'] as $td_bad) {
+        check("'" . $td_bad . "' is refused rather than interpreted",
+              resolve_asof_date($td_bad, 'TSTX') === null);
+    }
+    check('an exchange with no prices at all has no as of date',
+          resolve_asof_date(null, 'NOSUCH') === null);
+    db()->exec("delete from historical_prices where exchange='TSTX'");
+
+    //End to end. The seeded universe has prices, so the job uses the newest.
+    $td_latest = (string)scalar("select max(date) from historical_prices where exchange='XLON'");
+    db()->exec("truncate jobs");
+    run_script('get_statistics.php');
+    check('the job calculates for the newest priced date',
+          scalar("select date(max(job_date)) from jobs where job_name='get_statistics_asof'") === $td_latest,
+          'marker ' . scalar("select date(max(job_date)) from jobs where job_name='get_statistics_asof'")
+          . ', newest price ' . $td_latest);
+
+    //A date with prices, given on the command line.
+    $td_earlier = (string)scalar("select max(date) from historical_prices
+                                   where exchange='XLON' and date < ?", [$td_latest]);
+    db()->exec("truncate jobs");
+    [$td_out, $td_rc] = run_script('get_statistics.php', [$td_earlier]);
+    check('a date argument with prices is used',
+          $td_rc === 0
+          && scalar("select date(max(job_date)) from jobs where job_name='get_statistics_asof'") === $td_earlier,
+          'rc ' . $td_rc . ', marker '
+          . scalar("select date(max(job_date)) from jobs where job_name='get_statistics_asof'"));
+
+    //A date without prices is refused, and nothing is written for it.
+    db()->exec("truncate jobs");
+    [$td_refused, $td_rc2] = run_script('get_statistics.php', ['2020-01-01']);
+    check('a date argument with no prices is refused', $td_rc2 !== 0, 'rc ' . $td_rc2);
+    check('it says why rather than failing silently',
+          stripos($td_refused, 'refusing to run') !== false, $td_refused);
+    check('nothing is calculated for the refused date',
+          (int)scalar("select count(*) from statistics where date='2020-01-01'") === 0
+          && (int)scalar("select count(*) from jobs where job_name='get_statistics_asof'") === 0);
+    [, $td_rc3] = run_script('get_statistics.php', ['not-a-date']);
+    check('a date argument that is not a date is refused', $td_rc3 !== 0, 'rc ' . $td_rc3);
+
+    //Put the marker back for everything after this.
+    run_script('get_statistics.php');
+
+    echo "\n--- the dashboard reports the as of date and the run time separately ---\n";
+
+    check('the as of date is a date, with no time of day',
+          preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)get_last_update()) === 1,
+          var_export(get_last_update(), true));
+    check('the run time is a timestamp',
+          preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string)get_last_run()) === 1,
+          var_export(get_last_run(), true));
+    check('the as of date is the date the statistics carry',
+          (string)get_last_update() === (string)scalar("select max(date) from statistics
+                                                         where indicator='momentum_score'"));
+    /* Comments stripped first. The template explains what the old label got
+       wrong, so it contains the old label - and searching the raw file finds
+       the explanation and reports that nothing changed. This is the fifth time
+       that trap has bitten in this codebase; it is always the comment. */
+    $mn_dash = php_strip_whitespace(dirname(__DIR__) . '/templates/quote_form.php');
+    check('the dashboard names the two facts rather than running them together',
+          strpos($mn_dash, 'Prices as of') !== false
+          && strpos($mn_dash, 'updated') !== false
+          && strpos($mn_dash, 'Statistics Refreshed') === false,
+          strpos($mn_dash, 'Statistics Refreshed') !== false
+              ? 'the old label is still there' : 'the new wording is missing');
+    check('index.php supplies both to the template',
+          preg_match('/"last_run"\s*=>/', (string)file_get_contents(dirname(__DIR__) . '/public/index.php')) === 1);
+
+    echo "\n--- the outlook knows which index the share is in ---\n";
+
+    /* The owner's policy notes have a universe rule about the FTSE 350. With
+       nothing in the inputs to check a share against, the model reported that
+       FTSE 350 membership was missing from the data on every single share. */
+    db()->exec("update stock_symbols set market='FTSE 100' where symbol='AAA'");
+    db()->exec("update stock_symbols set market='FTSE 250' where symbol='BBB'");
+    $mn_in_100 = outlook_share_inputs('AAA', $mn_asof);
+    $mn_in_250 = outlook_share_inputs('BBB', $mn_asof);
+    check('the outlook inputs carry the index the share is in',
+          ($mn_in_100['index'] ?? null) === 'FTSE 100'
+          && ($mn_in_250['index'] ?? null) === 'FTSE 250',
+          json_encode([$mn_in_100['index'] ?? null, $mn_in_250['index'] ?? null]));
+    check('it comes from stock_symbols.market rather than being guessed',
+          preg_match('/"index"\s*=>\s*\$info\[.market.\]/',
+                     (string)file_get_contents($INCLUDES . '/ai_outlook.php')) === 1);
+    db()->exec("update stock_symbols set market='Main Market' where symbol in ('AAA','BBB')");
+
+    //Leave the universe as it was found.
+    foreach ($mn_symbols as $mn_i => $mn_sym) {
+        db()->prepare("update stock_symbols set sector=?, industry=? where symbol=?")
+            ->execute(['Sector ' . ($mn_i % 3), 'Industry ' . ($mn_i % 4), $mn_sym]);
+    }
+    db()->exec("delete from screen_indicators where name in ('pe','roe_ttm')");
+    db()->exec("truncate price_valuation");
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($mn_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $mn_saved_exchange; }
 
     echo "\n--- the price log names the provider that actually ran ---\n";
 
@@ -2134,7 +2440,7 @@
           stripos($prompt, 'is_fund true') !== false
           && stripos($prompt, 'no value or quality score') !== false);
 
-    $outlook_asof = date('Y-m-d', strtotime('-1 day'));
+    $outlook_asof = asof_date();
     db()->exec("update stock_symbols set sector='Investment Trusts' where symbol='LLL'");
     $fund_inputs = outlook_share_inputs('LLL', $outlook_asof);
     db()->exec("update stock_symbols set sector='Sector 2' where symbol='LLL'");
@@ -2259,8 +2565,88 @@
           && strpos($deploy_src, 'php8.3-fpm') !== false);
     check('it prints the commit it landed on',
           strpos($deploy_src, 'git log -1 --oneline') !== false);
-    check('it refuses to discard uncommitted work on the server',
-          strpos($deploy_src, 'git status --porcelain') !== false);
+    /* Refuses on a modified tracked file, runs past an untracked one.
+       "git status --porcelain" reported both, so public/webfonts/ - fetched by
+       tools/fetch_assets.sh, which is deliberately not in the repository -
+       made the tree look dirty and the deploy would not run at all. A file git
+       is not tracking cannot be lost by a pull.
+
+       Run for real in a throwaway repository rather than matched in the
+       source. It gets as far as "git fetch origin", which fails there because
+       there is no remote, and that is past the point being tested. */
+    check('it checks only tracked files for local changes',
+          preg_match('/git diff --quiet/', $deploy_src) === 1
+          && preg_match('/git diff --cached --quiet/', $deploy_src) === 1,
+          'the dirty check is not the tracked-files one');
+    check('it no longer treats an untracked file as a dirty tree',
+          strpos($deploy_src, 'git status --porcelain') === false);
+
+    $deploy_dir = sys_get_temp_dir() . '/sm_deploy_' . getmypid();
+    exec('rm -rf ' . escapeshellarg($deploy_dir));
+    mkdir($deploy_dir . '/deploy', 0700, true);
+    copy($deploy, $deploy_dir . '/deploy/deploy.sh');
+    chmod($deploy_dir . '/deploy/deploy.sh', 0700);
+    file_put_contents($deploy_dir . '/tracked.txt', "one\n");
+    $git = 'git -C ' . escapeshellarg($deploy_dir)
+         . ' -c user.email=t@example.com -c user.name=test';
+    exec($git . ' init -q 2>&1');
+    exec($git . ' add -A 2>&1');
+    exec($git . ' commit -qm first 2>&1');
+
+    $run_deploy = function () use ($deploy_dir) {
+        exec('SM_APP_DIR=' . escapeshellarg($deploy_dir)
+             . ' SM_PHP_SERVICE=sm-not-a-real-service'
+             . ' bash ' . escapeshellarg($deploy_dir . '/deploy/deploy.sh')
+             . ' some-branch 2>&1', $out, $rc);
+        return [implode("\n", $out), $rc];
+    };
+
+    //A clean tree: it should get as far as fetching.
+    [$deploy_clean, ] = $run_deploy();
+    check('a clean checkout gets past the local-changes check',
+          strpos($deploy_clean, 'refusing to pull') === false
+          && strpos($deploy_clean, 'deploy: fetching') !== false,
+          $deploy_clean);
+
+    //An untracked file is not a reason to stop.
+    mkdir($deploy_dir . '/public/webfonts', 0700, true);
+    file_put_contents($deploy_dir . '/public/webfonts/fa-solid-900.woff2', "x");
+    [$deploy_untracked, ] = $run_deploy();
+    check('an untracked file does not stop the deploy',
+          strpos($deploy_untracked, 'refusing to pull') === false
+          && strpos($deploy_untracked, 'deploy: fetching') !== false,
+          $deploy_untracked);
+
+    //A modified tracked file is.
+    file_put_contents($deploy_dir . '/tracked.txt', "edited by hand\n");
+    [$deploy_dirty, $deploy_rc] = $run_deploy();
+    check('a modified tracked file stops the deploy',
+          strpos($deploy_dirty, 'refusing to pull') !== false && $deploy_rc === 1,
+          'rc ' . $deploy_rc . ': ' . $deploy_dirty);
+    check('and it says which file, without listing untracked ones',
+          strpos($deploy_dirty, 'tracked.txt') !== false
+          && strpos($deploy_dirty, 'webfonts') === false,
+          $deploy_dirty);
+
+    //A staged change counts too, even with the working tree matching HEAD.
+    exec($git . ' checkout -- tracked.txt 2>&1');
+    file_put_contents($deploy_dir . '/tracked.txt', "staged\n");
+    exec($git . ' add tracked.txt 2>&1');
+    file_put_contents($deploy_dir . '/tracked.txt', "one\n");
+    [$deploy_staged, ] = $run_deploy();
+    check('a staged change stops the deploy as well',
+          strpos($deploy_staged, 'refusing to pull') !== false, $deploy_staged);
+
+    exec('rm -rf ' . escapeshellarg($deploy_dir));
+
+    /* The assets the deploy no longer trips over are ignored by git as well,
+       so they do not show up as untracked in the first place. */
+    $deploy_ignore = (string) @file_get_contents(dirname(__DIR__) . '/.gitignore');
+    foreach (['public/webfonts/', 'public/jpgraph-4.4.4/', 'public/jpgraph-4.2.0'] as $deploy_path) {
+        check("$deploy_path is gitignored",
+              in_array($deploy_path, array_map('trim', explode("\n", $deploy_ignore)), true),
+              $deploy_path . ' is not listed');
+    }
     check('it stops on the first error rather than carrying on',
           preg_match('/set -euo pipefail/', $deploy_src) === 1);
     /* A deploy script that quietly ran migrations would one day run them

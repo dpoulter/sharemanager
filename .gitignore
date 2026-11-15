@@ -4,7 +4,6 @@ chapter13
 css
 fonts
 img
-jpgraph-4.2.0
 js
 sql/Dump20230711.sql
 python/__pycache__/functions.cpython-38.pyc
@@ -17,3 +16,12 @@ tests/__pycache__/
 
 # Sandbox database settings, holds a password
 tools/sandbox.env
+
+# Third-party assets fetched into the document root rather than committed:
+# tools/fetch_assets.sh writes public/webfonts/, and jpgraph is downloaded and
+# unpacked by hand as public/jpgraph-4.4.4/ with public/jpgraph-4.2.0 as a
+# symlink to it, because the pages require that path. Untracked files used to
+# make deploy/deploy.sh refuse to pull.
+public/webfonts/
+public/jpgraph-4.4.4/
+public/jpgraph-4.2.0

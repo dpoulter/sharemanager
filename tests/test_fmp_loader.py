@@ -122,7 +122,13 @@ def load_loader(query_result):
     sys.modules["functions"] = functions
 
     pipeline = types.ModuleType("pipeline")
-    pipeline.pipeline_asofdate = lambda: "2026-11-13"
+    pipeline.pipeline_asofdate = lambda *a, **k: "2026-11-13"
+    # The loader resolves its date through this now: a date on the command
+    # line has to be one prices were loaded for, and 2020-01-01 stands for one
+    # that was not.
+    pipeline.pipeline_resolve_asofdate = (
+        lambda requested=None, *a, **k:
+        "2026-11-13" if not requested else (None if requested == "2020-01-01" else requested))
     sys.modules["pipeline"] = pipeline
 
     fmp = types.ModuleType("fmp")
@@ -162,11 +168,13 @@ check("the loader handles query() returning None",
       "if rows is None" in src)
 
 print("\n--- argument parsing ---")
-check("no arguments means yesterday and no limit",
+check("no arguments means the last trading day and no limit",
       loader.parse_args([]) == ("2026-11-13", None))
 check("a date is taken positionally",
       loader.parse_args(["2026-01-31"]) == ("2026-01-31", None))
 check("--limit is honoured", loader.parse_args(["--limit", "20"]) == ("2026-11-13", 20))
+check("a date with no prices resolves to nothing, which main() refuses on",
+      loader.parse_args(["2020-01-01"]) == (None, None))
 check("a date and a limit together",
       loader.parse_args(["2026-01-31", "--limit", "5"]) == ("2026-01-31", 5))
 

@@ -418,7 +418,7 @@
 							  						<table class="table table-striped table-bordered table-sm">
 											    
 														<thead>
-														<tr><th width="20%"></th><th width="20%">Share</th><th width="20%">Sector</th><th width="20%">Market</th ><th width="20%">Rank</th></tr>
+														<tr><th width="20%"></th><th width="20%">Share</th><th width="20%">Sector median</th><th width="20%">Market median</th ><th width="20%">Rank</th></tr>
 														</thead>
 														<tbody>
 														<?php foreach ($category_indicator["indicators"] as $indicator): ?>
@@ -580,7 +580,7 @@
 						<table class="table borderless">
 			    
 						<thead>
-						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market</th><th width="25%">Rank</th></tr>
+						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market median</th><th width="25%">Rank</th></tr>
 						</thead>
 						<tbody>
 							<?php foreach($momentumranks as $momentumrank): ?>
@@ -630,7 +630,7 @@
 						<table class="table borderless">
 			    
 						<thead>
-						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market</th><th width="25%">Rank</th></tr>
+						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market median</th><th width="25%">Rank</th></tr>
 						</thead>
 						<tbody>
 							<?php foreach($qualityranks as $qualityrank): ?>
@@ -683,7 +683,7 @@
 						<table class="table borderless">
 			    
 						<thead>
-						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market</th><th width="25%">Rank</th></tr>
+						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market median</th><th width="25%">Rank</th></tr>
 						</thead>
 						<tbody>
 							<?php foreach($valueranks as $valuerank): ?>
@@ -733,7 +733,7 @@
 					<div class="modal-body">
 						<table class="table borderless">
 			    
-						<th>Ratio</th><th>Share</th><th>Sector median (peers)</th><th>Implied price at sector median</th>
+						<th>Ratio</th><th>Share</th><th>Sector peer median (excl. this share)</th><th>Implied price at sector median</th>
 						<tbody>
 							<?php foreach($relative_sector_valuations as $sector_valuation): ?>
 							<tr>
@@ -774,7 +774,7 @@
 					<div class="modal-body">
 						<table class="table borderless">
 			    
-						<th>Ratio</th><th>Share</th><th>Industry median (peers)</th><th>Implied price at industry median</th>
+						<th>Ratio</th><th>Share</th><th>Industry peer median (excl. this share)</th><th>Implied price at industry median</th>
 						<tbody>
 							<?php foreach($relative_industry_valuations as $valuation): ?>
 							<tr>

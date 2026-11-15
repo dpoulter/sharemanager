@@ -221,10 +221,11 @@ How to answer:
 	 */
 	function outlook_share_inputs($symbol, $as_of) {
 
-		$info = query("select name, sector, industry, industry_group from stock_symbols
+		$info = query("select name, sector, industry, industry_group, market from stock_symbols
 		                where symbol=? and exchange=?", $symbol, session_exchange());
 		$info = count($info) ? $info[0] : ["name" => null, "sector" => null,
-		                                   "industry" => null, "industry_group" => null];
+		                                   "industry" => null, "industry_group" => null,
+		                                   "market" => null];
 
 		$close = outlook_stat($symbol, 'close_price', $as_of);
 		$ma50  = outlook_stat($symbol, 'ma50',  $as_of);
@@ -276,6 +277,12 @@ How to answer:
 			"name"       => $info['name'],
 			"sector"     => $info['industry_group'],
 			"industry"   => $info['industry'],
+			/* stock_symbols.market: "FTSE 100" or "FTSE 250". The owner's
+			   policy notes have a universe rule about the FTSE 350, and
+			   without this the model had nothing to check a share against
+			   and reported that FTSE 350 membership was missing from the
+			   data on every single share. */
+			"index"      => $info['market'],
 			"is_fund"    => $is_fund,
 			"price" => [
 				"close"           => $close["value"],

@@ -80,8 +80,11 @@
 		$value_topten = get_value_topten(); 
 		$quality_topten = get_quality_topten(); 
 		$overall_topten = get_overall_topten(); 
+		//Two separate facts: the trading day the statistics describe, and when
+		//the job that produced them ran.
 		$last_update = get_last_update();
-        render("quote_form.php", ["title" => "Stock Quote","momentum_topten"=> $momentum_topten,"value_topten"=> $value_topten,"quality_topten"=> $quality_topten,"overall_topten"=> $overall_topten,"last_update"=> $last_update]);
+		$last_run    = get_last_run();
+        render("quote_form.php", ["title" => "Stock Quote","momentum_topten"=> $momentum_topten,"value_topten"=> $value_topten,"quality_topten"=> $quality_topten,"overall_topten"=> $overall_topten,"last_update"=> $last_update,"last_run"=> $last_run]);
     }
 
 ?>

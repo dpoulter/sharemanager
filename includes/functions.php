@@ -861,9 +861,27 @@
 	}
     
     //Get Last Update
+    /**
+     * The date the statistics are current as of: the last trading day the
+     * nightly job calculated for.
+     *
+     * A date, with no time of day. The marker used to carry the time the job
+     * started, so the dashboard printed the previous day's date next to this
+     * morning's clock and called the pair "Statistics Refreshed". They are
+     * two different facts and the page now shows them as two.
+     */
     function get_last_update(){
-        $data = query("SELECT job_date FROM jobs where job_name='get_statistics_asof' and job_date=(select max(job_date) from jobs where job_name='get_statistics_asof')");
-        return $data[0]['job_date'];
+        $data = query("SELECT date(max(job_date)) asof FROM jobs where job_name='get_statistics_asof'");
+        return count($data) ? $data[0]['asof'] : null;
+    }
+
+    /**
+     * When the nightly job last ran. log_job() writes NOW under this name,
+     * which is the other half of what the dashboard reports.
+     */
+    function get_last_run(){
+        $data = query("SELECT max(job_date) ran FROM jobs where job_name='get_statistics'");
+        return count($data) ? $data[0]['ran'] : null;
     }
 
     //Log job
