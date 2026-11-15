@@ -2560,17 +2560,30 @@
           strpos($sy_stats_src, "'enterprise_value_to_ebitda','price_free_cash_flow_per_share'") === false
           && strpos($sy_stats_src, "si.category=12 and si.calc_rank='Y'") !== false);
 
-    /* A share missing a component must not be scored down for the gap. YGB
-       has no price/book here and YUS does; with the sum they would have been
-       on different scales. */
-    db()->exec("delete from statistics where indicator in ('pe','price_sales_ratio','price_book_ratio','value_score')");
+    /* A share missing a component must not be scored down for the gap, and
+       the way to show that is a case where summing and averaging disagree
+       about the order.
+
+       Four shares, with the percentiles the ranking will give them:
+
+         YUS  pe 1                     -> 75
+         YGB  pe 2, price/sales 1      -> 50, 50
+         YGE  pe 3, price/sales 2      -> 25,  0
+         YNO  pe 4                     ->  0
+
+       Averaged, YUS is the best of them at 75 and YGB second at 50.
+       Summed, YGB is first on 100 and YUS second on 75 - better not because
+       it is cheaper but because it has one more figure. */
+    db()->exec("delete from statistics where indicator in
+                  ('pe','price_sales_ratio','price_book_ratio','value_score',
+                   'div_yield','buyback_yield','shareholder_yield')");
     $sy_ratio = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange) values (?,?,?,?,'XLON')");
-    foreach (['YUS','YGB','YGE','YNO'] as $sy_s) {
-        $sy_ratio->execute([$sy_s, $sy_asof, 'pe', 10.0]);
-        $sy_ratio->execute([$sy_s, $sy_asof, 'price_sales_ratio', 2.0]);
+    foreach (['YUS' => 1.0, 'YGB' => 2.0, 'YGE' => 3.0, 'YNO' => 4.0] as $sy_s => $sy_pe) {
+        $sy_ratio->execute([$sy_s, $sy_asof, 'pe', $sy_pe]);
     }
-    //Only YUS has the third one.
-    $sy_ratio->execute(['YUS', $sy_asof, 'price_book_ratio', 1.5]);
+    foreach (['YGB' => 1.0, 'YGE' => 2.0] as $sy_s => $sy_ps) {
+        $sy_ratio->execute([$sy_s, $sy_asof, 'price_sales_ratio', $sy_ps]);
+    }
     run_script('get_statistics.php');
 
     $sy_score = function ($symbol) use ($sy_asof) {
@@ -2578,17 +2591,28 @@
                     [$symbol, $sy_asof]);
         return ($v === false || $v === null) ? null : (float)$v;
     };
-    check('a share missing one component is still scored',
-          $sy_score('YGB') !== null, var_export($sy_score('YGB'), true));
-    check('the score is an average, so a missing component is not a penalty',
+    $sy_pct = function ($symbol, $indicator) use ($sy_asof) {
+        $v = scalar("select percentile from statistics where symbol=? and indicator=? and date=?",
+                    [$symbol, $indicator, $sy_asof]);
+        return ($v === false || $v === null) ? null : (float)$v;
+    };
+
+    check('the components ranked as the arithmetic above assumes',
+          $sy_pct('YUS','pe') === 75.0 && $sy_pct('YGB','pe') === 50.0
+          && $sy_pct('YGB','price_sales_ratio') === 50.0
+          && $sy_pct('YGE','price_sales_ratio') === 0.0,
+          json_encode([$sy_pct('YUS','pe'), $sy_pct('YGB','pe'),
+                       $sy_pct('YGB','price_sales_ratio'), $sy_pct('YGE','price_sales_ratio')]));
+    check('a share with only one component is still scored',
+          $sy_score('YUS') !== null && $sy_score('YNO') !== null,
+          json_encode([$sy_score('YUS'), $sy_score('YNO')]));
+    check('the cheaper share with fewer figures beats the dearer one with more',
+          $sy_score('YUS') > $sy_score('YGB'),
+          'YUS ' . var_export($sy_score('YUS'), true)
+          . ', YGB ' . var_export($sy_score('YGB'), true)
+          . ' - summing rather than averaging puts YGB first on count alone');
+    check('the score is an average in the query, not only in its effect',
           preg_match('/sum\(if\(percentile is null,50,percentile\)\)\/count\(\*\)/', $sy_stats_src) === 1);
-    /* YGB and YNO have the same two ratios and the same percentiles on them;
-       YNO has no shareholder yield at all. If the score summed rather than
-       averaged, the one with fewer components would score lower for no
-       reason. Here they differ only by what each actually has. */
-    check('two shares with the same ratios are scored on the same scale',
-          $sy_score('YGB') !== null && $sy_score('YNO') !== null,
-          json_encode([$sy_score('YGB'), $sy_score('YNO')]));
 
     echo "\n--- the outlook is sent the yields ---\n";
 
