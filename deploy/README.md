@@ -165,7 +165,19 @@ sudo mariadb sharemanager < sql/report_currency.sql
 sudo mariadb sharemanager < sql/shareholder_yield.sql
 sudo mariadb sharemanager < sql/fmp_scores.sql
 sudo mariadb sharemanager < sql/news.sql
+sudo mariadb sharemanager < sql/trending_value.sql
 ```
+
+`sql/trending_value.sql` changes the Value score on the home page and the
+quote page, because it adds the two value measures the score was always meant
+to have. Run the pipeline by hand afterwards so the new score exists for the
+latest trading day, and read the last table the migration prints: a count of
+zero for `price_cash_flow` or `ev_ebitda` means the FMP field name is wrong.
+`Ratios.priceToOperatingCashFlowRatioTTM` is the one mapping in this
+application that has never been seen in a live response - there is no FMP key
+in the repository session, so `python/fmp_probe.py` could not confirm it - and
+`ev_ebitda` is set to `fx_adjust='NONE'` pending the same check on a
+non-sterling reporter. See the comments at the top of the file.
 
 `tools/fetch_assets.sh` now also downloads TradingView Lightweight Charts
 (Apache-2.0) into `public/js/` and copies `templates/chart.js` beside it. Run

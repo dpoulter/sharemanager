@@ -2697,8 +2697,15 @@
 
     $sy_components = rows("select name from screen_indicators
                             where enabled='Y' and category=12 and calc_rank='Y' order by name");
+    /* Six since sql/trending_value.sql: O'Shaughnessy's six, which is what
+       the score was always meant to hold. The list is asserted exactly rather
+       than counted, because the whole claim is that the composite is whatever
+       category 12 holds - so when that set changes, this line is where it has
+       to be said out loud. */
     check('the components come from the database, not from the query',
-          array_column($sy_components, 'name') === ['pe','price_book_ratio','price_sales_ratio','shareholder_yield'],
+          array_column($sy_components, 'name')
+            === ['ev_ebitda','pe','price_book_ratio','price_cash_flow',
+                 'price_sales_ratio','shareholder_yield'],
           json_encode(array_column($sy_components, 'name')));
     $sy_stats_src = php_strip_whitespace($INCLUDES . '/get_statistics.php');
     check('the hard-coded list is gone from the value ranking',
@@ -4163,6 +4170,488 @@
           (int) scalar("select count(*) from stock_symbols where symbol like '^%'") === 0);
     $prices_src = (string) file_get_contents($INCLUDES . '/get_share_prices.php');
     check('the nightly price job loads the index', strpos($prices_src, 'get_index_prices') !== false);
+
+
+    echo "\n--- the top_n criterion ---\n";
+
+    /* "The best N of whatever is left" is the one thing build_screen() could
+       not say. Every other operator is a filter and can be intersected in any
+       order; this one depends on what survived, so it runs last, and two of
+       them run in sequence - which is what makes O'Shaughnessy's "cheapest
+       tenth, then the strongest momentum of those" a screen rather than two
+       screens and a spreadsheet. */
+
+    $tv_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $tv_asof = asof_date();
+
+    /* A scratch screen built from a list of [indicator, operator, operand],
+       in the order the criteria are meant to apply. The criteria rows are
+       inserted one at a time so their ids ascend, which is what decides the
+       order build_screen() applies them in. */
+    $tv_screen = function (array $criteria) {
+        db()->exec("delete from screen_build where screen_id in
+                      (select id from screen where name='TopN scratch')");
+        db()->exec("delete from screen where name='TopN scratch'");
+        db()->exec("delete from screen_criteria where description like 'topn-scratch%'");
+        db()->exec("insert into screen (name,description,displayed)
+                    values ('TopN scratch','scratch screen for the top_n tests','N')");
+        $sid = (int) scalar("select id from screen where name='TopN scratch'");
+        $n = 0;
+        foreach ($criteria as $c) {
+            $iid = (int) scalar("select indicator_id from screen_indicators where name=?", [$c[0]]);
+            db()->prepare("insert into screen_criteria
+                             (indicator_id,description,operator,first_operand)
+                           values (?,?,?,?)")
+                ->execute([$iid, 'topn-scratch ' . $n, $c[1], $c[2]]);
+            $cid = (int) db()->lastInsertId();
+            db()->prepare("insert into screen_build (screen_id,criteria_id) values (?,?)")
+                ->execute([$sid, $cid]);
+            $n++;
+        }
+        return $sid;
+    };
+
+    /* The symbols the screen returns, in the order it returned them. The
+       order is the point: a set comparison would pass on a screen that
+       ranked its answer backwards. */
+    $tv_run = function ($sid) use ($tv_asof) {
+        $out = [];
+        foreach (build_screen($sid, $tv_asof) as $row) {
+            $out[] = is_array($row) ? ($row['symbol'] ?? reset($row)) : $row;
+        }
+        return $out;
+    };
+
+    /* Writes exactly these statistics and nothing else, so each case is the
+       whole universe the screen can see. */
+    $tv_stats = function (array $by_indicator) use ($tv_asof) {
+        reset_calculated();
+        $ins = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                              values (?,?,?,?,'XLON')");
+        foreach ($by_indicator as $indicator => $values) {
+            foreach ($values as $symbol => $value) {
+                $ins->execute([$symbol, $tv_asof, $indicator, $value]);
+            }
+        }
+    };
+
+    /* value_score ranks 'value DESC' - it is a percentile where 100 is the
+       cheapest - so the best N is the N highest. */
+    $tv_stats(['value_score' => ['AAA' => 90, 'BBB' => 80, 'CCC' => 70,
+                                 'DDD' => 60, 'EEE' => 50]]);
+
+    $tv_got = $tv_run($tv_screen([['value_score', 'top_n', '3']]));
+    check('top_n keeps N shares and no more', count($tv_got) === 3, json_encode($tv_got));
+    check('and they are the best N, in that order',
+          $tv_got === ['AAA', 'BBB', 'CCC'], json_encode($tv_got));
+
+    check('asking for more than there are returns everything rather than failing',
+          $tv_run($tv_screen([['value_score', 'top_n', '50']])) === ['AAA','BBB','CCC','DDD','EEE']);
+    check('asking for none returns none',
+          $tv_run($tv_screen([['value_score', 'top_n', '0']])) === []);
+
+    /* 6mnth also ranks DESC but means something different - a percentage
+       change, not a percentile - so a screen that silently used the wrong
+       column would still pass the test above. */
+    $tv_stats(['6mnth' => ['AAA' => -4.0, 'BBB' => 11.0, 'CCC' => 2.5,
+                           'DDD' => 30.0, 'EEE' => 9.0]]);
+    check('top_n reads the indicator it was given, not a percentile column',
+          $tv_run($tv_screen([['6mnth', 'top_n', '2']])) === ['DDD', 'BBB'],
+          json_encode($tv_run($tv_screen([['6mnth', 'top_n', '2']]))));
+
+    /* Ties. Three shares, two of them equal on the measure, and room for two:
+       which two is a real question and the answer has to be the same every
+       run, or the screen tells you something different on Tuesday from what
+       it told you on Monday with the same data. */
+    $tv_stats(['value_score' => ['BBB' => 90, 'AAA' => 90, 'CCC' => 80]]);
+    $tv_tied = $tv_run($tv_screen([['value_score', 'top_n', '2']]));
+    check('a tie is broken by symbol, so the same data gives the same list',
+          $tv_tied === ['AAA', 'BBB'], json_encode($tv_tied));
+    check('and the same screen run twice gives the same list',
+          $tv_run($tv_screen([['value_score', 'top_n', '2']])) === $tv_tied);
+
+    /* A share with no value for the measure. It has a statistic for the date,
+       so it is in the universe build_screen() starts from - it just has
+       nothing to be ranked on. The cheapest 26 cannot include a share whose
+       cheapness is unknown. */
+    $tv_stats(['value_score' => ['AAA' => 90, 'BBB' => 80],
+               '6mnth'       => ['AAA' => 1.0, 'BBB' => 1.0, 'CCC' => 99.0]]);
+    $tv_missing = $tv_run($tv_screen([['value_score', 'top_n', '3']]));
+    check('a share with no value for the indicator drops out rather than sorting to an end',
+          $tv_missing === ['AAA', 'BBB'], json_encode($tv_missing));
+    check('even when it would have been first on another measure',
+          !in_array('CCC', $tv_missing, true));
+
+    echo "\n--- two top_n criteria, applied in sequence ---\n";
+
+    /* The whole point of the operator. AAA..EEE are the five cheapest; the
+       strongest momentum of the lot belongs to FFF, which is not cheap. A
+       screen that applied the momentum cut to the universe rather than to
+       the survivors of the value cut would return FFF. */
+    $tv_stats(['value_score' => ['AAA' => 95, 'BBB' => 90, 'CCC' => 85, 'DDD' => 80,
+                                 'EEE' => 75, 'FFF' => 20, 'GGG' => 10,
+                                 'HHH' => 30, 'III' => 40],
+               '6mnth'       => ['AAA' => 1.0,  'BBB' => 2.0,  'CCC' => 3.0,  'DDD' => 4.0,
+                                 'EEE' => 5.0,  'FFF' => 99.0, 'GGG' => 98.0,
+                                 'HHH' => 97.0, 'III' => 96.0]]);
+
+    $tv_seq = $tv_run($tv_screen([['value_score', 'top_n', '4'],
+                                  ['6mnth',       'top_n', '2']]));
+    check('the second top_n ranks the survivors of the first, not the universe',
+          $tv_seq === ['DDD', 'CCC'], json_encode($tv_seq));
+    check('the share with the best momentum overall is not in it, because it is not cheap',
+          !in_array('FFF', $tv_seq, true));
+    check('the result is in the order of the last top_n, not the first',
+          $tv_seq[0] === 'DDD', json_encode($tv_seq));
+
+    /* The same two criteria the other way round is a different screen. The
+       four strongest on momentum are the four cheapest shares' opposites
+       here, so "cheapest four, then best momentum" and "best momentum four,
+       then cheapest" have no share in common - which is the clearest way to
+       show the order is being honoured rather than the criteria being
+       intersected. */
+    $tv_rev = $tv_run($tv_screen([['6mnth',       'top_n', '4'],
+                                  ['value_score', 'top_n', '2']]));
+    check('swapping the two criteria gives a different answer',
+          $tv_rev !== $tv_seq, json_encode($tv_rev));
+    check('and that answer is the cheapest two of the strongest four',
+          $tv_rev === ['III', 'HHH'], json_encode($tv_rev));
+
+    echo "\n--- a comparison criterion and a top_n on the same screen ---\n";
+
+    /* build_screen() intersects the comparison criteria first and applies the
+       top_n to what is left. So the momentum filter decides who is eligible
+       to be one of the cheapest N, rather than thinning the N afterwards -
+       the screen always has its full N to choose from. */
+    $tv_stats(['value_score' => ['AAA' => 95, 'BBB' => 90, 'CCC' => 85, 'DDD' => 80, 'EEE' => 75],
+               '6mnth'       => ['AAA' => -5.0, 'BBB' => -2.0, 'CCC' => 3.0,
+                                 'DDD' => 4.0,  'EEE' => 5.0]]);
+
+    $tv_mixed = $tv_run($tv_screen([['value_score', 'top_n', '2'],
+                                    ['6mnth', '>', '0']]));
+    check('the filter applies before the top_n, whatever order the criteria are in',
+          $tv_mixed === ['CCC', 'DDD'], json_encode($tv_mixed));
+    check('the two cheapest overall are both out, because both are still falling',
+          !in_array('AAA', $tv_mixed, true) && !in_array('BBB', $tv_mixed, true));
+    check('and the top_n still returns its full N rather than what was left of it',
+          count($tv_mixed) === 2, count($tv_mixed) . ' shares');
+
+    /* A filter that matches nothing leaves the top_n with nothing to rank,
+       and an empty screen is the right answer rather than the whole universe. */
+    check('a filter that excludes everything gives an empty screen',
+          $tv_run($tv_screen([['value_score', 'top_n', '3'],
+                              ['6mnth', '>', '1000']])) === []);
+
+    echo "\n--- the Trending Value screen ---\n";
+
+    $tv_id = (int) scalar("select id from screen where name='Trending Value'");
+    check('the migration created the screen', $tv_id > 0, "id $tv_id");
+    check('it is shown on the screens page', scalar("select displayed from screen where id=?", [$tv_id]) === 'Y');
+    check('and is shared rather than owned by one account',
+          scalar("select session_id from screen where id=?", [$tv_id]) === null);
+
+    $tv_criteria = rows("select si.name, sc.operator, sc.first_operand
+                           from screen_build sb, screen_criteria sc, screen_indicators si
+                          where sb.criteria_id=sc.id and sc.indicator_id=si.indicator_id
+                            and sb.screen_id=? order by sb.criteria_id", [$tv_id]);
+    check('it has the three criteria, in the order they must apply',
+          count($tv_criteria) === 3
+          && $tv_criteria[0]['name'] === 'value_score' && $tv_criteria[0]['operator'] === 'top_n'
+          && (int)$tv_criteria[0]['first_operand'] === 26
+          && $tv_criteria[1]['name'] === '6mnth' && $tv_criteria[1]['operator'] === '>'
+          && $tv_criteria[2]['name'] === '6mnth' && $tv_criteria[2]['operator'] === 'top_n'
+          && (int)$tv_criteria[2]['first_operand'] === 15,
+          json_encode($tv_criteria));
+
+    /* Run it on a universe small enough to work out by hand. The counts in
+       the real screen are 26 and 15; here the same screen is asked the same
+       question of twelve shares, so what it returns can be checked rather
+       than taken on trust. */
+    $tv_stats(['value_score' => ['AAA' => 99, 'BBB' => 98, 'CCC' => 97, 'DDD' => 96,
+                                 'EEE' => 95, 'FFF' => 94, 'GGG' => 50],
+               '6mnth'       => ['AAA' => -1.0, 'BBB' => 12.0, 'CCC' => 30.0, 'DDD' => 4.0,
+                                 'EEE' => 18.0, 'FFF' => 7.0,  'GGG' => 99.0]]);
+    $tv_live = $tv_run($tv_id);
+    /* Seven shares against a cut of 26, so the value criterion keeps all of
+       them: what this case can show is the momentum filter and the order the
+       page gets, not the value cut. The value cut biting is the scratch
+       screens above, where the N is small enough to be checked by hand. */
+    check('the screen returns the rising shares, best momentum first',
+          $tv_live === ['GGG', 'CCC', 'EEE', 'BBB', 'FFF', 'DDD'], json_encode($tv_live));
+    check('a share that is still falling is left out',
+          !in_array('AAA', $tv_live, true));
+    check('every share it returns is one that is rising',
+          count(array_filter($tv_live,
+                fn($s) => (float) scalar("select value from statistics
+                                           where symbol=? and indicator='6mnth' and date=?",
+                                         [$s, $tv_asof]) <= 0)) === 0);
+
+    /* The screen names value_score, which is written by get_statistics.php
+       and was not a row in screen_indicators before this change: without one,
+       build_screen() cannot join a criterion to an indicator name at all. */
+    check('value_score is an indicator a criterion can name',
+          (int) scalar("select count(*) from screen_indicators where name='value_score'") === 1);
+    check('and so are the other three scores',
+          (int) scalar("select count(*) from screen_indicators
+                         where name in ('momentum_score','quality_score','overall_score')") === 3);
+
+    /* Registering them must not put them into the nightly job. Each of these
+       is a separate way the job finds work, and an enabled score row would be
+       picked up by all three. */
+    $tv_scores = rows("select name, enabled, calc_rank, category, screen_function, provider_field
+                         from screen_indicators
+                        where name in ('value_score','momentum_score','quality_score','overall_score')");
+    check('no score is enabled, so get_stats_indicators() does not try to calculate one',
+          count(array_filter($tv_scores, fn($r) => $r['enabled'] !== 'N')) === 0,
+          json_encode($tv_scores));
+    check('none is ranked, so none gets a percentile of its own',
+          count(array_filter($tv_scores, fn($r) => $r['calc_rank'] !== 'N')) === 0);
+    check('none has a category, so the value score cannot be averaged into itself',
+          count(array_filter($tv_scores, fn($r) => $r['category'] !== null)) === 0);
+    check('none has a provider field or a function, so nothing goes looking for one',
+          count(array_filter($tv_scores,
+                fn($r) => $r['screen_function'] !== null || $r['provider_field'] !== null)) === 0);
+
+    /* The form has to offer the operator, or the screen can be read in the
+       app and not edited. */
+    $tv_form = (string) file_get_contents(dirname(__DIR__) . '/templates/criteria_form.php');
+    check('the criteria form offers the new operator',
+          strpos($tv_form, 'value="top_n"') !== false);
+    check('and its indicator list is not filtered to enabled indicators, which is what lets a criterion name a score',
+          strpos($tv_form, 'SELECT indicator_id, name, description FROM screen_indicators') !== false);
+
+    //Leave the screens as they were found.
+    db()->exec("delete from screen_build where screen_id in
+                  (select id from screen where name='TopN scratch')");
+    db()->exec("delete from screen where name='TopN scratch'");
+    db()->exec("delete from screen_criteria where description like 'topn-scratch%'");
+
+    echo "\n--- the two new value measures ---\n";
+
+    /* price_cash_flow and ev_ebitda complete O'Shaughnessy's six. They need
+       no change to get_statistics.php: the value score is the average of
+       every enabled category 12 indicator with calc_rank='Y', so joining that
+       set is the whole of it. These check the settings that decide how they
+       are ranked, because the ranking is where a valuation ratio goes wrong. */
+
+    $tv_new = [];
+    foreach (rows("select name, category, calc_rank, rank_order, rank_negative,
+                          rank_funds, fx_adjust, provider_field, enabled
+                     from screen_indicators where name in ('price_cash_flow','ev_ebitda')") as $r) {
+        $tv_new[$r['name']] = $r;
+    }
+    check('both are registered', count($tv_new) === 2, json_encode(array_keys($tv_new)));
+    check('both are in the value category and ranked, so both join the value score',
+          count(array_filter($tv_new,
+                fn($r) => (int)$r['category'] === 12 && $r['calc_rank'] === 'Y'
+                          && $r['enabled'] === 'Y')) === 2,
+          json_encode($tv_new));
+    check('both rank cheap first',
+          count(array_filter($tv_new, fn($r) => trim($r['rank_order']) === 'value ASC')) === 2);
+    check('neither ranks investment funds, like the other four value measures',
+          count(array_filter($tv_new, fn($r) => $r['rank_funds'] === 'N')) === 2);
+    /* The same treatment pe gets, which is EXCLUDE. Read from the migration
+       that sets it on the live database rather than from this one: pe is not
+       in the test seed, an earlier section registers it by hand for its own
+       fixture, and by here it is gone again - so a lookup would compare
+       against nothing and pass. */
+    $tv_pe_sql = (string) file_get_contents(dirname(__DIR__) . '/sql/fmp_migration.sql');
+    check('both treat a negative the way pe does, and pe still does',
+          $tv_new['price_cash_flow']['rank_negative'] === 'EXCLUDE'
+          && $tv_new['ev_ebitda']['rank_negative'] === 'EXCLUDE'
+          && preg_match("/set rank_negative='EXCLUDE'\s*\n\s*where name in \([^)]*'pe'/", $tv_pe_sql) === 1,
+          json_encode([$tv_new['price_cash_flow']['rank_negative'],
+                       $tv_new['ev_ebitda']['rank_negative']]));
+    check('a price over a figure from the accounts is converted, like pe',
+          $tv_new['price_cash_flow']['fx_adjust'] === 'MULTIPLY');
+    check('both read a field the provider sends',
+          $tv_new['price_cash_flow']['provider_field'] === 'Ratios.priceToOperatingCashFlowRatioTTM'
+          && $tv_new['ev_ebitda']['provider_field'] === 'KeyMetrics.evToEBITDATTM',
+          json_encode([$tv_new['price_cash_flow']['provider_field'],
+                       $tv_new['ev_ebitda']['provider_field']]));
+
+    echo "\n--- a negative ratio is not a cheap share ---\n";
+
+    /* A company with negative operating cash flow, or negative EBITDA, gets a
+       negative ratio. Sorted ASC it lands ahead of every profitable company
+       and scores as the cheapest share in the index, which is how Hg Capital
+       Trust reached value_score 99 on negative book value. rank_negative
+       EXCLUDE leaves it unranked instead: the percentile stays null and the
+       score query counts it as the neutral 50 - neither cheap nor expensive,
+       because the ratio means nothing for that company. */
+
+    $tv_neg_asof = asof_date();
+    reset_calculated();
+    $tv_ins = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                             values (?,?,?,?,'XLON')");
+    foreach (['price_cash_flow' => ['AAA' => -3.0, 'BBB' => 4.0, 'CCC' => 9.0,
+                                    'DDD' => 14.0, 'EEE' => 19.0],
+              'ev_ebitda'       => ['AAA' => -2.0, 'BBB' => 5.0, 'CCC' => 8.0,
+                                    'DDD' => 11.0, 'EEE' => 16.0]] as $ind => $vals) {
+        foreach ($vals as $sym => $v) { $tv_ins->execute([$sym, $tv_neg_asof, $ind, $v]); }
+    }
+    run_script('get_momentum_statistics.php');
+    [$tv_neg_out, ] = run_script('get_statistics.php');
+    check('the job completes with negative ratios in the data',
+          stripos($tv_neg_out, 'Fatal error') === false, substr($tv_neg_out, -300));
+
+    foreach (['price_cash_flow', 'ev_ebitda'] as $tv_ind) {
+        $pct = [];
+        foreach (rows("select symbol, percentile from statistics where indicator=? and date=?",
+                      [$tv_ind, $tv_neg_asof]) as $r) {
+            $pct[$r['symbol']] = $r['percentile'] === null ? null : (float) $r['percentile'];
+        }
+        check("$tv_ind: the negative ratio is not ranked at all",
+              array_key_exists('AAA', $pct) && $pct['AAA'] === null,
+              'AAA percentile ' . var_export($pct['AAA'] ?? 'missing', true));
+        check("$tv_ind: so it does not come out as the cheapest share",
+              $pct['BBB'] !== null && ($pct['AAA'] === null || $pct['AAA'] < $pct['BBB']),
+              json_encode($pct));
+        check("$tv_ind: the cheapest positive ratio is ranked best",
+              $pct['BBB'] !== null && $pct['BBB'] > ($pct['EEE'] ?? 0), json_encode($pct));
+        check("$tv_ind: the raw value is still stored, so the quote page can show it",
+              (float) scalar("select value from statistics where symbol='AAA' and indicator=? and date=?",
+                             [$tv_ind, $tv_neg_asof]) < 0);
+    }
+
+    /* And the consequence for the score: unranked counts as 50, so the
+       loss-maker sits between the cheap and the expensive rather than on top
+       of the list. */
+    $tv_scores_now = [];
+    foreach (rows("select symbol, value from statistics where indicator='value_score' and date=?",
+                  [$tv_neg_asof]) as $r) {
+        $tv_scores_now[$r['symbol']] = (float) $r['value'];
+    }
+    check('the loss-maker does not have the best value score',
+          isset($tv_scores_now['AAA'], $tv_scores_now['BBB'])
+          && $tv_scores_now['AAA'] < $tv_scores_now['BBB'],
+          json_encode($tv_scores_now));
+    check('and is not scored worst either, because the ratio says nothing about it',
+          isset($tv_scores_now['AAA'], $tv_scores_now['EEE'])
+          && $tv_scores_now['AAA'] > $tv_scores_now['EEE'],
+          json_encode($tv_scores_now));
+
+    echo "\n--- a bank is scored on the measures that apply to it ---\n";
+
+    /* EV/EBITDA means nothing for a bank: "debt less cash" is the trading
+       book, not a capital structure adjustment, and nobody values one on
+       EBITDA. indicator_sector_exclusions leaves it out for the sector, and
+       the point of leaving it out is that the bank is then scored on five
+       measures - not on six with a hole counted as nought, and not on six
+       with a number that means nothing dragging it down. */
+
+    $tv_bank = 'HHH';
+    $tv_bank_sector = (string) scalar("select sector from stock_symbols where symbol=?", [$tv_bank]);
+    db()->prepare("update stock_symbols set sector='Financial Services' where symbol=?")
+        ->execute([$tv_bank]);
+
+    /* indicator_sector_exclusions is created by a migration rather than by
+       tests/schema.sql, so the table and its rows survive between runs of the
+       suite: the schema load drops only the tables it defines. A check that
+       the migration created a row would otherwise pass on a row left behind
+       by yesterday's run, which is how a mutation that stopped the migration
+       writing it at all was caught by nothing here. Clear this indicator's
+       rows and let the migration put them back, so what is under test is what
+       this run produced. */
+    db()->exec("delete from indicator_sector_exclusions where indicator='ev_ebitda'");
+    apply_migration('trending_value.sql');
+    check('the migration is what creates the exclusion, not a row left from an earlier run',
+          (int) scalar("select count(*) from indicator_sector_exclusions
+                         where indicator='ev_ebitda' and sector='Financial Services'") === 1);
+
+    /* The bank is cheap on everything except EV/EBITDA, where it is the
+       most expensive share in the universe. If that measure counted, it
+       would score below CCC; excluded, it stays above. One share's order
+       decides the test, so the fixture has to be read both ways. */
+    /* Only the two measures the rule is about. The live database has all six
+       in category 12; naming more here would make the test depend on which
+       of them an earlier section happened to leave registered. */
+    $tv_bank_data = [
+        'price_cash_flow' => ['AAA' => 20.0, 'BBB' => 18.0, 'CCC' => 9.0, 'DDD' => 16.0, $tv_bank => 2.0],
+        'ev_ebitda'       => ['AAA' => 4.0,  'BBB' => 5.0,  'CCC' => 3.0, 'DDD' => 6.0,  $tv_bank => 99.0],
+    ];
+
+    /* How many category 12 measures actually reach the average for a share -
+       the denominator the value score divides by. This is the "five, not six
+       with a zero" of the brief, counted directly rather than inferred from
+       where the share came out. */
+    $tv_counted = function ($symbol) use ($tv_neg_asof) {
+        return (int) scalar("select count(*) from statistics s, screen_indicators si
+                              where s.indicator=si.name and s.date=? and s.exchange='XLON'
+                                and si.enabled='Y' and si.category=12 and si.calc_rank='Y'
+                                and s.symbol=?
+                                and not exists (select 1 from stock_symbols x,
+                                                       indicator_sector_exclusions e
+                                                 where x.symbol=s.symbol and e.sector=x.sector
+                                                   and e.indicator=s.indicator)",
+                            [$tv_neg_asof, $symbol]);
+    };
+    $tv_bank_run = function () use ($tv_bank_data, $tv_neg_asof) {
+        reset_calculated();
+        $ins = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                              values (?,?,?,?,'XLON')");
+        foreach ($tv_bank_data as $ind => $vals) {
+            foreach ($vals as $sym => $v) { $ins->execute([$sym, $tv_neg_asof, $ind, $v]); }
+        }
+        run_script('get_momentum_statistics.php');
+        run_script('get_statistics.php');
+        $out = [];
+        foreach (rows("select symbol, value from statistics where indicator='value_score' and date=?",
+                      [$tv_neg_asof]) as $r) { $out[$r['symbol']] = (float) $r['value']; }
+        return $out;
+    };
+
+    $tv_with_exclusion = $tv_bank_run();
+
+    check('the bank still has an EV/EBITDA value stored',
+          scalar("select value from statistics where symbol=? and indicator='ev_ebitda' and date=?",
+                 [$tv_bank, $tv_neg_asof]) !== false);
+    check('but it is not ranked on it',
+          scalar("select percentile from statistics where symbol=? and indicator='ev_ebitda' and date=?",
+                 [$tv_bank, $tv_neg_asof]) === null);
+    check('a company in another sector is ranked on it',
+          scalar("select percentile from statistics where symbol='CCC' and indicator='ev_ebitda' and date=?",
+                 [$tv_neg_asof]) !== null);
+
+    /* Scored on its other two measures, where it is the cheapest share, the
+       bank must come out ahead of CCC. */
+    check('the bank is scored on one measure fewer than a company in another sector',
+          $tv_counted($tv_bank) === $tv_counted('CCC') - 1,
+          'bank ' . $tv_counted($tv_bank) . ' vs CCC ' . $tv_counted('CCC'));
+    check('and the measure it loses is the one that does not apply, not an arbitrary one',
+          (int) scalar("select count(*) from statistics where symbol=? and indicator='price_cash_flow'
+                         and date=?", [$tv_bank, $tv_neg_asof]) === 1);
+
+    check('the bank is scored on the measures that apply, so being cheap on them wins',
+          isset($tv_with_exclusion[$tv_bank], $tv_with_exclusion['CCC'])
+          && $tv_with_exclusion[$tv_bank] > $tv_with_exclusion['CCC'],
+          json_encode($tv_with_exclusion));
+
+    /* Now take the exclusion away and run the same data again. If the
+       exclusion were doing nothing, both runs would agree - and the test
+       above would be passing on the arithmetic rather than on the rule. */
+    db()->exec("delete from indicator_sector_exclusions
+                 where indicator='ev_ebitda' and sector='Financial Services'");
+    $tv_without_exclusion = $tv_bank_run();
+    check('without the exclusion the same bank is dragged below CCC by a measure that means nothing for it',
+          isset($tv_without_exclusion[$tv_bank], $tv_without_exclusion['CCC'])
+          && $tv_without_exclusion[$tv_bank] < $tv_without_exclusion['CCC'],
+          json_encode($tv_without_exclusion));
+
+    apply_migration('trending_value.sql');
+    check('the migration puts the exclusion back',
+          (int) scalar("select count(*) from indicator_sector_exclusions
+                         where indicator='ev_ebitda' and sector='Financial Services'") === 1);
+
+    //Leave the universe and the statistics as they were found.
+    db()->prepare("update stock_symbols set sector=? where symbol=?")
+        ->execute([$tv_bank_sector, $tv_bank]);
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($tv_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $tv_saved_exchange; }
 
     echo "\n--- pages render without a fatal ---\n";
 

@@ -41,6 +41,7 @@
 			<option value=">=" <?php if (isset($criteria["operator"])&&$criteria["operator"]=='>='): ?> selected <?php endif?>>>=</option>
 			<option value="<=" <?php if (isset($criteria["operator"])&&$criteria["operator"]=='<='): ?> selected <?php endif?>><=</option>
 			<option value="top_percent" <?php if (isset($criteria["operator"])&&$criteria["operator"]=='top_percent'): ?> selected <?php endif?>>Top Percentile</option>
+			<option value="top_n" <?php if (isset($criteria["operator"])&&$criteria["operator"]=='top_n'): ?> selected <?php endif?>>Best N (Constant)</option>
 		</select>	
                 <td><input name="first_operand" <?php if(isset($criteria["first_operand"])): ?> value="<?= $criteria["first_operand"] ?>" <?php endif?> type="text"/></td>
 				<td>
