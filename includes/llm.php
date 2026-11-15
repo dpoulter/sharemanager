@@ -201,6 +201,20 @@
 		   was wrong" would be a lie about what happened. */
 		$stop = (string) ($decoded["stop_reason"] ?? '');
 		if ($stop === 'max_tokens') {
+			/* Logged, not just reported, so how often this happens can be
+			   counted before deciding whether 4000 is enough. Thinking comes
+			   out of the same budget and is not reported separately, so the
+			   output count below is the floor of what was spent, not the
+			   whole of it. write_log() is never gated by DEBUG_LOG; the
+			   guard is for callers that use this file without functions.php.
+			   No prompt text and no key: the numbers are the point. */
+			if (function_exists('write_log')) {
+				write_log("llm", "stop_reason=max_tokens model=" . $model
+				               . " max_tokens=" . llm_max_tokens()
+				               . " output_tokens=" . $usage["output_tokens"]
+				               . " input_tokens=" . $usage["input_tokens"]
+				               . " cached_tokens=" . $usage["cached_tokens"]);
+			}
 			return $fail("The model ran out of room before finishing (stop_reason max_tokens). "
 			           . "Raise ANTHROPIC_MAX_TOKENS.");
 		}

@@ -23,6 +23,31 @@
     $passed = 0; $failed = 0; $failures = [];
 
     /**
+     * The first keyword structured outputs do not support, or null.
+     *
+     * The documented exclusions: recursive schemas, numerical constraints,
+     * string constraints, complex array constraints, and
+     * additionalProperties set to anything but false.
+     */
+    function outlook_schema_unsupported_keyword($node) {
+        if (!is_array($node)) { return null; }
+        foreach (['minimum','maximum','exclusiveMinimum','exclusiveMaximum','multipleOf',
+                  'minLength','maxLength','pattern',
+                  'minItems','maxItems','uniqueItems','contains',
+                  'minProperties','maxProperties','patternProperties',
+                  'if','then','else','not','oneOf'] as $keyword) {
+            if (array_key_exists($keyword, $node)) { return $keyword; }
+        }
+        foreach ($node as $child) {
+            if (is_array($child)) {
+                $found = outlook_schema_unsupported_keyword($child);
+                if ($found !== null) { return $found; }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Is additionalProperties false on every object in a JSON schema?
      *
      * Checked recursively rather than on the top level alone: a nested object
@@ -1453,13 +1478,37 @@
           json_encode($schema['required']));
     check('stance is an enum, not free text',
           $schema['properties']['stance']['enum'] === ['positive','neutral','negative']);
+    /* The count is asked for in the description, not with minItems: array
+       size constraints are outside the subset structured outputs support,
+       so a schema carrying them is refused. outlook_validate() keeps the
+       range, which it had to anyway - a schema says nothing about a model
+       that declined or ran out of room. */
     check('three positives and three risks are asked for',
-          $schema['properties']['positives']['minItems'] === 3
-          && $schema['properties']['risks']['maxItems'] === 3);
+          stripos($schema['properties']['positives']['description'], 'three') !== false
+          && stripos($schema['properties']['risks']['description'], 'three') !== false,
+          $schema['properties']['positives']['description']);
+    check('the range is enforced in code, not left to the schema',
+          count(outlook_validate(["stance" => "neutral", "summary" => "x",
+                                  "positives" => ["a","b","c","d","e"], "risks" => ["f"],
+                                  "action" => "", "watch" => ""])[0]['positives']) === 3);
     /* Without this a model may add fields, and a field the panel does not
        draw is one nobody reads: paid for, stored and invisible. */
     check('the schema allows no fields the panel does not draw',
           ($schema['additionalProperties'] ?? null) === false);
+    /* Structured outputs support a subset of JSON Schema. Array size
+       constraints are not in it, and a schema carrying them is refused
+       outright - so the count is asked for in the description and
+       outlook_validate() keeps the range. */
+    check('the schema carries no constraint structured outputs reject',
+          outlook_schema_unsupported_keyword($schema) === null,
+          (string) outlook_schema_unsupported_keyword($schema));
+
+    /* The shipped default has to match the model the server runs. A missing
+       environment variable moving the panel to another model is how the
+       forced-tool-use failure stayed invisible. */
+    $shipped = (string) file_get_contents($INCLUDES . '/constants.php');
+    check('the shipped default model is the one the server runs',
+          preg_match('/ANTHROPIC_MODEL.*?\?:\s*"claude-fable-5-2"/s', $shipped) === 1);
     check('every object in the schema says so, not just the top one',
           outlook_schema_objects_all_closed($schema), 'an object is left open');
 
@@ -2217,6 +2266,89 @@ STUB
               json_encode(array_slice((array) $thought, 0, 2)));
         check('the model that answered is recorded, not the one configured',
               ($thought['model'] ?? '') === 'claude-fable-5-2', (string) ($thought['model'] ?? ''));
+
+        /* The stub has to refuse what the real API refuses, or it reports
+           every request as fine and the first anyone hears otherwise is in
+           production - which is exactly how the forced-tool-use failure got
+           as far as the server. These send schemas and a tool_choice the
+           API rejects, straight at the stub, and expect a 400 back. */
+        $raw_post = function ($payload) use ($ai_port) {
+            $context = stream_context_create(["http" => [
+                "method" => "POST",
+                "header" => "content-type: application/json\r\nx-api-key: k\r\n"
+                          . "anthropic-version: 2023-06-01\r\n",
+                "content" => json_encode($payload),
+                "timeout" => 10, "ignore_errors" => true,
+            ]]);
+            $http_response_header = [];
+            $body = @file_get_contents("http://127.0.0.1:$ai_port/v1/messages", false, $context);
+            $status = 0;
+            foreach ($http_response_header as $line) {
+                if (preg_match('#^HTTP/\S+\s+(\d{3})#', $line, $m)) { $status = (int) $m[1]; }
+            }
+            return ["status" => $status, "body" => (string) $body];
+        };
+
+        $good = ["model" => "m", "max_tokens" => 4000, "messages" => [],
+                 "output_config" => ["format" => ["type" => "json_schema",
+                     "schema" => ["type" => "object", "additionalProperties" => false,
+                                  "properties" => ["a" => ["type" => "string"]]]]]];
+        $accepted = $raw_post($good);
+        check('the stub accepts a schema the API would accept',
+              $accepted['status'] === 200, 'status ' . $accepted['status']);
+
+        foreach ([['minItems',  ["type"=>"array","items"=>["type"=>"string"],"minItems"=>3]],
+                  ['maxItems',  ["type"=>"array","items"=>["type"=>"string"],"maxItems"=>3]],
+                  ['minLength', ["type"=>"string","minLength"=>5]],
+                  ['maximum',   ["type"=>"integer","maximum"=>10]]] as [$keyword, $property]) {
+            $bad = $good;
+            $bad['output_config']['format']['schema']['properties']['a'] = $property;
+            $refused = $raw_post($bad);
+            check("the stub refuses a schema carrying $keyword, as the API does",
+                  $refused['status'] === 400 && stripos($refused['body'], $keyword) !== false,
+                  'status ' . $refused['status'] . ' ' . substr($refused['body'], 0, 90));
+        }
+
+        $open = $good;
+        $open['output_config']['format']['schema']['additionalProperties'] = true;
+        $open_result = $raw_post($open);
+        check('the stub refuses an object that allows extra properties',
+              $open_result['status'] === 400, 'status ' . $open_result['status']);
+
+        $forced = $good;
+        $forced['tool_choice'] = ["type" => "tool", "name" => "outlook"];
+        $forced_result = $raw_post($forced);
+        check('the stub refuses forced tool use, as this model does',
+              $forced_result['status'] === 400
+              && stripos($forced_result['body'], 'not supported for this model') !== false,
+              'status ' . $forced_result['status'] . ' ' . substr($forced_result['body'], 0, 90));
+
+        /* And the schema the panel actually sends passes that same check. */
+        $live = $good;
+        $live['output_config']['format']['schema'] = outlook_schema();
+        $live_result = $raw_post($live);
+        check('the schema the panel sends is one the stub accepts',
+              $live_result['status'] === 200,
+              'status ' . $live_result['status'] . ' ' . substr($live_result['body'], 0, 120));
+
+        /* A truncated generation is logged, so how often it happens can be
+           counted before deciding whether 4000 tokens is enough. */
+        db()->exec("delete from message_log where module='llm'");
+        $ai_mode('truncated');
+        $ai_json('symbol=III');
+        $logged = rows("select message_text from message_log where module='llm' order by id desc limit 1");
+        check('a truncated generation is logged, not only shown',
+              count($logged) === 1 && strpos($logged[0]['message_text'], 'stop_reason=max_tokens') !== false,
+              count($logged) ? $logged[0]['message_text'] : 'nothing logged');
+        check('the log line carries the numbers needed to judge the budget',
+              count($logged) === 1
+              && strpos($logged[0]['message_text'], 'max_tokens=4000') !== false
+              && strpos($logged[0]['message_text'], 'output_tokens=') !== false,
+              count($logged) ? $logged[0]['message_text'] : '');
+        check('the log line carries no key and no prompt',
+              count($logged) === 1 && strpos($logged[0]['message_text'], $ai_key) === false
+              && stripos($logged[0]['message_text'], 'Rolls') === false);
+        $ai_mode('ok');
 
         /* The schema enum, echoed in another case. The comparison is case
            insensitive, so this is a good answer rather than a rejected one. */

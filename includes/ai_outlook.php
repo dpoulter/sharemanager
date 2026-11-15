@@ -50,15 +50,22 @@
 					"type" => "string",
 					"description" => "At most 100 words. What the figures say, in plain English.",
 				],
+				/* No minItems or maxItems. Structured outputs support a
+				   subset of JSON Schema that excludes array size
+				   constraints, and the API rejects a schema carrying them.
+				   The count is asked for in the description instead, and
+				   outlook_validate() keeps the 1-3 range - which it had to
+				   anyway, since a schema cannot be trusted to be enforced on
+				   a model that declined or ran out of room. */
 				"positives" => [
-					"type" => "array", "minItems" => 3, "maxItems" => 3,
+					"type" => "array",
 					"items" => ["type" => "string"],
-					"description" => "Three things supporting the case.",
+					"description" => "Exactly three things supporting the case.",
 				],
 				"risks" => [
-					"type" => "array", "minItems" => 3, "maxItems" => 3,
+					"type" => "array",
 					"items" => ["type" => "string"],
-					"description" => "Three things that could go wrong.",
+					"description" => "Exactly three things that could go wrong.",
 				],
 				"action" => [
 					"type" => "string",

@@ -36,6 +36,90 @@ foreach ($_SERVER as $key => $value) {
 }
 @file_put_contents($dir . '/last_headers', json_encode($headers));
 
+/**
+ * Reject a schema the real API would reject.
+ *
+ * A stub that accepts anything is worse than no stub: it reports the request
+ * as fine and the first time anyone finds out otherwise is in production.
+ * Structured outputs support a subset of JSON Schema, and this is the
+ * documented list of what is not in it:
+ *
+ *   recursive schemas; numerical constraints (minimum, maximum, multipleOf);
+ *   string constraints (minLength, maxLength); complex array constraints;
+ *   additionalProperties set to anything other than false.
+ *
+ * Checked recursively, because a nested object is as rejectable as the top
+ * one. Returns an error string, or null when the schema is acceptable.
+ */
+function stub_schema_problem($node, $path = 'schema') {
+
+    if (!is_array($node)) { return null; }
+
+    $unsupported = [
+        'minimum' => 'numerical', 'maximum' => 'numerical',
+        'exclusiveMinimum' => 'numerical', 'exclusiveMaximum' => 'numerical',
+        'multipleOf' => 'numerical',
+        'minLength' => 'string', 'maxLength' => 'string', 'pattern' => 'string',
+        'minItems' => 'array', 'maxItems' => 'array', 'uniqueItems' => 'array',
+        'minContains' => 'array', 'maxContains' => 'array', 'contains' => 'array',
+        'minProperties' => 'object', 'maxProperties' => 'object',
+        'patternProperties' => 'object', 'dependentSchemas' => 'object',
+        'if' => 'conditional', 'then' => 'conditional', 'else' => 'conditional',
+        'not' => 'conditional', 'oneOf' => 'combinator',
+    ];
+
+    foreach ($unsupported as $keyword => $kind) {
+        if (array_key_exists($keyword, $node)) {
+            return "output_config.format.schema: $kind constraint \"$keyword\" at $path "
+                 . "is not supported by structured outputs.";
+        }
+    }
+
+    if (($node['type'] ?? null) === 'object'
+        && array_key_exists('additionalProperties', $node)
+        && $node['additionalProperties'] !== false) {
+        return "output_config.format.schema: additionalProperties must be false at $path.";
+    }
+    if (($node['type'] ?? null) === 'object' && !array_key_exists('additionalProperties', $node)) {
+        return "output_config.format.schema: additionalProperties: false is required at $path.";
+    }
+
+    foreach ($node as $key => $child) {
+        if (!is_array($child)) { continue; }
+        $problem = stub_schema_problem($child, $path . '.' . $key);
+        if ($problem !== null) { return $problem; }
+    }
+
+    return null;
+}
+
+/* The request is checked before the mode is honoured, so a schema the API
+   would refuse fails here too rather than being answered happily. */
+$request = json_decode($body, true);
+if (is_array($request)) {
+
+    //Forced tool use is a 400 on the model this panel runs on.
+    if (isset($request['tool_choice']['type'])
+        && in_array($request['tool_choice']['type'], ['tool', 'any'], true)) {
+        header('Content-Type: application/json');
+        http_response_code(400);
+        print(json_encode(["type" => "error", "error" => ["type" => "invalid_request_error",
+            "message" => 'tool_choice: type "tool" and "any" are not supported for this model.']]));
+        exit;
+    }
+
+    $schema_problem = isset($request['output_config']['format']['schema'])
+        ? stub_schema_problem($request['output_config']['format']['schema'])
+        : null;
+    if ($schema_problem !== null) {
+        header('Content-Type: application/json');
+        http_response_code(400);
+        print(json_encode(["type" => "error",
+            "error" => ["type" => "invalid_request_error", "message" => $schema_problem]]));
+        exit;
+    }
+}
+
 header('Content-Type: application/json');
 
 function stub_usage($cached) {

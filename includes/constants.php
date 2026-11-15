@@ -101,7 +101,11 @@
     //it is never a fatal and never reaches the browser.
     define("ANTHROPIC_API_KEY", getenv("ANTHROPIC_API_KEY") ?: "");
 
-    define("ANTHROPIC_MODEL", getenv("ANTHROPIC_MODEL") ?: "claude-sonnet-5-5");
+    //Matches the model the server is configured for. A missing environment
+    //variable should not quietly move the panel to a different model with
+    //different behaviour, different prices and, as it turned out, a
+    //different view on forced tool use.
+    define("ANTHROPIC_MODEL", getenv("ANTHROPIC_MODEL") ?: "claude-fable-5-2");
 
     //Overridable so the tests can point at a local stub and exercise the
     //request, the response parsing and the error paths rather than skipping
@@ -109,10 +113,12 @@
     define("ANTHROPIC_BASE_URL", getenv("ANTHROPIC_BASE_URL") ?: "https://api.anthropic.com");
 
     //Dollars per million tokens, so the panel can price each generation.
-    //Defaults are Sonnet 5.5's published rates; override when they change or
-    //when ANTHROPIC_MODEL points somewhere else, rather than editing code.
-    define("ANTHROPIC_PRICE_INPUT",      getenv("ANTHROPIC_PRICE_INPUT")      ?: "2.00");
-    define("ANTHROPIC_PRICE_OUTPUT",     getenv("ANTHROPIC_PRICE_OUTPUT")     ?: "10.00");
+    //Defaults are the published rates for ANTHROPIC_MODEL's default above;
+    //override when they change or when the model does, rather than editing
+    //code. Getting these wrong misreports the cost, it does not break the
+    //panel.
+    define("ANTHROPIC_PRICE_INPUT",      getenv("ANTHROPIC_PRICE_INPUT")      ?: "8.00");
+    define("ANTHROPIC_PRICE_OUTPUT",     getenv("ANTHROPIC_PRICE_OUTPUT")     ?: "40.00");
     define("ANTHROPIC_PRICE_CACHE_READ", getenv("ANTHROPIC_PRICE_CACHE_READ") ?: "0.10");
     //Writing to the cache costs more than ordinary input and reading back
     //costs far less; that gap is the reason the vault is sent cached at all,
