@@ -1597,9 +1597,24 @@ function time_to_decimal($time) {
 		//ext-curl. The fetch itself is file_get_contents, so curl was never
 		//doing the work - it only supplied a version string - and on a host
 		//without php-curl the call was a fatal that took the page with it.
+		//
+		//Connection: close, and it matters more than it looks.
+		//
+		//PHP's http stream wrapper does not do keep-alive: it opens one
+		//socket, sends the request and reads to end of file. Ask for
+		//Keep-Alive and the server obligingly does not close the socket, so
+		//there is no end of file to read - the wrapper sits there until the
+		//read timeout expires and only then hands back the body it already
+		//had. Every response costs the full timeout: on the N100 that was
+		//6.2 seconds per search against 0.2-0.6 with close, and the feed
+		//redirects, so the wrapper paid it twice. The quote page took 13
+		//seconds, 12.4 of them here.
+		//
+		//Nothing was ever reused: there is no second request on the
+		//connection to reuse it for.
 		$headers = [
 			"Accept" => "*/*",
-			"Connection" => "Keep-Alive",
+			"Connection" => "close",
 			"User-Agent" => "sharemanager/1.0 (+php " . PHP_VERSION . ")"
 		];
 
@@ -1677,7 +1692,9 @@ function time_to_decimal($time) {
 	 * Separate so the tests can read the query back without a network call.
 	 */
 	function news_feed_url($query){
-		return "https://news.google.com/rss/search?q=" . rawurlencode($query)
+		$base = defined('SM_NEWS_BASE_URL') && SM_NEWS_BASE_URL !== ''
+		      ? rtrim(SM_NEWS_BASE_URL, '/') : 'https://news.google.com';
+		return $base . "/rss/search?q=" . rawurlencode($query)
 		     . "&hl=en-GB&gl=GB&ceid=GB:en";
 	}
 

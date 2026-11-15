@@ -33,6 +33,11 @@
     define("EODHD_EXCHANGE", "LSE");
     define("EODHD_BASE_URL", getenv('EODHD_BASE_URL') ?: "https://eodhd.com/api");
 
+    // Google News RSS. The suite points this at tools/news_stub.php, which
+    // behaves like a server that honours Keep-Alive, so the timeout the old
+    // header caused is reproduced rather than described.
+    define("SM_NEWS_BASE_URL", getenv('SM_NEWS_BASE_URL') ?: "https://news.google.com");
+
     // The AI outlook. There is no real key here and never should be: the
     // suite points ANTHROPIC_BASE_URL at tools/anthropic_stub.php and asserts
     // the request shape, the usage accounting and every error path against

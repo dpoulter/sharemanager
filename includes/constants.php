@@ -76,6 +76,13 @@
     //above, and the two are not interchangeable.
     define("DEFAULT_EXCHANGE", "XLON");
 
+    //Google News RSS, for the News tab and the outlook prompt. Overridable
+    //so the tests can point at a local stub and exercise the real request -
+    //including which Connection header it asks for, which is the difference
+    //between a quote page that renders in a second and one that takes
+    //thirteen. Never set this on a real host.
+    define("SM_NEWS_BASE_URL", getenv("SM_NEWS_BASE_URL") ?: "https://news.google.com");
+
     //-----------------------------------------------------------------------
     // The AI outlook panel. Same pattern as the market data providers above:
     // the key is read from the environment and never committed.

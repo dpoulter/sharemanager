@@ -1301,6 +1301,129 @@
 
     db()->exec("delete from stock_symbols where symbol in ('RR','QQ1')");
 
+    echo "\n--- the news fetch must not ask for keep-alive ---\n";
+
+    /* PHP's http stream wrapper has no keep-alive support. It opens a socket,
+       writes the request and reads to end of file. Ask for Keep-Alive, and a
+       server that honours it never closes the socket, so there is no end of
+       file: the wrapper blocks until its read timeout and then hands back the
+       body it had all along. The feed redirects, so that cost is paid twice.
+       On the N100 this was 6.2 seconds per search against 0.2-0.6 with close,
+       and it made the quote page take 13 seconds, 12.4 of them in here.
+
+       tools/news_stub.php honours whatever the client asks for, so this is
+       measured rather than asserted from the source. Two instances: the stub
+       is single threaded and the keep-alive case holds its socket open, which
+       would otherwise block the next connection. */
+    $news_dir = sys_get_temp_dir() . '/smnews' . getmypid();
+    @mkdir($news_dir, 0777, true);
+    @unlink("$news_dir/news_requests");
+
+    $news_port_close = 8331;
+    $news_port_keep  = 8332;
+    $news_stub = function ($port) use ($news_dir) {
+        return (int) trim((string) shell_exec(
+            'SM_STUB_DIR=' . escapeshellarg($news_dir) . ' SM_NEWS_STUB_HOLD=6 php '
+            . escapeshellarg(dirname(__DIR__) . '/tools/news_stub.php')
+            . ' 127.0.0.1:' . $port . ' > /dev/null 2>&1 & echo $!'));
+    };
+    $news_pid_close = $news_stub($news_port_close);
+    $news_pid_keep  = $news_stub($news_port_keep);
+    usleep(700000);
+
+    db()->exec("delete from stock_symbols where symbol='RRZ'");
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market,industry_group,industry,logo)
+                   values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','Aerospace',null)")
+         ->execute(['RRZ', 'Rolls-Royce Holdings plc', 'x']);
+
+    /* Run in a subprocess: SM_NEWS_BASE_URL is read into a constant when
+       constants.php is first loaded, so it cannot be changed in this one. */
+    $fetch_news = function ($port) use ($INCLUDES) {
+        $body = 'require("constants.php"); require("functions.php"); require("share_functions.php");'
+              . ' $_SESSION["exchange"]="XLON";'
+              . ' $t=microtime(true); $a=get_articles("RRZ");'
+              . ' printf("%.3f %d", microtime(true)-$t, count($a));';
+        $out = (string) shell_exec(
+            'SM_NEWS_BASE_URL=' . escapeshellarg("http://127.0.0.1:$port")
+            . ' SM_TEST_DB=' . escapeshellarg(DATABASE)
+            . ' SM_TEST_HOST=' . escapeshellarg(SERVER)
+            . ' SM_TEST_USER=' . escapeshellarg(USERNAME)
+            . ' SM_TEST_PASS=' . escapeshellarg(PASSWORD)
+            . ' php -d include_path=' . escapeshellarg(__DIR__ . '/fixtures' . PATH_SEPARATOR . $INCLUDES)
+            . ' -r ' . escapeshellarg($body) . ' 2>/dev/null');
+        //The jobs print as they go, so the timing is the last line.
+        $last = trim(substr($out, strrpos($out, "\n") === false ? 0 : strrpos($out, "\n")));
+        $parts = preg_split('/\s+/', $last);
+        return ["seconds" => (float) ($parts[0] ?? -1), "articles" => (int) ($parts[1] ?? -1)];
+    };
+
+    $fast = $fetch_news($news_port_close);
+    check('the news fetch returns articles', $fast['articles'] > 0, json_encode($fast));
+    check('the news fetch returns promptly rather than waiting out its timeout',
+          $fast['seconds'] >= 0 && $fast['seconds'] < 1.5,
+          $fast['seconds'] . 's');
+    check('a blocked publisher is still filtered out', $fast['articles'] === 2,
+          $fast['articles'] . ' articles, expected 2 of 3');
+
+    /* What actually went over the wire. */
+    $sent_requests = array_values(array_filter(array_map(
+        function ($line) { return json_decode($line, true); },
+        explode("\n", (string) @file_get_contents("$news_dir/news_requests")))));
+
+    $connections = array_map(function ($r) { return strtolower($r['headers']['connection'] ?? ''); }, $sent_requests);
+    check('the request does not ask for keep-alive',
+          count($connections) > 0 && !in_array('keep-alive', $connections, true),
+          json_encode($connections));
+    check('it asks for the connection to be closed',
+          count(array_filter($connections, function ($c) { return $c === 'close'; })) === count($connections),
+          json_encode($connections));
+
+    /* One search. It used to run two, differing only by an exchange prefix on
+       a ticker nobody writes, and each one paid the timeout. The redirect is
+       a second leg of the same search, not a second search. */
+    $searches = array_values(array_unique(array_filter(array_map(
+        function ($r) { return strpos($r['target'], 'followed=1') === false ? $r['target'] : null; },
+        $sent_requests))));
+    check('one search is made, not two', count($searches) === 1, json_encode($searches));
+    check('that search is for the company name',
+          count($searches) === 1 && strpos(rawurldecode($searches[0]), '"Rolls-Royce Holdings" shares') !== false,
+          json_encode(array_map('rawurldecode', $searches)));
+
+    /* The control. Without this the check above could pass against a server
+       that closes the connection regardless of what was asked, and would
+       prove nothing about the header. Here the same stub is asked for
+       keep-alive and the fetch stalls until the timeout and comes back empty,
+       which is exactly what the quote page was doing. */
+    $ka_body = 'ini_set("default_socket_timeout","10");'
+             . ' $ctx=stream_context_create(["http"=>["header"=>"Accept: */*\r\nConnection: Keep-Alive\r\n",'
+             . ' "method"=>"GET","timeout"=>2]]);'
+             . ' $t=microtime(true); $b=@file_get_contents('
+             . var_export("http://127.0.0.1:$news_port_keep/rss/search?q=x", true) . ',false,$ctx);'
+             . ' printf("%.3f %d", microtime(true)-$t, strlen((string)$b));';
+    $ka_out = trim((string) shell_exec('php -r ' . escapeshellarg($ka_body) . ' 2>/dev/null'));
+    $ka = preg_split('/\s+/', $ka_out);
+    check('asking for keep-alive is what stalls, so the check above has teeth',
+          isset($ka[0]) && (float) $ka[0] >= 1.5 && (int) ($ka[1] ?? -1) === 0,
+          'took ' . ($ka[0] ?? '?') . 's and returned ' . ($ka[1] ?? '?') . ' bytes');
+
+    if ($news_pid_close > 0) { exec("kill $news_pid_close 2>/dev/null"); }
+    if ($news_pid_keep  > 0) { exec("kill $news_pid_keep 2>/dev/null"); }
+    db()->exec("delete from stock_symbols where symbol='RRZ'");
+
+    /* And the source, so a future edit that reintroduces the header is caught
+       even on a host where the stub cannot bind a port.
+
+       Comments are stripped first: the comment in get_articles explaining why
+       the header is wrong contains the word, and searching the raw file finds
+       the explanation and reports the bug as still present. */
+    $stripped_share = php_strip_whitespace($INCLUDES . '/share_functions.php');
+    $articles_src = substr($stripped_share, strpos($stripped_share, 'function get_articles'));
+    $articles_src = substr($articles_src, 0, strpos($articles_src, 'function news_feed_url'));
+    check('no keep-alive header survives in the code itself',
+          stripos($articles_src, 'keep-alive') === false, 'found it in get_articles');
+    check('the code asks for the connection to be closed',
+          stripos($articles_src, 'close') !== false);
+
     echo "\n--- the outlook request and what comes back ---\n";
 
     /* What the model is asked for. tool_choice forces the tool, so the answer
