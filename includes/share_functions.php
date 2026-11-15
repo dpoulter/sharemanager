@@ -9,6 +9,97 @@
 
 /* Share Functions */
 
+
+/* ---------------------------------------------------------------------------
+   Investment funds.
+
+   An investment trust owns other companies' shares, so its P/E, price/sales,
+   price/book and return on equity describe a wrapper rather than a business:
+   ranked against operating companies they are noise, and on the live FTSE 350
+   for 2026-11-13 they put three trusts in the ten best overall scores. Funds
+   are therefore left out of the value, quality and overall rankings, and out
+   of the denominators those rankings are worked out against, so a company is
+   ranked against companies only. Momentum is untouched - a price series is a
+   price series whoever owns the assets behind it.
+
+   Which sectors are funds is data, in fund_sectors; which indicators funds are
+   ranked on is data too, in screen_indicators.rank_funds. Both arrive with
+   sql/fund_sectors.sql. See that file.
+   --------------------------------------------------------------------------- */
+
+/**
+ * True once sql/fund_sectors.sql has been applied.
+ *
+ * deploy/deploy.sh pulls code and restarts PHP; it does not run migrations, so
+ * there is a window where this code is on the server and the table is not.
+ * Without this check the nightly job would die on an unknown table. It carries
+ * on ranking the way it did before instead, and says so in the log.
+ *
+ * Checked once per process: get_statistics.php asks per indicator and per
+ * symbol, and this is information_schema, not a cheap lookup.
+ */
+function fund_config_ready() {
+
+	static $ready = null;
+
+	if ($ready !== null)
+		return $ready;
+
+	$table  = query("select count(*) n from information_schema.tables
+	                  where table_schema=database() and table_name='fund_sectors'");
+	$column = query("select count(*) n from information_schema.columns
+	                  where table_schema=database() and table_name='screen_indicators'
+	                    and column_name='rank_funds'");
+
+	$ready = (count($table) && (int) $table[0]['n'] === 1)
+	      && (count($column) && (int) $column[0]['n'] === 1);
+
+	if (!$ready)
+		write_log("fund_sectors", "sql/fund_sectors.sql has not been applied: "
+		          ."funds are still being ranked alongside companies");
+
+	return $ready;
+}
+
+/**
+ * A SQL predicate, ready to be AND'ed on, that excludes investment funds.
+ *
+ * $symbol_expr is how the surrounding query spells the symbol column, e.g.
+ * 's.symbol'. No sector name is interpolated anywhere: the predicate joins to
+ * fund_sectors, so adding a sector is a row rather than a release.
+ *
+ * Not scoped by exchange. A symbol's sector is the same whichever exchange row
+ * carries it, and the ranking query it is used in is not scoped by exchange
+ * either.
+ *
+ * Returns the empty string when the migration has not been applied, which
+ * leaves the query exactly as it was.
+ */
+function not_fund_sql($symbol_expr) {
+
+	if (!fund_config_ready())
+		return "";
+
+	return " and not exists (select 1 from stock_symbols fund_ss, fund_sectors fund_fs
+	                          where fund_ss.symbol = ".$symbol_expr."
+	                            and fund_ss.sector = fund_fs.sector) ";
+}
+
+/**
+ * True when this symbol sits in one of the fund sectors.
+ */
+function is_fund($symbol) {
+
+	if (!fund_config_ready())
+		return false;
+
+	$rows = query("select 1 from stock_symbols ss, fund_sectors fs
+	                where ss.symbol=? and ss.sector=fs.sector", $symbol);
+
+	return count($rows) > 0;
+}
+
+
 // function get_historical_prices($start_date,$end_date)
 
 //Calculate indicator Stats
@@ -1993,6 +2084,11 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 	$score ['value']=50;
 	$score ['quality']=50;
 	$score ['overall']=50;
+
+	/* A fund has no value, quality or overall score at all, and the neutral 50
+	   above would read as a real middling score rather than an absent one.
+	   templates/quote.php shows "Not scored: investment fund" instead. */
+	$score ['is_fund']=is_fund($symbol);
 	
 	$rows = query("SELECT indicator,value from statistics s1 where symbol=? and exchange=? and date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.date<=? and s2.exchange=s1.exchange) and s1.indicator in ('quality_score','momentum_score','value_score','overall_score')",$symbol,session_exchange(),$asOfDate);
    foreach($rows as $row){
@@ -3480,6 +3576,16 @@ function get_industry_average($indicator,$date,$industry){
 function calc_implied_valuation ($date,$symbol){
 		
 	write_log('calc_implied_valuation','symbol='.$symbol);
+
+	/* Funds are out of the sector and industry medians this works from, so a
+	   fund has no comparison set of its own: its sector is all funds and now
+	   has no median at all, and valuing a trust off the median price/book of
+	   the operating companies that happen to share its industry is the
+	   comparison this change exists to remove. */
+	if (is_fund($symbol)){
+		write_log('calc_implied_valuation','skipped: '.$symbol.' is an investment fund');
+		return;
+	}
 	
 	
 	//List of Indicators
@@ -3650,7 +3756,13 @@ function get_value_topten(){
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
-	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='value_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,session_exchange());
+	/* Funds are not scored, so there should be no fund rows to find.
+	   The filter is here as well because the dashboard reads the newest
+	   statistics date, and between deploying this and the next nightly
+	   run that date still holds the rows the old code wrote. */
+	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='value_score' and date=? and ss.exchange=?"
+	            .not_fund_sql('ss.symbol')
+	            ." order by value DESC limit 10",$job_date,session_exchange());
 	
 	return $rows;
 }	
@@ -3662,7 +3774,13 @@ function get_quality_topten(){
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
-	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='quality_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,session_exchange());
+	/* Funds are not scored, so there should be no fund rows to find.
+	   The filter is here as well because the dashboard reads the newest
+	   statistics date, and between deploying this and the next nightly
+	   run that date still holds the rows the old code wrote. */
+	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='quality_score' and date=? and ss.exchange=?"
+	            .not_fund_sql('ss.symbol')
+	            ." order by value DESC limit 10",$job_date,session_exchange());
 	
 	return $rows;
 }	
@@ -3674,7 +3792,13 @@ function get_overall_topten(){
 	$job_date=$rows[0]['job_date'];
 	
 	//Get top ten 
-	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='overall_score' and date=? and ss.exchange=? order by value DESC limit 10",$job_date,session_exchange());
+	/* Funds are not scored, so there should be no fund rows to find.
+	   The filter is here as well because the dashboard reads the newest
+	   statistics date, and between deploying this and the next nightly
+	   run that date still holds the rows the old code wrote. */
+	$rows=query("select ss.symbol, ss.name, s.value from statistics s, stock_symbols ss where s.symbol=ss.symbol and indicator='overall_score' and date=? and ss.exchange=?"
+	            .not_fund_sql('ss.symbol')
+	            ." order by value DESC limit 10",$job_date,session_exchange());
 	
 	return $rows;
 }	

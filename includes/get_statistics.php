@@ -56,6 +56,13 @@
 		
 		write_log("get_statistics.php","Calculate Sector Medians for all statistics");
 		
+		/* Sector and industry medians are the comparison sets the relative
+		   valuations on the quote page are worked out against, so funds are
+		   left out of both sides of them: a trust must not drag the median
+		   price/book of the companies it shares an industry with. A fund
+		   sector contains nothing but funds, so it now has no median at all,
+		   which is why calc_implied_valuation() skips funds outright. */
+
 		//Calculate Sector Medians for all statistics
 		$sectors=query('select distinct sector from stock_symbols where exchange=?',$_SESSION["exchange"]);
 		foreach ($sectors as $sector){
@@ -64,6 +71,7 @@
 				$avg = query("SELECT x.indicator, x.value, ssx.sector from statistics x,screen_indicators si, statistics y , stock_symbols ssx, stock_symbols ssy
 				where x.date=? and x.indicator=? and ssx.sector=? and ssx.exchange=? and x.date=y.date and x.indicator=y.indicator and si.name=x.indicator 
 				and x.symbol=ssx.symbol and y.symbol=ssy.symbol and ssx.sector = ssy.sector and ssy.enabled='Y' and if(x.value=0,if(rank_zero='N',0,1),1)=1
+				".not_fund_sql('ssx.symbol').not_fund_sql('ssy.symbol')."
 				GROUP BY x.indicator,x.value, ssx.sector HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5
 				LIMIT 1",date_format($asOfDate,'Y-m-d'),$indicator['name'],$sector['sector'],$_SESSION["exchange"]);
 				if(count($avg)>0) {
@@ -82,6 +90,7 @@
 				$avg = query("SELECT x.indicator, x.value, ssx.industry from statistics x,screen_indicators si, statistics y , stock_symbols ssx, stock_symbols ssy
 				where x.date=? and x.indicator=? and ssx.industry=? and x.exchange=? and x.date=y.date and x.indicator=y.indicator and si.name=x.indicator 
 				and x.symbol=ssx.symbol and y.symbol=ssy.symbol and ssx.industry = ssy.industry and ssx.enabled='Y' and if(x.value=0,if(rank_zero='N',0,1),1)=1
+				".not_fund_sql('ssx.symbol').not_fund_sql('ssy.symbol')."
 				GROUP BY x.indicator,x.value, ssx.industry HAVING SUM(SIGN(1-SIGN(y.value-x.value)))/COUNT(*) > .5
 				LIMIT 1",date_format($asOfDate,'Y-m-d'),$indicator['name'],$industry['industry'],$_SESSION["exchange"]);
 				if(count($avg)>0) {
@@ -100,8 +109,15 @@
 		//Calculate Rank for each statistic
 		write_log("get_statistics.php","Calculate Rank for each statistic");
 		
+		/* rank_funds says whether investment funds are ranked on this
+		   indicator. It arrives with sql/fund_sectors.sql, so it is selected
+		   as a constant until that has been applied - see fund_config_ready()
+		   in share_functions.php. */
+		$rank_funds_col = fund_config_ready() ? "ifnull(nullif(rank_funds,''),'Y')" : "'Y'";
+
 	    $indicators=query("select name, if(rank_order='','DESC',rank_order) rank_order,
-	                             ifnull(nullif(rank_negative,''),'NORMAL') rank_negative
+	                             ifnull(nullif(rank_negative,''),'NORMAL') rank_negative,
+	                             ".$rank_funds_col." rank_funds
 	                        from screen_indicators where enabled='Y' and calc_rank='Y'");
 
 	    foreach ($indicators as $indicator){
@@ -133,6 +149,18 @@
 			$negatives = strtoupper(trim($indicator['rank_negative']));
 			$negative_filter = ($negatives === 'EXCLUDE') ? " AND value >= 0" : "";
 			$order_by = ($negatives === 'LAST') ? "(value < 0), ".$rank_order : $rank_order;
+
+			/* rank_funds='N' leaves investment funds out of this indicator's
+			   ranking. The filter goes in the innermost select, which is both
+			   the set that gets ranked and the set @rownum counts, so a fund
+			   gets no percentile and is not in the denominator either: a
+			   company is ranked against companies and nothing else. The raw
+			   value stays in statistics and still shows on the quote page.
+
+			   The momentum indicators keep rank_funds='Y'. A price series is a
+			   price series whoever owns the assets behind it. */
+			$fund_filter = (strtoupper(trim($indicator['rank_funds'])) === 'N')
+			             ? not_fund_sql('s.symbol') : "";
 
 		 	$sql1 = "SELECT
 			 symbol,
@@ -168,6 +196,7 @@
 							   AND date = '".date_format($asOfDate, 'Y-m-d')."'
 							   AND indicator = '".$indicator['name']."'
 							   ".$negative_filter."
+							   ".$fund_filter."
 						 ) s,
 						 (SELECT @rownum := 0, @prev_value := NULL) r
 					  ORDER BY ".$order_by."
@@ -241,7 +270,10 @@
 		//Calculate Value Ranking
 		write_log("get_statistics.php","Calculate Value Ranking");
 		
-		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and indicator in ('shareholder_yield','pe','price_sales_ratio','price_book_ratio','enterprise_value_to_ebitda','price_free_cash_flow_per_share')   group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		/* not_fund_sql() leaves investment funds out: no value_score row is
+		   written for a fund at all, rather than one built from the neutral 50
+		   a missing percentile falls back to. See sql/fund_sectors.sql. */
+		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and indicator in ('shareholder_yield','pe','price_sales_ratio','price_book_ratio','enterprise_value_to_ebitda','price_free_cash_flow_per_share') ".not_fund_sql('s.symbol')."  group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/6) as percentile
@@ -260,7 +292,7 @@
 		
 		//Calculate Quality Ranking
 		write_log("get_statistics.php","Calculate Quality Ranking");
-		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and category = 10  and s.exchange=? group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol, rank_zero FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol,si.rank_zero FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and category = 10  and s.exchange=? ".not_fund_sql('s.symbol')." group by symbol,si.rank_zero) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/1) as percentile
@@ -291,7 +323,11 @@
 		   nothing else. The value and quality queries above keep their join:
 		   theirs select real indicators, and the quality one needs
 		   si.category. */
-		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(value is null,50,value))) as value,symbol FROM statistics s where date= ? and indicator in ('value_score','momentum_score','quality_score') and s.exchange=?  group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		/* Funds are filtered here too. They still have a momentum_score, so
+		   without this a fund would get an overall score of its momentum plus
+		   the neutral 50 twice - which is how trusts reached the overall top
+		   ten in the first place. */
+		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(value is null,50,value))) as value,symbol FROM statistics s where date= ? and indicator in ('value_score','momentum_score','quality_score') and s.exchange=? ".not_fund_sql('s.symbol')."  group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		 /*$sql      =   "SELECT  symbol, round(sum(if(value is null,50,value))/3) as percentile
 		FROM statistics r where date=? and indicator in ('value_score','momentum_score','quality_score') 

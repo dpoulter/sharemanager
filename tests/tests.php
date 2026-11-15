@@ -1176,6 +1176,367 @@
     if ($saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $saved_exchange; }
 
+    echo "\n--- investment funds are left out of the value, quality and overall rankings ---\n";
+
+    /* An investment trust owns other companies' shares, so its P/E is its
+       holdings' earnings seen through a share price and a discount, and its
+       price/book is the discount to net asset value written as a ratio.
+       Ranked against operating companies they are noise: on the live FTSE 350
+       for 2026-11-13 three of the ten best overall scores and two of the ten
+       best value scores were trusts, and Hg Capital Trust reached value_score
+       99 on negative book value.
+
+       Which sectors are funds is data (fund_sectors) and which indicators
+       funds are ranked on is data too (screen_indicators.rank_funds), both
+       from sql/fund_sectors.sql. Momentum is untouched throughout: a price
+       series is a price series whoever owns the assets behind it. */
+
+    $fund_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+
+    $fund_sym = 'LLL';   // moved in and out of a fund sector below
+    $fund_reit = 'KKK';  // a REIT: an operating property company, ranked as normal
+
+    /* pe feeds the value score, roe_ttm the quality score (category 10). Both
+       are set rank_funds='N' the way the migration sets them on the live
+       database. */
+    db()->exec("delete from screen_indicators where name in ('pe','roe_ttm')");
+    db()->exec("insert into screen_indicators
+                  (name, description, enabled, order_number, calc_rank, rank_zero,
+                   rank_order, rank_negative, rank_funds, category)
+                values ('pe','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','N',null),
+                       ('roe_ttm','Return on equity','Y',1,'Y','N','value DESC','NORMAL','N',10)");
+
+    db()->exec("update stock_symbols set sector='Real Estate' where symbol='$fund_reit'");
+
+    $fund_asof = date('Y-m-d', strtotime('-1 day'));
+
+    /* The fund is the cheapest P/E and the best return on equity of the lot,
+       so leaving it in changes both the order and the denominator. A test
+       where it made no difference would pass whatever the code did. */
+    $fund_pe  = ['AAA' => 5.0, 'BBB' => 10.0, 'CCC' => 15.0, 'DDD' => 20.0,
+                 'EEE' => 25.0, 'HHH' => 40.0, $fund_reit => 30.0, $fund_sym => 1.0];
+    $fund_roe = ['AAA' => 5.0, 'BBB' => 10.0, 'CCC' => 15.0, 'DDD' => 20.0,
+                 'EEE' => 25.0, 'HHH' => 40.0, $fund_reit => 30.0, $fund_sym => 99.0];
+
+    /* Runs the nightly job over a universe where $sector is $fund_sym's sector
+       and $include_fund says whether the fund has figures at all, then reports
+       the percentiles the companies were given. */
+    $fund_run = function ($sector, $include_fund = true) use ($fund_pe, $fund_roe, $fund_asof, $fund_sym) {
+        reset_calculated();
+        db()->prepare("update stock_symbols set sector=? where symbol=?")
+            ->execute([$sector, $fund_sym]);
+        $ins = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                              values (?,?,?,?,'XLON')");
+        foreach (['pe' => $fund_pe, 'roe_ttm' => $fund_roe] as $ind => $values) {
+            foreach ($values as $sym => $v) {
+                if (!$include_fund && $sym === $fund_sym) { continue; }
+                $ins->execute([$sym, $fund_asof, $ind, $v]);
+            }
+        }
+        run_script('get_momentum_statistics.php');
+        [$out, ] = run_script('get_statistics.php');
+        return $out;
+    };
+    $fund_percentiles = function ($indicator) use ($fund_asof) {
+        $out = [];
+        foreach (rows("select symbol, percentile from statistics
+                        where indicator=? and date=? order by symbol",
+                      [$indicator, $fund_asof]) as $r) {
+            $out[$r['symbol']] = $r['percentile'] === null ? null : (float)$r['percentile'];
+        }
+        return $out;
+    };
+
+    // (1) The fund counted as an ordinary company: the old behaviour.
+    $fund_out = $fund_run('Sector 0');
+    check('the job completes with a fund in the universe',
+          stripos($fund_out, 'Fatal error') === false, substr($fund_out, -300));
+    $fund_as_company = $fund_percentiles('pe');
+
+    // (2) The fund left out of the data entirely: companies ranked alone.
+    $fund_run('Sector 0', false);
+    $fund_absent = $fund_percentiles('pe');
+
+    // (3) The fund present, in a fund sector: must match (2), not (1).
+    $fund_out = $fund_run('Investment Trusts');
+    check('the job completes with a fund sector in play',
+          stripos($fund_out, 'Fatal error') === false, substr($fund_out, -300));
+    $fund_as_fund = $fund_percentiles('pe');
+
+    check('a fund gets no percentile on an indicator it is not ranked on',
+          array_key_exists($fund_sym, $fund_as_fund) && $fund_as_fund[$fund_sym] === null,
+          'LLL percentile ' . var_export($fund_as_fund[$fund_sym] ?? 'missing', true));
+
+    check('the fund\'s raw value is still stored, only the rank is withheld',
+          (float)scalar("select value from statistics where symbol=? and indicator='pe' and date=?",
+                        [$fund_sym, $fund_asof]) === 1.0);
+
+    $fund_companies = function ($set) use ($fund_sym) {
+        unset($set[$fund_sym]);
+        return $set;
+    };
+    check('a fund is out of the denominator: companies rank exactly as if it were not listed',
+          $fund_companies($fund_as_fund) == $fund_companies($fund_absent),
+          'with fund ' . json_encode($fund_companies($fund_as_fund))
+          . ' without ' . json_encode($fund_companies($fund_absent)));
+    check('counting the fund would have changed those percentiles (the test has teeth)',
+          $fund_companies($fund_as_company) != $fund_companies($fund_absent),
+          'as company ' . json_encode($fund_companies($fund_as_company)));
+
+    /* A REIT is an operating property company with rent, debt and a margin.
+       Its sector is not in fund_sectors and it must rank like any other. */
+    check('a REIT is still ranked',
+          isset($fund_as_fund[$fund_reit]) && $fund_as_fund[$fund_reit] !== null,
+          'KKK percentile ' . var_export($fund_as_fund[$fund_reit] ?? 'missing', true));
+    check('a REIT still gets a value score',
+          (int)scalar("select count(*) from statistics
+                        where symbol=? and indicator='value_score' and date=?",
+                      [$fund_reit, $fund_asof]) === 1);
+
+    $fund_score_rows = function ($symbol) use ($fund_asof) {
+        return (int)scalar("select count(*) from statistics where symbol=? and date=?
+                             and indicator in ('value_score','quality_score','overall_score')",
+                           [$symbol, $fund_asof]);
+    };
+    check('a fund gets no value, quality or overall score row at all',
+          $fund_score_rows($fund_sym) === 0, $fund_score_rows($fund_sym) . ' rows');
+    check('a company still gets all three', $fund_score_rows('AAA') === 3,
+          $fund_score_rows('AAA') . ' rows');
+
+    /* Momentum is explicitly kept. The fund has a price history like any other
+       share and belongs in the momentum series and the trend screens. */
+    foreach (['3mnth', '6mnth', '12mnth'] as $fund_mom) {
+        check("a fund is still ranked on $fund_mom",
+              scalar("select percentile from statistics where symbol=? and indicator=? and date=?",
+                     [$fund_sym, $fund_mom, $fund_asof]) !== null);
+    }
+    check('a fund still gets a momentum score',
+          (int)scalar("select count(*) from statistics
+                        where symbol=? and indicator='momentum_score' and date=?",
+                      [$fund_sym, $fund_asof]) === 1);
+    foreach (['close_price', 'ma50', 'ma200'] as $fund_trend) {
+        check("a fund still gets $fund_trend, so the trend screens can see it",
+              (int)scalar("select count(*) from statistics where symbol=? and indicator=? and date=?",
+                          [$fund_sym, $fund_trend, $fund_asof]) === 1);
+    }
+
+    /* Momentum must be numerically untouched, not merely present: the fund is
+       in the momentum denominator and leaving it there is the whole point. */
+    $fund_momentum_as_fund = $fund_percentiles('3mnth');
+    $fund_run('Sector 0');
+    $fund_momentum_as_company = $fund_percentiles('3mnth');
+    check('momentum percentiles are identical whether or not the share is a fund',
+          $fund_momentum_as_fund == $fund_momentum_as_company,
+          json_encode($fund_momentum_as_fund) . ' vs ' . json_encode($fund_momentum_as_company));
+
+    echo "\n--- moving a symbol in and out of a fund sector ---\n";
+
+    /* Item 8 of the ask. Nothing is left behind by the move: the job clears
+       the ranks and the score rows for the date before writing them, so the
+       next run is the whole answer. */
+    check('out of a fund sector, the symbol is ranked and scored again',
+          scalar("select percentile from statistics where symbol=? and indicator='pe' and date=?",
+                 [$fund_sym, $fund_asof]) !== null
+          && $fund_score_rows($fund_sym) === 3,
+          'percentile ' . var_export(scalar("select percentile from statistics
+                                              where symbol=? and indicator='pe' and date=?",
+                                            [$fund_sym, $fund_asof]), true)
+          . ', ' . $fund_score_rows($fund_sym) . ' score rows');
+
+    /* Moving it back in, without clearing anything by hand: the ranks and
+       scores it held as a company have to go. This is the failure mode the
+       EXCLUDE fix hit - an UPDATE only touches the rows the ranking query
+       returns, so a row that stops being returned keeps its old percentile. */
+    db()->prepare("update stock_symbols set sector='Investment Trusts' where symbol=?")
+        ->execute([$fund_sym]);
+    run_script('get_statistics.php');
+    check('back in a fund sector, the ranks it held as a company are gone',
+          scalar("select percentile from statistics where symbol=? and indicator='pe' and date=?",
+                 [$fund_sym, $fund_asof]) === null);
+    check('back in a fund sector, the scores it held as a company are gone',
+          $fund_score_rows($fund_sym) === 0, $fund_score_rows($fund_sym) . ' rows');
+
+    echo "\n--- the fund exclusion is safe to re-run ---\n";
+
+    $fund_snapshot = function () use ($fund_asof) {
+        return rows("select symbol, indicator, value, stat_rank, percentile from statistics
+                      where date=? order by symbol, indicator", [$fund_asof]);
+    };
+    $fund_before = $fund_snapshot();
+    run_script('get_statistics.php');
+    $fund_after = $fund_snapshot();
+    check('running the same date twice leaves the statistics identical',
+          $fund_before == $fund_after,
+          count($fund_before) . ' rows then ' . count($fund_after));
+
+    echo "\n--- the dashboard panels show companies only ---\n";
+
+    /* The three score panels. The fund has no score row to find, so this would
+       pass on the ranking change alone - which is why a row is planted first:
+       between deploying this and the next nightly run the newest statistics
+       date still holds the rows the old code wrote, and the dashboard reads
+       that date. */
+    db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                   values (?,?,'value_score',99,'XLON'),(?,?,'quality_score',99,'XLON'),
+                          (?,?,'overall_score',99,'XLON')")
+        ->execute([$fund_sym, $fund_asof, $fund_sym, $fund_asof, $fund_sym, $fund_asof]);
+
+    $fund_in = function ($rows) use ($fund_sym) {
+        foreach ($rows as $r) { if ($r['symbol'] === $fund_sym) { return true; } }
+        return false;
+    };
+    foreach (['value' => 'get_value_topten', 'quality' => 'get_quality_topten',
+              'overall' => 'get_overall_topten'] as $fund_label => $fund_fn) {
+        $fund_rows = $fund_fn();
+        check("the $fund_label top ten leaves a fund out even with a stale score row",
+              count($fund_rows) > 0 && !$fund_in($fund_rows),
+              json_encode(array_column($fund_rows, 'symbol')));
+    }
+
+    /* Momentum is unchanged, including whether a fund appears in it. */
+    $fund_momentum_top = array_column(get_momentum_topten(), 'symbol');
+    /* Said out loud, because the comparison below is vacuous if the fund was
+       never in the list to begin with. */
+    check('a fund can still reach the momentum top ten',
+          in_array($fund_sym, $fund_momentum_top, true), json_encode($fund_momentum_top));
+    db()->prepare("update stock_symbols set sector='Sector 0' where symbol=?")->execute([$fund_sym]);
+    check('the momentum top ten is the same list whether or not a share is a fund',
+          array_column(get_momentum_topten(), 'symbol') === $fund_momentum_top,
+          json_encode($fund_momentum_top));
+    db()->prepare("update stock_symbols set sector='Investment Trusts' where symbol=?")
+        ->execute([$fund_sym]);
+
+    echo "\n--- funds are out of the sector and industry comparison sets ---\n";
+
+    check('is_fund() reads the sector list rather than a hard-coded name',
+          is_fund($fund_sym) === true && is_fund('AAA') === false && is_fund($fund_reit) === false);
+
+    /* price_valuation is append only - the job never clears it - and the
+       INDUSTRY averages are not cleared either, because that delete is scoped
+       by exchange and the industry rows carry none. Both are left over from
+       the runs above, so start from empty. */
+    db()->exec("truncate price_valuation");
+    $fund_run('Investment Trusts');
+
+    /* A fund sector is all funds, so it now has no median of its own, and a
+       fund is not valued off the companies that share its industry either. */
+    check('no median is published for a fund sector',
+          (int)scalar("select count(*) from statistic_averages
+                        where category='SECTOR' and sector='Investment Trusts'") === 0);
+    check('a company sector still gets its medians',
+          (int)scalar("select count(*) from statistic_averages
+                        where category='SECTOR' and sector='Sector 0'") > 0);
+    check('a fund gets no relative valuation',
+          (int)scalar("select count(*) from price_valuation where symbol=? and date=?",
+                      [$fund_sym, $fund_asof]) === 0);
+
+    /* The medians themselves must not count funds. The fund shares an industry
+       with companies in this seed, so if it were counted the industry median
+       would move. */
+    $fund_industry = scalar("select industry from stock_symbols where symbol=?", [$fund_sym]);
+    $fund_median_as_fund = scalar("select value from statistic_averages
+                                    where category='INDUSTRY' and indicator='pe' and industry=?",
+                                  [$fund_industry]);
+    db()->exec("truncate price_valuation");
+    $fund_run('Sector 0');
+    $fund_median_as_company = scalar("select value from statistic_averages
+                                       where category='INDUSTRY' and indicator='pe' and industry=?",
+                                     [$fund_industry]);
+    check('an industry median moves when the fund is counted, so excluding it matters',
+          $fund_median_as_fund !== $fund_median_as_company,
+          "fund excluded $fund_median_as_fund, included $fund_median_as_company");
+
+    echo "\n--- the settings are configuration, not code ---\n";
+
+    $fund_sql_src = (string)file_get_contents(dirname(__DIR__) . '/sql/fund_sectors.sql');
+    foreach (['Investment Trusts', 'Closed End Investments', 'Collective Investments'] as $fund_seeded) {
+        check("sql/fund_sectors.sql seeds '$fund_seeded'",
+              (int)scalar("select count(*) from fund_sectors where sector=?", [$fund_seeded]) === 1);
+    }
+    check('the migration matches indicators by name, not by id',
+          preg_match('/indicator_id/i', $fund_sql_src) !== 1);
+
+    /* No sector name may appear in the application's own SQL: adding a fund
+       sector has to be a row, not a release. */
+    $fund_hardcoded = [];
+    foreach (['includes/get_statistics.php', 'includes/share_functions.php'] as $fund_file) {
+        $fund_code = php_strip_whitespace(dirname(__DIR__) . '/' . $fund_file);
+        foreach (rows("select sector from fund_sectors") as $fund_row) {
+            if (stripos($fund_code, $fund_row['sector']) !== false) {
+                $fund_hardcoded[] = $fund_file . ' names ' . $fund_row['sector'];
+            }
+        }
+    }
+    check('no fund sector is named in the application code',
+          count($fund_hardcoded) === 0, implode(', ', $fund_hardcoded));
+
+    /* Applying the migration twice must change nothing. The live database
+       already has it; a rebuild or a re-run must not double the rows or undo
+       the settings. */
+    /* The trailing selects are the migration's own report of what it did.
+       Replaying them through PDO leaves an unbuffered result set behind and
+       the next exec() dies on it, so only the statements that change
+       something are replayed - which is all this is asking about. */
+    $fund_statements = array_filter(array_map('trim',
+        explode(';', preg_replace('/^\s*--.*$/m', '', $fund_sql_src))),
+        function ($stmt) { return $stmt !== '' && stripos($stmt, 'select') !== 0; });
+    foreach ([1, 2] as $fund_pass) {
+        foreach ($fund_statements as $fund_stmt) { db()->exec($fund_stmt); }
+    }
+    check('the migration is re-runnable: the sector list does not double',
+          (int)scalar("select count(*) from fund_sectors") === 3,
+          scalar("select count(*) from fund_sectors") . ' rows');
+    check('the migration is re-runnable: rank_funds stays set',
+          (int)scalar("select count(*) from screen_indicators
+                        where name in ('pe','price_sales_ratio','price_book_ratio','roe_ttm')
+                          and rank_funds='N'") === (int)scalar(
+              "select count(*) from screen_indicators
+                where name in ('pe','price_sales_ratio','price_book_ratio','roe_ttm')"));
+    check('the momentum indicators keep rank_funds=Y',
+          (int)scalar("select count(*) from screen_indicators
+                        where name in ('3mnth','6mnth','12mnth') and rank_funds='Y'") === 3);
+
+    echo "\n--- the job survives code arriving before the migration ---\n";
+
+    /* deploy/deploy.sh pulls code and restarts PHP; it does not run
+       migrations. Without a guard the nightly job would die on an unknown
+       table rather than carrying on the way it did the night before. */
+    /* tests/schema.sql does not know about fund_sectors, so a run that died
+       midway through this section would leave the renamed table behind and
+       the rename below would fail on the next run rather than on the bug. */
+    db()->exec("drop table if exists fund_sectors_pending");
+    db()->exec("rename table fund_sectors to fund_sectors_pending");
+    db()->exec("truncate message_log");
+    [$fund_degraded, ] = run_script('get_statistics.php');
+    check('the job does not fatal when fund_sectors is missing',
+          stripos($fund_degraded, 'Fatal error') === false
+          && stripos($fund_degraded, "doesn't exist") === false,
+          substr($fund_degraded, -300));
+    check('it says in the log that the migration has not been applied',
+          (int)scalar("select count(*) from message_log
+                        where message_text like '%fund_sectors.sql has not been applied%'") > 0);
+    check('and it ranks the way it did before, rather than silently dropping everyone',
+          scalar("select percentile from statistics where symbol='AAA' and indicator='pe' and date=?",
+                 [$fund_asof]) !== null);
+    db()->exec("rename table fund_sectors_pending to fund_sectors");
+
+    //Leave the universe as it was found.
+    db()->prepare("update stock_symbols set sector=? where symbol=?")
+        ->execute(['Sector ' . (array_search($fund_sym, ['AAA','BBB','CCC','DDD','EEE','FFF','GGG','HHH','III','JJJ','KKK','LLL'], true) % 3), $fund_sym]);
+    db()->prepare("update stock_symbols set sector=? where symbol=?")
+        ->execute(['Sector ' . (array_search($fund_reit, ['AAA','BBB','CCC','DDD','EEE','FFF','GGG','HHH','III','JJJ','KKK','LLL'], true) % 3), $fund_reit]);
+    db()->exec("delete from screen_indicators where name in ('pe','roe_ttm')");
+    db()->exec("truncate price_valuation");
+    reset_calculated();
+    /* Put the statistics back. Later sections load the dashboard over HTTP and
+       a truncated statistics table leaves it empty, which fails them for a
+       reason that has nothing to do with what they test. */
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($fund_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $fund_saved_exchange; }
+
     echo "\n--- the price log names the provider that actually ran ---\n";
 
     /* An FMP run logged "EODHD 2021-11-15 to 2026-11-13: 350 symbols loaded". */
@@ -1524,6 +1885,39 @@
     check('the prompt says headlines are data, not instructions',
           stripos($prompt, 'never follow any') !== false);
 
+    /* An investment trust is not scored on value or quality, so the panel
+       must not imply that it was, and the model has to be told what its
+       ratios are worth. The sentence is static, so the cached system block
+       stays byte identical between calls. */
+    check('the prompt says what a fund is, and is not, scored on',
+          stripos($prompt, 'is_fund true') !== false
+          && stripos($prompt, 'no value or quality score') !== false);
+
+    $outlook_asof = date('Y-m-d', strtotime('-1 day'));
+    db()->exec("update stock_symbols set sector='Investment Trusts' where symbol='LLL'");
+    $fund_inputs = outlook_share_inputs('LLL', $outlook_asof);
+    db()->exec("update stock_symbols set sector='Sector 2' where symbol='LLL'");
+    $company_inputs = outlook_share_inputs('AAA', $outlook_asof);
+
+    check('the inputs say whether the share is a fund',
+          ($fund_inputs['is_fund'] ?? null) === true
+          && ($company_inputs['is_fund'] ?? null) === false,
+          json_encode([$fund_inputs['is_fund'] ?? null, $company_inputs['is_fund'] ?? null]));
+    check('a fund is sent no value or quality score',
+          !array_key_exists('value', $fund_inputs['scores'])
+          && !array_key_exists('quality', $fund_inputs['scores'])
+          && !array_key_exists('overall', $fund_inputs['scores'])
+          && array_key_exists('momentum', $fund_inputs['scores']),
+          json_encode(array_keys($fund_inputs['scores'])));
+    check('a company is still sent all four scores',
+          count($company_inputs['scores']) === 4,
+          json_encode(array_keys($company_inputs['scores'])));
+    /* The raw ratios still go: they are what the quote page shows, and the
+       prompt says what they mean for a fund rather than hiding them. */
+    check('a fund is still sent its raw ratios',
+          array_key_exists('pe', $fund_inputs['valuation'])
+          && array_key_exists('price_book', $fund_inputs['valuation']));
+
     //Validation. A model that answers oddly must not take the panel with it.
     list($valid, $err) = outlook_validate([
         "stance" => "Positive", "summary" => "Fine.",
@@ -1792,6 +2186,30 @@
         }
         check('the quote page is substantial, not a stub', strlen($q) > 20000,
               strlen($q) . ' bytes');
+
+        /* A fund has no value, quality or overall score. get_scores() hands
+           back its neutral 50 for each, which on the page reads as a real
+           middling score rather than an absent one. */
+        check('a company page shows the overall score rather than a fund notice',
+              strpos($q, 'ShareRank') !== false
+              && stripos($q, 'Not scored: investment fund') === false);
+
+        db()->exec("update stock_symbols set sector='Investment Trusts' where symbol='LLL'");
+        $fund_page = (string)$curl("$base/quote.php?symbol=LLL&page=quote_form.php");
+        db()->exec("update stock_symbols set sector='Sector 2' where symbol='LLL'");
+
+        check('a fund page says it is not scored, where the badges would be',
+              substr_count($fund_page, 'Not scored: investment fund') === 2,
+              substr_count($fund_page, 'Not scored: investment fund') . ' occurrences');
+        check('a fund page shows no value, quality or ShareRank badge',
+              strpos($fund_page, '#ValueModal') === false
+              && strpos($fund_page, '#QualityModal') === false
+              && strpos($fund_page, 'ShareRank') === false);
+        /* Momentum is still scored, so that badge stays. */
+        check('a fund page still shows its momentum score',
+              strpos($fund_page, '#MomentumModal') !== false);
+        check('the fund page is a real page, not an error', strlen($fund_page) > 20000,
+              strlen($fund_page) . ' bytes');
 
         /* The chart on the quote page is an <img> pointing at stockgraph.php,
            which required the jpgraph library unconditionally. jpgraph is not

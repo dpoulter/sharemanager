@@ -160,11 +160,17 @@ sudo mariadb sharemanager < sql/paper_trading.sql
 sudo mariadb sharemanager < sql/password_resets.sql
 sudo mariadb sharemanager < sql/trend_screens.sql
 sudo mariadb sharemanager < sql/ai_outlook.sql
+sudo mariadb sharemanager < sql/fund_sectors.sql
 ```
 
-`sql/trend_screens.sql` and `sql/ai_outlook.sql` are both re-runnable, so a
-later `git pull` can just run them again rather than working out whether they
-were applied.
+`sql/trend_screens.sql`, `sql/ai_outlook.sql` and `sql/fund_sectors.sql` are
+all re-runnable, so a later `git pull` can just run them again rather than
+working out whether they were applied.
+
+`deploy/deploy.sh` does not run migrations, so after pulling a change that
+brings a new one, run it by hand. Until `sql/fund_sectors.sql` has been
+applied the nightly job carries on ranking investment funds alongside
+companies, the way it did before, and says so in `message_log`.
 
 `tests/schema.sql` is a reconstruction, not a dump of your production database.
 If you have a real `mysqldump --no-data` from the live site, use that instead

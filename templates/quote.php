@@ -110,6 +110,17 @@
     								<span class="badge <?php print($badge_color)?>"><?php print(round($scores['momentum'],0))?></span>
     								<a data-bs-toggle="modal" href="#MomentumModal" >Momentum</a>
     							</li>
+    							<?php /* An investment fund has no value, quality or overall score:
+							             the ratios they are built from describe a wrapper rather
+							             than a business, so the nightly job writes no score row
+							             for a fund at all. get_scores() would hand back its
+							             neutral 50 for each, which reads as a real middling
+							             score rather than an absent one. */ ?>
+								<?php if (!empty($scores['is_fund'])) { ?>
+								<li class="list-group-item">
+									Not scored: investment fund
+								</li>
+								<?php } else { ?>
     							<?php if ($scores['value'] <= 25)
 										 $badge_color='text-bg-danger';
 									  elseif ($scores['value'] <= 50)
@@ -137,11 +148,19 @@
 	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['quality'],0))?></span>
 	    							<a data-bs-toggle="modal" href="#QualityModal" >Quality</a>
 	  							</li>
+								<?php } ?>
 							</ul>
 		  				</div>
 						  <?php write_log ("quote.php","5")?>
 		  		
   						<div class="card-footer">
+	  						<?php if (!empty($scores['is_fund'])) { ?>
+	  						<ul class="list-group">
+	  							<li class="list-group-item">
+	    							Not scored: investment fund
+	  							</li>
+							</ul>
+							<?php } else { ?>
 	  						<?php if ($scores['overall'] <= 25)
 										 $badge_color='text-bg-danger';
 									  elseif ($scores['overall'] <= 50)
@@ -157,6 +176,7 @@
 	    							ShareRank
 	  							</li>
 							</ul>
+							<?php } ?>
   						
   						</div>
 					</div>
