@@ -137,14 +137,9 @@
 			$qualityranks=get_quality_rank($symbol);
 			//$qualityranks=null;
 			write_log("quote.php","16");
-			$piotroski_fscore=get_piotroski_fscore($symbol);
-			$piotroski_variables=get_piotroski_variables($symbol);
-			write_log("quote.php","17");
-			$altman_zscore=get_altman_zscore($symbol);
-			
-			$altman_variables=get_altman_variables($symbol);
-			$altman_nonman_variables=get_altman_nonman_variables($symbol);
-			$altman_zscore_nonman=get_altman_zscore_nonman($symbol);
+/* Piotroski and Altman come from the provider now; the local
+			   calculations that used to fill them read an empty table. */
+			$health_scores=get_health_scores($symbol);
 
 			write_log("quote.php","Get relative_sector_valuations");
 			$relative_sector_valuations=get_relative_to_sector($symbol); 
@@ -166,23 +161,23 @@
 
 			 if(isset($screen_id))
 				render("quote.php", ["title" => session_exchange().":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
-					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
+					
 					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations,"share_info"=> $share_info
 					, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"screen_id"=>$screen_id,"incomestatement"=>$income_statement
 					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
 					,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks
-					,"qualityranks"=>$qualityranks,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman,"articles"=>$articles
+					,"qualityranks"=>$qualityranks,"articles"=>$articles,"health_scores"=>$health_scores
 					,"currency_note"=>$currency_note]);
 			 else
 				render("quote.php", ["title" => session_exchange().":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
-					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
+					
 					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations
 					,"share_info"=> $share_info, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"incomestatement"=>$income_statement
 					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics
 					,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics
 					,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks,"qualityranks"=>$qualityranks
-					,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman,"articles"=>$articles
-					,"currency_note"=>$currency_note]);
+					,"articles"=>$articles
+					,"health_scores"=>$health_scores,"currency_note"=>$currency_note]);
 
 			
 			write_log("quote.php","End render form");

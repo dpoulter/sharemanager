@@ -2863,6 +2863,271 @@
     }
     check('and nothing called them', count($arch_callers) === 0, implode(', ', $arch_callers));
 
+    echo "\n--- Piotroski, Altman and growth come from the provider ---\n";
+
+    /* This application worked Piotroski and Altman out for itself from
+       financial_statement_values, which is empty on the live database. So
+       neither score was ever written, the quote page's health card had been
+       commented out for years, and the three links behind it called onclick
+       handlers that exist in no script. earnings_growth was the same from
+       the other end: registered, never filled, because its calculation
+       needs EPS estimates no loader writes.
+
+       What is not moving: close_price, ma50, ma200 and the momentum series
+       stay local. The provider's 200-day average for RR is 1338.8005,
+       identical to this application's, and the history behind it is what the
+       screens and backtests read. */
+
+    $hs_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $hs_asof = asof_date();
+    $hs_all  = "('HMAN','HBNK','HLOW')";
+
+    $run_python_hs = function ($script) {
+        $cmd = 'SM_DB_HOST=' . escapeshellarg(SERVER)
+             . ' SM_DB_NAME=' . escapeshellarg(DATABASE)
+             . ' SM_DB_USER=' . escapeshellarg(USERNAME)
+             . ' SM_DB_PASS=' . escapeshellarg(PASSWORD)
+             . ' python3 ' . escapeshellarg(dirname(__DIR__) . '/python/' . $script);
+        exec($cmd . ' 2>&1', $out, $rc);
+        return [implode("\n", $out), $rc];
+    };
+
+    reset_calculated();
+    db()->exec("delete from stock_info");
+    db()->exec("delete from fx_rates");
+    db()->exec("delete from stock_symbols where symbol in $hs_all");
+
+    check('the migration registered both scores in the quality category',
+          (int)scalar("select count(*) from screen_indicators
+                        where name in ('piotroski_score','altman_z')
+                          and category=10 and calc_rank='Y' and rank_order='value DESC'
+                          and rank_funds='N' and fx_adjust='NONE'") === 2);
+    check('and the two growth rates, unranked, in their own category',
+          (int)scalar("select count(*) from screen_indicators
+                        where name in ('revenue_growth','earnings_growth')
+                          and category=11 and calc_rank='N'") === 2);
+    check('earnings_growth is mapped to the provider rather than calculated',
+          scalar("select provider_field from screen_indicators where name='earnings_growth'")
+          === 'Derived.epsGrowth'
+          && scalar("select ifnull(screen_function,'') from screen_indicators
+                      where name='earnings_growth'") === '');
+    check('the scores this application used to work out itself are disabled',
+          (int)scalar("select count(*) from screen_indicators
+                        where name in ('piotroski_fscore','altman_zscore','altman_zscore_nonman')
+                          and enabled='Y'") === 0);
+
+    /* Three companies: a manufacturer, a bank and a weak manufacturer. roe
+       is there so the quality score has a second component to average. */
+    db()->exec("delete from screen_indicators where name='roe_ttm'");
+    db()->exec("insert into screen_indicators
+                  (name, provider_field, description, enabled, order_number,
+                   calc_rank, rank_zero, rank_order, rank_negative, rank_funds,
+                   fx_adjust, category)
+                values ('roe_ttm','KeyMetrics.returnOnEquityTTM','Return on equity','Y',2,
+                        'Y','N','value DESC','NORMAL','N','NONE',10)");
+
+    $hs_rows = ['HMAN' => ['sector' => 'Industrials',        'p' => 7, 'z' => 3.09, 'roe' => 0.20],
+                'HBNK' => ['sector' => 'Financial Services', 'p' => 6, 'z' => 0.40, 'roe' => 0.18],
+                'HLOW' => ['sector' => 'Industrials',        'p' => 2, 'z' => 1.10, 'roe' => 0.05]];
+    $hs_sym  = db()->prepare("insert into stock_symbols (symbol,name,exchange,enabled,sector,industry,market,report_ccy,report_ccy_asof,is_fund)
+                              values (?,?,'XLON','Y',?,'Health Industry','FTSE 250','GBP',?,'N')");
+    $hs_info = db()->prepare("insert into stock_info (symbol,asofdate,attribute,value) values (?,?,?,?)");
+    foreach ($hs_rows as $hs_s => $hs_r) {
+        $hs_sym->execute([$hs_s, $hs_s . ' Test PLC', $hs_r['sector'], $hs_asof]);
+        $hs_info->execute([$hs_s, $hs_asof, 'Scores.piotroskiScore', (string)$hs_r['p']]);
+        $hs_info->execute([$hs_s, $hs_asof, 'Scores.altmanZScore', (string)$hs_r['z']]);
+        $hs_info->execute([$hs_s, $hs_asof, 'KeyMetrics.returnOnEquityTTM', (string)$hs_r['roe']]);
+        $hs_info->execute([$hs_s, $hs_asof, 'Growth.revenueGrowth', '0.0512']);
+        $hs_info->execute([$hs_s, $hs_asof, 'Derived.epsGrowth', '0.1834']);
+    }
+
+    [$hs_out, $hs_rc] = $run_python_hs('get_api_stats.py');
+    check('get_api_stats.py loads them', $hs_rc === 0, substr($hs_out, -400));
+
+    $hs_value = function ($symbol, $indicator) use ($hs_asof) {
+        $v = scalar("select value from statistics where symbol=? and indicator=? and date=? and exchange='XLON'",
+                    [$symbol, $indicator, $hs_asof]);
+        return ($v === false || $v === null) ? null : (float)$v;
+    };
+    $hs_pct = function ($symbol, $indicator) use ($hs_asof) {
+        $v = scalar("select percentile from statistics where symbol=? and indicator=? and date=?",
+                    [$symbol, $indicator, $hs_asof]);
+        return ($v === false || $v === null) ? null : (float)$v;
+    };
+
+    check('the Piotroski score arrives as the provider sent it',
+          $hs_value('HMAN', 'piotroski_score') === 7.0,
+          var_export($hs_value('HMAN', 'piotroski_score'), true));
+    check('and the Altman Z',
+          $hs_value('HMAN', 'altman_z') === 3.09,
+          var_export($hs_value('HMAN', 'altman_z'), true));
+    check('neither is touched by the currency conversion, being unitless',
+          $hs_value('HBNK', 'altman_z') === 0.40 && $hs_value('HLOW', 'piotroski_score') === 2.0);
+    check('revenue growth is loaded',
+          $hs_value('HMAN', 'revenue_growth') === 0.0512);
+    check('and EPS growth, under the indicator that was never filled',
+          $hs_value('HMAN', 'earnings_growth') === 0.1834,
+          var_export($hs_value('HMAN', 'earnings_growth'), true));
+
+    run_script('get_statistics.php');
+
+    check('the Piotroski score is ranked, so it counts in the quality score',
+          $hs_pct('HMAN', 'piotroski_score') !== null
+          && $hs_pct('HMAN', 'piotroski_score') > $hs_pct('HLOW', 'piotroski_score'),
+          json_encode([$hs_pct('HMAN', 'piotroski_score'), $hs_pct('HLOW', 'piotroski_score')]));
+    check('the growth rates are not ranked, because nothing scores on them',
+          $hs_pct('HMAN', 'revenue_growth') === null
+          && $hs_pct('HMAN', 'earnings_growth') === null);
+
+    echo "\n--- Altman Z is not a measure of a bank ---\n";
+
+    /* Altman's Z was fitted on manufacturers and reads a bank's balance
+       sheet as distress: leverage is the business, not a warning. HBNK's Z
+       of 0.40 would be the worst in the set and would drag its quality score
+       down for being a bank. */
+    check('a manufacturer is ranked on it',
+          $hs_pct('HMAN', 'altman_z') !== null && $hs_pct('HLOW', 'altman_z') !== null);
+    check('a financial is not',
+          $hs_pct('HBNK', 'altman_z') === null,
+          var_export($hs_pct('HBNK', 'altman_z'), true));
+    check('but the figure is still stored, so the page can show it',
+          $hs_value('HBNK', 'altman_z') === 0.40);
+    check('the exclusion is a row, not a name in the code',
+          (int)scalar("select count(*) from indicator_sector_exclusions
+                        where indicator='altman_z' and sector='Financial Services'") === 1);
+    $hs_lib = php_strip_whitespace($INCLUDES . '/share_functions.php');
+    $hs_job = php_strip_whitespace($INCLUDES . '/get_statistics.php');
+    check('no sector name appears in the application code',
+          strpos($hs_lib, 'Financial Services') === false
+          && strpos($hs_job, 'Financial Services') === false);
+    check('and the reason is on record for the page to quote',
+          stripos((string)sector_exclusion_reason('altman_z', 'HBNK'), 'leverage') !== false,
+          var_export(sector_exclusion_reason('altman_z', 'HBNK'), true));
+    check('a manufacturer has no such reason',
+          sector_exclusion_reason('altman_z', 'HMAN') === null);
+
+    echo "\n--- the quality score averages what applies ---\n";
+
+    /* Two components for the bank, three for the manufacturers. Summing
+       would score the bank down for the one that does not apply to it. */
+    $hs_components = function ($symbol) use ($hs_asof) {
+        return (int)scalar("select count(*) from statistics s, screen_indicators si
+                             where s.indicator=si.name and s.symbol=? and s.date=?
+                               and si.category=10 and si.enabled='Y' and si.calc_rank='Y'
+                               and s.percentile is not null", [$symbol, $hs_asof]);
+    };
+    check('the bank is scored on two components and the manufacturers on three',
+          $hs_components('HBNK') === 2 && $hs_components('HMAN') === 3,
+          json_encode([$hs_components('HBNK'), $hs_components('HMAN')]));
+
+    $hs_quality = function ($symbol) use ($hs_asof) {
+        $v = scalar("select value from statistics where symbol=? and indicator='quality_score' and date=?",
+                    [$symbol, $hs_asof]);
+        return ($v === false || $v === null) ? null : (float)$v;
+    };
+    check('all three are scored',
+          $hs_quality('HMAN') !== null && $hs_quality('HBNK') !== null
+          && $hs_quality('HLOW') !== null,
+          json_encode([$hs_quality('HMAN'), $hs_quality('HBNK'), $hs_quality('HLOW')]));
+    /* HBNK's two applicable measures are both better than HLOW's three, so
+       on an average it beats it. On a sum HLOW's extra component could carry
+       it past, which is the penalty for a gap this removes. */
+    check('a bank with good figures beats a weak manufacturer with more of them',
+          $hs_quality('HBNK') > $hs_quality('HLOW'),
+          'HBNK ' . var_export($hs_quality('HBNK'), true)
+          . ', HLOW ' . var_export($hs_quality('HLOW'), true));
+    check('the quality score is an average in the query, not only in its effect',
+          preg_match('/category = 10[^"]*sum\(if\(percentile is null,50,percentile\)\)\/count\(\*\)/s', $hs_job) === 1
+          || preg_match('/sum\(if\(percentile is null,50,percentile\)\)\/count\(\*\)[^"]*category = 10/s', $hs_job) === 1);
+
+    echo "\n--- the quote page shows the provider's scores ---\n";
+
+    $hs_health = get_health_scores('HMAN');
+    check('the page reader returns both scores with their percentiles',
+          $hs_health['piotroski_score']['value'] === 7.0
+          && $hs_health['altman_z']['value'] === 3.09
+          && $hs_health['altman_z']['percentile'] !== null,
+          json_encode($hs_health));
+    $hs_bank = get_health_scores('HBNK');
+    check('and says why the bank\'s Altman is not ranked',
+          $hs_bank['altman_z']['value'] === 0.40
+          && $hs_bank['altman_z']['percentile'] === null
+          && stripos((string)$hs_bank['altman_z']['not_ranked'], 'leverage') !== false,
+          json_encode($hs_bank['altman_z']));
+
+    $hs_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/quote.php');
+    check('the health card is no longer commented out',
+          strpos($hs_tpl, 'Financial Health') !== false);
+    check('the links that called handlers nothing defines are gone',
+          strpos($hs_tpl, 'load_piotroski_modal') === false
+          && strpos($hs_tpl, 'load_altman_modal') === false
+          && strpos($hs_tpl, 'load_altman_nonman_modal') === false);
+    check('and so are the modals that read a table nothing writes',
+          strpos($hs_tpl, 'piotroski_variables') === false
+          && strpos($hs_tpl, 'altman_variables') === false
+          && strpos($hs_tpl, 'altman_nonman_variables') === false);
+    check('the page says when a score is shown but not ranked',
+          strpos($hs_tpl, 'not ranked') !== false
+          && strpos($hs_tpl, 'does not count towards the quality score') !== false);
+
+    echo "\n--- the calculations they replace are gone ---\n";
+
+    /* Nothing in the served tree may still call them: the functions have
+       been deleted, so a caller is a fatal rather than a wrong number. */
+    $hs_dead = ['calc_piotroski_fscore', 'calc_altman_zscore', 'calc_altman_zscore_nonman',
+                'get_piotroski_fscore', 'get_altman_zscore', 'get_altman_zscore_nonman',
+                'get_piotroski_variables', 'get_altman_variables', 'get_altman_nonman_variables'];
+    $hs_live = array_merge(
+        glob(dirname(__DIR__) . '/{includes,public,templates}/*.php', GLOB_BRACE),
+        glob(dirname(__DIR__) . '/{includes,public,templates}/*.{js,sh}', GLOB_BRACE));
+    $hs_found = [];
+    foreach ($hs_live as $hs_file) {
+        $hs_text = php_strip_whitespace($hs_file);
+        foreach ($hs_dead as $hs_fn) {
+            if (preg_match('/\b' . preg_quote($hs_fn, '/') . '\s*\(/', $hs_text)) {
+                $hs_found[] = basename($hs_file) . ' -> ' . $hs_fn;
+            }
+        }
+    }
+    check('nothing defines or calls the removed calculations',
+          count($hs_found) === 0, implode(', ', $hs_found));
+    check('nothing in the live tree writes health_indicators any more',
+          count(array_filter($hs_live, function ($f) {
+              return strpos(php_strip_whitespace($f), 'into health_indicators') !== false;
+          })) === 0);
+    /* The nightly job must not try to dispatch to a function that is gone. */
+    check('no indicator is registered against a removed calculation',
+          (int)scalar("select count(*) from screen_indicators
+                        where screen_function in ('calc_piotroski_fscore','calc_altman_zscore',
+                                                  'calc_altman_zscore_nonman')") === 0);
+
+    echo "\n--- the outlook is sent the scores and the growth ---\n";
+
+    $hs_inputs = outlook_share_inputs('HMAN', $hs_asof);
+    check('the outlook carries the Piotroski score and the Altman Z',
+          ($hs_inputs['health']['piotroski_score'] ?? null) === 7.0
+          && ($hs_inputs['health']['altman_z'] ?? null) === 3.09,
+          json_encode($hs_inputs['health'] ?? null));
+    check('and the two growth rates',
+          ($hs_inputs['growth']['revenue_growth'] ?? null) === 0.0512
+          && ($hs_inputs['growth']['eps_growth'] ?? null) === 0.1834,
+          json_encode($hs_inputs['growth'] ?? null));
+    check('with a note on how to read them',
+          stripos($hs_inputs['health']['altman_z_note'], 'not meaningful for financials') !== false
+          && stripos($hs_inputs['growth']['growth_note'], 'fractions') !== false);
+
+    //Leave the universe as it was found.
+    db()->exec("delete from stock_symbols where symbol in $hs_all");
+    db()->exec("delete from statistics where symbol in $hs_all");
+    db()->exec("delete from stock_info");
+    db()->exec("delete from screen_indicators where name='roe_ttm'");
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($hs_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $hs_saved_exchange; }
+
     echo "\n--- the price log names the provider that actually ran ---\n";
 
     /* An FMP run logged "EODHD 2021-11-15 to 2026-11-13: 350 symbols loaded". */

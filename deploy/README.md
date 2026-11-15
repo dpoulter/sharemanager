@@ -162,11 +162,14 @@ sudo mariadb sharemanager < sql/trend_screens.sql
 sudo mariadb sharemanager < sql/ai_outlook.sql
 sudo mariadb sharemanager < sql/fund_sectors.sql
 sudo mariadb sharemanager < sql/report_currency.sql
+sudo mariadb sharemanager < sql/shareholder_yield.sql
+sudo mariadb sharemanager < sql/fmp_scores.sql
 ```
 
-`sql/trend_screens.sql`, `sql/ai_outlook.sql`, `sql/fund_sectors.sql` and
-`sql/report_currency.sql` are all re-runnable, so a later `git pull` can just
-run them again rather than working out whether they were applied.
+Every `sql/*.sql` above is re-runnable, so a later `git pull` can just run
+them all again rather than working out which are new. Two currently need it
+on a database that already has the others: `sql/fund_sectors.sql` adds
+`stock_symbols.is_fund`, and `sql/fmp_scores.sql` is new.
 
 `sql/report_currency.sql` is the one that matters most to get in before the
 next nightly run. Until it is applied, `stock_symbols.report_ccy` does not

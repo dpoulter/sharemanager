@@ -174,6 +174,14 @@
 			$fund_filter = (strtoupper(trim($indicator['rank_funds'])) === 'N')
 			             ? not_fund_sql('s.symbol') : "";
 
+			/* And the sectors this indicator does not apply to. Altman's Z
+			   reads a bank's balance sheet as distress because leverage is
+			   the business, so ranking it there puts every financial last
+			   for being a financial. The value is still stored and still
+			   shown; it is only left out of the ranking and so out of the
+			   quality score. See sql/fmp_scores.sql. */
+			$sector_filter = sector_exclusion_sql($indicator['name'], 's.symbol');
+
 		 	$sql1 = "SELECT
 			 symbol,
 			 IF(value = 0, IF(rank_zero = 'N', IF(rank_order = 'DESC', 0, @rownum), `rank`), `rank`) AS `rank`,
@@ -209,6 +217,7 @@
 							   AND indicator = '".$indicator['name']."'
 							   ".$negative_filter."
 							   ".$fund_filter."
+							   ".$sector_filter."
 						 ) s,
 						 (SELECT @rownum := 0, @prev_value := NULL) r
 					  ORDER BY ".$order_by."
@@ -312,7 +321,7 @@
 
 		   not_fund_sql() leaves investment funds out: no value_score row is
 		   written for a fund at all. See sql/fund_sectors.sql. */
-		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and si.enabled='Y' and si.category=12 and si.calc_rank='Y' ".not_fund_sql('s.symbol')."  group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and si.enabled='Y' and si.category=12 and si.calc_rank='Y' ".not_fund_sql('s.symbol').not_sector_excluded_sql('s.symbol','s.indicator')."  group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/6) as percentile
@@ -331,7 +340,13 @@
 		
 		//Calculate Quality Ranking
 		write_log("get_statistics.php","Calculate Quality Ranking");
-		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and category = 10  and s.exchange=? ".not_fund_sql('s.symbol')." group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		/* The average of its components, like the value score, and for the
+		   same reason: category 10 holds three indicators now rather than
+		   one, and a company whose Altman Z is not ranked - every bank and
+		   insurer - would otherwise sum over two where its peers sum over
+		   three and score lower for the gap. si.enabled='Y' and calc_rank='Y'
+		   so a disabled or unranked row cannot drag it either. */
+		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and si.category = 10 and si.enabled='Y' and si.calc_rank='Y' and s.exchange=? ".not_fund_sql('s.symbol').not_sector_excluded_sql('s.symbol','s.indicator')." group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/1) as percentile

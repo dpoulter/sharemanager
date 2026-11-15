@@ -181,71 +181,60 @@
   						</div>
 					</div>
 					<?php write_log ("quote.php","6")?>
-				<!--
-					<div class="card card-default">
-						<div class="card-header">
-							Health Indicators
-						</div>
-		  				<div class="card-body">
-		  					<table class="table">
-		  						<tr>
-		  							<td width="80%"><a href="#Piotroski" onclick="load_piotroski_modal()">Piotroski F-Score</a></td>
-		  							
-		  							<td style="text-align:right">
-		  							<?php if ($piotroski_fscore <= 2)
-											 $state='label-danger';
-										  elseif ($piotroski_fscore <= 5)
-										  	$state='label-warning';
-										  elseif ($piotroski_fscore <= 7)
-										  	$state='label-info';
-										  elseif ($piotroski_fscore <= 9)
-										  	$state='label-success';
+				<?php /* The health card was commented out for years: the scores it
+				         showed were worked out from financial_statement_values,
+				         which is empty, and its three links called
+				         load_piotroski_modal(), load_altman_modal() and
+				         load_altman_nonman_modal() - none of which exists in any
+				         script on the page. Both scores come from the provider
+				         now, so the card shows them, with the percentile that
+				         feeds the quality score beside each. */ ?>
+				<div class="card card-default">
+					<div class="card-header">
+						Financial Health
+						<small class="text-body-secondary d-block">From the provider's own figures</small>
+					</div>
+					<div class="card-body">
+						<table class="table table-borderless table-sm">
+						<?php foreach ($health_scores as $health_name => $health): ?>
+							<tr>
+								<td width="60%"><?=htmlspecialchars($health['label'])?></td>
+								<td style="text-align:right">
+									<?php if ($health['value'] === null): ?>
+										<span class="text-body-secondary">no figure</span>
+									<?php else: ?>
+										<?=htmlspecialchars(rtrim(rtrim(number_format($health['value'], 2), '0'), '.'))?>
+									<?php endif?>
+								</td>
+								<td style="text-align:right">
+									<?php if ($health['not_ranked'] !== null): ?>
+										<span class="badge text-bg-secondary" data-bs-toggle="tooltip"
+										      title="<?=htmlspecialchars($health['not_ranked'])?>">not ranked</span>
+									<?php elseif ($health['percentile'] === null): ?>
+										<span class="text-body-secondary">&nbsp;</span>
+									<?php else:
+										if ($health['percentile'] <= 25)      $badge_color='text-bg-danger';
+										elseif ($health['percentile'] <= 50)  $badge_color='text-bg-warning';
+										elseif ($health['percentile'] <= 75)  $badge_color='text-bg-info';
+										else                                  $badge_color='text-bg-success';
 									?>
-									
-									<span class="label <?php print($state)?>"><?php print($piotroski_fscore)?>	</span>
-		  							</td>
-		  						</tr>
-		  						<tr>
-		  						<td width="80%"><a href="#Altman" onclick="load_altman_modal()">Altman Z-Score (manufacturing)</a></td>	
-		  						<td style="text-align:right">
-		  						<?php if ($altman_zscore < 1.81)
-											 $state='label-danger';
-										  elseif ($altman_zscore < 2.675)
-										  	$state='label-warning';
-										  elseif ($altman_zscore <= 2.99)
-										  	$state='label-info';
-										  elseif ($altman_zscore >= 3.0)
-										  	$state='label-success';
-									?>
-									
-									<span class="label <?php print($state)?>"><?php print($altman_zscore)?>	</span>
-									
-		  						</td>
-		  						</tr>
-		  						<tr>
-		  						<td width="80%"><a href="#AltmanNonman" onclick="load_altman_nonman_modal()">Altman Z-Score (non manufacturing)</a></td>	
-		  						<td style="text-align:right">
-		  						<?php if ($altman_zscore_nonman < 1.2)
-											 $state='label-danger';
-										  elseif ($altman_zscore_nonman <= 2.6)
-										  	$state='label-info';
-										  elseif ($altman_zscore_nonman > 2.6)
-										  	$state='label-success';
-									?>
-									
-									<span class="label <?php print($state)?>"><?php print($altman_zscore_nonman)?>	</span>
-									
-		  						</td>
-		  						</tr>
-		  						
-		  					</table>
-		  					
-		  					
-		    						
-		  				</div>
-	  				</div>
-	  				
-				-->
+										<span class="badge <?=$badge_color?>" data-bs-toggle="tooltip"
+										      title="Percentile against the rest of the index"><?=round($health['percentile'])?></span>
+									<?php endif?>
+								</td>
+							</tr>
+						<?php endforeach?>
+						</table>
+						<?php foreach ($health_scores as $health): ?>
+							<?php if ($health['not_ranked'] !== null): ?>
+							<small class="text-body-secondary d-block"><?=htmlspecialchars($health['label'])?>:
+								<?=htmlspecialchars($health['not_ranked'])?>, so it is shown but not ranked and
+								does not count towards the quality score.</small>
+							<?php endif?>
+						<?php endforeach?>
+					</div>
+				</div>
+
 				
 				<?php write_log ("quote.php","7")?>
 	  				
@@ -820,142 +809,9 @@
 			</div>
 
 			<?php write_log ("quote.php","19")?>
-			<div id="PiotroskiModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="PiotroskiModal" aria-hidden="true">
-			  <div class="modal-dialog modal-lg">
-			  	
-			    <div class="modal-content">
-			    	<div class="modal-header">
-          				<h4 class="modal-title">Piotroski F-Score Criteria</h4>
-        			</div>
-					<div class="modal-body">
-						The F-Score was designed by Joseph Piotroski, a professor in accounting at Stanford University, and is used to identify companies for which the prospects are improving. It's the sum of 9 binary scores based on profitability, funding and operational efficiency. It looks at simple things such as: 'has the company made more profit compared to last year?' (+1 point) but also: 'is the company cooking the books by adjusting accruals?' (0 points). By using 9 points he was able to get enough signals to determine whether the company is really improving or not.
-						<i>MFIE Capital</i>. Retrieved 12:17, September 11, 2016, from <a class="external free" href="https://www.valuesignals.com/Glossary/Details/Piotroski_F_Score">https://www.valuesignals.com/Glossary/Details/Piotroski_F_Score</a>
-						<table class="table borderless">
-			    
-						
-						<tbody>
-							<?php foreach($piotroski_variables as $variable): ?>
-								
-								<?php if ($variable["value"] == 1){
-										$label='label-success';
-										$label_text='PASS';
-								}
-									  else{
-									  	$label='label-danger';	
-									    $label_text='FAIL ';
-									  }
-								?>
-
-							<tr>
-								<td width="90%"> <?php print ($variable["variable"] ); ?> </td>
-								<td width="10%"><span class="label <?= $label ?>"><?php print ($label_text); ?> </span> </td>
-								
-							</tr>
-							
-							<?php endforeach?>
-							
-						</tbody>
-		
-                 		</table>
-                 </div>
-		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
-        		</div>         		
-		 				
-			    </div>
-			    
-			  </div>
-			  
-			</div>
-			<?php write_log ("quote.php","20")?>
-			<div id="AltmanModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="AltmanModal" aria-hidden="true">
-			  <div class="modal-dialog modal-lg">
-			  	
-			    <div class="modal-content">
-			    	<div class="modal-header">
-          				<h4 class="modal-title">Altman Z-Score</h4>
-        			</div>
-					<div class="modal-body">
-						<p>The Z-score formula for predicting bankruptcy was published in 1968 by Edward I. Altman, who was, at the time, an Assistant Professor of Finance at New York University. The formula may be used to predict the probability that a firm will go into bankruptcy within two years. Z-scores are used to predict corporate defaults and an easy-to-calculate control measure for the financial distress status of companies in academic studies. The Z-score uses multiple corporate income and balance sheet values to measure the financial health of a company.
-						<i>Wikipedia, The Free Encyclopedia</i>. Retrieved 12:17, September 11, 2016, from <a class="external free" href="https://en.wikipedia.org/w/index.php?title=Altman_Z-score&amp;oldid=737490093">https://en.wikipedia.org/w/index.php?title=Altman_Z-score&amp;oldid=737490093</a>
-						</p>
-						<p><b>Z' Score bankruptcy Model:</b></p>
-						<table class="table borderless">
-			    
-						
-						<tbody>
-							<?php foreach($altman_variables as $variable): ?>
-
-							<tr>
-								<td width="90%"> <?php print ($variable["variable"] ); ?> </td>
-								<td width="10%"><?php print ($variable["value"]); ?>  </td>
-								
-							</tr>
-							
-							<?php endforeach?>
-							
-						</tbody>
-		
-                 		</table>
-                 		
-                 		<p>Z' = 0.717*X1 + 0.847*X2 + 3.107*X3 + 0.420*X4 + 0.998*X5 = <?php print($altman_zscore) ?> </p>
-                 		<p><b>Zones of Discrimination:</b></p>
-                 		<p>Z' &gt; 2.9 - Safe Zone</p>
-                 		<p>1.23 &lt; Z' &lt; 2.9 - Grey Zone</p>
-                 		<p>Z' &lt; 1.23 - Distress Zone</p>
-                 		
-                 </div>
-		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
-        		</div>         		
-		 				
-			    </div>
-			    
-			  </div>
-			  
-			</div>
-			
-			<?php write_log ("quote.php","21")?>
-			
-			<div id="Altman2Modal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="Altman2Modal" aria-hidden="true">
-			  <div class="modal-dialog modal-lg">
-			  	
-			    <div class="modal-content">
-			    	<div class="modal-header">
-          				<h4 class="modal-title">Altman Z-Score (non manufacturing)</h4>
-        			</div>
-					<div class="modal-body">
-						<p>The Z-score formula for predicting bankruptcy was published in 1968 by Edward I. Altman, who was, at the time, an Assistant Professor of Finance at New York University. The formula may be used to predict the probability that a firm will go into bankruptcy within two years. Z-scores are used to predict corporate defaults and an easy-to-calculate control measure for the financial distress status of companies in academic studies. The Z-score uses multiple corporate income and balance sheet values to measure the financial health of a company.
-						<i>Wikipedia, The Free Encyclopedia</i>. Retrieved 12:17, September 11, 2016, from <a class="external free" href="https://en.wikipedia.org/w/index.php?title=Altman_Z-score&amp;oldid=737490093">https://en.wikipedia.org/w/index.php?title=Altman_Z-score&amp;oldid=737490093</a>
-						</p>
-						<p><b>Z' Score bankruptcy Model:</b></p>
-						<table class="table borderless">
-			    
-						
-						<tbody>
-							<?php foreach($altman_nonman_variables as $variable): ?>
-
-							<tr>
-								<td width="90%"> <?php print ($variable["variable"] ); ?> </td>
-								<td width="10%"><?php print ($variable["value"]); ?>  </td>
-								
-							</tr>
-							
-							<?php endforeach?>
-							
-						</tbody>
-		
-                 		</table>
-                 		
-                 		<p>Z = 6.56*X1 + 3.26*X2 + 6.72*X3 + 1.05*X4 = <?php print($altman_zscore_nonman) ?> </p>
-                 		<p><b>Zones of Discrimination:</b></p>
-                 		<p>Z' &gt; 2.6 - Safe Zone</p>
-                 		<p>1.1 &lt; Z' &lt; 2.6 - Grey Zone</p>
-                 		<p>Z' &lt; 1.1 - Distress Zone</p>
-                 		
-                 </div>
-		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
-        		</div>         		
-		 				
+			<?php /* The Piotroski, Altman and Altman2 modals were here. They
+			         listed the components of each score out of
+			         health_indicators, which nothing writes, behind links
+			         calling onclick handlers that do not exist. The scores
+			         themselves are on the Financial Health card above. */ ?>
 				<?php write_log ("quote.php","22")?>

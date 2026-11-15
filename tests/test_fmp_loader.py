@@ -196,6 +196,11 @@ check("the pace stays under the plan's rate limit",
       abs(60.0 / loader.MIN_INTERVAL * loader.CALLS_PER_SYMBOL - loader.RATE_PER_MINUTE) < 1,
       "{:.0f} calls/min".format(60.0 / loader.MIN_INTERVAL * loader.CALLS_PER_SYMBOL))
 check("the pace leaves headroom below 750", loader.RATE_PER_MINUTE < 750)
+# quote, profile, key-metrics-ttm, ratios-ttm, the quarterly cash flow,
+# financial-scores and financial-growth. Two more than before the scores
+# moved to the provider, about 700 extra calls a night.
+check("the pacing counts all seven calls a symbol takes",
+      loader.CALLS_PER_SYMBOL == 7, str(loader.CALLS_PER_SYMBOL))
 
 print("\n--- the night's exchange rates ---")
 

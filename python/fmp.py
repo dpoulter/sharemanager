@@ -261,6 +261,22 @@ def fetch_sections(symbol, session=None):
     out["CashFlowQuarters"] = _get("cash-flow-statement", session=session,
                                    symbol=code, period="quarter",
                                    limit=CASH_FLOW_QUARTERS) or []
+
+    # Piotroski and Altman, worked out by the provider from statements it
+    # already holds. This application used to compute both from
+    # financial_statement_values, which is empty on the live database, so the
+    # scores were never written and the quote page's health card has been
+    # commented out for as long as anyone can remember. RR comes back as 7
+    # and 3.09.
+    out["Scores"] = _first(_get("financial-scores", session=session,
+                                symbol=code)) or {}
+
+    # Revenue, EPS and EBIT growth. earnings_growth exists as an indicator and
+    # has never been filled: the local calculation needs next year's and this
+    # year's EPS estimates, which no loader writes.
+    out["Growth"] = _first(_get("financial-growth", session=session,
+                                symbol=code, limit=1)) or {}
+
     return out
 
 
@@ -424,6 +440,19 @@ def flatten(sections, log=None):
     shares = shares_outstanding(profile, quote)
     if shares:
         flat["Derived.sharesOutstanding"] = shares
+
+    # One EPS growth field, whichever of the two the response carries. FMP
+    # sends epsgrowth on some responses and epsDilutedGrowth on others, and a
+    # provider_field is one column, so the choice is made here rather than in
+    # the mapping - where it would have to be made again for every indicator
+    # that wanted it. Both raw fields are still written above.
+    growth = sections.get("Growth") or {}
+    if isinstance(growth, dict):
+        for field in ("epsgrowth", "epsDilutedGrowth"):
+            value = growth.get(field)
+            if value is not None and value != "" and not isinstance(value, (dict, list)):
+                flat["Derived.epsGrowth"] = value
+                break
 
     # Buybacks over the market cap. Not a figure FMP sends: it reports the
     # dividend yield but not what a company handed back by buying its own

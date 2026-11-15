@@ -222,6 +222,67 @@ check("a yield just under the cap is kept",
 check("the cap is a quarter of the market capitalisation",
       fmp.BUYBACK_YIELD_CAP == 0.25)
 
+print("\n--- the scores and growth rates the provider works out ---")
+
+# This application computed Piotroski and Altman itself from
+# financial_statement_values, which is empty on the live database, so neither
+# was ever written. RR comes back from the provider as 7 and 3.09.
+scored = fmp.flatten({"Profile": {}, "Quote": {}, "KeyMetrics": {}, "Ratios": {},
+                      "CashFlowQuarters": [],
+                      "Scores": {"piotroskiScore": 7, "altmanZScore": 3.09},
+                      "Growth": {"revenueGrowth": 0.0512, "epsgrowth": 0.1834,
+                                 "ebitgrowth": 0.21}})
+check("the two scores are written under their own section",
+      scored.get("Scores.piotroskiScore") == 7
+      and scored.get("Scores.altmanZScore") == 3.09)
+check("the growth rates come through as well",
+      scored.get("Growth.revenueGrowth") == 0.0512
+      and scored.get("Growth.epsgrowth") == 0.1834
+      and scored.get("Growth.ebitgrowth") == 0.21)
+
+# A provider_field is one column, and FMP sends epsgrowth on some responses
+# and epsDilutedGrowth on others, so the choice is made once here.
+check("EPS growth is published under one name whichever field carries it",
+      scored.get("Derived.epsGrowth") == 0.1834)
+diluted = fmp.flatten({"Profile": {}, "Quote": {}, "KeyMetrics": {}, "Ratios": {},
+                       "CashFlowQuarters": [], "Scores": {},
+                       "Growth": {"epsDilutedGrowth": 0.09}})
+check("the diluted field is used when the other is absent",
+      diluted.get("Derived.epsGrowth") == 0.09)
+check("the undiluted one wins when both are there",
+      fmp.flatten({"Profile": {}, "Quote": {}, "KeyMetrics": {}, "Ratios": {},
+                   "CashFlowQuarters": [], "Scores": {},
+                   "Growth": {"epsgrowth": 0.11, "epsDilutedGrowth": 0.09}}
+                  ).get("Derived.epsGrowth") == 0.11)
+check("no growth at all writes no EPS growth, rather than a zero",
+      "Derived.epsGrowth" not in fmp.flatten(
+          {"Profile": {}, "Quote": {}, "KeyMetrics": {}, "Ratios": {},
+           "CashFlowQuarters": [], "Scores": {}, "Growth": {}})
+      and "Derived.epsGrowth" not in fmp.flatten(
+          {"Profile": {}, "Quote": {}, "KeyMetrics": {}, "Ratios": {},
+           "CashFlowQuarters": [], "Scores": {},
+           "Growth": {"epsgrowth": None, "epsDilutedGrowth": ""}}))
+
+# Both endpoints are asked for, once each, per symbol.
+asked_paths = []
+saved_get2 = fmp._get
+try:
+    def record(path, session=None, **params):
+        asked_paths.append((path, params.get("limit")))
+        return []
+    fmp._get = record
+    fmp.fetch_sections("RR")
+finally:
+    fmp._get = saved_get2
+check("financial-scores is fetched",
+      ("financial-scores", None) in asked_paths, str(asked_paths))
+check("financial-growth is fetched, one period of it",
+      ("financial-growth", 1) in asked_paths, str(asked_paths))
+check("and nothing is fetched twice",
+      len(asked_paths) == len(set(asked_paths)), str(asked_paths))
+check("the pacing counts every call the loader makes",
+      len(asked_paths) == 7, "{} calls, CALLS_PER_SYMBOL should match".format(len(asked_paths)))
+
 print("\n--- whether the provider calls it a fund ---")
 
 # fund_sectors catches a fund whose sector says so. FGT files under "Equity

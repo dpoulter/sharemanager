@@ -336,6 +336,23 @@ How to answer:
 					"momentum" => $score('momentum_score'),
 					"overall"  => $score('overall_score'),
 				],
+			/* The provider's own health scores, and the growth behind them.
+			   Both scores are unitless, so no conversion applies; the growth
+			   rates are fractions like the yields. altman_z is absent for a
+			   bank or an insurer, where the formula reads leverage as
+			   distress rather than as the business. */
+			"health" => [
+				"piotroski_score" => $score('piotroski_score'),
+				"altman_z"        => $score('altman_z'),
+				"altman_z_note"   => "0 to 9 for Piotroski, higher is better; "
+				                     ."Altman under 1.8 is distress, over 3 is safe, "
+				                     ."and it is not meaningful for financials",
+			],
+			"growth" => [
+				"revenue_growth" => $score('revenue_growth'),
+				"eps_growth"     => $score('earnings_growth'),
+				"growth_note"    => "fractions, not percentages: 0.05 is 5%",
+			],
 			"relative_to_sector" => $relative,
 			"screens"            => $screens,
 			"holding"            => $holding,

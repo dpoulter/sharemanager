@@ -93,6 +93,116 @@ function not_fund_sql($symbol_expr) {
 }
 
 /* ---------------------------------------------------------------------------
+   Indicators that do not apply to a whole sector.
+
+   Altman's Z was fitted on manufacturers. A bank or an insurer carries
+   leverage because leverage is the business, and the formula reads that as
+   distress: ranking it there would put every financial at the bottom of the
+   quality score for being a financial. So the score is still shown - it is a
+   real number and the owner can look at it - but it is not ranked and it does
+   not feed the quality score.
+
+   indicator_sector_exclusions holds which indicator does not apply to which
+   sector, matched against stock_symbols.sector, the same column fund_sectors
+   matches. No sector name appears in the application's SQL; see
+   sql/fmp_scores.sql.
+   --------------------------------------------------------------------------- */
+
+/**
+ * True once sql/fmp_scores.sql has been applied.
+ *
+ * Same reason as fund_config_ready(): deploy/deploy.sh does not run
+ * migrations, so the code can reach the server before the table does, and the
+ * nightly job should carry on ranking the way it did rather than die on an
+ * unknown table.
+ */
+function sector_exclusions_ready() {
+
+	static $ready = null;
+
+	if ($ready !== null)
+		return $ready;
+
+	$rows = query("select count(*) n from information_schema.tables
+	                where table_schema=database() and table_name='indicator_sector_exclusions'");
+
+	$ready = count($rows) && (int) $rows[0]['n'] === 1;
+
+	if (!$ready)
+		write_log("fmp_scores", "sql/fmp_scores.sql has not been applied: "
+		          ."every indicator is being ranked for every sector");
+
+	return $ready;
+}
+
+/**
+ * A SQL predicate, ready to be AND'ed on, that leaves out the sectors this
+ * indicator does not apply to. Empty when it applies everywhere.
+ *
+ * $symbol_expr is how the surrounding query spells the symbol column. The
+ * indicator name is passed as a bound parameter nowhere - it is interpolated,
+ * so it is quoted here the way the rest of the ranking query quotes it, and
+ * it comes from screen_indicators rather than from a request.
+ */
+function sector_exclusion_sql($indicator, $symbol_expr) {
+
+	if (!sector_exclusions_ready())
+		return "";
+
+	$rows = query("select count(*) n from indicator_sector_exclusions where indicator=?",
+	              $indicator);
+
+	if (!count($rows) || (int) $rows[0]['n'] === 0)
+		return "";
+
+	return " and not exists (select 1 from stock_symbols excl_ss, indicator_sector_exclusions excl_x
+	                          where excl_ss.symbol = ".$symbol_expr."
+	                            and excl_x.sector = excl_ss.sector
+	                            and excl_x.indicator = '".addslashes($indicator)."') ";
+}
+
+/**
+ * The same exclusion where the indicator is a column rather than a constant.
+ *
+ * The score queries span several indicators at once, so they cannot name one.
+ * A row left out here is left out of the average as well as the ranking,
+ * which is the point: a bank should be scored on the measures that apply to
+ * it, not scored on Altman and handed the neutral 50 for it.
+ *
+ * That neutral 50 is still right for a value that was left unranked because
+ * it has no meaning for the company - a negative P/E - which is a different
+ * case and keeps the old treatment.
+ */
+function not_sector_excluded_sql($symbol_expr, $indicator_expr) {
+
+	if (!sector_exclusions_ready())
+		return "";
+
+	return " and not exists (select 1 from stock_symbols excl2_ss, indicator_sector_exclusions excl2_x
+	                          where excl2_ss.symbol = ".$symbol_expr."
+	                            and excl2_x.sector = excl2_ss.sector
+	                            and excl2_x.indicator = ".$indicator_expr.") ";
+}
+
+/**
+ * Why an indicator is not ranked for this symbol, or null when it is.
+ *
+ * The quote page shows the reason beside the figure, so a blank rank reads as
+ * a decision rather than as missing data.
+ */
+function sector_exclusion_reason($indicator, $symbol) {
+
+	if (!sector_exclusions_ready())
+		return null;
+
+	$rows = query("select x.reason from indicator_sector_exclusions x, stock_symbols ss
+	                where ss.symbol=? and x.sector=ss.sector and x.indicator=?",
+	              $symbol, $indicator);
+
+	return count($rows) ? (string) $rows[0]['reason'] : null;
+}
+
+/* ---------------------------------------------------------------------------
    Reporting currency.
 
    FMP's price ratios divide the London price by per-share figures from
@@ -2362,248 +2472,42 @@ function get_fin_Stmt_value($symbol,$date,$item){
 	}
 }
 
-//Calculate Altman Z-score
-function calc_altman_zscore ($asOfDate,$symbol){
-	
-	
-	//write_log("calc_altman_zscore","asOfDate=".$asOfDate."symbol=$symbol");
-	
-	//Delete values for the current date
-	query("delete from health_indicators where symbol=? and type=? and date=?",$symbol,'altman_zscore',$asOfDate);
-	
-	//Get Current Assets
-	$current_assets=get_fin_Stmt_value($symbol,$asOfDate,'total_current_assets');
-	
-	//write_log("calc_altman_zscore","Current Assets=".$current_assets);
-	
-	//Get Current Liabilities
-	$current_liabilities=get_fin_Stmt_value($symbol,$asOfDate,'total_current_liabilities');
-	
-	//write_log("calc_altman_zscore","Current Liabilities=".$current_liabilities);
-	
-	//Get Total Assets
-	$total_assets=get_fin_Stmt_value($symbol,$asOfDate,'total_assets');
-	
-	//write_log("calc_altman_zscore","Total Assets=".$total_assets);
-	
-	//Get Retained Earnings
-	$retained_earnings=get_fin_Stmt_value($symbol,$asOfDate,'retained_earnings');
-	
-	//write_log("calc_altman_zscore","Retained Earnings=".$retained_earnings);
-	
-	//Get EBIT
-	$ebit=get_fin_Stmt_value($symbol,$asOfDate,'earnings_before_interest_tax');
-	
-	//write_log("calc_altman_zscore","EBIT=".$ebit);
-	
-	//Get Total Liabilities
-	$total_liabilities=get_fin_Stmt_value($symbol,$asOfDate,'total_liabilities');
-	
-	//write_log("calc_altman_zscore","Total Liabilities=".$total_liabilities);
-	
-	//Get Sales
-	$sales=get_fin_Stmt_value($symbol,$asOfDate,'total_revenue');
-	
-	//write_log("calc_altman_zscore","Sales=".$sales);
-	
-	//Get Market Capitalization
-	$market_cap=get_indicator_value($symbol, 'market_capitalisation',$asOfDate)/1000;
-	
-	//write_log("calc_altman_zscore","Market Capitalization=".$market_cap);
-	
-	//Calculate Working Capital to Total Assets
-	$x1=($current_assets-$current_liabilities)/$total_assets;
-	
-	//write_log("calc_altman_zscore","Working Capital to Total Assets=".$x1);
-	
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore',$asOfDate,'working_capital_total_assets',$x1);
-	
-	
-	//Calculate Retained Earnings to Total Assets
-	$x2=$retained_earnings/$total_assets;
-	
-	//write_log("calc_altman_zscore","Retained Earnings to Total Assets=".$x2);
-	
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore',$asOfDate,'retained_earnings_total_assets',$x2);
-	
-	//Calculate EBIT to Total Assets
-	$x3=$ebit/$total_assets;
-	
-	//write_log("calc_altman_zscore","EBIT to Total Assets=".$x3);
-	
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore',$asOfDate,'ebit_total_assets',$x3);
-	
-	
-	//Calculate Market Cap to Total Assets
-	$x4=$market_cap/$total_liabilities;
-	
-	//write_log("calc_altman_zscore","Market Cap to Total Assets=".$x4);
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore',$asOfDate,'market_cap_total_liabilities',$x4);
-	
-	//Calculate Sales to Total Assets
-	$x5=$sales/$total_assets;
-	
-	//write_log("calc_altman_zscore","Sales to Total Assets=".$x5);
-	
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore',$asOfDate,'sales_total_assets',$x5);
-	
+/**
+ * The two health scores, as the provider worked them out.
+ *
+ * Returns value, percentile and - where the score does not apply to this
+ * company's sector - the reason it was left unranked, so the page can say so
+ * rather than show a blank that reads as missing data.
+ */
+function get_health_scores($symbol) {
 
-	//Calculate Z-score for manufacturing companies
-	$zscore=1.2*$x1+1.4*$x2+3.3*$x3+0.6*$x4+0.99*$x5;
-	
-	//write_log("calc_altman_zscore","Z-Score=".$zscore);
-	
-	//update statistics
-	update_statistic($symbol, 'altman_zscore', $zscore, $asOfDate);
-	
-	
-}
+	$rows = query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
+	$as_of = count($rows) ? $rows[0]['job_date'] : null;
 
-//Calculate Altman Z-score (Non Manufacturing)
-function calc_altman_zscore_nonman ($asOfDate,$symbol){
-	
-	
-	//write_log("calc_altman_zscore","asOfDate=".$asOfDate."symbol=$symbol");
-	
-	//Delete values for the current date
-	query("delete from health_indicators where symbol=? and type=? and date=?",$symbol,'altman_zscore_nonman',$asOfDate);
-	
-	//Get Current Assets
-	$current_assets=get_fin_Stmt_value($symbol,$asOfDate,'total_current_assets');
-	
-	//write_log("calc_altman_zscore","Current Assets=".$current_assets);
-	
-	//Get Current Liabilities
-	$current_liabilities=get_fin_Stmt_value($symbol,$asOfDate,'total_current_liabilities');
-	
-	//write_log("calc_altman_zscore","Current Liabilities=".$current_liabilities);
-	
-	//Get Total Assets
-	$total_assets=get_fin_Stmt_value($symbol,$asOfDate,'total_assets');
-	
-	//write_log("calc_altman_zscore","Total Assets=".$total_assets);
-	
-	//Get Retained Earnings
-	$retained_earnings=get_fin_Stmt_value($symbol,$asOfDate,'retained_earnings');
-	
-	//write_log("calc_altman_zscore","Retained Earnings=".$retained_earnings);
-	
-	//Get EBIT
-	$ebit=get_fin_Stmt_value($symbol,$asOfDate,'earnings_before_interest_tax');
-	
-	//write_log("calc_altman_zscore","EBIT=".$ebit);
-	
-	//Get Total Liabilities
-	$total_liabilities=get_fin_Stmt_value($symbol,$asOfDate,'total_liabilities');
-	
-	//write_log("calc_altman_zscore","Total Liabilities=".$total_liabilities);
-	
-	//Get Sales
-	$sales=get_fin_Stmt_value($symbol,$asOfDate,'total_revenue');
-	
-	//write_log("calc_altman_zscore","Sales=".$sales);
-	
-	//Get Market Capitalization
-	$market_cap=get_indicator_value($symbol, 'market_capitalisation',$asOfDate)/1000;
-	
-	//write_log("calc_altman_zscore","Market Capitalization=".$market_cap);
-	
-	//Calculate Working Capital to Total Assets
-	$x1=($current_assets-$current_liabilities)/$total_assets;
-	
-	//write_log("calc_altman_zscore","Working Capital to Total Assets=".$x1);
-	
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore_nonman',$asOfDate,'working_capital_total_assets',$x1);
-	
-	
-	//Calculate Retained Earnings to Total Assets
-	$x2=$retained_earnings/$total_assets;
-	
-	//write_log("calc_altman_zscore","Retained Earnings to Total Assets=".$x2);
-	
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore_nonman',$asOfDate,'retained_earnings_total_assets',$x2);
-	
-	//Calculate EBIT to Total Assets
-	$x3=$ebit/$total_assets;
-	
-	//write_log("calc_altman_zscore","EBIT to Total Assets=".$x3);
-	
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore_nonman',$asOfDate,'ebit_total_assets',$x3);
-	
-	
-	//Calculate Book Value of Equity to Total Liabilities
-	$x4=($total_assets-$total_liabilities)/$total_liabilities;
-	
-	query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'altman_zscore_nonman',$asOfDate,'equity_total_liabilities',$x4);
-	
-	//Altman Z-score for non-manufacturing companies
-	$zscore=6.56*$x1+3.26*$x2+6.72*$x3+1.05*$x4;
-	
-	//update statistics
-	update_statistic($symbol, 'altman_zscore_nonman', $zscore, $asOfDate);
-	
-}
-//Get Piotroski Fscore
-function get_piotroski_fscore($symbol){
-	
-//Get As of Date as yesterdays date
-$asOfDate=new DateTime();
-$asOfDate->sub(new DateInterval('P1D'));
-$asOfDate=date_format($asOfDate,'Y-m-d');
+	$scores = [];
 
-//write_log("get_scores.php","asOfDate=$asOfDate");
+	foreach (['piotroski_score' => 'Piotroski F-Score',
+	          'altman_z'        => 'Altman Z-Score'] as $name => $label) {
 
+		$row = $as_of === null ? [] : query(
+			"select s.value, s.percentile, si.description
+			   from statistics s, screen_indicators si
+			  where si.name = s.indicator and s.indicator = ?
+			    and s.symbol = ? and s.exchange = ? and s.date = ?",
+			$name, $symbol, session_exchange(), $as_of);
 
-	
-	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and s1.exchange=? and s1.indicator ='piotroski_fscore' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.exchange=s1.exchange and s2.date<=?) ",$symbol,session_exchange(),$asOfDate);
-   
-   
-   	//write_log("get_scores.php","value score=".$score['value']);
-		if (count($score)>0)
-		return round($score[0]['value']);
+		$scores[$name] = [
+			"label"      => (count($row) && $row[0]['description'] !== null)
+			                ? $row[0]['description'] : $label,
+			"value"      => (count($row) && $row[0]['value'] !== null)
+			                ? (float) $row[0]['value'] : null,
+			"percentile" => (count($row) && $row[0]['percentile'] !== null)
+			                ? (float) $row[0]['percentile'] : null,
+			"not_ranked" => sector_exclusion_reason($name, $symbol),
+		];
+	}
 
-}
-
-//Get Altman Z-score
-function get_altman_zscore($symbol){
-	
-//Get As of Date as yesterdays date
-$asOfDate=new DateTime();
-$asOfDate->sub(new DateInterval('P1D'));
-$asOfDate=date_format($asOfDate,'Y-m-d');
-
-//write_log("get_scores.php","asOfDate=$asOfDate");
-
-
-	
-	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and s1.exchange=? and s1.indicator ='altman_zscore' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.exchange=s1.exchange and s2.indicator=s1.indicator and s2.date<=?) ",$symbol,session_exchange(),$asOfDate);
-   
-   
-   	//write_log("get_scores.php","value score=".$score['value']);
-	if (count($score)>0)
-		return round($score[0]['value'],1);
-
-}
-
-//Get Altman Z-score Non Manufacturing
-function get_altman_zscore_nonman($symbol){
-	
-//Get As of Date as yesterdays date
-$asOfDate=new DateTime();
-$asOfDate->sub(new DateInterval('P1D'));
-$asOfDate=date_format($asOfDate,'Y-m-d');
-
-//write_log("get_scores.php","asOfDate=$asOfDate");
-
-
-	
-	$score = query("SELECT s1.value from  statistics s1 where s1.symbol=? and exchange=? and s1.indicator ='altman_zscore_nonman' and s1.date=(select max(date) from statistics s2 where s2.symbol=s1.symbol and s2.indicator=s1.indicator and s2.exchange=s1.exchange and s2.date<=?) ",$symbol,session_exchange(),$asOfDate);
-   
-   
-   	//write_log("get_scores.php","value score=".$score['value']);
-	if (count($score)>0)
-		return round($score[0]['value'],1);
-
+	return $scores;
 }
 
 //Get Relative Sector Valuation
@@ -2858,42 +2762,6 @@ function get_relative_to_industry($symbol){
 	return $rows;	
 }
 
-//Get Piotroski variables
-function get_piotroski_variables($symbol){
-		
-	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
-	$job_date=$rows[0]['job_date'];
-			
-	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='piotroski_fscore'",$symbol,$job_date);
-	
-	return $rows;	
-	
-}
-
-//Get Altman Z-score variables
-function get_altman_variables($symbol){
-		
-	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
-	$job_date=$rows[0]['job_date'];
-			
-	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='altman_zscore'",$symbol,$job_date);
-	
-	return $rows;	
-	
-}
-
-//Get Altman Z-score (non manufacturing) variables
-function get_altman_nonman_variables($symbol){
-		
-	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
-	$job_date=$rows[0]['job_date'];
-			
-	$rows=query("select v.text variable,value from health_indicators hi, variables v where v.name=hi.variable and symbol=? and date=? and type='altman_zscore_nonman'",$symbol,$job_date);
-	
-	return $rows;	
-	
-}
-	
 //Convert values containing B, K and M to actual number value
 function convert_value($value){
 	//Strip £ and commas
@@ -3228,632 +3096,24 @@ function calc_shareholder_yield($date,$symbol){
 	update_statistic($symbol, 'shareholder_yield', $shareholder_yield, $date);
 }
 	
-//Calculate Piotroski F-score
-function calc_piotroski_fscore($asOfdate,$symbol){
-		
-	//Delete values for the current date
-	query("delete from health_indicators where symbol=? and type=? and date=?",$symbol,'piotroski_fscore',$asOfdate);
-	
-		
-	//Start F-score at 0
-	$fscore=0;
-	
-	//get Net Income for latest period from financial statements
-	
-	$rows = query(" SELECT fsv.period_id, value, fsp.end_date
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='net_income'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='net_income'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$asOfdate);
-					
-	if (count($rows)>0){
-				
-		$period_id=$rows[0]['period_id'];
-		$date=$rows[0]['end_date'];
-		$net_income=$rows[0]['value'];
-		
-		//write_log("calc_roa","period_id".$period_id);
-		//write_log("calc_roa","date".$date);
-		//write_log("calc_roa","net_income".$net_income);
-		
-		// If net income is positive then score 1 else score 0
-		if ($net_income>0){
-			$fscore=$fscore+1;
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'net_income_greater_zero',1);
-		}
-		else
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'net_income_greater_zero',0);
+/* calc_piotroski_fscore(), calc_altman_zscore() and
+   calc_altman_zscore_nonman() were here, with their readers
+   get_piotroski_fscore(), get_altman_zscore(), get_altman_zscore_nonman(),
+   get_piotroski_variables(), get_altman_variables() and
+   get_altman_nonman_variables().
 
-	    ////write_log("calc_piotroski_fscore","net income is positive - increase fscore by 1");
-	}
-	//get operating cash flow for latest period from financial statements
-	
-    $rows = query(" SELECT fsv.period_id, value, fsp.end_date
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='total_cash_flow_operating_activities'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='total_cash_flow_operating_activities'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$date);
-					
-	if (count($rows)>0){
-			
-		$period_id=$rows[0]['period_id'];
-		$date=$rows[0]['end_date'];
-		$total_cash_flow_operating_activities=$rows[0]['value'];
-		
-		//write_log("calc_roa","period_id".$period_id);
-		//write_log("calc_roa","date".$date);
-		//write_log("calc_roa","total_cash_flow_operating_activities".$total_cash_flow_operating_activities);
-		
-		// If operating cash flow is positive then score 1 else score 0
-		if ($total_cash_flow_operating_activities>0){
-			$fscore=$fscore+1;
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'total_cash_flow_operating_activities_greater_zero',1);
-		}
-		else
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'total_cash_flow_operating_activities_greater_zero',0);				
-		 //write_log("calc_piotroski_fscore","operating cash flow positive - increase fscore by 1");
-		
-	}	
-	
-	//Get Total assets for current year
-	$rows = query("SELECT value
-	FROM `financial_statement_values` fsv
-	WHERE period_id=?
-	and symbol=?
-	and fsv.item_name='total_assets'",$period_id,$symbol);
-	
-	if (count($rows)>0){
-	
-		$total_assets_end_yr=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","total_assets_cur_yr".$total_assets_end_yr);
-			
-		//Set Previous year Date
-		$prevYrDate=date_create_from_format('Y-m-d', $date);
-	    $prevYrDate->sub(new DateInterval('P11M'));
-		$prevYrDate = date_format($prevYrDate,'Y-m-d');
-		
-		//write_log("calc_piotroski_fscore","prevYrDate".$prevYrDate);
-	
-	}
-	
-	//get Total assets for beginning of year
-	$rows = query("SELECT fsv.period_id, value
-	FROM `financial_statement_values` fsv,
-	financial_statement_periods fsp
-	WHERE fsp.period_id=fsv.period_id 
-	and symbol=?
-	and fsv.item_name='total_assets'
-	and fsp.end_date = (select max(end_date)
-	                 from `financial_statement_values` fsv ,
-	                 financial_statement_periods fsp
-					WHERE fsv.period_id=fsp.period_id 
-					and symbol=?
-					and fsv.item_name='total_assets'
-					and fsp.end_date<?)
-	limit 1",$symbol,$symbol,$prevYrDate);
-	
-	if (count($rows)>0){
-	
+   All of them worked from financial_statement_values, which is empty on the
+   live database, so no score was ever written, nothing read one, and the
+   quote page's health card had been commented out for years with its three
+   modals hanging off onclick handlers that do not exist. The provider
+   computes both scores from statements it already holds - see
+   sql/fmp_scores.sql - so they arrive as piotroski_score and altman_z like
+   any other indicator, and get_health_scores() reads them back.
 
-		$period_id=$rows[0]['period_id'];
-		$total_assets_beg_yr=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","total_assets".$total_assets_beg_yr);
-		
-		//Calculate average Assets for Current Year
-		$avg_total_assets=($total_assets_end_yr+$total_assets_beg_yr)/2;
-	
-		
-		//Calculate Return on Assets
-		
-		$roa = round($net_income/$total_assets_beg_yr*100,2);
-		
-		//write_log("calc_piotroski_fscore","roa".$roa);
-		
-		//Calculate Cashflow Return on Assets
-	
-		$cfo= round($total_cash_flow_operating_activities/$total_assets_beg_yr*100,2);
-	
-		//write_log("calc_piotroski_fscore","cfo".$cfo);
-	}
+   health_indicators and its variables lookup are left in place: nothing
+   writes them now, and dropping a table is a different decision from
+   deleting the code that filled it. */
 
-	
-	//get net income for previous period
-	$rows = query("SELECT fsv.period_id, value
-	FROM `financial_statement_values` fsv,
-	financial_statement_periods fsp
-	WHERE fsp.period_id=fsv.period_id 
-	and symbol=?
-	and fsv.item_name='net_income'
-	and fsp.end_date = (select max(end_date)
-	                 from `financial_statement_values` fsv ,
-	                 financial_statement_periods fsp
-					WHERE fsv.period_id=fsp.period_id 
-					and symbol=?
-					and fsv.item_name='net_income'
-					and fsp.end_date<?)
-	limit 1",$symbol,$symbol,$prevYrDate);
-	
-	if (count($rows)>0){
-	
-	
-		$period_id=$rows[0]['period_id'];
-		$net_income=$rows[0]['value'];
-		
-		//write_log("calc_roa","period_id".$period_id);
-		//write_log("calc_roa","net_income".$net_income);
-		
-	
-	
-		//Get total assets for beginning of previous period
-		
-		$prevYrDate=date_create_from_format('Y-m-d', $prevYrDate);
-	    $prevYrDate->sub(new DateInterval('P11M'));
-		$prevYrDate = date_format($prevYrDate,'Y-m-d');
-	}
-		
-	$rows = query("SELECT fsv.period_id, value
-	FROM `financial_statement_values` fsv,
-	financial_statement_periods fsp
-	WHERE fsp.period_id=fsv.period_id 
-	and symbol=?
-	and fsv.item_name='total_assets'
-	and fsp.end_date = (select max(end_date)
-	                 from `financial_statement_values` fsv ,
-	                 financial_statement_periods fsp
-					WHERE fsv.period_id=fsp.period_id 
-					and symbol=?
-					and fsv.item_name='total_assets'
-					and fsp.end_date<?)
-	limit 1",$symbol,$symbol,$prevYrDate);
-	
-	if (count($rows)>0){
-	
-		$period_id=$rows[0]['period_id'];
-		$total_assets_beg_prev_yr=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","total_assets_beg_prev_yr".$total_assets_beg_prev_yr);
-		
-			
-		//Calculate ROA for previous period 
-		
-		$roa_prior_yr = round($net_income/$total_assets_beg_prev_yr*100,2);
-		
-		//write_log("calc_piotroski_fscore","roa_prior_yr".$roa_prior_yr);
-		
-		// If roa this year is greater than roa last year then score 1 else score 0
-		if ($roa>$roa_prior_yr){
-			$fscore=$fscore+1;
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'roa_greater_roa_prior_yr',1);
-		}	
-		else
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'roa_greater_roa_prior_yr',0);
-		 //write_log("calc_piotroski_fscore","roa this year is greater than roa last year - increase fscore by 1".$roa_prior_yr);
-	
-	}	
-		
-	//Accrual - if CFO greater than ROA then score 1 else score 0
-	if ($cfo>$roa){
-		$fscore=$fscore+1;
-		query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'cfo_greater_roa',1);
-		
-	}	
-	else {
-				query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'cfo_greater_roa',0);
-		
-	}
-	//Get Long Term Debt this year
-	
-    $rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='long_term_debt'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='long_term_debt'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$date);
-	if (count($rows)>0){
-									
-		$period_id=$rows[0]['period_id'];
-		$long_term_debt=$rows[0]['value'];
-		
-		//write_log("calc_roa","period_id".$period_id);
-		//write_log("calc_roa","long_term_debt".$long_term_debt);
-	}	
-
-	
-		//Get Long Term Debt prior year
-	
-    $rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='long_term_debt'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='long_term_debt'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$prevYrDate);
-					
-	if (count($rows)>0){
-									
-		$period_id=$rows[0]['period_id'];
-		$long_term_debt_prior_yr=$rows[0]['value'];
-		
-		//write_log("calc_roa","period_id".$period_id);
-		//write_log("calc_roa","long_term_debt".$long_term_debt_prior_yr);
-		
-		//Calculate Long Term Debt to Average Assets for Curent Year
-		$leverage_cur_yr=$long_term_debt/$avg_total_assets;
-		
-		//Calculate Average Assets for Prior Year
-		$avg_total_assets_prior_year=($total_assets_beg_prev_yr+$total_assets_beg_yr)/2;
-		
-		//Calculate Long Term Debt to Average for Prior year
-		$leverage_prior_yr=$long_term_debt_prior_yr/$avg_total_assets;
-		
-		//If Leverage this year is lower than last year then score 1
-		if ($leverage_cur_yr<$leverage_prior_yr){
-			$fscore=$fscore+1;
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'leverage_cur_yr_less_leverage_prior_yr',1);
-		}
-		else {
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'leverage_cur_yr_less_leverage_prior_yr',0);
-		}
-	}	
-	//Change in Working Capital  (compare current ratio to last year )	If improved then score 1 else 0
-	
-	//Current Assets for this year
-	$rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='total_current_assets'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='total_current_assets'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$date);
-	if (count($rows)>0){
-				
-		$period_id=$rows[0]['period_id'];
-		$total_current_assets=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","total_current_assets".$total_current_assets);
-	}
-	//Current Liabilities for this year
-	$rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='total_current_liabilities'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='total_current_liabilities'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$date);
-	if (count($rows)>0){
-									
-		$period_id=$rows[0]['period_id'];
-		$total_current_liabilities=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","total_current_liabilities".$total_current_liabilities);
-	
-	}
-	//Get Current Assets for  prior year
-	
-    $rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='total_current_assets'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='total_current_assets'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$prevYrDate);
-	if (count($rows)>0){
-				
-		$period_id=$rows[0]['period_id'];
-		$current_assets_prior_yr=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","current_assets_prior_yr".$current_assets_prior_yr);
-	}
-	//Get Current Liabilities for  prior year
-	
-    $rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='total_current_liabilities'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='total_current_liabilities'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$prevYrDate);
-	if (count($rows)>0){
-				
-		$period_id=$rows[0]['period_id'];
-		$current_liabilities_prior_yr=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","current_liabilities_prior_yr".$current_liabilities_prior_yr);
-		
-		//Calculate Current Year Current Ratio
-		$current_ratio = $total_current_assets/$total_current_liabilities;
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","current_ratio".$current_ratio);
-		
-		//Calculate Prior Year Current Ratio
-		$current_ratio_prior_yr = $current_assets_prior_yr/$current_liabilities_prior_yr;
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","current_ratio_prior_yr".$current_ratio_prior_yr);
-		
-		//Compare Current year to prior year
-		if ($current_ratio>$current_ratio_prior_yr){
-			$fscore=$fscore+1;
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'current_ratio_greater_current_ratio_prior_yr',1);
-			
-		}
-		else {
-						query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'current_ratio_greater_current_ratio_prior_yr',0);
-		}
-	}	
-    //Change in Common Stock
- 	$rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='common_stock'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='common_stock'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$date);
-	if (count($rows)>0){
-				
-		$period_id=$rows[0]['period_id'];
-		$common_stock=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","common_stock".$common_stock);
-    }
-	//Get Common Stock for prior year
-	
-    $rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='common_stock'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='common_stock'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$prevYrDate);
-	if (count($rows)>0){
-									
-		$period_id=$rows[0]['period_id'];
-		$common_stock_prior_yr=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","common_stock".$common_stock_prior_yr);
-	        
-		
-		//Compare Current year to prior year
-		if ($common_stock<=$common_stock_prior_yr){
-			$fscore=$fscore+1;
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'common_stock_less_common_stock_prior_yr',1);
-		}
-		else
-						query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'common_stock_less_common_stock_prior_yr',0);
-			
-	
-	}
-	//Calculate Gross Margin
-	
-	//Get Total Revenue Current Year
- 	$rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='total_revenue'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='total_revenue'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$date);
-	if (count($rows)>0){
-		
-		$period_id=$rows[0]['period_id'];
-		$total_revenue=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","total_revenue".$total_revenue);
-	}	
-	//Get Cost Of Revenue Current Year
-	
- 	$rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='cost_of_revenue'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='cost_of_revenue'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$date);
-	if (count($rows)>0){
-									
-		$period_id=$rows[0]['period_id'];
-		$cost_of_revenue=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","cost_of_revenue".$cost_of_revenue);
-	}	
-	//Get Total Revenue Prior Year	
-    $rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='total_revenue'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='total_revenue'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$prevYrDate);
-	if (count($rows)>0){
-									
-		$period_id=$rows[0]['period_id'];
-		$total_revenue_prior_yr=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","total_revenue_prior_yr".$total_revenue_prior_yr);
-
-	}
-	//Get Cost Of Revenue Prior Year	
-    $rows = query(" SELECT fsv.period_id, value
-					FROM `financial_statement_values` fsv,
-					financial_statement_periods fsp
-					WHERE fsp.period_id=fsv.period_id 
-					and symbol=?
-					and fsv.item_name='cost_of_revenue'
-					and fsp.end_date = (select max(fsp.end_date)
-					                 from `financial_statement_values` fsv,
-					                 financial_statement_periods fsp
-									WHERE fsv.period_id=fsp.period_id 
-									and symbol=?
-									and fsv.item_name='cost_of_revenue'
-									and fsp.end_date<=?)
-					limit 1",$symbol,$symbol,$prevYrDate);
-	if (count($rows)>0){
-								
-		$period_id=$rows[0]['period_id'];
-		$cost_of_revenue_prior_yr=$rows[0]['value'];
-		
-		//write_log("calc_piotroski_fscore","period_id".$period_id);
-		//write_log("calc_piotroski_fscore","cost_of_revenue".$cost_of_revenue_prior_yr);
-		
-		//Calculate Current Gross Margin
-		$gross_margin = ($total_revenue - $cost_of_revenue)/$total_revenue;
-		
-		//write_log("calc_piotroski_fscore","gross_margin".$gross_margin);
-		
-		//Calculate Prior Year Gross Margin
-		$gross_margin_prior_yr=($total_revenue_prior_yr - $cost_of_revenue_prior_yr)/$total_revenue_prior_yr;
-		
-		//write_log("calc_piotroski_fscore","gross_margin_prior_yr".$gross_margin_prior_yr);
-		
-		//If gross margin current year greater than last year then 1 else 0
-		if ($gross_margin>$gross_margin_prior_yr){
-			$fscore=$fscore+1;
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'gross_margin_greater_gross_margin_prior_yr',1);
-		}
-		else {
-						query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'gross_margin_greater_gross_margin_prior_yr',0);
-			
-		}
-			
-			
-		//Calculate Asset Turnover for current year
-		$asset_turnover=$total_revenue/$total_assets_beg_yr;
-		
-		//write_log("calc_piotroski_fscore","asset_turnover".$asset_turnover);
-		
-		//Calculate Asset Turnover for Last year
-		$asset_turnover_prior_yr = $total_revenue_prior_yr/$total_assets_beg_prev_yr;
-		
-		//write_log("calc_piotroski_fscore","asset_turnover_prior_yr".$asset_turnover_prior_yr);
-		
-		//if Asset Turnover is greater than last year then 1 else 0
-		if ($asset_turnover>$asset_turnover_prior_yr){
-			$fscore = $fscore+1;
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'asset_turnover_greater_asset_turnover_prior_yr',1);
-		}
-		else {
-			query("insert into health_indicators(symbol,type,date,variable,value) values (?,?,?,?,?)",$symbol,'piotroski_fscore',$asOfdate,'asset_turnover_greater_asset_turnover_prior_yr',0);
-			
-		}
-	}	
-	//update statistics
-	update_statistic($symbol, 'piotroski_fscore', $fscore, $asOfdate);
-	
-	//write_log("calc_piotroski_fscore","fscore".$fscore);
-}
-	
-
-	
 function get_share_price($symbol, $date){
 	
 	write_log('get_share_price',"symbol=$symbol , date=$date");
