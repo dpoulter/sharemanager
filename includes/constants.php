@@ -113,17 +113,25 @@
     define("ANTHROPIC_BASE_URL", getenv("ANTHROPIC_BASE_URL") ?: "https://api.anthropic.com");
 
     //Dollars per million tokens, so the panel can price each generation.
-    //Defaults are the published rates for ANTHROPIC_MODEL's default above;
-    //override when they change or when the model does, rather than editing
-    //code. Getting these wrong misreports the cost, it does not break the
-    //panel.
+    //
+    //All four are claude-fable-5-2's published rates, matching the default
+    //model above: $8 input, $40 output, $0.20 cache read, $10 five-minute
+    //cache write. They must move together - a set describing two different
+    //models prices nothing correctly, and the cache figures are the ones
+    //that get forgotten, which under-reports exactly the calls the caching
+    //was added to make cheap.
+    //
+    //These are a default, not a source of truth. Override them when the
+    //rates change or ANTHROPIC_MODEL points elsewhere, and check them
+    //against a real invoice rather than trusting the panel.
     define("ANTHROPIC_PRICE_INPUT",      getenv("ANTHROPIC_PRICE_INPUT")      ?: "8.00");
     define("ANTHROPIC_PRICE_OUTPUT",     getenv("ANTHROPIC_PRICE_OUTPUT")     ?: "40.00");
-    define("ANTHROPIC_PRICE_CACHE_READ", getenv("ANTHROPIC_PRICE_CACHE_READ") ?: "0.10");
+    define("ANTHROPIC_PRICE_CACHE_READ", getenv("ANTHROPIC_PRICE_CACHE_READ") ?: "0.20");
     //Writing to the cache costs more than ordinary input and reading back
     //costs far less; that gap is the reason the vault is sent cached at all,
-    //so the two are priced apart rather than lumped together.
-    define("ANTHROPIC_PRICE_CACHE_WRITE", getenv("ANTHROPIC_PRICE_CACHE_WRITE") ?: "2.50");
+    //so the two are priced apart rather than lumped together. This is the
+    //five-minute write rate, which is what cache_control: ephemeral buys.
+    define("ANTHROPIC_PRICE_CACHE_WRITE", getenv("ANTHROPIC_PRICE_CACHE_WRITE") ?: "10.00");
 
     //Output tokens per generation, thinking included. Raise it for a model
     //that thinks at length; it cannot go below 4000, because a budget too

@@ -45,10 +45,12 @@
     define("ANTHROPIC_API_KEY", getenv('ANTHROPIC_API_KEY') ?: "");
     define("ANTHROPIC_MODEL",   getenv('ANTHROPIC_MODEL') ?: "claude-sonnet-5-5");
     define("ANTHROPIC_BASE_URL", getenv('ANTHROPIC_BASE_URL') ?: "https://api.anthropic.com");
-    define("ANTHROPIC_PRICE_INPUT",       getenv('ANTHROPIC_PRICE_INPUT')       ?: "2.00");
-    define("ANTHROPIC_PRICE_OUTPUT",      getenv('ANTHROPIC_PRICE_OUTPUT')      ?: "10.00");
-    define("ANTHROPIC_PRICE_CACHE_READ",  getenv('ANTHROPIC_PRICE_CACHE_READ')  ?: "0.10");
-    define("ANTHROPIC_PRICE_CACHE_WRITE", getenv('ANTHROPIC_PRICE_CACHE_WRITE') ?: "2.50");
+    // The same four rates the application ships, so the cost arithmetic is
+    // tested against the model it actually defaults to.
+    define("ANTHROPIC_PRICE_INPUT",       getenv('ANTHROPIC_PRICE_INPUT')       ?: "8.00");
+    define("ANTHROPIC_PRICE_OUTPUT",      getenv('ANTHROPIC_PRICE_OUTPUT')      ?: "40.00");
+    define("ANTHROPIC_PRICE_CACHE_READ",  getenv('ANTHROPIC_PRICE_CACHE_READ')  ?: "0.20");
+    define("ANTHROPIC_PRICE_CACHE_WRITE", getenv('ANTHROPIC_PRICE_CACHE_WRITE') ?: "10.00");
     define("ANTHROPIC_TIMEOUT", (int)(getenv('ANTHROPIC_TIMEOUT') ?: 90));
     define("ANTHROPIC_MAX_TOKENS", (int)(getenv('ANTHROPIC_MAX_TOKENS') ?: 4000));
 

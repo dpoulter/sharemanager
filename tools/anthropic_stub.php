@@ -122,12 +122,16 @@ if (is_array($request)) {
 
 header('Content-Type: application/json');
 
-function stub_usage($cached) {
-    return $cached
+function stub_usage($cached, $output = 210, $thinking = 60) {
+    //thinking_tokens is a breakdown of output_tokens, not an addition to
+    //it: thinking is billed as output and counted there.
+    $usage = $cached
         ? ["input_tokens" => 120, "cache_read_input_tokens" => 4000,
-           "cache_creation_input_tokens" => 0, "output_tokens" => 210]
+           "cache_creation_input_tokens" => 0, "output_tokens" => $output]
         : ["input_tokens" => 900, "cache_read_input_tokens" => 0,
-           "cache_creation_input_tokens" => 4000, "output_tokens" => 210];
+           "cache_creation_input_tokens" => 4000, "output_tokens" => $output];
+    $usage["output_tokens_details"] = ["thinking_tokens" => $thinking];
+    return $usage;
 }
 
 /**
@@ -260,7 +264,9 @@ switch ($mode) {
                 ["type" => "thinking", "thinking" => str_repeat("thinking ", 50), "signature" => "stub"],
                 ["type" => "text", "text" => '{"stance":"positive","summary":"Trading above'],
             ],
-            "usage" => stub_usage(false),
+            //A real truncation spends the whole budget, nearly all of it on
+            //thinking - which is why output_tokens alone says so little.
+            "usage" => stub_usage(false, 4000, 3900),
         ]));
         break;
 

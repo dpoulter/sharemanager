@@ -84,7 +84,8 @@
 	function llm_failure($message) {
 		return ["ok" => false, "error" => $message, "output" => null,
 		        "usage" => ["input_tokens" => 0, "cached_tokens" => 0,
-		                    "cache_write_tokens" => 0, "output_tokens" => 0],
+		                    "cache_write_tokens" => 0, "output_tokens" => 0,
+		                    "thinking_tokens" => null],
 		        "cost" => 0.0, "model" => llm_model()];
 	}
 
@@ -185,6 +186,14 @@
 			"cached_tokens"      => (int) ($decoded["usage"]["cache_read_input_tokens"] ?? 0),
 			"cache_write_tokens" => (int) ($decoded["usage"]["cache_creation_input_tokens"] ?? 0),
 			"output_tokens"      => (int) ($decoded["usage"]["output_tokens"] ?? 0),
+			/* Thinking is part of output_tokens, not additional to it: it is
+			   billed as output and counted there. This field breaks out how
+			   much of that was thinking, where the response carries it, so
+			   it is reported and never added to the cost - adding it would
+			   bill the same tokens twice. */
+			"thinking_tokens"    => isset($decoded["usage"]["output_tokens_details"]["thinking_tokens"])
+			                        ? (int) $decoded["usage"]["output_tokens_details"]["thinking_tokens"]
+			                        : null,
 		];
 
 		$model = (string) ($decoded["model"] ?? llm_model());
@@ -202,16 +211,25 @@
 		$stop = (string) ($decoded["stop_reason"] ?? '');
 		if ($stop === 'max_tokens') {
 			/* Logged, not just reported, so how often this happens can be
-			   counted before deciding whether 4000 is enough. Thinking comes
-			   out of the same budget and is not reported separately, so the
-			   output count below is the floor of what was spent, not the
-			   whole of it. write_log() is never gated by DEBUG_LOG; the
-			   guard is for callers that use this file without functions.php.
-			   No prompt text and no key: the numbers are the point. */
+			   counted before deciding whether 4000 is enough.
+			
+			   output_tokens includes the thinking tokens - thinking is
+			   billed as output and counted there - so on a truncation it
+			   sits at or just under max_tokens and says little on its own.
+			   thinking_tokens is the figure that answers the question: how
+			   much of the budget went to thinking rather than to the answer.
+			   It is absent on responses that do not report it, and logged as
+			   "unreported" rather than as zero, which would read as "none".
+			
+			   write_log() is never gated by DEBUG_LOG; the guard is for
+			   callers that use this file without functions.php. No prompt
+			   text and no key: the numbers are the point. */
 			if (function_exists('write_log')) {
 				write_log("llm", "stop_reason=max_tokens model=" . $model
 				               . " max_tokens=" . llm_max_tokens()
 				               . " output_tokens=" . $usage["output_tokens"]
+				               . " thinking_tokens=" . ($usage["thinking_tokens"] === null
+				                                        ? "unreported" : $usage["thinking_tokens"])
 				               . " input_tokens=" . $usage["input_tokens"]
 				               . " cached_tokens=" . $usage["cached_tokens"]);
 			}

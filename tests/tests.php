@@ -1558,13 +1558,22 @@
     //Cost. The panel shows it, so it has to be the real arithmetic.
     $cost = llm_cost(["input_tokens" => 1000000, "cached_tokens" => 0,
                       "cache_write_tokens" => 0, "output_tokens" => 0]);
-    check('a million input tokens costs the input rate', abs($cost - 2.00) < 0.0001, (string) $cost);
+    check('a million input tokens costs the input rate', abs($cost - 8.00) < 0.0001, (string) $cost);
     $cost = llm_cost(["input_tokens" => 0, "cached_tokens" => 1000000,
                       "cache_write_tokens" => 0, "output_tokens" => 0]);
-    check('a million cached tokens costs the cache read rate', abs($cost - 0.10) < 0.0001, (string) $cost);
+    check('a million cached tokens costs the cache read rate', abs($cost - 0.20) < 0.0001, (string) $cost);
     $cost = llm_cost(["input_tokens" => 0, "cached_tokens" => 0,
                       "cache_write_tokens" => 0, "output_tokens" => 1000000]);
-    check('a million output tokens costs the output rate', abs($cost - 10.00) < 0.0001, (string) $cost);
+    check('a million output tokens costs the output rate', abs($cost - 40.00) < 0.0001, (string) $cost);
+    /* All four rates have to describe the same model. A set that mixes two
+       prices nothing correctly, and the cache figures are the ones that get
+       left behind - which under-reports exactly the calls the caching was
+       added to make cheap. */
+    check('the cache rates belong to the same model as the input rate',
+          abs((float) ANTHROPIC_PRICE_CACHE_READ - (float) ANTHROPIC_PRICE_INPUT * 0.025) < 0.001
+          && abs((float) ANTHROPIC_PRICE_CACHE_WRITE - (float) ANTHROPIC_PRICE_INPUT * 1.25) < 0.001,
+          'input ' . ANTHROPIC_PRICE_INPUT . ', read ' . ANTHROPIC_PRICE_CACHE_READ
+          . ', write ' . ANTHROPIC_PRICE_CACHE_WRITE);
     check('reading the cache is far cheaper than sending it again',
           llm_cost(["cached_tokens" => 100000]) < llm_cost(["input_tokens" => 100000]) / 10);
 
@@ -2340,10 +2349,20 @@ STUB
         check('a truncated generation is logged, not only shown',
               count($logged) === 1 && strpos($logged[0]['message_text'], 'stop_reason=max_tokens') !== false,
               count($logged) ? $logged[0]['message_text'] : 'nothing logged');
+        /* output_tokens includes the thinking tokens, so on a truncation it
+           sits at the limit and says little on its own. thinking_tokens is
+           the figure that answers how much of the budget went to thinking
+           rather than to the answer, so the line is no use without it. */
         check('the log line carries the numbers needed to judge the budget',
               count($logged) === 1
               && strpos($logged[0]['message_text'], 'max_tokens=4000') !== false
-              && strpos($logged[0]['message_text'], 'output_tokens=') !== false,
+              && strpos($logged[0]['message_text'], 'output_tokens=4000') !== false
+              && strpos($logged[0]['message_text'], 'thinking_tokens=3900') !== false,
+              count($logged) ? $logged[0]['message_text'] : '');
+        check('thinking is counted inside output, not added to it',
+              count($logged) === 1
+              && (int) preg_replace('/.*thinking_tokens=(\d+).*/', '$1', $logged[0]['message_text'])
+                 <= (int) preg_replace('/.*output_tokens=(\d+).*/', '$1', $logged[0]['message_text']),
               count($logged) ? $logged[0]['message_text'] : '');
         check('the log line carries no key and no prompt',
               count($logged) === 1 && strpos($logged[0]['message_text'], $ai_key) === false
