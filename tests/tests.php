@@ -1584,6 +1584,55 @@
           $nokey['ok'] === false && stripos($nokey['error'], 'no api key') !== false, $nokey['error']);
     check('a failed generation reports no cost', $nokey['cost'] == 0.0);
 
+    echo "\n--- the deploy script ---\n";
+
+    /* Pushed and deployed are different things, and the gap between them
+       cost a session: the server answered with code three commits old while
+       every report of the fix was true. */
+    $deploy = dirname(__DIR__) . '/deploy/deploy.sh';
+    check('there is a deploy script', file_exists($deploy));
+    /* Comments stripped before any ordering or presence check. The header
+       explains what the script does, so it contains every phrase the checks
+       look for - searching the raw file finds the explanation and reports
+       the wrong answer. This is the fourth time that trap has bitten in this
+       codebase; it is always the comment. */
+    $deploy_src = implode("\n", array_filter(
+        explode("\n", (string) @file_get_contents($deploy)),
+        function ($line) { return !preg_match('/^\s*#/', $line) && trim($line) !== ''; }));
+    check('the deploy script parses',
+          trim((string) shell_exec('bash -n ' . escapeshellarg($deploy) . ' 2>&1')) === '');
+    /* Compared as commands, not as phrases: the script's own error messages
+       mention "git checkout" too, so searching the text finds a string
+       literal and gets the order wrong. */
+    $deploy_line = function ($command) use ($deploy_src) {
+        foreach (explode("\n", $deploy_src) as $i => $line) {
+            if (preg_match('/^\s*' . preg_quote($command, '/') . '\b/', $line)) { return $i; }
+        }
+        return -1;
+    };
+    check('it fetches before it checks out',
+          $deploy_line('git fetch') >= 0 && $deploy_line('git checkout') >= 0
+          && $deploy_line('git fetch') < $deploy_line('git checkout'),
+          'fetch on line ' . $deploy_line('git fetch')
+          . ', checkout on line ' . $deploy_line('git checkout'));
+    check('it pulls after checking out, not before',
+          $deploy_line('git pull') > $deploy_line('git checkout'));
+    check('it restarts php only after the pull',
+          $deploy_line('systemctl restart') > $deploy_line('git pull'));
+    check('it restarts php-fpm, without which a pull changes nothing served',
+          preg_match('/systemctl restart/', $deploy_src) === 1
+          && strpos($deploy_src, 'php8.3-fpm') !== false);
+    check('it prints the commit it landed on',
+          strpos($deploy_src, 'git log -1 --oneline') !== false);
+    check('it refuses to discard uncommitted work on the server',
+          strpos($deploy_src, 'git status --porcelain') !== false);
+    check('it stops on the first error rather than carrying on',
+          preg_match('/set -euo pipefail/', $deploy_src) === 1);
+    /* A deploy script that quietly ran migrations would one day run them
+       against the wrong database. */
+    check('it runs no migrations and touches no database',
+          stripos($deploy_src, 'mariadb ') === false && stripos($deploy_src, 'mysql ') === false);
+
     echo "\n--- the index the market outlook reads ---\n";
 
     /* An index is addressed by its own code: FMP wants ^FTSE, not ^FTSE.L. */
@@ -2340,15 +2389,61 @@ STUB
               $live_result['status'] === 200,
               'status ' . $live_result['status'] . ' ' . substr($live_result['body'], 0, 120));
 
+        /* Every generation is logged, not only the ones that go wrong.
+           Without a line per success there is nothing to compare the
+           truncations against: "it happened twice" means nothing until you
+           know whether that was out of three runs or three hundred. */
+        db()->exec("delete from message_log where module='llm'");
+        $ai_mode('ok');
+        $ai_json('symbol=III');
+        $info = rows("select message_text from message_log where module='llm' order by id desc limit 1");
+        check('a successful generation is logged too, not just a failure',
+              count($info) === 1 && strpos($info[0]['message_text'], 'level=INFO') === 0,
+              count($info) ? $info[0]['message_text'] : 'nothing logged');
+        foreach (['stop_reason=', 'output_tokens=', 'thinking_tokens=',
+                  'input_tokens=', 'cached_tokens=', 'duration_ms='] as $field) {
+            check("the generation line carries $field",
+                  count($info) === 1 && strpos($info[0]['message_text'], $field) !== false,
+                  count($info) ? $info[0]['message_text'] : '');
+        }
+        check('the duration is a real measurement, not a placeholder',
+              count($info) === 1
+              && preg_match('/duration_ms=(\d+)/', $info[0]['message_text'], $dm) === 1
+              && (int) $dm[1] >= 0 && (int) $dm[1] < 60000,
+              count($info) ? $info[0]['message_text'] : '');
+        check('a successful generation logs no warning',
+              (int) scalar("select count(*) from message_log
+                             where module='llm' and message_text like 'level=WARN%'") === 0);
+        check('the log line carries no key, no prompt and no note text',
+              count($info) === 1 && strpos($info[0]['message_text'], $ai_key) === false
+              && stripos($info[0]['message_text'], 'Never more than 5%') === false);
+
+        /* An API failure is a thing that happened, so it is counted too. */
+        db()->exec("delete from message_log where module='llm'");
+        $ai_mode('rate_limited');
+        $ai_json('symbol=III');
+        $warned = rows("select message_text from message_log where module='llm' order by id desc limit 1");
+        check('a refused request is logged as a warning with its status',
+              count($warned) === 1 && strpos($warned[0]['message_text'], 'level=WARN') === 0
+              && strpos($warned[0]['message_text'], 'status=429') !== false,
+              count($warned) ? $warned[0]['message_text'] : 'nothing logged');
+
         /* A truncated generation is logged, so how often it happens can be
            counted before deciding whether 4000 tokens is enough. */
         db()->exec("delete from message_log where module='llm'");
         $ai_mode('truncated');
         $ai_json('symbol=III');
-        $logged = rows("select message_text from message_log where module='llm' order by id desc limit 1");
+        $logged = rows("select message_text from message_log
+                         where module='llm' and message_text like 'level=WARN%'
+                         order by id desc limit 1");
         check('a truncated generation is logged, not only shown',
               count($logged) === 1 && strpos($logged[0]['message_text'], 'stop_reason=max_tokens') !== false,
               count($logged) ? $logged[0]['message_text'] : 'nothing logged');
+        check('a truncation is both counted and warned about',
+              (int) scalar("select count(*) from message_log
+                             where module='llm' and message_text like 'level=INFO%'") === 1
+              && (int) scalar("select count(*) from message_log
+                                where module='llm' and message_text like 'level=WARN%'") === 1);
         /* output_tokens includes the thinking tokens, so on a truncation it
            sits at the limit and says little on its own. thinking_tokens is
            the figure that answers how much of the budget went to thinking

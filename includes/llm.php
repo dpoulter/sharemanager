@@ -79,6 +79,40 @@
 	}
 
 	/**
+	 * One log line about a generation.
+	 *
+	 * message_log has no level column and write_log() takes no level, and
+	 * that table is shared with every other module - so the level goes in
+	 * the line rather than into a migration that changes logging for the
+	 * whole application. It is the first field, so a grep for "level=WARN"
+	 * finds the ones that need attention and the rest read as a census:
+	 *
+	 *   select message_text from message_log
+	 *    where module='llm' and message_text like 'level=WARN%';
+	 *
+	 * Never carries prompt text, note text, a symbol or the key. These lines
+	 * exist to be counted, and anything else in them is a liability.
+	 *
+	 * write_log() is never gated by DEBUG_LOG. The guard is for callers that
+	 * use this file without functions.php loaded.
+	 */
+	function llm_log($level, $text) {
+		if (function_exists('write_log')) {
+			write_log("llm", "level=" . $level . " " . $text);
+		}
+	}
+
+	/**
+	 * A token count for a log line.
+	 *
+	 * null means the response did not report the figure, which is not the
+	 * same as zero: zero would read as "no thinking happened".
+	 */
+	function llm_token_figure($value) {
+		return $value === null ? "unreported" : (string) (int) $value;
+	}
+
+	/**
 	 * The shape every caller gets back, success or failure.
 	 */
 	function llm_failure($message) {
@@ -160,11 +194,16 @@
 		//warning printed into a JSON response is a broken panel. The return
 		//value and $http_response_header carry everything needed.
 		$http_response_header = [];
+		$started = microtime(true);
 		$response = @file_get_contents(llm_base_url() . "/v1/messages", false, $context);
+		$duration_ms = (int) round((microtime(true) - $started) * 1000);
 
 		if ($response === false) {
 			//A timeout and an unreachable host look the same here. Both mean
 			//the same thing to the person reading the panel.
+			llm_log("WARN", "outcome=unreachable model=" . llm_model()
+			              . " duration_ms=" . $duration_ms
+			              . " timeout_s=" . (defined('ANTHROPIC_TIMEOUT') ? ANTHROPIC_TIMEOUT : 90));
 			return llm_failure("Could not reach the API: it did not respond within "
 			                 . (defined('ANTHROPIC_TIMEOUT') ? ANTHROPIC_TIMEOUT : 90)
 			                 . " seconds, or the host is unreachable.");
@@ -174,6 +213,11 @@
 		$decoded = json_decode($response, true);
 
 		if ($status >= 400) {
+			//No tokens and no stop_reason on a refused request, but it still
+			//happened and is still worth counting - a run of 429s is exactly
+			//the thing these lines exist to make visible.
+			llm_log("WARN", "outcome=http_error status=" . $status
+			              . " model=" . llm_model() . " duration_ms=" . $duration_ms);
 			return llm_failure(llm_error_message($status, $decoded));
 		}
 
@@ -197,6 +241,24 @@
 		];
 
 		$model = (string) ($decoded["model"] ?? llm_model());
+
+		/* One line per generation, whatever the outcome. The truncation
+		   warning below is the alert; this is the record, and without it a
+		   successful run leaves no trace at all - so there is nothing to
+		   compare the truncations against and no way to tell whether 4000 is
+		   enough. Emitted here, before the outcome is branched on, so every
+		   path that got a response is counted exactly once. */
+		llm_log("INFO", "outcome=generated"
+		              . " stop_reason=" . ((string) ($decoded["stop_reason"] ?? 'none'))
+		              . " model=" . $model
+		              . " duration_ms=" . $duration_ms
+		              . " max_tokens=" . llm_max_tokens()
+		              . " input_tokens=" . $usage["input_tokens"]
+		              . " cached_tokens=" . $usage["cached_tokens"]
+		              . " cache_write_tokens=" . $usage["cache_write_tokens"]
+		              . " output_tokens=" . $usage["output_tokens"]
+		              . " thinking_tokens=" . llm_token_figure($usage["thinking_tokens"]));
+
 		$fail  = function ($message) use ($usage, $model) {
 			return array_merge(llm_failure($message),
 				["usage" => $usage, "cost" => llm_cost($usage), "model" => $model]);
@@ -224,15 +286,12 @@
 			   write_log() is never gated by DEBUG_LOG; the guard is for
 			   callers that use this file without functions.php. No prompt
 			   text and no key: the numbers are the point. */
-			if (function_exists('write_log')) {
-				write_log("llm", "stop_reason=max_tokens model=" . $model
-				               . " max_tokens=" . llm_max_tokens()
-				               . " output_tokens=" . $usage["output_tokens"]
-				               . " thinking_tokens=" . ($usage["thinking_tokens"] === null
-				                                        ? "unreported" : $usage["thinking_tokens"])
-				               . " input_tokens=" . $usage["input_tokens"]
-				               . " cached_tokens=" . $usage["cached_tokens"]);
-			}
+			llm_log("WARN", "outcome=truncated stop_reason=max_tokens model=" . $model
+			              . " max_tokens=" . llm_max_tokens()
+			              . " output_tokens=" . $usage["output_tokens"]
+			              . " thinking_tokens=" . llm_token_figure($usage["thinking_tokens"])
+			              . " input_tokens=" . $usage["input_tokens"]
+			              . " cached_tokens=" . $usage["cached_tokens"]);
 			return $fail("The model ran out of room before finishing (stop_reason max_tokens). "
 			           . "Raise ANTHROPIC_MAX_TOKENS.");
 		}
