@@ -35,6 +35,23 @@
 		return llm_api_key() !== '';
 	}
 
+	/**
+	 * The output budget, thinking included.
+	 *
+	 * Floored rather than simply defaulted: too small a value does not save
+	 * anything, it truncates the answer, and a truncated answer is billed and
+	 * discarded.
+	 */
+	function llm_max_tokens($configured = null) {
+		//The value is a parameter so the floor can be exercised directly; a
+		//constant cannot be redefined mid-process, and production passes
+		//nothing and gets ANTHROPIC_MAX_TOKENS.
+		if ($configured === null) {
+			$configured = defined('ANTHROPIC_MAX_TOKENS') ? (int) ANTHROPIC_MAX_TOKENS : 0;
+		}
+		return max(4000, (int) $configured);
+	}
+
 	function llm_base_url() {
 		$url = defined('ANTHROPIC_BASE_URL') ? rtrim((string) ANTHROPIC_BASE_URL, '/') : '';
 		return $url !== '' ? $url : 'https://api.anthropic.com';
@@ -65,24 +82,30 @@
 	 * The shape every caller gets back, success or failure.
 	 */
 	function llm_failure($message) {
-		return ["ok" => false, "error" => $message, "tool_input" => null,
+		return ["ok" => false, "error" => $message, "output" => null,
 		        "usage" => ["input_tokens" => 0, "cached_tokens" => 0,
 		                    "cache_write_tokens" => 0, "output_tokens" => 0],
 		        "cost" => 0.0, "model" => llm_model()];
 	}
 
 	/**
-	 * Ask the model to fill in one tool call.
+	 * Ask for one JSON answer matching a schema.
 	 *
 	 * $cached_system and $system are both system text; the first is sent with
 	 * cache_control so the long, stable part (the instructions and the vault)
 	 * is cached and a repeat click pays the read rate for it. The per-request
 	 * data goes in the user message, which is never cached.
 	 *
-	 * $tool is ["name" => ..., "description" => ..., "input_schema" => [...]].
-	 * tool_choice forces it, so the model cannot reply with prose instead.
+	 * $schema is a JSON schema. It is sent as output_config.format, which is
+	 * what constrains the answer.
+	 *
+	 * This used to define a tool and force it with tool_choice. The live API
+	 * rejects that on claude-fable-5-2 with HTTP 400, "tool_choice: type
+	 * "tool" and "any" are not supported for this model", so forcing a
+	 * tool is not a portable way to get structured output. Structured outputs
+	 * are, and they need no beta header.
 	 */
-	function llm_generate($cached_system, $system, $user_text, $tool) {
+	function llm_generate($cached_system, $system, $user_text, $schema) {
 
 		if (!llm_configured()) {
 			return llm_failure("No API key is configured, so there is nothing to ask. "
@@ -101,12 +124,18 @@
 		}
 
 		$payload = [
-			"model"       => llm_model(),
-			"max_tokens"  => 2000,
-			"system"      => $system_blocks,
-			"messages"    => [["role" => "user", "content" => (string) $user_text]],
-			"tools"       => [$tool],
-			"tool_choice" => ["type" => "tool", "name" => $tool["name"]],
+			"model"      => llm_model(),
+			//Thinking tokens come out of this budget, so a model that thinks
+			//before answering can spend the whole allowance and have the JSON
+			//cut off part way. 2000 was enough for the answer and not for the
+			//thinking in front of it. The floor is not negotiable by
+			//configuration: a smaller number does not save money, it buys
+			//truncated answers that are thrown away and paid for anyway.
+			"max_tokens" => llm_max_tokens(),
+			"system"     => $system_blocks,
+			"messages"   => [["role" => "user", "content" => (string) $user_text]],
+			//No tools and no tool_choice. See llm_generate() above.
+			"output_config" => ["format" => ["type" => "json_schema", "schema" => $schema]],
 		];
 
 		$body = json_encode($payload);
@@ -158,27 +187,52 @@
 			"output_tokens"      => (int) ($decoded["usage"]["output_tokens"] ?? 0),
 		];
 
-		//tool_choice forces the tool, but a refusal, a max_tokens stop or a
-		//model that ignores it all end up here, so the content is searched
-		//rather than assumed.
-		$tool_input = null;
+		$model = (string) ($decoded["model"] ?? llm_model());
+		$fail  = function ($message) use ($usage, $model) {
+			return array_merge(llm_failure($message),
+				["usage" => $usage, "cost" => llm_cost($usage), "model" => $model]);
+		};
+
+		/* Why the answer stopped, before reading it.
+		
+		   max_tokens means the JSON is cut off part way, and a half-written
+		   outlook is not a cheaper outlook - it is a wrong one. refusal means
+		   the model declined; there is nothing to parse and saying "the shape
+		   was wrong" would be a lie about what happened. */
+		$stop = (string) ($decoded["stop_reason"] ?? '');
+		if ($stop === 'max_tokens') {
+			return $fail("The model ran out of room before finishing (stop_reason max_tokens). "
+			           . "Raise ANTHROPIC_MAX_TOKENS.");
+		}
+		if ($stop === 'refusal') {
+			return $fail("The model declined to answer (stop_reason refusal).");
+		}
+
+		/* The first text block, not content[0].
+		
+		   On a model that thinks before answering - claude-fable-5-2 does -
+		   the first block is a thinking block with no text field at all.
+		   Reading content[0] gets that block, and content[0]["text"] gets
+		   nothing, so the answer looks missing when it is simply second. */
+		$text = null;
 		foreach ((array) ($decoded["content"] ?? []) as $block) {
-			if (($block["type"] ?? '') === "tool_use" && ($block["name"] ?? '') === $tool["name"]) {
-				$tool_input = $block["input"] ?? null;
+			if (($block["type"] ?? '') === "text" && isset($block["text"])) {
+				$text = (string) $block["text"];
 				break;
 			}
 		}
 
-		if (!is_array($tool_input)) {
-			return array_merge(
-				llm_failure("The model did not return an outlook in the expected form."),
-				["usage" => $usage, "cost" => llm_cost($usage),
-				 "model" => (string) ($decoded["model"] ?? llm_model())]);
+		if ($text === null || trim($text) === '') {
+			return $fail("The model returned no answer.");
 		}
 
-		return ["ok" => true, "error" => "", "tool_input" => $tool_input,
-		        "usage" => $usage, "cost" => llm_cost($usage),
-		        "model" => (string) ($decoded["model"] ?? llm_model())];
+		$output = json_decode($text, true);
+		if (!is_array($output)) {
+			return $fail("The model did not return an outlook in the expected form.");
+		}
+
+		return ["ok" => true, "error" => "", "output" => $output,
+		        "usage" => $usage, "cost" => llm_cost($usage), "model" => $model];
 	}
 
 	/**

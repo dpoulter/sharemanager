@@ -22,6 +22,23 @@
     $INCLUDES = dirname(__DIR__) . '/includes';
     $passed = 0; $failed = 0; $failures = [];
 
+    /**
+     * Is additionalProperties false on every object in a JSON schema?
+     *
+     * Checked recursively rather than on the top level alone: a nested object
+     * left open is the same hole, just harder to see.
+     */
+    function outlook_schema_objects_all_closed($node) {
+        if (!is_array($node)) { return true; }
+        if (($node['type'] ?? null) === 'object' && ($node['additionalProperties'] ?? null) !== false) {
+            return false;
+        }
+        foreach ($node as $child) {
+            if (is_array($child) && !outlook_schema_objects_all_closed($child)) { return false; }
+        }
+        return true;
+    }
+
     function check($name, $ok, $detail = '') {
         global $passed, $failed, $failures;
         if ($ok) { $passed++; printf("  \033[32mPASS\033[0m  %s\n", $name); }
@@ -1426,18 +1443,25 @@
 
     echo "\n--- the outlook request and what comes back ---\n";
 
-    /* What the model is asked for. tool_choice forces the tool, so the answer
-       has a shape rather than being prose that has to be parsed. */
-    $tool = outlook_tool();
-    check('the tool is named outlook', $tool['name'] === 'outlook');
+    /* What the model is asked for. A JSON schema sent as
+       output_config.format, not a tool: tool_choice is rejected outright on
+       claude-fable-5-2 with HTTP 400, so forcing a tool is not a portable way
+       to get a structured answer. */
+    $schema = outlook_schema();
     check('the schema requires every field the panel draws',
-          $tool['input_schema']['required'] === ['stance','summary','positives','risks','action','watch'],
-          json_encode($tool['input_schema']['required']));
+          $schema['required'] === ['stance','summary','positives','risks','action','watch'],
+          json_encode($schema['required']));
     check('stance is an enum, not free text',
-          $tool['input_schema']['properties']['stance']['enum'] === ['positive','neutral','negative']);
+          $schema['properties']['stance']['enum'] === ['positive','neutral','negative']);
     check('three positives and three risks are asked for',
-          $tool['input_schema']['properties']['positives']['minItems'] === 3
-          && $tool['input_schema']['properties']['risks']['maxItems'] === 3);
+          $schema['properties']['positives']['minItems'] === 3
+          && $schema['properties']['risks']['maxItems'] === 3);
+    /* Without this a model may add fields, and a field the panel does not
+       draw is one nobody reads: paid for, stored and invisible. */
+    check('the schema allows no fields the panel does not draw',
+          ($schema['additionalProperties'] ?? null) === false);
+    check('every object in the schema says so, not just the top one',
+          outlook_schema_objects_all_closed($schema), 'an object is left open');
 
     /* The prompt has to tell the model to apply the owner's policy and to
        speak up when the data disagrees with it, or the notes are decoration. */
@@ -1457,6 +1481,12 @@
         "positives" => ["a","b","c"], "risks" => ["d","e","f"],
         "action" => "Hold.", "watch" => "The average."]);
     check('a good answer validates', $err === null && $valid['stance'] === 'positive');
+
+    list($vc, $ec) = outlook_validate([
+        "stance" => "POSITIVE", "summary" => "Fine.",
+        "positives" => ["a"], "risks" => ["b"], "action" => "", "watch" => ""]);
+    check('a stance in a different case is still that stance',
+          $ec === null && $vc['stance'] === 'positive', (string) $ec);
 
     list($v2, $e2) = outlook_validate(["stance" => "wildly bullish", "summary" => "x"]);
     check('an unrecognised stance is refused', $v2 === null && $e2 !== null, (string) $e2);
@@ -1491,7 +1521,7 @@
 
     //No key is a state, not a failure.
     check('with no key configured nothing is sent', !llm_configured());
-    $nokey = llm_generate('system', '', 'user', outlook_tool());
+    $nokey = llm_generate('system', '', 'user', outlook_schema());
     check('with no key the caller gets a message, not an exception',
           $nokey['ok'] === false && stripos($nokey['error'], 'no api key') !== false, $nokey['error']);
     check('a failed generation reports no cost', $nokey['cost'] == 0.0);
@@ -2063,10 +2093,26 @@ STUB
         check('the share data is in the user message, not the cached block',
               strpos($sent['messages'][0]['content'] ?? '', 'III') !== false
               && strpos($sent['system'][0]['text'] ?? '', '"symbol": "III"') === false);
-        check('the tool is forced rather than offered',
-              ($sent['tool_choice']['type'] ?? '') === 'tool'
-              && ($sent['tool_choice']['name'] ?? '') === 'outlook',
-              json_encode($sent['tool_choice'] ?? null));
+        /* Structured outputs, not a forced tool. The live API answers HTTP
+           400 on claude-fable-5-2 for tool_choice type "tool", so sending
+           one is not a portable way to get a structured answer - and it is
+           the configured model on the server. */
+        check('the answer is constrained by a json schema',
+              ($sent['output_config']['format']['type'] ?? '') === 'json_schema',
+              json_encode($sent['output_config'] ?? null));
+        check('the schema sent is the one the panel draws from',
+              ($sent['output_config']['format']['schema']['required'] ?? [])
+              === ['stance','summary','positives','risks','action','watch'],
+              json_encode($sent['output_config']['format']['schema']['required'] ?? null));
+        check('the request sends no tool_choice',
+              !array_key_exists('tool_choice', $sent), json_encode($sent['tool_choice'] ?? null));
+        check('the request sends no tools either',
+              !array_key_exists('tools', $sent));
+        /* Structured outputs need no beta header. */
+        $hdrs_now = json_decode((string)@file_get_contents("$ai_dir/last_headers"), true);
+        check('no beta header is sent',
+              !isset($hdrs_now['anthropic-beta']),
+              json_encode($hdrs_now['anthropic-beta'] ?? null));
         check('the model is the configured one', ($sent['model'] ?? '') === 'claude-sonnet-5-5');
 
         /* The key goes to the API and nowhere else. */
@@ -2136,7 +2182,10 @@ STUB
                   ['rate_limited', 'Rate limited'],
                   ['server_error', 'had a problem'],
                   ['not_json',     'not JSON'],
-                  ['no_tool',      'expected form'],
+                  ['prose',        'expected form'],
+                  ['no_text',      'returned no answer'],
+                  ['truncated',    'ran out of room'],
+                  ['refusal',      'declined to answer'],
                   ['bad_stance',   'unrecognised stance'],
                   ['empty_summary','empty summary']] as [$mode, $expected]) {
             $ai_mode($mode);
@@ -2152,6 +2201,71 @@ STUB
                   is_array($ai_error),
                   'decoded ' . (is_array($ai_error) ? 'yes' : 'no'));
         }
+
+        /* A model that thinks before it answers.
+           On claude-fable-5-2 the first content block is a thinking block
+           with no text field at all, and the answer is behind it. Reading
+           content[0] gets that block and content[0]["text"] gets nothing, so
+           the answer looks missing when it is simply second. The client takes
+           the first block whose type is text, and this is what proves it
+           rather than the code looking right. */
+        $ai_mode('thinking');
+        $thought = $ai_json('symbol=III');
+        check('a thinking block before the answer does not hide it',
+              is_array($thought) && ($thought['ok'] ?? false) === true
+              && ($thought['outlook']['stance'] ?? '') === 'positive',
+              json_encode(array_slice((array) $thought, 0, 2)));
+        check('the model that answered is recorded, not the one configured',
+              ($thought['model'] ?? '') === 'claude-fable-5-2', (string) ($thought['model'] ?? ''));
+
+        /* The schema enum, echoed in another case. The comparison is case
+           insensitive, so this is a good answer rather than a rejected one. */
+        $ai_mode('stance_case');
+        $upper = $ai_json('symbol=III');
+        check('a stance in a different case is accepted, not refused',
+              is_array($upper) && ($upper['ok'] ?? false) === true
+              && ($upper['outlook']['stance'] ?? '') === 'positive',
+              json_encode(array_slice((array) $upper, 0, 2)));
+
+        /* Out of output budget. Thinking tokens come out of max_tokens, so a
+           budget that fits the answer but not the thinking in front of it
+           cuts the JSON off part way. A half-written outlook is not a cheaper
+           outlook, and "the shape was wrong" would be the wrong thing to
+           tell someone whose answer was simply cut short. */
+        $ai_mode('truncated');
+        $cut = $ai_json('symbol=III');
+        check('a truncated answer is an error, not an empty panel',
+              is_array($cut) && ($cut['ok'] ?? true) === false,
+              json_encode($cut));
+        check('and it says the model ran out of room, not that the shape was wrong',
+              stripos($cut['error'] ?? '', 'ran out of room') !== false
+              && stripos($cut['error'] ?? '', 'max_tokens') !== false,
+              (string) ($cut['error'] ?? ''));
+
+        /* A refusal is not a malformed answer either. */
+        $ai_mode('refusal');
+        $declined = $ai_json('symbol=III');
+        check('a refusal says the model declined, not that parsing failed',
+              is_array($declined) && ($declined['ok'] ?? true) === false
+              && stripos($declined['error'] ?? '', 'declined') !== false,
+              (string) ($declined['error'] ?? ''));
+
+        /* The budget itself, on the wire. */
+        $ai_mode('ok');
+        $ai_json('symbol=III');
+        $budget_sent = $ai_last_request();
+        check('the request asks for enough room for thinking and an answer',
+              (int) ($budget_sent['max_tokens'] ?? 0) >= 4000,
+              'max_tokens=' . var_export($budget_sent['max_tokens'] ?? null, true));
+        /* Passed explicitly: the suite's own configuration is already 4000,
+           so calling it with no argument would pass whether the floor exists
+           or not. Too small a budget does not save anything - it truncates
+           the answer, and a truncated answer is billed and discarded. */
+        check('the budget cannot be configured below that floor',
+              llm_max_tokens(100) === 4000 && llm_max_tokens(0) === 4000,
+              llm_max_tokens(100) . ' from 100, ' . llm_max_tokens(0) . ' from 0');
+        check('a larger configured budget is honoured',
+              llm_max_tokens(8000) === 8000, (string) llm_max_tokens(8000));
 
         /* A timeout. ANTHROPIC_TIMEOUT is 5s for the suite and the stub
            sleeps 8, so this exercises the real path rather than a mock. */

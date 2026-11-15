@@ -25,49 +25,51 @@
 	require_once("vault.php");
 
 	/**
-	 * The tool the model must fill in.
+	 * The shape the answer must take.
 	 *
-	 * Structured output by tool use rather than by asking for JSON in prose:
-	 * the schema is enforced by the API, and tool_choice means the model
-	 * cannot answer with an essay instead.
+	 * Sent as output_config.format, which the API enforces, rather than as a
+	 * tool the model is forced to call: tool_choice is rejected outright on
+	 * claude-fable-5-2, and a structured output needs no beta header and
+	 * works on both.
+	 *
+	 * additionalProperties is false on every object. Without it a model may
+	 * add fields, and a field the panel does not draw is one nobody reads -
+	 * paid for, stored, and invisible.
 	 */
-	function outlook_tool() {
+	function outlook_schema() {
 		return [
-			"name" => "outlook",
-			"description" => "Record a short investment outlook for the share or market described.",
-			"input_schema" => [
-				"type" => "object",
-				"properties" => [
-					"stance" => [
-						"type" => "string",
-						"enum" => ["positive", "neutral", "negative"],
-						"description" => "Overall stance implied by the data and the owner's policy notes.",
-					],
-					"summary" => [
-						"type" => "string",
-						"description" => "At most 100 words. What the figures say, in plain English.",
-					],
-					"positives" => [
-						"type" => "array", "minItems" => 3, "maxItems" => 3,
-						"items" => ["type" => "string"],
-						"description" => "Three things supporting the case.",
-					],
-					"risks" => [
-						"type" => "array", "minItems" => 3, "maxItems" => 3,
-						"items" => ["type" => "string"],
-						"description" => "Three things that could go wrong.",
-					],
-					"action" => [
-						"type" => "string",
-						"description" => "One line: what to consider doing, and under what condition.",
-					],
-					"watch" => [
-						"type" => "string",
-						"description" => "One line: the single thing to watch from here.",
-					],
+			"type" => "object",
+			"additionalProperties" => false,
+			"properties" => [
+				"stance" => [
+					"type" => "string",
+					"enum" => ["positive", "neutral", "negative"],
+					"description" => "Overall stance implied by the data and the owner's policy notes.",
 				],
-				"required" => ["stance", "summary", "positives", "risks", "action", "watch"],
+				"summary" => [
+					"type" => "string",
+					"description" => "At most 100 words. What the figures say, in plain English.",
+				],
+				"positives" => [
+					"type" => "array", "minItems" => 3, "maxItems" => 3,
+					"items" => ["type" => "string"],
+					"description" => "Three things supporting the case.",
+				],
+				"risks" => [
+					"type" => "array", "minItems" => 3, "maxItems" => 3,
+					"items" => ["type" => "string"],
+					"description" => "Three things that could go wrong.",
+				],
+				"action" => [
+					"type" => "string",
+					"description" => "One line: what to consider doing, and under what condition.",
+				],
+				"watch" => [
+					"type" => "string",
+					"description" => "One line: the single thing to watch from here.",
+				],
 			],
+			"required" => ["stance", "summary", "positives", "risks", "action", "watch"],
 		];
 	}
 
@@ -528,10 +530,10 @@ How to answer:
 			            . json_encode($headlines, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 		}
 
-		$result = llm_generate($cached_system, '', $user_text, outlook_tool());
+		$result = llm_generate($cached_system, '', $user_text, outlook_schema());
 
 		list($outlook, $invalid) = $result["ok"]
-			? outlook_validate($result["tool_input"])
+			? outlook_validate($result["output"])
 			: [null, null];
 
 		//Saved whenever the API answered, valid or not: it was paid for, and a

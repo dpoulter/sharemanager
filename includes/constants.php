@@ -119,6 +119,11 @@
     //so the two are priced apart rather than lumped together.
     define("ANTHROPIC_PRICE_CACHE_WRITE", getenv("ANTHROPIC_PRICE_CACHE_WRITE") ?: "2.50");
 
+    //Output tokens per generation, thinking included. Raise it for a model
+    //that thinks at length; it cannot go below 4000, because a budget too
+    //small to finish in does not save money, it buys truncated answers.
+    define("ANTHROPIC_MAX_TOKENS", (int)(getenv("ANTHROPIC_MAX_TOKENS") ?: 4000));
+
     //How long to wait for a generation before giving up and saying so.
     define("ANTHROPIC_TIMEOUT", (int)(getenv("ANTHROPIC_TIMEOUT") ?: 90));
 

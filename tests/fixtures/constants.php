@@ -50,6 +50,7 @@
     define("ANTHROPIC_PRICE_CACHE_READ",  getenv('ANTHROPIC_PRICE_CACHE_READ')  ?: "0.10");
     define("ANTHROPIC_PRICE_CACHE_WRITE", getenv('ANTHROPIC_PRICE_CACHE_WRITE') ?: "2.50");
     define("ANTHROPIC_TIMEOUT", (int)(getenv('ANTHROPIC_TIMEOUT') ?: 90));
+    define("ANTHROPIC_MAX_TOKENS", (int)(getenv('ANTHROPIC_MAX_TOKENS') ?: 4000));
 
     define("SM_VAULT_DIR", getenv('SM_VAULT_DIR') ?: "");
     define("SM_VAULT_WORD_BUDGET", (int)(getenv('SM_VAULT_WORD_BUDGET') ?: 6000));

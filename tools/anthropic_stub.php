@@ -13,8 +13,9 @@
  *   last_request    the body of the most recent request, for assertions
  *   last_headers    its headers, likewise
  *
- * Modes: ok, no_tool, bad_stance, empty_summary, unauthorized, rate_limited,
- *        server_error, not_json, slow, cached
+ * Modes: ok, prose, bad_stance, empty_summary, unauthorized, rate_limited,
+ *        server_error, not_json, slow, cached, thinking, no_text, truncated,
+ *        refusal
  */
 
 $dir = getenv('SM_STUB_DIR') ?: sys_get_temp_dir();
@@ -45,13 +46,16 @@ function stub_usage($cached) {
            "cache_creation_input_tokens" => 4000, "output_tokens" => 210];
 }
 
-function stub_message($tool_input, $cached = false) {
+/**
+ * A structured-output answer: the JSON arrives as the text of a text block,
+ * not as a tool call. output_config.format is what constrains it.
+ */
+function stub_message($output, $cached = false, $model = "claude-sonnet-5-5") {
     return [
         "id" => "msg_stub", "type" => "message", "role" => "assistant",
-        "model" => "claude-sonnet-5-5",
-        "stop_reason" => "tool_use",
-        "content" => [["type" => "tool_use", "id" => "toolu_stub",
-                       "name" => "outlook", "input" => $tool_input]],
+        "model" => $model,
+        "stop_reason" => "end_turn",
+        "content" => [["type" => "text", "text" => json_encode($output)]],
         "usage" => stub_usage($cached),
     ];
 }
@@ -92,8 +96,8 @@ switch ($mode) {
         print("<html><body>a gateway said something</body></html>");
         break;
 
-    case 'no_tool':
-        //Answered with prose instead of calling the tool.
+    case 'prose':
+        //Answered with text that is not JSON at all.
         print(json_encode([
             "id" => "msg_stub", "type" => "message", "role" => "assistant",
             "model" => "claude-sonnet-5-5", "stop_reason" => "end_turn",
@@ -104,6 +108,12 @@ switch ($mode) {
 
     case 'bad_stance':
         print(json_encode(stub_message(array_merge($outlook, ["stance" => "wildly bullish"]))));
+        break;
+
+    case 'stance_case':
+        //A schema enum the model echoed in a different case. The comparison
+        //is case-insensitive, so this is a good answer, not a bad one.
+        print(json_encode(stub_message(array_merge($outlook, ["stance" => "POSITIVE"]))));
         break;
 
     case 'empty_summary':
@@ -126,6 +136,57 @@ switch ($mode) {
 
     case 'cached':
         print(json_encode(stub_message($outlook, true)));
+        break;
+
+    case 'thinking':
+        /* What claude-fable-5-2 returns: the first content block is a
+           thinking block with no text field at all, and the answer is behind
+           it. Anything reading content[0] finds the wrong block, and
+           content[0]["text"] finds nothing. */
+        print(json_encode([
+            "id" => "msg_stub", "type" => "message", "role" => "assistant",
+            "model" => "claude-fable-5-2", "stop_reason" => "end_turn",
+            "content" => [
+                ["type" => "thinking",
+                 "thinking" => "Let me look at the trend figures before deciding.",
+                 "signature" => "stub"],
+                ["type" => "text", "text" => json_encode($outlook)],
+            ],
+            "usage" => stub_usage(false),
+        ]));
+        break;
+
+    case 'no_text':
+        //Thought, and then said nothing.
+        print(json_encode([
+            "id" => "msg_stub", "type" => "message", "role" => "assistant",
+            "model" => "claude-fable-5-2", "stop_reason" => "end_turn",
+            "content" => [["type" => "thinking", "thinking" => "Hmm.", "signature" => "stub"]],
+            "usage" => stub_usage(false),
+        ]));
+        break;
+
+    case 'truncated':
+        /* Out of output budget: thinking used it all and the JSON is cut off
+           part way, so there is nothing trustworthy to parse. */
+        print(json_encode([
+            "id" => "msg_stub", "type" => "message", "role" => "assistant",
+            "model" => "claude-fable-5-2", "stop_reason" => "max_tokens",
+            "content" => [
+                ["type" => "thinking", "thinking" => str_repeat("thinking ", 50), "signature" => "stub"],
+                ["type" => "text", "text" => '{"stance":"positive","summary":"Trading above'],
+            ],
+            "usage" => stub_usage(false),
+        ]));
+        break;
+
+    case 'refusal':
+        print(json_encode([
+            "id" => "msg_stub", "type" => "message", "role" => "assistant",
+            "model" => "claude-fable-5-2", "stop_reason" => "refusal",
+            "content" => [],
+            "usage" => stub_usage(false),
+        ]));
         break;
 
     case 'ok':
