@@ -56,6 +56,7 @@ print("fx rates for {}: {}".format(date, fx or "none"))
 
 written = 0
 corrected = 0
+cleared = 0
 symbols_with_data = 0
 unconvertible = {}
 
@@ -66,6 +67,31 @@ for row in rows:
     # GBP reporters need no conversion; an unknown currency is left alone
     # rather than assumed to be sterling.
     rate = 1.0 if currency in ('', 'GBP') else fx.get(currency)
+
+    # Clear this date's provider-sourced statistics for the symbol before
+    # writing the new set, so a figure the provider has stopped sending stops
+    # being there. insert_statistic() is an upsert, which updates a value that
+    # comes again and leaves one that does not: on the re-run for 2026-11-13
+    # TRN's buyback yield was correctly not written, being over the sanity
+    # cap, and the 47.9% from the run before it stayed in statistics and went
+    # on being ranked. FGT kept 65% and VEIL 48% the same way.
+    #
+    # Only the indicators that come from a provider_field, and only for a
+    # symbol the provider answered for this run. Everything this application
+    # works out for itself - the momentum series, the moving averages, the
+    # scores - is written by get_statistics.php afterwards and is not this
+    # job's to delete. And a symbol with nothing in stock_info for the date is
+    # a symbol the loader got nothing for, which is not the same as the data
+    # being gone: the loader takes that view too, and leaves what it has.
+    has_data = query("select count(*) from stock_info where symbol='"+symbol+"' and asofdate='"+date+"'")
+    if has_data and has_data[0][0]:
+        removed = query("delete s from statistics s, screen_indicators sci"
+                        " where s.indicator = sci.name"
+                        "   and coalesce(nullif(sci.provider_field,''),'') <> ''"
+                        "   and s.symbol='"+symbol+"'"
+                        "   and s.exchange='"+exchange+"'"
+                        "   and s.date='"+date+"'")
+        cleared += removed if isinstance(removed, int) else 0
 
     indicator_stats = query("select sti.symbol, sci.name, sti.value, ifnull(nullif(sci.fx_adjust,''),'NONE') from screen_indicators sci, stock_info sti where sci.enabled='Y' and sti.attribute = coalesce(nullif(sci.provider_field,''), sci.name) and sti.symbol='"+symbol+"' and sti.asofdate = '"+date+"' order by order_number")
 
@@ -97,8 +123,9 @@ for row in rows:
         "" if currency in ('', 'GBP') else "  [" + currency + "]",
         "" if not skipped_here else "  {} not written, no rate".format(skipped_here)))
 
-print("{}: {} statistics written for {} of {} symbols, {} converted from another currency"
-      .format(date, written, symbols_with_data, len(rows), corrected))
+print("{}: {} statistics written for {} of {} symbols, {} converted from another "
+      "currency, {} stale rows cleared"
+      .format(date, written, symbols_with_data, len(rows), corrected, cleared))
 
 if unconvertible:
     print("NO RATE: " + ", ".join(

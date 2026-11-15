@@ -3154,6 +3154,134 @@
     if ($hs_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $hs_saved_exchange; }
 
+    echo "\n--- a figure the provider stops sending stops being there ---\n";
+
+    /* insert_statistic() is an upsert: it updates a value that comes again
+       and leaves one that does not. So a statistic the provider stopped
+       sending went on sitting in the table, and on being ranked.
+
+       On the re-run for 2026-11-13 TRN's buyback yield was correctly not
+       written - it was over the sanity cap - and the 47.9% from the run
+       before it stayed. FGT kept 65% and VEIL 48% the same way, and all
+       three went on filling the value top ten on figures the job had just
+       decided not to write. */
+
+    $st_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $st_asof = asof_date();
+    $st_all  = "('SGON','SKEEP','SNONE')";
+
+    $run_python_st = function ($script) {
+        $cmd = 'SM_DB_HOST=' . escapeshellarg(SERVER)
+             . ' SM_DB_NAME=' . escapeshellarg(DATABASE)
+             . ' SM_DB_USER=' . escapeshellarg(USERNAME)
+             . ' SM_DB_PASS=' . escapeshellarg(PASSWORD)
+             . ' python3 ' . escapeshellarg(dirname(__DIR__) . '/python/' . $script);
+        exec($cmd . ' 2>&1', $out, $rc);
+        return [implode("\n", $out), $rc];
+    };
+
+    reset_calculated();
+    db()->exec("delete from stock_info");
+    db()->exec("delete from fx_rates");
+    db()->exec("delete from stock_symbols where symbol in $st_all");
+    db()->exec("delete from screen_indicators where name in ('pe','buyback_yield')");
+    db()->exec("insert into screen_indicators
+                  (name, provider_field, description, enabled, order_number,
+                   calc_rank, rank_zero, rank_order, rank_negative, rank_funds,
+                   fx_adjust, category)
+                values
+                  ('pe','Ratios.priceToEarningsRatioTTM','Price / earnings','Y',1,
+                   'Y','N','value ASC','EXCLUDE','N','MULTIPLY',12),
+                  ('buyback_yield','Derived.buybackYieldTTM','Buyback yield','Y',211,
+                   'N','Y','value DESC','NORMAL','N','DIVIDE',12)");
+
+    $st_sym = db()->prepare("insert into stock_symbols (symbol,name,exchange,enabled,sector,industry,market,report_ccy,report_ccy_asof,is_fund)
+                             values (?,?,'XLON','Y','Stale Test','Stale Industry','FTSE 250','GBP',?,'N')");
+    $st_info = db()->prepare("insert into stock_info (symbol,asofdate,attribute,value) values (?,?,?,?)");
+    foreach (['SGON', 'SKEEP', 'SNONE'] as $st_s) { $st_sym->execute([$st_s, $st_s . ' Test PLC', $st_asof]); }
+
+    /* SGON loses its buyback yield on the second run, the way a symbol over
+       the cap does. SKEEP keeps both. SNONE has nothing in stock_info at
+       all on the second run, which is the loader getting no answer rather
+       than the provider withdrawing a figure. */
+    foreach (['SGON', 'SKEEP', 'SNONE'] as $st_s) {
+        $st_info->execute([$st_s, $st_asof, 'Ratios.priceToEarningsRatioTTM', '12.5']);
+        $st_info->execute([$st_s, $st_asof, 'Derived.buybackYieldTTM', '0.479']);
+    }
+
+    [$st_out1, $st_rc1] = $run_python_st('get_api_stats.py');
+    check('the first run writes both figures', $st_rc1 === 0, substr($st_out1, -300));
+
+    $st_value = function ($symbol, $indicator) use ($st_asof) {
+        $v = scalar("select value from statistics where symbol=? and indicator=? and date=? and exchange='XLON'",
+                    [$symbol, $indicator, $st_asof]);
+        return ($v === false || $v === null) ? null : (float)$v;
+    };
+    foreach (['SGON', 'SKEEP', 'SNONE'] as $st_s) {
+        check("$st_s has a buyback yield after the first run",
+              $st_value($st_s, 'buyback_yield') === 0.479,
+              var_export($st_value($st_s, 'buyback_yield'), true));
+    }
+
+    /* Something this application calculates for itself, written between the
+       two runs. It has no provider_field, so the clear-down must not touch
+       it: the momentum series and the moving averages are get_statistics.php's
+       to manage, not this job's. */
+    db()->prepare("insert into statistics (symbol,date,indicator,value,exchange)
+                   values ('SGON',?,'3mnth',11.0,'XLON')")->execute([$st_asof]);
+
+    //Second run: the provider no longer sends SGON's buyback yield.
+    db()->prepare("delete from stock_info where symbol='SGON' and attribute='Derived.buybackYieldTTM'")
+        ->execute();
+    db()->prepare("delete from stock_info where symbol='SNONE'")->execute();
+
+    [$st_out2, $st_rc2] = $run_python_st('get_api_stats.py');
+    check('the second run completes', $st_rc2 === 0, substr($st_out2, -300));
+
+    check('a figure the provider stopped sending is gone',
+          $st_value('SGON', 'buyback_yield') === null,
+          var_export($st_value('SGON', 'buyback_yield'), true));
+    check('while the figure it still sends is there',
+          $st_value('SGON', 'pe') === 12.5, var_export($st_value('SGON', 'pe'), true));
+    check('and another symbol keeps both',
+          $st_value('SKEEP', 'buyback_yield') === 0.479 && $st_value('SKEEP', 'pe') === 12.5);
+
+    /* A symbol the loader got nothing for is not a symbol whose data has
+       gone. The loader takes that view when it writes stock_info; this job
+       takes it too, or one failed fetch would empty a company's row. */
+    check('a symbol the provider answered nothing for keeps what it had',
+          $st_value('SNONE', 'buyback_yield') === 0.479 && $st_value('SNONE', 'pe') === 12.5,
+          json_encode([$st_value('SNONE', 'buyback_yield'), $st_value('SNONE', 'pe')]));
+
+    check('an indicator this application calculates is left alone',
+          $st_value('SGON', '3mnth') === 11.0,
+          var_export($st_value('SGON', '3mnth'), true));
+
+    check('the run says how many stale rows it cleared',
+          preg_match('/\d+ stale rows cleared/', $st_out2) === 1,
+          substr($st_out2, -200));
+
+    /* And the ranking follows: a value that is gone is not ranked. */
+    run_script('get_statistics.php');
+    check('the withdrawn figure is not ranked either',
+          scalar("select percentile from statistics where symbol='SGON'
+                   and indicator='buyback_yield' and date=?", [$st_asof]) === false
+          || scalar("select percentile from statistics where symbol='SGON'
+                      and indicator='buyback_yield' and date=?", [$st_asof]) === null);
+
+    //Leave the universe as it was found.
+    db()->exec("delete from stock_symbols where symbol in $st_all");
+    db()->exec("delete from statistics where symbol in $st_all");
+    db()->exec("delete from stock_info");
+    db()->exec("delete from screen_indicators where name in ('pe','buyback_yield')");
+    apply_migration('shareholder_yield.sql');
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    run_script('get_statistics.php');
+    if ($st_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $st_saved_exchange; }
+
     echo "\n--- the price log names the provider that actually ran ---\n";
 
     /* An FMP run logged "EODHD 2021-11-15 to 2026-11-13: 350 symbols loaded". */
