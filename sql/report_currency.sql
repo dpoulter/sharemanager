@@ -84,7 +84,15 @@ update screen_indicators set fx_adjust='MULTIPLY'
 
 -- A yield is the same ratio inverted.
 update screen_indicators set fx_adjust='DIVIDE'
- where name in ('dividend_yield','shareholder_yield');
+ where name in ('dividend_yield');
+
+-- shareholder_yield is not here on purpose. It is not a provider figure:
+-- calc_shareholder_yield() in share_functions.php adds buyback_yield and
+-- div_yield together out of statistics, so get_api_stats.py never writes it
+-- and a flag on it would say nothing. Those two components are the ones that
+-- would need converting, and neither is mapped to a provider field today -
+-- nothing writes them, so shareholder_yield comes out as zero for every
+-- share. Worth settling before this is relied on either way.
 
 -- Same currency top and bottom.
 update screen_indicators set fx_adjust='NONE'
