@@ -7869,6 +7869,186 @@
     if ($pf_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $pf_saved_exchange; }
 
+    echo "\n--- screens: a screen that cannot be run is not offered ---\n";
+
+    require_once($INCLUDES . '/screen_view.php');
+
+    $sv_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+
+    /* The seeded Quality Momentum screen is the one from the live database:
+       its criteria carry the indicator's name in first_operand where a
+       number belongs. build_screen() puts first_operand into the SQL as it
+       stands, so "3mnth > 0" becomes "AND s.value> 3mnth" - a reference to
+       a column that does not exist - and the page died with an SQL error
+       rather than showing a screen. */
+    $sv_problems = screen_problems(1);
+    check('the broken screen is reported rather than run',
+          count($sv_problems) > 0, json_encode($sv_problems));
+    check('and the reason names the operand that is wrong',
+          strpos(implode(' ', $sv_problems), '3mnth') !== false,
+          json_encode($sv_problems));
+
+    $sv_rows = screen_list_rows();
+    $sv_by_name = [];
+    foreach ($sv_rows as $sv_row) { $sv_by_name[$sv_row['name']] = $sv_row; }
+
+    check('the list shows every screen',
+          count($sv_rows) >= 3, count($sv_rows) . ' screens');
+    check('a broken screen has no match count to show',
+          $sv_by_name['Quality Momentum']['matches'] === null
+          && count($sv_by_name['Quality Momentum']['problems']) > 0);
+    check('a sound one has one, and it is what the screen actually finds',
+          $sv_by_name['Trend following (200-day)']['matches']
+          === count(build_screen($sv_by_name['Trend following (200-day)']['id'], null)),
+          json_encode($sv_by_name['Trend following (200-day)']['matches']));
+
+    /* A screen with no criteria at all selects every share, which is not a
+       screen. */
+    db()->exec("insert into screen (id, name, description, displayed, session_id)
+                values (91, 'Empty screen', 'Nothing in it', 'Y', 1)");
+    check('a screen with no criteria is refused too',
+          count(screen_problems(91)) === 1
+          && stripos(screen_problems(91)[0], 'no criteria') !== false,
+          json_encode(screen_problems(91)));
+
+    /* An operator the builder does not know is a criterion that selects
+       nothing, silently. */
+    db()->exec("insert into screen_criteria (id, indicator_id, description, operator,
+                                             first_operand, second_operand)
+                select 91, indicator_id, 'nonsense', 'LIKE', '5', ''
+                  from screen_indicators where name='6mnth' limit 1");
+    db()->exec("insert into screen_build (screen_id, criteria_id) values (91, 91)");
+    check('and so is an operator the builder does not know',
+          count(screen_problems(91)) === 1
+          && stripos(screen_problems(91)[0], 'operator') !== false,
+          json_encode(screen_problems(91)));
+
+    db()->exec("update screen_criteria set operator='>' where id=91");
+    check('a number to compare against is what makes it valid',
+          screen_problems(91) === [], json_encode(screen_problems(91)));
+
+    db()->exec("update screen_criteria set first_operand='', second_operand='ma200' where id=91");
+    check('or an empty box with another indicator named beside it',
+          screen_problems(91) === [], json_encode(screen_problems(91)));
+
+    db()->exec("update screen_criteria set second_operand='not_an_indicator' where id=91");
+    check('but not an indicator that does not exist',
+          count(screen_problems(91)) === 1, json_encode(screen_problems(91)));
+
+    db()->exec("delete from screen_build where screen_id=91");
+    db()->exec("delete from screen_criteria where id=91");
+    db()->exec("delete from screen where id=91");
+
+    echo "\n--- screens: what a run shows ---\n";
+
+    $sv_screen_id = $sv_by_name['Trend following (200-day)']['id'];
+    $sv_asof    = screen_asof();
+    $sv_columns = screen_indicator_columns($sv_screen_id);
+    $sv_symbols = build_screen($sv_screen_id, null);
+    $sv_results = screen_result_rows($sv_symbols, $sv_columns, $sv_asof);
+
+    check('a run returns a row per matching share, in the screen order',
+          count($sv_results) === count($sv_symbols)
+          && $sv_results[0]['symbol'] === $sv_symbols[0]['symbol'],
+          json_encode([count($sv_results), count($sv_symbols)]));
+    check('each row carries the company name and the screen own columns',
+          trim((string) $sv_results[0]['name']) !== ''
+          && array_key_exists($sv_columns[0]['name'], $sv_results[0]['values']));
+    /* A list of tickers against one ratio is not enough to decide anything
+       with, and following each to its quote page was the only way to see
+       the rest. */
+    check('and the price, the six month move and the three scores besides',
+          array_key_exists('price', $sv_results[0])
+          && array_key_exists('change_6m', $sv_results[0])
+          && array_key_exists('momentum', $sv_results[0])
+          && array_key_exists('value_score', $sv_results[0])
+          && array_key_exists('quality', $sv_results[0]));
+
+    /* A screen built on the latest close was showing it twice: once as its
+       own column and once as the Price beside it. */
+    $sv_extras = screen_extras_wanted($sv_columns);
+    check('a figure the screen already has a column for is not repeated',
+          in_array('close_price', array_column($sv_columns, 'name'), true)
+          && !isset($sv_extras['close_price']),
+          json_encode([array_column($sv_columns, 'name'), array_keys($sv_extras)]));
+    check('and the ones it does not have are still shown',
+          isset($sv_extras['6mnth']) && isset($sv_extras['momentum_score']));
+
+    /* A screen can be built on anything, so a column could be a price in
+       pence, a percentage return or a score. One formatter would print them
+       all as "196.82". */
+    check('a price column is pence, a return is a signed percentage',
+          strpos(screen_cell_html('close_price', 196.8153), '196.8p') !== false
+          && strpos(screen_cell_html('6mnth', 9.0568), '+9.1%') !== false,
+          screen_cell_html('close_price', 196.8153) . ' / ' . screen_cell_html('6mnth', 9.0568));
+    check('a score is a badge on the one scale',
+          strpos(screen_cell_html('momentum_score', 82), 'sm-score-good') !== false,
+          screen_cell_html('momentum_score', 82));
+    check('and a yield stored as a fraction is a percentage',
+          strpos(screen_cell_html('div_yield', 0.0311), '3.11%') !== false,
+          screen_cell_html('div_yield', 0.0311));
+
+    /* The rows come back in the order of the last top_n, so the page says
+       so rather than leaving a reader to assume alphabetical. */
+    $sv_tv = null;
+    foreach ($sv_rows as $sv_row) {
+        if (stripos($sv_row['name'], 'Trending Value') !== false) { $sv_tv = $sv_row['id']; }
+    }
+    check('a ranked screen says what it was ranked by',
+          $sv_tv === null || (screen_rank_words($sv_tv) !== null
+                              && stripos(screen_rank_words($sv_tv), 'ranked by') === 0),
+          $sv_tv === null ? 'no Trending Value screen' : screen_rank_words($sv_tv));
+    check('and one with no ranking says nothing rather than guessing',
+          screen_rank_words($sv_screen_id) === null);
+
+    /* Nothing recorded when a screen was last run: they run on demand, not
+       from the nightly job. */
+    check('the run stamp column is there',
+          screen_has_last_run());
+    db()->exec("update screen set last_run=null where id=$sv_screen_id");
+    screen_mark_run($sv_screen_id);
+    check('and running one stamps it',
+          (string) scalar("select last_run from screen where id=?", [$sv_screen_id]) !== '');
+
+    echo "\n--- screens: the list and the results pages ---\n";
+
+    $sv_list_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/screens.php');
+    $sv_res_tpl  = php_strip_whitespace(dirname(__DIR__) . '/templates/screen.php');
+
+    /* Choosing a screen and choosing what to do with it were two decisions
+       in two places, and neither was on the row you were looking at. */
+    check('the radio buttons and the two shared buttons are gone',
+          strpos($sv_list_tpl, 'type="radio"') === false
+          && strpos($sv_list_tpl, 'View/Edit') === false);
+    check('every row carries its own Run and Edit',
+          strpos($sv_list_tpl, 'run=1') !== false && strpos($sv_list_tpl, 'edit=1') !== false);
+    check('and a broken screen gets an Edit but no Run',
+          preg_match('/if \(!count\(\$screen\[.problems.\]\)\).{0,200}run=1/s', $sv_list_tpl) === 1);
+    check('the list shows the matches and the last run',
+          stripos($sv_list_tpl, 'Matches') !== false && stripos($sv_list_tpl, 'Last run') !== false);
+
+    check('the results page has a heading that says which screen and when',
+          strpos($sv_res_tpl, "screen['name']") !== false
+          && strpos($sv_res_tpl, "screen['description']") !== false
+          && strpos($sv_res_tpl, 'fmt_date($as_of)') !== false);
+    check('and links back to the screens rather than having a Back button',
+          strpos($sv_res_tpl, 'All screens') !== false
+          && preg_match('/>\s*Back\s*</', $sv_res_tpl) !== 1
+          && strpos($sv_res_tpl, 'btnClose') === false);
+    check('the table sorts and the numbers are right aligned',
+          strpos($sv_res_tpl, 'sm-table-sort') !== false
+          && substr_count($sv_res_tpl, 'sm-num') > 4);
+    check('there is a CSV to download',
+          strpos($sv_res_tpl, 'screen_csv.php') !== false);
+    /* The old page's title was <?php $title ?> - the variable with no echo -
+       so it printed nothing at all. */
+    check('and the title is printed rather than merely mentioned',
+          strpos($sv_res_tpl, '<?php $title ?>') === false);
+
+    if ($sv_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $sv_saved_exchange; }
+
     echo "\n--- one way to print a number ---\n";
 
     /* Formatting used to live in each template, and the same figure was

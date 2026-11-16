@@ -100,6 +100,9 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_rules.sql" > /dev/null || exit 1
 echo "applying sql/strategy_backtest.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_backtest.sql" > /dev/null || exit 1
 
+echo "applying sql/screen_last_run.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/screen_last_run.sql" > /dev/null || exit 1
+
 # After sql/report_currency.sql, which adds the column this one sits after.
 echo "applying sql/strategy_prices.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_prices.sql" > /dev/null || exit 1
