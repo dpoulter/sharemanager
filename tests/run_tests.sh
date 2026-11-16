@@ -106,6 +106,9 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_display_name.sql" > /dev/null || exit
 echo "applying sql/strategy_backtest.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_backtest.sql" > /dev/null || exit 1
 
+echo "applying sql/strategy_backtest_overrides.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_backtest_overrides.sql" > /dev/null || exit 1
+
 echo "applying sql/user_theme.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/user_theme.sql" > /dev/null || exit 1
 
@@ -162,7 +165,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       shareholder_yield fmp_scores news trending_value rns \
                       strategy_rules user_theme market_breadth statistics_indicator_index screen_last_run \
                       strategy_hold_rank strategy_display_name \
-                      strategy_backtest strategy_prices; do
+                      strategy_backtest strategy_backtest_overrides strategy_prices; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
      done
 

@@ -298,6 +298,7 @@
 					<thead>
 						<tr>
 							<th>Period</th><th>Status</th>
+							<th>Settings</th>
 							<th class="text-end">Days</th>
 							<th class="text-end">Rebalances</th>
 							<th class="text-end">Exits</th>
@@ -315,6 +316,13 @@
 								<span class="badge bg-secondary">backtest</span>
 								<?= htmlspecialchars((string) $run['status']) ?>
 							</td>
+							<?php /* Four runs of the same strategy with four different
+							         answers and one label between them is not a comparison, so
+							         each row says what it was run with. */ ?>
+							<td><small><?= array_key_exists('overrides', $run)
+							                 && trim((string) $run['overrides']) !== ''
+								? htmlspecialchars((string) $run['overrides'])
+								: '<span class="text-muted">as stored</span>' ?></small></td>
 							<td class="text-end"><?= (int) $run['trading_days'] ?></td>
 							<td class="text-end"><?= (int) $run['rebalances'] ?></td>
 							<td class="text-end"><?= (int) $run['exits'] ?></td>
@@ -322,11 +330,31 @@
 							<td class="text-end<?= s_colour($run['benchmark_return']) ?>"><?= s_percent($run['benchmark_return']) ?></td>
 							<td class="sm-num"><?= $run['max_drawdown'] === null
 								? VIEW_DASH : move_pct_html(-(float) $run['max_drawdown'] * 100) ?></td>
-							<td class="text-end"><?= s_money($run['costs_paid'], 2) ?></td>
+							<?php /* The costs set against the money that went in: GBP53,553
+							         means nothing until it is read against GBP100,000. The start
+							         is the account's starting cash, not the first night's value,
+							         which is already down by the first build's costs. */
+							   $bt_start = (array_key_exists('starting_cash', $run)
+							                && $run['starting_cash'] !== null)
+							             ? (float) $run['starting_cash'] : (float) $run['start_value']; ?>
+							<td class="text-end">
+								<?= s_money($run['costs_paid'], 2) ?>
+								<?php if ($bt_start > 0 && $run['costs_paid'] !== null): ?>
+								<br><small class="text-muted"><?= number_format(
+									(float) $run['costs_paid'] / $bt_start * 100, 1) ?>% of the start</small>
+								<?php endif ?>
+							</td>
 						</tr>
-						<?php if ($run['note'] !== null): ?>
+						<?php if ($run['note'] !== null || !empty($run['turnover_refusals'])): ?>
 						<tr>
-							<td colspan="9" class="text-muted"><small><?= htmlspecialchars((string) $run['note']) ?></small></td>
+							<td colspan="10" class="text-muted"><small>
+								<?= htmlspecialchars((string) $run['note']) ?>
+								<?php if (!empty($run['turnover_refusals'])): ?>
+									<?= (int) $run['turnover_refusals'] ?>
+									rebalance<?= (int) $run['turnover_refusals'] === 1 ? '' : 's' ?>
+									refused by the turnover limit.
+								<?php endif ?>
+							</small></td>
 						</tr>
 						<?php endif ?>
 					<?php endforeach ?>

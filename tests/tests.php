@@ -1997,6 +1997,152 @@
           $res_rc !== 0 && stripos($res_out, 'reserved') !== false,
           substr($res_out, 0, 200));
 
+    echo "\n--- strategies: backtest variants, without touching the live rules ---\n";
+
+    /* The question these runs are being done to answer is which settings to
+       run live, and that cannot be answered by editing the strategy's rules
+       four times: the edit would change the live strategy, and the four
+       results would carry one label between them.
+
+       Same shape as the run above - a screen only trend strategy over the
+       dates the backfill covers - because that is what can be backtested
+       without hindsight. */
+    $BV = 'test_bt_variants';
+    s_drop($BV);
+    db()->prepare("delete from strategy_backtest_runs where strategy=?")->execute([$BV]);
+    s_rules($BV, ['selection'=>'screen','screen_id'=>$bt_screen,'score_indicator'=>null,
+                  'rank_by'=>null,'holdings'=>5,'rebalance'=>'monthly',
+                  'exit_rules'=>'below_ma200_2d']);
+    s_reset($BV);
+
+    $bv_before = (int) scalar("select count(*) from strategy_backtest_runs where strategy=?", [$BV]);
+
+    [$bv_out, $bv_rc] = run_script('backtest_strategy.php',
+                                   [$BV, $bf_from, $bf_to, '--rebalance=weekly',
+                                    '--holdings=6', '--hold-rank=9']);
+
+    $bv_run = rows("select * from strategy_backtest_runs where strategy=? order by run_id desc limit 1",
+                   [$BV]);
+
+    check('a run with overridden settings finishes',
+          $bv_rc === 0 && count($bv_run) === 1 && $bv_run[0]['status'] === 'DONE',
+          'rc ' . $bv_rc . ': ' . substr($bv_out, -400));
+    check('and says what it was told to do differently',
+          stripos($bv_out, 'overridden for this run') !== false
+          && stripos($bv_out, 'rebalance=weekly') !== false
+          && stripos($bv_out, 'holdings=6') !== false,
+          substr($bv_out, 0, 600));
+    check('the overrides are on the run, not only in somebody\'s terminal',
+          stripos((string) $bv_run[0]['overrides'], 'rebalance=weekly') !== false
+          && stripos((string) $bv_run[0]['overrides'], 'hold-rank=9') !== false,
+          json_encode($bv_run[0]['overrides']));
+    check('it did rebalance weekly, as it was told to rather than as stored',
+          (int) $bv_run[0]['rebalances'] > 1,
+          json_encode([$bv_run[0]['rebalances'], $bv_run[0]['trading_days']]));
+
+    /* The overridden copy is the backtest account's: the live strategy's
+       own rules are exactly as they were. */
+    $bv_live = strategy_rules($BV);
+    check('and the live rules did not change',
+          $bv_live['rebalance'] === 'monthly' && (int) $bv_live['holdings'] === 5
+          && $bv_live['hold_rank'] === null,
+          json_encode([$bv_live['rebalance'], $bv_live['holdings'], $bv_live['hold_rank']]));
+
+    /* "start 98,487.63" was the value on the first night, already down by
+       the first build's dealing costs - so the return was measured from a
+       number the costs had come out of, and the costs were understated by
+       exactly that much. The start is the money that went in. */
+    check('the start is the money that went in, not what the first build left',
+          abs((float) $bv_run[0]['starting_cash'] - STRATEGY_BACKTEST_CASH) < 0.005
+          && abs((float) $bv_run[0]['start_value'] - STRATEGY_BACKTEST_CASH) < 0.005,
+          json_encode([$bv_run[0]['starting_cash'], $bv_run[0]['start_value']]));
+    check('and the first night\'s value is printed as what it is, separately',
+          stripos($bv_out, 'started with') !== false
+          && stripos($bv_out, 'after the first build') !== false,
+          substr($bv_out, (int) strpos($bv_out, 'started with'), 160));
+    check('the costs are shown against it',
+          stripos($bv_out, 'of what went in') !== false,
+          substr($bv_out, (int) strpos($bv_out, 'dealing costs'), 160));
+
+    /* A rebalance the turnover cap refused is a fact about the result, and
+       the first version could only say "10 or more" because it stopped
+       collecting errors at ten. */
+    check('refused rebalances are counted, not listed to ten',
+          $bv_run[0]['turnover_refusals'] !== null
+          && (int) $bv_run[0]['turnover_refusals'] >= 0,
+          json_encode($bv_run[0]['turnover_refusals']));
+
+    /* A setting nobody can act on is worse than none: a mistyped option is
+       named rather than read as a date or quietly ignored. */
+    foreach ([['--rebalance=fortnightly', 'rebalance'],
+              ['--holdings=0',            'holdings'],
+              ['--holdings=two',          'holdings'],
+              ['--hold-rank=-1',          'hold-rank'],
+              ['--nonsense=1',            'Unknown option']] as [$bv_bad, $bv_word]) {
+        [$bv_bad_out, $bv_bad_rc] = run_script('backtest_strategy.php',
+                                               [$BV, $bf_from, $bf_to, $bv_bad]);
+        check("'$bv_bad' is refused rather than guessed at",
+              $bv_bad_rc === 2 && stripos($bv_bad_out, $bv_word) !== false,
+              'rc ' . $bv_bad_rc . ': ' . substr($bv_bad_out, 0, 200));
+    }
+
+    check('and a refused option writes no run at all',
+          (int) scalar("select count(*) from strategy_backtest_runs where strategy=?", [$BV])
+          === $bv_before + 1,
+          scalar("select count(*) from strategy_backtest_runs where strategy=?", [$BV]));
+
+    /* 'none' turns the buffer off for a run, which is the comparison the
+       buffer was added to make. */
+    [$bv_none_out, $bv_none_rc] = run_script('backtest_strategy.php',
+                                             [$BV, $bf_from, $bf_to, '--hold-rank=none']);
+    check('the buffer can be turned off for a run',
+          $bv_none_rc === 0
+          && stripos((string) scalar("select overrides from strategy_backtest_runs
+                                       where strategy=? order by run_id desc limit 1", [$BV]),
+                     'hold-rank=none') !== false,
+          'rc ' . $bv_none_rc . ': ' . substr($bv_none_out, -200));
+
+    echo "\n--- strategies: the runs in one table ---\n";
+
+    /* Four results in four terminals is not a comparison. */
+    [$bv_cmp, $bv_cmp_rc] = run_script('backtest_strategy.php', ['--compare']);
+    check('the comparison runs', $bv_cmp_rc === 0, substr($bv_cmp, 0, 300));
+    check('with a column for each thing the runs are being compared on',
+          stripos($bv_cmp, 'return') !== false && stripos($bv_cmp, 'a year') !== false
+          && stripos($bv_cmp, 'bench') !== false && stripos($bv_cmp, 'fall') !== false
+          && stripos($bv_cmp, 'costs%') !== false && stripos($bv_cmp, 'ref') !== false,
+          substr($bv_cmp, 0, 300));
+    check('and the settings each run used, so the rows can be told apart',
+          stripos($bv_cmp, 'rebalance=weekly') !== false
+          && stripos($bv_cmp, 'as stored') !== false,
+          substr($bv_cmp, 0, 800));
+    /* Every row is flattered by survivorship, and a table is exactly where
+       that is easiest to forget. */
+    check('the caveat is on the table, not only on a single run',
+          stripos($bv_cmp, 'survivorship') !== false);
+
+    [$bv_one, $bv_one_rc] = run_script('backtest_strategy.php', ['--compare', $BV]);
+    check('it can be narrowed to one strategy',
+          $bv_one_rc === 0 && stripos($bv_one, $BV) !== false
+          && stripos($bv_one, 'test_backtest ') === false,
+          substr($bv_one, 0, 400));
+    [$bv_cmp_none] = run_script('backtest_strategy.php', ['--compare', 'no_such_strategy']);
+    check('and says so when there is nothing to compare',
+          stripos($bv_cmp_none, 'no backtest runs') !== false, $bv_cmp_none);
+
+    /* The page says it too, or the comparison lives only in a terminal. */
+    $bv_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php');
+    check('the page labels a backtest with the settings it used',
+          strpos($bv_tpl, "run['overrides']") !== false && strpos($bv_tpl, 'as stored') !== false);
+    check('and shows the costs against the money that went in',
+          strpos($bv_tpl, "run['starting_cash']") !== false
+          && strpos($bv_tpl, 'of the start') !== false);
+    check('and how many rebalances the turnover limit refused',
+          strpos($bv_tpl, "run['turnover_refusals']") !== false);
+
+    s_drop($BV);
+    db()->prepare("delete from strategy_backtest_runs where strategy=?")->execute([$BV]);
+
     db()->exec("delete from strategy_values where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
     db()->exec("delete from strategy_orders where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
     db()->exec("delete from strategy_positions where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
