@@ -8128,6 +8128,93 @@
           strpos($nv_tpl, 'fmt_date_short($group') !== false
           && strpos($nv_tpl, 'fmt_date($from)') !== false);
 
+    echo "\n--- strategies: names and rules a reader can read ---\n";
+
+    /* "trend_following" is a column name, and it was the heading of the
+       card. */
+    check('a strategy has a name as well as a code',
+          strategy_display_name('trending_value') === 'Trending Value'
+          && strategy_display_name('trend_following') === 'Trend following',
+          strategy_display_name('trending_value') . ' / ' . strategy_display_name('trend_following'));
+    check('and one with no name set gets its code tidied rather than left raw',
+          strategy_display_name('no_such_strategy') === 'No such strategy',
+          strategy_display_name('no_such_strategy'));
+
+    /* The page printed the values as stored: an exit code and an indicator
+       name. A reader cannot act on either. */
+    check('an exit rule is a sentence, not a code',
+          strategy_exit_words('below_ma200_2d')
+          === 'Sells after two closes below the 200 day average',
+          strategy_exit_words('below_ma200_2d'));
+    check('the ranking says what it ranks by',
+          strategy_rank_words('6mnth') === 'Ranked by the 6 month return',
+          strategy_rank_words('6mnth'));
+    check('and nothing to rank by says nothing rather than "ranked by"',
+          strategy_rank_words('') === null && strategy_rank_words(null) === null);
+    check('an indicator with no sentence of its own is looked up, not printed',
+          stripos(strategy_rank_words('ev_ebitda'), 'ev to ebitda') !== false,
+          strategy_rank_words('ev_ebitda'));
+    check('the rebalance is a sentence too',
+          strategy_rebalance_words('weekly') === 'Rebalanced at the start of each week'
+          && strategy_rebalance_words('monthly') === 'Rebalanced at the start of each month');
+
+    /* Said on a trade and said as a rule are two different sentences about
+       the same thing, and both have to exist. */
+    check('the same exit reads one way as a rule and another on a trade',
+          strategy_exit_words('below_ma200_2d') !== strategy_reason_words('below_ma200_2d')
+          && stripos(strategy_reason_words('below_ma200_2d'), '200') !== false);
+
+    $st_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php');
+
+    check('the card shows the name and keeps the code in small type',
+          strpos($st_tpl, 'strategy_display_name($card') !== false);
+    check('the rules on the card are the sentences',
+          strpos($st_tpl, 'strategy_rebalance_words') !== false
+          && strpos($st_tpl, 'strategy_rank_words') !== false
+          && strpos($st_tpl, 'strategy_exit_words') !== false);
+    check('and the chart names its lines the same way',
+          strpos($st_tpl, 'strategy_display_name($card[\'strategy\'])') !== false);
+
+    /* Eight lines of explanation, with the thing a reader must know - that
+       none of this is real - in the middle of it. */
+    check('the opening paragraph is two lines with the rest folded away',
+          strpos($st_tpl, 'How this works') !== false
+          && strpos($st_tpl, 'id="how-this-works"') !== false
+          && strpos($st_tpl, 'No real orders are ever placed') !== false
+          && strpos($st_tpl, 'No real orders are ever placed')
+             < strpos($st_tpl, 'How this works'));
+
+    /* A row of dashes reads as a strategy that lost everything rather than
+       one that has not started. */
+    check('before the first fill the card says when it starts',
+          strpos($st_tpl, 'Starts on') !== false
+          && strpos($st_tpl, "card['starts_on']") !== false);
+    check('and a switched-off one that never ran says that instead',
+          strpos($st_tpl, 'Switched off, so it never will') !== false);
+
+    check('the switched-off strategies are behind a toggle with a count',
+          strpos($st_tpl, 'Show disabled (') !== false
+          && strpos($st_tpl, 'Hide switched-off strategies') !== false
+          && strpos($st_tpl, 'disabled=1') !== false);
+
+    /* Returns on this page are stored as fractions - 0.124 is 12.4% - so
+       they go through the fraction formatter and not the percentage one. */
+    check('the page formats through the shared formatters',
+          strpos($st_tpl, 'fmt_percent_of') !== false
+          && strpos($st_tpl, 'fmt_pounds') !== false
+          && strpos($st_tpl, 'move_class') !== false);
+
+    $st_mig = (string) file_get_contents(dirname(__DIR__) . '/sql/strategy_display_name.sql');
+    check('the migration adds the column only if it is missing',
+          stripos($st_mig, 'information_schema.columns') !== false
+          && stripos($st_mig, 'display_name') !== false);
+    check('and leaves a name somebody has edited alone',
+          stripos($st_mig, "display_name is null or display_name = ''") !== false);
+    check('the column is on the table in this database',
+          (int) scalar("select count(*) from information_schema.columns
+                         where table_schema=database() and table_name='strategy_accounts'
+                           and column_name='display_name'") === 1);
+
     echo "\n--- one way to print a number ---\n";
 
     /* Formatting used to live in each template, and the same figure was

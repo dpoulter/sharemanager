@@ -39,6 +39,8 @@
             "as_of"      => $as_of,
             "ready"      => false,
             "cards"      => [],
+            "disabled_count" => 0,
+            "show_disabled"  => false,
             "benchmark"  => [],
             "halted"     => strategy_halted(),
             "switch_file" => STRATEGY_KILL_SWITCH_FILE,
@@ -50,12 +52,18 @@
     $strategies = strategy_strategies();
 
     /* A disabled strategy still has a history worth looking at, so the page
-       shows every account with rules rather than only the ones that will run
-       tonight. The card says which is which. */
+       can show every account with rules rather than only the ones that will
+       run tonight - but it is folded away behind a toggle rather than
+       sitting among the live ones. A card that will never trade again looks
+       exactly like one that trades tomorrow. */
+    $disabled = [];
     foreach (query("select a.strategy from strategy_accounts a, strategy_rules r
                      where r.strategy=a.strategy and a.enabled<>'Y' order by a.strategy") as $row) {
-        if (!strategy_reserved($row['strategy'])) { $strategies[] = $row['strategy']; }
+        if (!strategy_reserved($row['strategy'])) { $disabled[] = $row['strategy']; }
     }
+
+    $show_disabled = ($_GET['disabled'] ?? '') === '1';
+    if ($show_disabled) { $strategies = array_merge($strategies, $disabled); }
 
     /* The dry run lives at strategy_dry_run.php now and opens in a popup
        over this page. It used to be a POST back to here that printed the
@@ -73,6 +81,12 @@
            live card and labelled as backtests. Three at most: the useful
            comparison is between the last few runs, not all of them. */
         $card['backtests']     = strategy_backtests($strategy, 3);
+        /* Before the first fill there is nothing to value, and a row of
+           dashes reads as a strategy that lost everything rather than one
+           that has not started. The date it will start is the next
+           rebalance from today. */
+        $card['starts_on'] = ($card['start'] === null && $card['rules'] !== null)
+                           ? strategy_next_rebalance($card['rules'], $as_of) : null;
         $cards[] = $card;
     }
 
@@ -81,6 +95,8 @@
         "as_of"     => $as_of,
         "ready"     => true,
         "cards"     => $cards,
+        "disabled_count" => count($disabled),
+        "show_disabled"  => $show_disabled,
         "benchmark" => strategy_series(STRATEGY_BENCHMARK),
         /* The switch, and whether PHP can see where it lives: "not halted"
            from a path open_basedir blocks is an assumption, and the page

@@ -858,6 +858,63 @@
 	}
 
 	/**
+	 * What a rule does, in words.
+	 *
+	 * The page printed "below_ma200_2d" and "6mnth" - the values as stored,
+	 * which are an exit code and an indicator name. A reader cannot act on
+	 * either, and a reader who could would not need the page.
+	 *
+	 * The exit codes are the same set strategy_reason_words() names on a
+	 * trade, said here as a rule rather than as something that happened.
+	 */
+	function strategy_exit_words($code) {
+
+		$words = [
+			'below_ma200_2d' => 'Sells after two closes below the 200 day average',
+			'delisted'       => 'Sells at the last price if a holding stops trading',
+		];
+
+		$code = strtolower(trim((string) $code));
+		return isset($words[$code]) ? $words[$code] : $code;
+	}
+
+	/** How the selection is ranked, in words. */
+	function strategy_rank_words($indicator) {
+
+		$words = [
+			'6mnth'          => 'Ranked by the 6 month return',
+			'3mnth'          => 'Ranked by the 3 month return',
+			'12mnth'         => 'Ranked by the 12 month return',
+			'momentum_score' => 'Ranked by the momentum score',
+			'value_score'    => 'Ranked by the value score',
+			'quality_score'  => 'Ranked by the quality score',
+			'overall_score'  => 'Ranked by the ShareRank',
+		];
+
+		$indicator = strtolower(trim((string) $indicator));
+		if ($indicator === '') { return null; }
+
+		if (isset($words[$indicator])) { return $words[$indicator]; }
+
+		/* Anything else is a stored indicator name, so look up what it is
+		   called rather than printing the column. */
+		$rows = query("select description from screen_indicators where name=?", $indicator);
+		return count($rows) && trim((string) $rows[0]['description']) !== ''
+		     ? 'Ranked by ' . strtolower((string) $rows[0]['description'])
+		     : 'Ranked by ' . $indicator;
+	}
+
+	/** How often it rebalances, as a sentence rather than an adverb. */
+	function strategy_rebalance_words($rebalance) {
+		$words = ['daily'   => 'Rebalanced every trading day',
+		          'weekly'  => 'Rebalanced at the start of each week',
+		          'monthly' => 'Rebalanced at the start of each month'];
+		$rebalance = strtolower(trim((string) $rebalance));
+		return isset($words[$rebalance]) ? $words[$rebalance] : 'Rebalanced ' . $rebalance;
+	}
+
+
+	/**
 	 * A name the nightly run must not treat as a strategy: the benchmark's
 	 * row in strategy_values, and any backtest account.
 	 */

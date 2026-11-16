@@ -15,45 +15,52 @@
 	 * button here runs a dry run, which writes nothing.
 	 */
 
-	/* Money, percentages and dates, written the same way everywhere on the
-	   page. Null is "not known yet" rather than zero: a strategy that has
-	   not run has no return, and printing 0.00% would be a claim. */
-	function s_money($value, $decimals = 0) {
-		if ($value === null) { return '&ndash;'; }
-		return '&pound;' . number_format((float) $value, $decimals);
-	}
-	function s_percent($value, $decimals = 1) {
-		if ($value === null) { return '&ndash;'; }
-		$text = number_format((float) $value * 100, $decimals) . '%';
-		return ((float) $value > 0 ? '+' : '') . $text;
-	}
+	/* Money, percentages and dates, through the shared formatters from
+	   includes/view.php so this page writes a figure the way every other
+	   page does. Null is "not known yet" rather than zero: a strategy that
+	   has not run has no return, and printing 0.00% would be a claim.
+
+	   The returns on this page are stored as fractions - 0.124 is 12.4% -
+	   which is why they go through fmt_percent_of() and the figures on the
+	   dashboard, which are already percentages, do not. */
+	function s_money($value, $decimals = 0) { return e(fmt_pounds($value, $decimals)); }
+	function s_percent($value, $decimals = 1) { return e(fmt_percent_of($value, $decimals)); }
 	function s_colour($value) {
-		if ($value === null) { return ''; }
-		return (float) $value < 0 ? ' text-danger' : ((float) $value > 0 ? ' text-success' : '');
+		return $value === null ? '' : ' ' . move_class($value);
 	}
-	function s_date($value) {
-		return $value === null ? '&ndash;' : htmlspecialchars((string) $value);
-	}
+	function s_date($value) { return e(fmt_date($value)); }
 ?>
-<div class="container-fluid">
 
-	<h3><?= htmlspecialchars($title) ?></h3>
+	<h1><?= e($title) ?></h1>
 
-	<p class="text-muted">
-		Paper strategies, run by the nightly job and filled against the
-		following day's closing prices after dealing costs.
+	<?php /* Two lines, and the rest folded away. The paragraph that was here
+	         ran to eight, and the thing a reader has to know - that none of
+	         this is real - was in the middle of it. */ ?>
+	<p class="sm-sub mb-1">
+		Paper strategies, run by the nightly job and filled at the next day's
+		close after dealing costs.
 		<strong>No real orders are ever placed</strong> and nothing here is
 		connected to a broker.
-		<br>
-		<small>
-			Valued at <?= s_date($as_of) ?>.
-			The benchmark is the FTSE 350 equal weighted, built from the
-			constituents' own prices and rebased to 100 - there is no index
-			level in the data. It is today's constituents, so like any
-			backtest it leaves out the companies that have left the index.
-			Not financial advice.
-		</small>
+		<a class="small ms-1" data-bs-toggle="collapse" href="#how-this-works"
+		   role="button" aria-expanded="false" aria-controls="how-this-works">How this works</a>
 	</p>
+	<div class="collapse mb-3" id="how-this-works">
+		<div class="card card-body py-2">
+			<small class="text-muted mb-0">
+				Each strategy starts with a notional GBP100,000 and holds equally
+				weighted positions chosen by its own rules. The nightly job decides
+				on tonight's close and the order fills at the next close, after
+				commission, stamp duty and an allowance for the spread - so the
+				figures are after costs, not before them.
+				Valued at <?= s_date($as_of) ?>.
+				The benchmark is the FTSE 350 equal weighted, built from the
+				constituents' own prices and rebased to 100 - there is no index
+				level in the data. It is today's constituents, so like any
+				backtest it leaves out the companies that have left the index.
+				Not financial advice.
+			</small>
+		</div>
+	</div>
 
 	<?php if ($halted): ?>
 	<div class="alert alert-danger">
@@ -96,33 +103,66 @@
 	<div class="card mb-4">
 		<div class="card-body">
 
-			<h5 class="card-title">
-				<?= htmlspecialchars($card['strategy']) ?>
+			<?php /* The name a reader should see. "trend_following" is a
+			         column name, and it was the heading of the card. */ ?>
+			<h2 class="h5 card-title">
+				<?= e(strategy_display_name($card['strategy'])) ?>
+				<small class="text-muted"><?= e($card['strategy']) ?></small>
 				<?php if ($card['enabled'] !== 'Y'): ?>
-					<span class="badge bg-secondary">disabled</span>
+					<?= status_badge_html('off') ?>
 				<?php endif ?>
-				<span class="badge bg-info text-dark"><?= htmlspecialchars((string) $card['mode']) ?></span>
-			</h5>
+				<?= status_badge_html('paper', $card['mode']) ?>
+			</h2>
 
+			<?php /* The rules as sentences. The page printed the values as
+			         stored - "below_ma200_2d", "6mnth" - which are an exit
+			         code and an indicator name: a reader cannot act on
+			         either, and one who could would not need the page. */ ?>
 			<p class="text-muted mb-3">
 				<?php if ($card['screen'] !== null): ?>
-					Holds the <strong><?= htmlspecialchars($card['screen']) ?></strong> screen,
+					Holds the <strong><?= e($card['screen']) ?></strong> screen,
 				<?php elseif ($card['rules'] !== null && $card['rules']['score_indicator'] !== null): ?>
-					Holds the best by <strong><?= htmlspecialchars($card['rules']['score_indicator']) ?></strong>,
+					Holds the best by <strong><?= e($card['rules']['score_indicator']) ?></strong>,
 				<?php endif ?>
 				<?php if ($card['rules'] !== null): ?>
-					<?= (int) $card['rules']['holdings'] ?> equally weighted positions,
-					rebalanced <?= htmlspecialchars($card['rules']['rebalance']) ?><?php
-					if ($card['rules']['rank_by'] !== null): ?>,
-					ranked by <?= htmlspecialchars($card['rules']['rank_by']) ?><?php endif ?><?php
-					if (count($card['rules']['exit_list'])): ?>,
-					leaving on <?= htmlspecialchars(implode(', ', $card['rules']['exit_list'])) ?><?php endif ?>.
+					<?= e(fmt_quantity($card['rules']['holdings'])) ?> equally weighted positions.
+					<?= e(strategy_rebalance_words($card['rules']['rebalance'])) ?>.
+					<?php $rank = strategy_rank_words($card['rules']['rank_by']); ?>
+					<?php if ($rank !== null): ?><?= e($rank) ?>.<?php endif ?>
+					<?php foreach ($card['rules']['exit_list'] as $exit): ?>
+						<?= e(strategy_exit_words($exit)) ?>.
+					<?php endforeach ?>
+					<?php if (!count($card['rules']['exit_list'])): ?>
+						No exits between rebalances.
+					<?php endif ?>
 				<?php endif ?>
 				<?php if ($card['note'] !== null): ?>
-					<br><small><?= htmlspecialchars((string) $card['note']) ?></small>
+					<br><small><?= e($card['note']) ?></small>
 				<?php endif ?>
 			</p>
 
+			<?php if ($card['start'] === null): ?>
+				<?php /* A row of dashes reads as a strategy that lost
+				         everything rather than one that has not started. */ ?>
+				<div class="sm-strip mb-3">
+					<div class="sm-strip-item">
+						<div class="sm-strip-label">Not started</div>
+						<div class="sm-strip-value" style="font-size:1.1rem">
+							<?php if ($card['enabled'] !== 'Y'): ?>
+								Switched off, so it never will
+							<?php elseif ($card['starts_on'] !== null): ?>
+								Starts on <?= s_date($card['starts_on']) ?>
+							<?php else: ?>
+								Starts at the next rebalance
+							<?php endif ?>
+						</div>
+					</div>
+					<div class="sm-strip-item">
+						<div class="sm-strip-label">Opening cash</div>
+						<div class="sm-strip-value"><?= s_money($card['cash'], 0) ?></div>
+					</div>
+				</div>
+			<?php else: ?>
 			<div class="row text-center mb-3">
 				<div class="col">
 					<div class="text-muted"><small>Value</small></div>
@@ -138,7 +178,12 @@
 				</div>
 				<div class="col">
 					<div class="text-muted"><small>Worst fall</small></div>
-					<div class="h5 mb-0"><?= $card['drawdown'] === null ? '&ndash;' : '-' . number_format($card['drawdown'] * 100, 1) . '%' ?></div>
+					<?php /* A drawdown is stored as a positive fraction and is a
+					         fall, so it is printed negative. "8.5%" in the column
+					         headed "Worst fall" is the right number pointing the
+					         wrong way. */ ?>
+					<div class="h5 mb-0"><?= $card['drawdown'] === null
+						? VIEW_DASH : move_pct_html(-$card['drawdown'] * 100) ?></div>
 				</div>
 				<div class="col">
 					<div class="text-muted"><small>Cash</small></div>
@@ -146,14 +191,16 @@
 				</div>
 				<div class="col">
 					<div class="text-muted"><small>Holdings</small></div>
-					<div class="h5 mb-0"><?= (int) $card['holdings'] ?></div>
+					<div class="h5 mb-0"><?= e(fmt_quantity($card['holdings'])) ?></div>
 				</div>
 			</div>
+			<?php endif ?>
 
 			<p class="text-muted">
 				<small>
 					Last rebalance <?= s_date($card['last_rebalance']) ?>.
-					Next on or after <?= s_date($card['next_rebalance']) ?>.
+					Next on or after <?= s_date($card['next_rebalance'] === null
+						? $card['starts_on'] : $card['next_rebalance']) ?>.
 					Dealing costs paid to date
 					<?= s_money($card['costs']['total'], 2) ?>
 					over <?= (int) $card['costs']['fills'] ?> fills
@@ -209,11 +256,12 @@
 						<tr>
 							<td><a href="quote.php?symbol=<?= urlencode($holding['symbol']) ?>"><?= htmlspecialchars($holding['symbol']) ?></a></td>
 							<td><?= htmlspecialchars((string) $holding['name']) ?><?= $holding['stale'] ? ' <span class="badge bg-warning text-dark">not trading</span>' : '' ?></td>
-							<td class="text-end"><?= number_format($holding['quantity']) ?></td>
-							<td class="text-end"><?= number_format($holding['avg_price'], 2) ?></td>
-							<td class="text-end"><?= $holding['price'] === null ? '&ndash;' : number_format($holding['price'], 2) ?></td>
-							<td class="text-end"><?= s_money($holding['value'], 0) ?></td>
-							<td class="text-end"><?= $holding['weight'] === null ? '&ndash;' : number_format($holding['weight'] * 100, 1) . '%' ?></td>
+							<td class="sm-num"><?= e(fmt_quantity($holding['quantity'])) ?></td>
+							<td class="sm-num"><?= e(fmt_pounds($holding['avg_price'])) ?></td>
+							<td class="sm-num"><?= e(fmt_pounds($holding['price'])) ?></td>
+							<td class="sm-num"><?= s_money($holding['value'], 0) ?></td>
+							<td class="sm-num"><?= $holding['weight'] === null
+								? VIEW_DASH : e(fmt_pct($holding['weight'] * 100)) ?></td>
 							<td class="text-end<?= s_colour($holding['gain']) ?>">
 								<?= s_money($holding['gain'], 0) ?>
 								<?= $holding['gain_percent'] === null ? '' : '(' . s_percent($holding['gain_percent']) . ')' ?>
@@ -264,7 +312,8 @@
 							<td class="text-end"><?= (int) $run['exits'] ?></td>
 							<td class="text-end<?= s_colour($run['total_return']) ?>"><?= s_percent($run['total_return']) ?></td>
 							<td class="text-end<?= s_colour($run['benchmark_return']) ?>"><?= s_percent($run['benchmark_return']) ?></td>
-							<td class="text-end"><?= $run['max_drawdown'] === null ? '&ndash;' : '-' . number_format((float) $run['max_drawdown'] * 100, 1) . '%' ?></td>
+							<td class="sm-num"><?= $run['max_drawdown'] === null
+								? VIEW_DASH : move_pct_html(-(float) $run['max_drawdown'] * 100) ?></td>
 							<td class="text-end"><?= s_money($run['costs_paid'], 2) ?></td>
 						</tr>
 						<?php if ($run['note'] !== null): ?>
@@ -299,11 +348,11 @@
 						<tbody>
 						<?php foreach ($card['trades'] as $trade): ?>
 							<tr>
-								<td><?= s_date($trade['fill_date'] === null ? $trade['as_of_date'] : $trade['fill_date']) ?></td>
+								<td style="white-space: nowrap"><?= s_date($trade['fill_date'] === null ? $trade['as_of_date'] : $trade['fill_date']) ?></td>
 								<td><?= htmlspecialchars((string) $trade['side']) ?></td>
 								<td><a href="quote.php?symbol=<?= urlencode($trade['symbol']) ?>"><?= htmlspecialchars($trade['symbol']) ?></a></td>
-								<td class="text-end"><?= number_format((int) $trade['quantity']) ?></td>
-								<td class="text-end"><?= $trade['fill_price'] === null ? '&ndash;' : number_format((float) $trade['fill_price'], 2) ?></td>
+								<td class="sm-num"><?= e(fmt_quantity($trade['quantity'])) ?></td>
+								<td class="sm-num"><?= e(fmt_pounds($trade['fill_price'])) ?></td>
 								<td class="text-end"><?= $trade['status'] === 'FILLED'
 									? s_money((float) $trade['commission'] + (float) $trade['stamp_duty'] + (float) $trade['slippage'], 2)
 									: '&ndash;' ?></td>
@@ -329,7 +378,7 @@
 		foreach ($cards as $card) {
 			$points = strategy_rebased(strategy_series($card['strategy']));
 			if (count($points) > 1) {
-				$chart[] = ["name" => $card['strategy'], "points" => $points];
+				$chart[] = ["name" => strategy_display_name($card['strategy']), "points" => $points];
 			}
 		}
 		$benchmark_points = strategy_rebased($benchmark);
@@ -386,4 +435,14 @@
 		</div>
 	</div>
 
-</div>
+	<?php /* The switched-off ones, folded away. A card that will never trade
+	         again looks exactly like one that trades tomorrow. */ ?>
+	<?php if ($disabled_count > 0 || $show_disabled): ?>
+	<p>
+		<a href="strategies.php<?= $show_disabled ? '' : '?disabled=1' ?>">
+			<?= $show_disabled
+			    ? 'Hide switched-off strategies'
+			    : 'Show disabled (' . e(fmt_quantity($disabled_count)) . ')' ?>
+		</a>
+	</p>
+	<?php endif ?>

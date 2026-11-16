@@ -97,6 +97,9 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/rns.sql" > /dev/null || exit 1
 echo "applying sql/strategy_rules.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_rules.sql" > /dev/null || exit 1
 
+echo "applying sql/strategy_display_name.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_display_name.sql" > /dev/null || exit 1
+
 echo "applying sql/strategy_backtest.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_backtest.sql" > /dev/null || exit 1
 
