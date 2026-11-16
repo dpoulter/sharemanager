@@ -256,12 +256,22 @@ How to answer:
 		$report_ccy = report_currency($symbol) ?: 'GBP';
 		$fx_rate    = fx_rate_for($as_of, $report_ccy);
 
-		//Holdings, if any. avg_cost comes from the purchase history.
+		/* Holdings, if any, from purchases - buys less sells - which is
+		   what the Portfolio page reads. It used to read the shares table,
+		   which Buy and Sell maintained and nothing else did, and which is
+		   read by nothing now.
+
+		   Scoped to the session as well. The old query had no user in it,
+		   so on an account with more than one user the model was told about
+		   somebody else's holdings. */
 		$holding = null;
-		$held = query("select shares, avg_cost from shares where symbol=? and shares is not null and shares>0", $symbol);
-		if (count($held)) {
-			$holding = ["shares" => (int) $held[0]['shares'],
-			            "average_cost" => $held[0]['avg_cost'] === null ? null : (float) $held[0]['avg_cost']];
+		if (!empty($_SESSION["id"])) {
+			require_once("portfolio_functions.php");
+			$held = portfolio_held($_SESSION["id"], $symbol);
+			if ($held['shares'] > 0) {
+				$holding = ["shares" => $held['shares'],
+				            "average_cost" => $held['avg_cost']];
+			}
 		}
 
 		/* price_valuation.value is not a ratio and not a score: it is what the

@@ -347,6 +347,17 @@
 					<label class="form-label" for="buy-date">Date</label>
 					<input class="form-control" id="buy-date" name="buyDate" type="date" required>
 				</div>
+				<?php /* Dealing costs. Optional: nought is an honest default and
+				         the figure shows on the Transactions page. */ ?>
+				<div class="mb-2">
+					<label class="form-label" for="buy-commission">Commission &pound;</label>
+					<input class="form-control" id="buy-commission" name="commission"
+					       inputmode="decimal" value="0">
+				</div>
+				<p class="text-muted small mb-0">
+					Bought at the latest price for that share. The cost comes out of
+					the cash book.
+				</p>
 			</div>
 			<div class="modal-footer">
 				<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -378,6 +389,20 @@
 					<label class="form-label" for="sell-qty">Shares</label>
 					<input class="form-control" id="sell-qty" name="qty" inputmode="numeric" pattern="\d+" required>
 				</div>
+				<div class="mb-2">
+					<label class="form-label" for="sell-date">Date</label>
+					<input class="form-control" id="sell-date" name="sellDate" type="date"
+					       value="<?= e(date('Y-m-d')) ?>">
+				</div>
+				<div class="mb-2">
+					<label class="form-label" for="sell-commission">Commission &pound;</label>
+					<input class="form-control" id="sell-commission" name="commission"
+					       inputmode="decimal" value="0">
+				</div>
+				<p class="text-muted small mb-0">
+					Sold at the latest price for that share. The proceeds go into the
+					cash book.
+				</p>
 			</div>
 			<div class="modal-footer">
 				<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -395,9 +420,14 @@
 				<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
 			</div>
 			<div class="modal-body">
+				<?php /* dividends.php reads these as arrays - $symbol[0],
+				         $amount[0] - because its own page edits several rows at
+				         once. Posted as scalars, $symbol[0] is the first letter
+				         of the ticker, and the dividend is filed against a
+				         company called "A". */ ?>
 				<div class="mb-2">
 					<label class="form-label" for="dividend-symbol">Share</label>
-					<input class="form-control" id="dividend-symbol" name="symbol" list="dividend-symbols" required>
+					<input class="form-control" id="dividend-symbol" name="symbol[]" list="dividend-symbols" required>
 					<datalist id="dividend-symbols">
 					<?php foreach ($holdings as $holding): ?>
 						<option value="<?= e($holding['symbol']) ?>"></option>
@@ -406,11 +436,11 @@
 				</div>
 				<div class="mb-2">
 					<label class="form-label" for="dividend-date">Date</label>
-					<input class="form-control" id="dividend-date" name="dividend_date" type="date" required>
+					<input class="form-control" id="dividend-date" name="dividend_date[]" type="date" required>
 				</div>
 				<div class="mb-2">
 					<label class="form-label" for="dividend-amount">Amount &pound;</label>
-					<input class="form-control" id="dividend-amount" name="amount" inputmode="decimal" required>
+					<input class="form-control" id="dividend-amount" name="amount[]" inputmode="decimal" required>
 				</div>
 			</div>
 			<div class="modal-footer">

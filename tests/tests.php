@@ -7858,9 +7858,9 @@
        (day, month, year) as well, which is (month, day, year). */
     $pf_buy = (string) file_get_contents(dirname(__DIR__) . '/public/buy.php');
     check('buy.php accepts the date its own form submits',
-          strpos($pf_buy, '^\\d{4}-\\d{2}-\\d{2}$') !== false);
+          strpos($pf_buy, '(\\d{4})-(\\d{2})-(\\d{2})') !== false);
     check('and checks it the right way round',
-          strpos($pf_buy, 'checkdate($month,$day,$year)') !== false);
+          strpos($pf_buy, 'checkdate((int) $month, (int) $day, (int) $year)') !== false);
 
     $pf_empty = portfolio_holdings(987654, 'XLON');
     check('an account with nothing in it is handled without a warning',
@@ -8350,6 +8350,214 @@
           && strpos($mb_job, 'get_statistics.php') < strpos($mb_job, 'write_market_breadth.php'));
     check('and a failure there does not take the run with it',
           preg_match('/write_market_breadth\.php" \|\| echo/', $mb_job) === 1);
+
+    echo "\n--- one model: a trade goes where the portfolio looks ---\n";
+
+    /* Buy wrote shares, history and users.cash. The Portfolio page reads
+       purchases, cash_history and portfolio_performance. So a purchase made
+       through the application never appeared in the portfolio it was made
+       in, and the cash it spent came out of a balance nothing showed. */
+
+    $om_user = 77;
+    db()->exec("delete from purchases where session_id=$om_user");
+    db()->exec("delete from cash_history where user_id=$om_user");
+    db()->exec("delete from shares where id=$om_user");
+
+    $om_saved_id = $_SESSION["id"] ?? null;
+    $om_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["id"] = $om_user;
+    $_SESSION["exchange"] = 'XLON';
+
+    check('an account with no trades holds nothing and has no cash',
+          portfolio_held($om_user, 'AAA') === ['shares' => 0, 'avg_cost' => null]
+          && abs(portfolio_cash_balance($om_user)) < 0.005);
+
+    update_cash_history('2026-01-05', 'DEPOSIT', 50000.00);
+    check('a deposit is the cash book, not a column on users',
+          abs(portfolio_cash_balance($om_user) - 50000.0) < 0.005,
+          portfolio_cash_balance($om_user));
+
+    /* Two lots, so the average cost has to be weighted by the shares in
+       each: 500 at 72.5p and 250 at 81.1p average 75.37p, not 76.8p. */
+    portfolio_record_trade($om_user, 'BUY', 'AAA', 500, 72.50, 5.95, '2026-01-06');
+    portfolio_record_trade($om_user, 'BUY', 'AAA', 250, 81.10, 5.95, '2026-02-10');
+
+    $om_held = portfolio_held($om_user, 'AAA');
+    check('a purchase is in purchases, where the portfolio reads it',
+          $om_held['shares'] === 750, json_encode($om_held));
+    check('and the average cost is weighted by the lots, not the prices',
+          abs($om_held['avg_cost'] - 75.3666667) < 0.0001, $om_held['avg_cost']);
+
+    /* 500 at 72.5p is GBP362.50, plus GBP5.95; 250 at 81.1p is GBP202.75,
+       plus GBP5.95. 50,000 less 577.15 is 49,422.85. */
+    check('the money left the cash book, consideration and commission',
+          abs(portfolio_cash_balance($om_user) - 49422.85) < 0.005,
+          portfolio_cash_balance($om_user));
+
+    portfolio_record_trade($om_user, 'SELL', 'AAA', 250, 90.00, 5.95, '2026-03-11');
+    check('a sale reduces the holding',
+          portfolio_held($om_user, 'AAA')['shares'] === 500);
+    /* 250 at 90p is GBP225.00, less GBP5.95 commission. */
+    check('and the proceeds go in, less the commission',
+          abs(portfolio_cash_balance($om_user) - (49422.85 + 225.00 - 5.95)) < 0.005,
+          portfolio_cash_balance($om_user));
+    check('while the average cost still describes what was bought',
+          abs(portfolio_held($om_user, 'AAA')['avg_cost'] - 75.3666667) < 0.0001);
+
+    /* A BUY row holds what the purchase cost as a positive number, because
+       the balance negates it. Stored negative it is negated again and a
+       purchase adds cash - which is how the seeded account came to show
+       three hundred thousand pounds against fifteen thousand of holdings. */
+    check('a purchase is stored positive, so the balance can take it off',
+          (float) scalar("select amount from cash_history
+                           where user_id=? and trx_type='BUY' order by id limit 1",
+                         [$om_user]) > 0);
+
+    $om_symbols = array_column(portfolio_held_symbols($om_user), 'symbol');
+    check('the Sell list is what is still held',
+          $om_symbols === ['AAA'], json_encode($om_symbols));
+    portfolio_record_trade($om_user, 'SELL', 'AAA', 500, 95.00, 0, '2026-04-01');
+    check('and a position sold out of leaves it',
+          portfolio_held_symbols($om_user) === []
+          && portfolio_held($om_user, 'AAA')['shares'] === 0);
+
+    /* Nothing writes the three old tables any more. */
+    check('the trade wrote nothing to the shares table',
+          (int) scalar("select count(*) from shares where id=?", [$om_user]) === 0);
+
+    $om_sources = '';
+    foreach (['public/buy.php', 'public/sell.php', 'public/topup.php'] as $om_file) {
+        $om_sources .= (string) file_get_contents(dirname(__DIR__) . '/' . $om_file);
+    }
+    check('buy, sell and deposit no longer write shares, history or users.cash',
+          stripos($om_sources, 'INTO shares') === false
+          && stripos($om_sources, 'UPDATE shares') === false
+          && stripos($om_sources, 'record_transaction') === false
+          && stripos($om_sources, 'users set cash') === false,
+          $om_sources === '' ? 'no sources read' : 'a write is still there');
+    check('and they all write the model the portfolio reads',
+          substr_count($om_sources, 'portfolio_record_trade') === 2
+          && stripos($om_sources, 'update_cash_history') !== false);
+
+    /* The share outlook read the shares table with no user in it, so on an
+       account with more than one user the model was told about somebody
+       else's holdings. */
+    $om_outlook = (string) file_get_contents($INCLUDES . '/ai_outlook.php');
+    check('the outlook reads the holding from purchases, for this session',
+          stripos($om_outlook, 'from shares where symbol') === false
+          && strpos($om_outlook, 'portfolio_held($_SESSION["id"]') !== false);
+
+    /* update_portfolio() copied a figure derived from purchases into a
+       second table nobody consults. */
+    check('nothing keeps the shares table in step any more',
+          stripos((string) file_get_contents($INCLUDES . '/share_functions.php'),
+                  'insert into shares') === false);
+
+    db()->exec("delete from purchases where session_id=$om_user");
+    db()->exec("delete from cash_history where user_id=$om_user");
+    if ($om_saved_id === null) { unset($_SESSION["id"]); } else { $_SESSION["id"] = $om_saved_id; }
+    if ($om_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $om_saved_exchange; }
+
+    echo "\n--- one model: the pages that do the writing ---\n";
+
+    /* The deposit check was inverted: it apologised when the amount WAS a
+       number, so "5000" was refused and "abc" was accepted and written to
+       the cash book as nought. */
+    $om_topup = (string) file_get_contents(dirname(__DIR__) . '/public/topup.php');
+    check('a deposit of a number is accepted and a word is not',
+          preg_match('/!preg_match\("\/\^\\\\d\+\(\\\\\.\\\\d\{1,2\}\)\?\$\/"/', $om_topup) === 1,
+          'the amount check');
+    check('and it takes pence as well as pounds',
+          strpos($om_topup, '\\d{1,2}') !== false);
+
+    /* Buy checks against the cash book rather than users.cash, which was a
+       second balance that two pages maintained and nothing read. */
+    $om_buy = (string) file_get_contents(dirname(__DIR__) . '/public/buy.php');
+    check('buy checks the money against the book it spends from',
+          strpos($om_buy, 'portfolio_cash_balance') !== false
+          && stripos($om_buy, 'cash FROM users') === false);
+    /* Both date forms are checked where the fault was first described,
+       under the portfolio rebuild. */
+
+    $om_sell = (string) file_get_contents(dirname(__DIR__) . '/public/sell.php');
+    check('sell counts what is held from the trades rather than a running total',
+          strpos($om_sell, 'portfolio_held(') !== false
+          && stripos($om_sell, 'FROM shares') === false);
+
+    $om_modal = php_strip_whitespace(dirname(__DIR__) . '/templates/portfolio.php');
+    check('the Buy and Sell forms offer the commission the pages accept',
+          substr_count($om_modal, 'name="commission"') === 2
+          && strpos($om_modal, 'name="sellDate"') !== false);
+
+    /* dividends.php reads its fields as arrays - $symbol[0], $amount[0] -
+       because its own page edits several rows at once. Posted as scalars,
+       $symbol[0] is the first letter of the ticker and the dividend is
+       filed against a company called "A". */
+    check('the dividend form posts the arrays dividends.php reads',
+          strpos($om_modal, 'name="symbol[]"') !== false
+          && strpos($om_modal, 'name="dividend_date[]"') !== false
+          && strpos($om_modal, 'name="amount[]"') !== false);
+
+    echo "\n--- one model: a trade shows before tonight ---\n";
+
+    /* portfolio_performance is the valuation of purchases and cash_history,
+       and the nightly job is what normally writes it - so a purchase made at
+       eleven in the morning was in the trade list and in the cash balance
+       but not in Holdings until the following night. */
+    $rv_user = 78;
+    $rv_saved_id = $_SESSION["id"] ?? null;
+    $rv_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["id"] = $rv_user;
+    $_SESSION["exchange"] = 'XLON';
+
+    foreach (['purchases' => 'session_id', 'cash_history' => 'user_id',
+              'performance' => 'session_id', 'portfolio_performance' => 'session_id',
+              'dividends' => 'session_id'] as $rv_table => $rv_key) {
+        db()->exec("delete from $rv_table where $rv_key=$rv_user");
+    }
+
+    update_cash_history('2026-01-05', 'DEPOSIT', 20000.00);
+    portfolio_record_trade($rv_user, 'BUY', 'AAA', 300, 70.00, 5.95, date('Y-m-d'));
+
+    check('before the account is valued, Holdings has nothing to show',
+          count(get_active_positions($rv_user)) === 0);
+
+    portfolio_revalue($rv_user);
+
+    $rv_positions = get_active_positions($rv_user);
+    check('valuing it puts the purchase in Holdings at once',
+          count($rv_positions) === 1 && $rv_positions[0]['symbol'] === 'AAA'
+          && (int) $rv_positions[0]['qty_purchased'] === 300,
+          json_encode(array_column($rv_positions, 'symbol')));
+
+    /* One date, replaced. Deleting more would throw away history the nightly
+       job wrote and this cannot rebuild. */
+    db()->prepare("insert into performance (session_id, performance_date, total_value,
+                                            total_profit, total_holding, cash)
+                   values (?, '2020-01-02', 1, 1, 1, 1)")->execute([$rv_user]);
+    portfolio_revalue($rv_user);
+    check('and it rewrites today only, leaving the history alone',
+          (int) scalar("select count(*) from performance
+                         where session_id=? and performance_date='2020-01-02'",
+                       [$rv_user]) === 1
+          && (int) scalar("select count(*) from performance
+                            where session_id=? and performance_date=?",
+                          [$rv_user, date('Y-m-d')]) === 1);
+
+    check('buying and selling both value the account before redirecting',
+          substr_count((string) file_get_contents(dirname(__DIR__) . '/public/buy.php'),
+                       'portfolio_revalue') === 1
+          && substr_count((string) file_get_contents(dirname(__DIR__) . '/public/sell.php'),
+                          'portfolio_revalue') === 1);
+
+    foreach (['purchases' => 'session_id', 'cash_history' => 'user_id',
+              'performance' => 'session_id', 'portfolio_performance' => 'session_id'] as $rv_table => $rv_key) {
+        db()->exec("delete from $rv_table where $rv_key=$rv_user");
+    }
+    if ($rv_saved_id === null) { unset($_SESSION["id"]); } else { $_SESSION["id"] = $rv_saved_id; }
+    if ($rv_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $rv_saved_exchange; }
 
     echo "\n--- one way to print a number ---\n";
 

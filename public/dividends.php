@@ -97,6 +97,11 @@
 		       		update_cash_history($dividend_date[0],'DIVIDEND',$amount[0]);
 				}
 			//};
+			/* A dividend is part of what a position has returned, so the
+			   valuation it feeds is rewritten now rather than tonight. */
+			require_once("../includes/portfolio_functions.php");
+			portfolio_revalue($_SESSION["id"]);
+
 			//query dividends 
 			write_log("dividends.php","query dividends"); 
 			

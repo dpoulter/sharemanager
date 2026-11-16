@@ -2061,19 +2061,21 @@ function time_to_decimal($time) {
 		return $avg_share_cost[0]["avg_cost"];
 	}
 	
-	//Update Portfolio 
+	/**
+	 * Kept the shares table's avg_cost in step with purchases.
+	 *
+	 * Nothing reads the shares table any more. Buy and Sell wrote it, the
+	 * share outlook read it and the Sell form listed from it; all three use
+	 * purchases now, which is where the trades actually are. So this had one
+	 * job - copying a figure derived from purchases into a second table that
+	 * nobody consults - and it does nothing.
+	 *
+	 * Left as a function rather than deleted because edit.php calls it on
+	 * every transaction edit, and the table is kept rather than dropped
+	 * until somebody has looked at what is in it on the live database.
+	 */
 	function update_portfolio($symbol){
-		$shares=query("select distinct symbol as symbol from purchases where symbol=?",$symbol);
-		foreach ($shares as $share){
-			$avg_cost = avg_share_cost($share["symbol"]);
-			//check if share exists in portfolio
-			$share_symbol = query("select symbol from shares where symbol=?",$share["symbol"]);
-			if (count($share_symbol)>0) 
-				query("update shares set avg_cost=? where symbol=?",$avg_cost, $share["symbol"]);
-			else
-				query("insert into shares (symbol,avg_cost) values (?,?)",$share["symbol"],$avg_cost);
-		}
-	
+		return null;
 	}
 	
 	//Financial Statement

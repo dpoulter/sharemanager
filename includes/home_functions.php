@@ -40,16 +40,10 @@
 		          'gain' => null, 'day_change' => null, 'day_change_pct' => null,
 		          'as_of' => null];
 
-		/* Cash is the running total of the cash book, which is what every
-		   other page on this application means by cash. */
-		$cash = query("select sum(case trx_type when 'DEPOSIT' then amount
-		                                        when 'BUY'     then -1*amount
-		                                        when 'SELL'    then amount
-		                                        when 'DELETE'  then -1*amount
-		                                        else amount end) cash
-		                 from cash_history where user_id=?", $session_id);
-		$strip['cash'] = count($cash) && $cash[0]['cash'] !== null
-		               ? (float) $cash[0]['cash'] : 0.0;
+		/* The cash book, run down. One implementation, in
+		   portfolio_functions.php, because buy.php checks against the same
+		   figure before it lets a purchase through. */
+		$strip['cash'] = portfolio_cash_balance($session_id);
 
 		$positions = get_active_positions($session_id);
 		$strip['holdings'] = count($positions);
