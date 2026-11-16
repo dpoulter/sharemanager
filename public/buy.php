@@ -17,12 +17,26 @@
             apologize("Quantity must be greater than 0 and must be whole number");
         
         }
-        else if (!preg_match("~^\d{2}-\d{2}-\d{4}$~",$_POST["buyDate"])) {
-            		apologize("Date format must be in DD-MM-YYYY format");
+        /* Either form of date.
+         *
+         * The form has always been <input type="date">, and that control
+         * submits YYYY-MM-DD - which this refused, because it insisted on
+         * DD-MM-YYYY. So the Buy page could not buy anything: every
+         * submission from its own form was turned away by its own
+         * validation. Both are accepted now, and both are checked.
+         */
+        else if (!preg_match("~^\d{2}-\d{2}-\d{4}$~",$_POST["buyDate"])
+              && !preg_match("~^\d{4}-\d{2}-\d{2}$~",$_POST["buyDate"])) {
+            		apologize("Date must be DD-MM-YYYY or YYYY-MM-DD");
         }
         else 
-        {  list($day,$month,$year) = explode('-',$_POST["buyDate"]);
-           if (!checkdate($day,$month,$year)) {
+        {  if (preg_match("~^\d{4}-\d{2}-\d{2}$~",$_POST["buyDate"])) {
+             list($year,$month,$day) = explode('-',$_POST["buyDate"]);
+           }
+           else {
+             list($day,$month,$year) = explode('-',$_POST["buyDate"]);
+           }
+           if (!checkdate($month,$day,$year)) {
 	     apologize("Please enter a valid date"); 	
            }
 	   else

@@ -68,32 +68,20 @@
 		$strip['gain']  = $gain;
 		$strip['total'] = $value + $strip['cash'];
 
-		/* The two most recent sessions the market traded. Two dates, not
-		   "today and yesterday": a Monday's change is against Friday. */
-		$dates = query("select distinct date from historical_prices
-		                 where exchange=? order by date desc limit 2", $exchange);
-		if (count($dates) < 2) { return $strip; }
-
-		$today     = (string) $dates[0]['date'];
-		$yesterday = (string) $dates[1]['date'];
-		$strip['as_of'] = $today;
+		$strip['as_of'] = last_trading_date($exchange);
 
 		$change = 0.0; $base = 0.0; $priced = 0;
 		foreach ($positions as $position) {
 			$held = (int) $position['qty_purchased'] - (int) $position['qty_sold'];
 			if ($held <= 0) { continue; }
-			$prices = query("select date, price from historical_prices
-			                  where symbol=? and exchange=? and date in (?, ?)",
-			                $position['symbol'], $exchange, $today, $yesterday);
-			$by_date = [];
-			foreach ($prices as $price) { $by_date[(string) $price['date']] = (float) $price['price']; }
-			if (!isset($by_date[$today]) || !isset($by_date[$yesterday])) { continue; }
+			$move = portfolio_day_move($position['symbol'], $exchange);
+			if ($move === null) { continue; }
 			$priced++;
-			$change += ($by_date[$today] - $by_date[$yesterday]) * $held / 100;
-			$base   += $by_date[$yesterday] * $held / 100;
+			$change += $move['change'] * $held / 100;
+			$base   += $move['previous'] * $held / 100;
 		}
 
-		/* No holding had a close on both days: the honest answer is that no
+		/* No holding had two closes to compare: the honest answer is that no
 		   change is known, not that nothing moved. */
 		if ($priced === 0) { return $strip; }
 
@@ -101,6 +89,33 @@
 		$strip['day_change_pct'] = $base > 0 ? ($change / $base) * 100 : null;
 
 		return $strip;
+	}
+
+	/**
+	 * What one share did between its last two closes.
+	 *
+	 * Its own last two, not the exchange's. The exchange's latest two dates
+	 * are the same thing only when every share traded on both of them, and
+	 * a share that was suspended, or that simply has a gap in the loaded
+	 * history, then reports no move at all - which on a page of ten holdings
+	 * reads as a flat market rather than as missing data.
+	 *
+	 * Returns ['change' => pence per share, 'previous' => pence, 'date' =>
+	 * the later of the two], or null when there are not two closes.
+	 */
+	function portfolio_day_move($symbol, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+
+		$closes = query("select date, price from historical_prices
+		                  where symbol=? and exchange=? and price is not null
+		                  order by date desc limit 2", $symbol, $exchange);
+
+		if (count($closes) < 2 || (float) $closes[1]['price'] == 0.0) { return null; }
+
+		return ['change'   => (float) $closes[0]['price'] - (float) $closes[1]['price'],
+		        'previous' => (float) $closes[1]['price'],
+		        'date'     => (string) $closes[0]['date']];
 	}
 
 	/* ---------------------------------------------------------------------

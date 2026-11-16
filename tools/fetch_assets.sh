@@ -47,6 +47,8 @@ copy_repo_assets() {
   echo "  js/strategy_dry_run.js copied from templates/"
   cp "$REPO_DIR/templates/typeahead.css" "$PUBLIC/css/typeahead.css"
   echo "  css/typeahead.css      copied from templates/"
+  cp "$REPO_DIR/templates/portfolio_chart.js" "$PUBLIC/js/portfolio_chart.js"
+  echo "  js/portfolio_chart.js  copied from templates/"
   cp "$REPO_DIR/templates/app.css"       "$PUBLIC/css/app.css"
   echo "  css/app.css            copied from templates/"
 }

@@ -7638,6 +7638,237 @@
     if ($qh_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $qh_saved_exchange; }
 
+    echo "\n--- the portfolio: the figures add up ---\n";
+
+    require_once($INCLUDES . '/portfolio_view.php');
+
+    $pf_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $pf_user = 1;
+
+    $pf_summary  = portfolio_summary($pf_user, 'XLON');
+    $pf_holdings = portfolio_holdings($pf_user, 'XLON');
+
+    check('the seeded account has a portfolio worth looking at',
+          count($pf_holdings) >= 10, count($pf_holdings) . ' holdings');
+
+    /* Worked out here from the seeded rows rather than by calling the same
+       function twice. value is the shares at the latest close, in pounds -
+       prices are pence - and invested is what they cost. */
+    $pf_value = 0.0; $pf_invested = 0.0;
+    foreach ($pf_holdings as $pf_row) {
+        $pf_price = (float) scalar("select price from historical_prices
+                                     where symbol=? and exchange='XLON'
+                                     order by date desc limit 1", [$pf_row['symbol']]);
+        $pf_value    += $pf_price * $pf_row['shares'] / 100;
+        $pf_invested += $pf_row['avg_cost'] * $pf_row['shares'] / 100;
+    }
+
+    check('the value is the holdings at the latest close',
+          abs($pf_summary['value'] - $pf_value) < 0.02,
+          json_encode([$pf_summary['value'], $pf_value]));
+    check('and invested is what they cost',
+          abs($pf_summary['invested'] - $pf_invested) < 0.02,
+          json_encode([$pf_summary['invested'], $pf_invested]));
+    /* The seed charges GBP5.95 commission on each position, and the gain is
+       net of it. */
+    check('the gain is the value less the cost, less commission',
+          abs($pf_summary['gain'] - ($pf_value - $pf_invested - 5.95 * count($pf_holdings))) < 0.05,
+          json_encode([$pf_summary['gain'], $pf_value - $pf_invested - 5.95 * count($pf_holdings)]));
+    check('and the percentage is against the cost, not against the value',
+          abs($pf_summary['gain_pct'] - ($pf_summary['gain'] / $pf_invested * 100)) < 0.01,
+          json_encode([$pf_summary['gain_pct']]));
+    check('the total is the holdings plus the cash',
+          abs($pf_summary['total'] - ($pf_summary['value'] + $pf_summary['cash'])) < 0.005);
+
+    /* The cash book: DEPOSIT in, BUY out, SELL in. A BUY stored as a
+       negative amount is negated again and a purchase adds cash, which is
+       how the seeded account came to hold three hundred thousand pounds. */
+    $pf_cash_hand = (float) scalar("select sum(case trx_type
+                                                 when 'DEPOSIT' then amount
+                                                 when 'BUY'     then -1*amount
+                                                 when 'SELL'    then amount
+                                                 when 'DELETE'  then -1*amount
+                                                 else amount end)
+                                      from cash_history where user_id=?", [$pf_user]);
+    check('the cash is the cash book, run down',
+          abs($pf_summary['cash'] - $pf_cash_hand) < 0.005,
+          json_encode([$pf_summary['cash'], $pf_cash_hand]));
+    check('and the purchases took money out of it rather than putting it in',
+          $pf_summary['cash'] < (float) scalar("select sum(amount) from cash_history
+                                                 where user_id=? and trx_type='DEPOSIT'", [$pf_user]),
+          $pf_summary['cash']);
+
+    /* Weights are against the holdings rather than against holdings plus
+       cash: the question is how much of what was chosen this is. */
+    $pf_weight = 0.0;
+    foreach ($pf_holdings as $pf_row) { $pf_weight += (float) $pf_row['weight']; }
+    check('the weights add up to the whole portfolio',
+          abs($pf_weight - 100.0) < 0.05, $pf_weight);
+
+    check('a holding carries its three scores and its company name',
+          array_key_exists('momentum', $pf_holdings[0])
+          && array_key_exists('value_score', $pf_holdings[0])
+          && array_key_exists('quality', $pf_holdings[0])
+          && trim((string) $pf_holdings[0]['name']) !== '');
+
+    echo "\n--- the portfolio: the sell rule, on the page ---\n";
+
+    /* Dale's rule is a close below the 200 day average. A holding 1% above
+       it is one that may be sold this week, so the table says three things
+       rather than two. */
+    $pf_trend_asof = (string) scalar("select max(date) from statistics where exchange='XLON'");
+    $pf_trend_sym  = $pf_holdings[0]['symbol'];
+    $pf_trend_price = (float) $pf_holdings[0]['price'];
+
+    $pf_set_ma = function ($value) use ($pf_trend_sym, $pf_trend_asof) {
+        db()->prepare("delete from statistics where symbol=? and indicator='ma200'
+                        and exchange='XLON' and date=?")->execute([$pf_trend_sym, $pf_trend_asof]);
+        db()->prepare("insert into statistics (symbol, exchange, indicator, date, value)
+                       values (?, 'XLON', 'ma200', ?, ?)")
+            ->execute([$pf_trend_sym, $pf_trend_asof, $value]);
+    };
+    $pf_trend_of = function () use ($pf_user, $pf_trend_sym) {
+        foreach (portfolio_holdings($pf_user, 'XLON') as $r) {
+            if ($r['symbol'] === $pf_trend_sym) { return $r['trend']; }
+        }
+        return null;
+    };
+
+    $pf_set_ma($pf_trend_price * 0.90);
+    check('ten per cent above the 200 day average is above it', $pf_trend_of() === 'above');
+    $pf_set_ma($pf_trend_price * 0.99);
+    check('one per cent above it is a warning, because that is the sell rule',
+          $pf_trend_of() === 'near');
+    $pf_set_ma($pf_trend_price / 1.02);
+    check('exactly two per cent above is still the warning, not clear of it',
+          $pf_trend_of() === 'near');
+    $pf_set_ma($pf_trend_price * 1.05);
+    check('and below the average is below it', $pf_trend_of() === 'below');
+    db()->prepare("delete from statistics where symbol=? and indicator='ma200'
+                    and exchange='XLON' and date=?")->execute([$pf_trend_sym, $pf_trend_asof]);
+    check('a share with no 200 day average says so rather than guessing',
+          $pf_trend_of() === 'unknown');
+
+    echo "\n--- the portfolio: the tax year, the sales and the dividends ---\n";
+
+    /* 6 April to 5 April. A calendar year figure matches nothing on a tax
+       return. */
+    check('the tax year runs from 6 April',
+          portfolio_tax_year('2026-11-16') === ['2026-04-06', '2027-04-05']
+          && portfolio_tax_year('2026-04-06') === ['2026-04-06', '2027-04-05'],
+          json_encode(portfolio_tax_year('2026-11-16')));
+    check('and 5 April is still the year before',
+          portfolio_tax_year('2026-04-05') === ['2025-04-06', '2026-04-05'],
+          json_encode(portfolio_tax_year('2026-04-05')));
+
+    [$pf_year_from, $pf_year_to] = portfolio_tax_year();
+    $pf_divs_hand = (float) scalar("select ifnull(sum(amount),0) from dividends
+                                     where session_id=? and dividend_date between ? and ?",
+                                   [$pf_user, $pf_year_from, $pf_year_to]);
+    check('the dividend figure is this tax year, not every dividend ever',
+          abs($pf_summary['dividends_tax_year'] - $pf_divs_hand) < 0.005
+          && $pf_divs_hand < (float) scalar("select sum(amount) from dividends where session_id=?",
+                                            [$pf_user]),
+          json_encode([$pf_summary['dividends_tax_year'], $pf_divs_hand]));
+
+    $pf_sold = portfolio_sold($pf_user);
+    check('the closed positions are there to be looked at',
+          count($pf_sold) >= 2, count($pf_sold) . ' closed');
+    check('one closed at a profit and one at a loss, so both colours are exercised',
+          count(array_filter($pf_sold, function ($r) { return $r['gain'] > 0; })) > 0
+          && count(array_filter($pf_sold, function ($r) { return $r['gain'] < 0; })) > 0,
+          json_encode(array_column($pf_sold, 'gain')));
+
+    check('the dividends and the cash book both have rows to show',
+          count(portfolio_dividends($pf_user)) > 0 && count(portfolio_cash($pf_user)) > 0);
+
+    echo "\n--- the portfolio: the chart and its benchmark ---\n";
+
+    $pf_series = portfolio_series($pf_user, 365);
+    check('the performance series is the nightly totals',
+          count($pf_series) > 1 && array_key_exists('total', $pf_series[0]),
+          count($pf_series) . ' points');
+
+    /* The benchmark is rebased to start where the portfolio starts. An
+       index level of 3,900 beside a portfolio of GBP15,000 compares
+       nothing. */
+    db()->exec("delete from strategy_values where strategy='_benchmark'");
+    $pf_bench_ins = db()->prepare("insert into strategy_values
+        (strategy, date, total, cash, holdings_value, holdings, note)
+        values ('_benchmark', ?, ?, 0, ?, 350, null)");
+    $pf_bench_ins->execute(['2026-11-10', 1000.0, 1000.0]);
+    $pf_bench_ins->execute(['2026-11-11', 1100.0, 1100.0]);
+    $pf_bench_ins->execute(['2026-11-12',  990.0,  990.0]);
+    $pf_bench = portfolio_benchmark('2026-11-10', '2026-11-12', 20000.0);
+    check('the benchmark starts where the portfolio starts',
+          count($pf_bench) === 3 && abs($pf_bench[0]['total'] - 20000.0) < 0.01,
+          json_encode($pf_bench));
+    check('and keeps its own shape',
+          abs($pf_bench[1]['total'] - 22000.0) < 0.01
+          && abs($pf_bench[2]['total'] - 19800.0) < 0.01,
+          json_encode($pf_bench));
+    check('with no benchmark stored the chart draws one line, not a wrong one',
+          portfolio_benchmark('2001-01-01', '2001-01-31', 20000.0) === []);
+    db()->exec("delete from strategy_values where strategy='_benchmark'");
+
+    echo "\n--- the portfolio: what is on the page ---\n";
+
+    $pf_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/portfolio.php');
+
+    check('the monospace block of unlabelled numbers is gone',
+          strpos($pf_tpl, '<pre>') === false && strpos($pf_tpl, 'Shares:') === false);
+    check('and so is the Timespan / Type / Go form and the stray timespan',
+          strpos($pf_tpl, 'selected_timespan') === false
+          && preg_match('/<select[^>]+name="timespan"/', $pf_tpl) !== 1
+          && strpos($pf_tpl, 'echo $timespan') === false);
+    /* Two links with no space between them rendered as one word: "Active
+       SharesSold Shares". */
+    check('the four tabs are tabs, with counts',
+          substr_count($pf_tpl, 'data-bs-toggle="tab"') === 4
+          && strpos($pf_tpl, 'href="#holdings"') !== false
+          && strpos($pf_tpl, 'href="#sold"') !== false
+          && strpos($pf_tpl, 'href="#dividends"') !== false
+          && strpos($pf_tpl, 'href="#cash"') !== false);
+    check('the actions are buttons at the top, opening the existing forms',
+          strpos($pf_tpl, 'data-bs-target="#buyModal"') !== false
+          && strpos($pf_tpl, 'data-bs-target="#sellModal"') !== false
+          && strpos($pf_tpl, 'data-bs-target="#dividendModal"') !== false
+          && strpos($pf_tpl, 'data-bs-target="#cashModal"') !== false
+          && strpos($pf_tpl, 'action="buy.php"') !== false
+          && strpos($pf_tpl, 'action="sell.php"') !== false
+          && strpos($pf_tpl, 'action="topup.php"') !== false
+          && strpos($pf_tpl, 'action="dividends.php"') !== false);
+    check('an empty portfolio gets a sentence and a button, not an empty table',
+          strpos($pf_tpl, 'Nothing held.') !== false
+          && strpos($pf_tpl, 'Add a purchase') !== false);
+    check('the holdings table has a totals row and sorts',
+          strpos($pf_tpl, 'sm-total-row') !== false
+          && strpos($pf_tpl, 'sm-table-sort') !== false);
+    /* 300px of empty card above "No performance history available" is what
+       the old page did. */
+    check('no history means no chart box, rather than an empty one',
+          strpos((string) file_get_contents(dirname(__DIR__) . '/templates/portfolio_chart.js'),
+                 'root.style.display = "none"') !== false);
+
+    /* The form has always been <input type="date">, which submits
+       YYYY-MM-DD, and buy.php insisted on DD-MM-YYYY - so the Buy page
+       could not buy anything: its own validation turned away every
+       submission from its own form. checkdate() was being called
+       (day, month, year) as well, which is (month, day, year). */
+    $pf_buy = (string) file_get_contents(dirname(__DIR__) . '/public/buy.php');
+    check('buy.php accepts the date its own form submits',
+          strpos($pf_buy, '^\\d{4}-\\d{2}-\\d{2}$') !== false);
+    check('and checks it the right way round',
+          strpos($pf_buy, 'checkdate($month,$day,$year)') !== false);
+
+    $pf_empty = portfolio_holdings(987654, 'XLON');
+    check('an account with nothing in it is handled without a warning',
+          $pf_empty === [] && portfolio_summary(987654, 'XLON')['holdings'] === 0);
+
+    if ($pf_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $pf_saved_exchange; }
+
     echo "\n--- one way to print a number ---\n";
 
     /* Formatting used to live in each template, and the same figure was

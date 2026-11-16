@@ -79,7 +79,16 @@
 
     $USER_ID = 1;   // the 'tester' row inserted below
 
-    // Three still held, one sold in full so the closed-position path is covered.
+    /* A portfolio somebody could actually have: ten holdings, two positions
+       closed in full, one sold down in part, and dividends from several of
+       them. Three holdings and one sale was enough to prove the queries ran;
+       it was not enough to see whether the page reads properly, which is
+       what a table of ten rows with mixed gains, mixed trends and a totals
+       line is for.
+
+       The costs are set against the seeded closing prices so that some
+       holdings show a gain and some a loss - a portfolio where every row is
+       green tells you nothing about how the red ones look. */
     $trades = [
         ['AAA', 'BUY',  500, 72.50,  '2025-03-14'],
         ['BBB', 'BUY',  200, 240.00, '2025-04-02'],
@@ -87,6 +96,17 @@
         ['AAA', 'BUY',  250, 81.10,  '2025-09-05'],   // second lot, averages cost
         ['DDD', 'BUY',  300, 155.00, '2025-02-20'],
         ['DDD', 'SELL', 300, 178.40, '2026-01-16'],   // closed at a profit
+
+        ['EEE', 'BUY',  400, 171.20, '2025-04-18'],
+        ['FFF', 'BUY', 1500, 212.40, '2025-05-09'],
+        ['FFF', 'SELL', 300, 268.10, '2026-03-05'],   // sold down, still held
+        ['GGG', 'BUY',  150, 340.00, '2025-06-27'],
+        ['HHH', 'BUY',  600, 298.75, '2025-08-14'],
+        ['III', 'BUY',  220, 401.00, '2025-02-07'],
+        ['III', 'SELL', 220, 362.80, '2026-05-21'],   // closed at a loss
+        ['JJJ', 'BUY',  300, 418.60, '2025-10-02'],   // under water
+        ['KKK', 'BUY',  900, 395.10, '2025-11-21'],
+        ['LLL', 'BUY',  500, 466.30, '2026-02-13'],   // under water
     ];
     $buy_trade  = $pdo->prepare("insert into purchases (session_id,symbol,trx_type,shares,price_paid,commission,purchase_date) values (?,?,?,?,?,?,?)");
     $log_trade  = $pdo->prepare("insert into history (user_id,trx_type,symbol,quantity,price,timestamp) values (?,?,?,?,?,?)");
@@ -95,21 +115,44 @@
         $log_trade->execute([$USER_ID, $side, $symbol, $qty, $price, $when . ' 09:15:00']);
     }
 
-    // Net holdings, the way buy.php maintains them.
-    $holdings = ['AAA' => [750, 75.37], 'BBB' => [200, 240.00], 'CCC' => [800, 41.25]];
+    /* Net holdings, the way buy.php maintains them. The average cost of a
+       symbol bought twice is weighted by the shares in each lot: AAA is 500
+       at 72.50 and 250 at 81.10, which averages 75.37. */
+    $holdings = ['AAA' => [750, 75.37],  'BBB' => [200, 240.00], 'CCC' => [800, 41.25],
+                 'EEE' => [400, 171.20], 'FFF' => [1200, 212.40], 'GGG' => [150, 340.00],
+                 'HHH' => [600, 298.75], 'JJJ' => [300, 418.60], 'KKK' => [900, 395.10],
+                 'LLL' => [500, 466.30]];
     $hold = $pdo->prepare("insert into shares (id,symbol,shares,avg_cost,commission,price_paid) values (?,?,?,?,?,?)");
     foreach ($holdings as $symbol => [$qty, $cost]) { $hold->execute([$USER_ID, $symbol, $qty, $cost, 5.95, $cost]); }
 
     $dividend = $pdo->prepare("insert into dividends (session_id,symbol,dividend_date,amount) values (?,?,?,?)");
+    /* Dividends across two tax years, so the strip's "since 6 April" figure
+       is a different number from the lot. The UK tax year runs 6 April to 5
+       April; a calendar year figure matches nothing on a tax return. */
     foreach ([['AAA','2025-07-18',112.50], ['AAA','2026-01-20',131.25],
-              ['BBB','2025-09-30',84.00],  ['CCC','2025-11-14',66.00]] as $d) {
+              ['BBB','2025-09-30',84.00],  ['CCC','2025-11-14',66.00],
+              ['EEE','2026-05-14',96.00],  ['FFF','2026-06-30',210.00],
+              ['HHH','2026-07-22',148.50], ['KKK','2026-09-18',172.00],
+              ['LLL','2026-10-09',119.25], ['CCC','2026-08-07',72.50]] as $d) {
         $dividend->execute([$USER_ID, $d[0], $d[1], $d[2]]);
     }
 
     $cash = $pdo->prepare("insert into cash_history (user_id,transaction_date,trx_type,amount) values (?,?,?,?)");
-    foreach ([['2025-03-01','DEPOSIT',100000.00], ['2025-03-14','BUY',-36255.95],
+    /* The running cash balance is
+         DEPOSIT +amount, BUY -amount, SELL +amount, DELETE -amount, else +amount
+       which is the sum every page in the application computes. A BUY row
+       therefore holds what the purchase cost as a positive number; stored
+       negative it is negated again and a purchase adds cash. The first BUY
+       row below was stored negative, so the seeded account's cash was
+       GBP72,000 higher than the trades it is made of. */
+    foreach ([['2025-03-01','DEPOSIT',100000.00], ['2025-03-14','BUY',36255.95],
               ['2025-07-18','DIVIDEND',112.50],   ['2026-01-16','SELL',53514.05],
-              ['2026-02-01','WITHDRAWAL',-10000.00]] as $c) {
+              ['2026-02-01','WITHDRAWAL',-10000.00],
+              ['2025-04-18','BUY',6848.00],       ['2025-05-09','BUY',31860.00],
+              ['2025-06-27','BUY',5100.00],       ['2025-08-14','BUY',17925.00],
+              ['2025-10-02','BUY',12558.00],      ['2025-11-21','BUY',35559.00],
+              ['2026-02-13','BUY',23315.00],      ['2026-03-05','SELL',8043.00],
+              ['2026-05-21','SELL',7981.60],      ['2026-06-01','DEPOSIT',25000.00]] as $c) {
         $cash->execute([$USER_ID, $c[0], $c[1], $c[2]]);
     }
 
@@ -136,6 +179,23 @@
             }
         }
         $day->modify('+1 day');
+    }
+
+    /* The positions that are closed. get_inactive_positions() reads these
+       rows with active='N', so without them the Sold tab is empty however
+       many sales are in purchases. One snapshot each, at the latest date,
+       because a closed position does not move any more. */
+    $closed = ['DDD' => [300, 155.00, 178.40, '2026-01-16'],
+               'III' => [220, 401.00, 362.80, '2026-05-21']];
+    $latest = $pdo->query("select max(as_of_date) from portfolio_performance")->fetchColumn();
+    foreach ($closed as $symbol => [$qty, $cost, $sold_at, $when]) {
+        $dividends_on = 0;
+        //Realised gain: what it sold for less what it cost, less commission.
+        $profit = ((($sold_at - $cost) * $qty) / 100) - 5.95;
+        $snapshot->execute([$USER_ID, $latest, $symbol, 'N', 'XLON', $qty, $qty, $sold_at, $cost,
+                            $sold_at, 5.95, $dividends_on, number_format(0, 2), 0.0,
+                            number_format($profit, 2), $profit,
+                            $cost > 0 ? round($profit / (($cost * $qty) / 100) * 100, 4) : 0]);
     }
 
     // Whole-portfolio daily totals, derived from the per symbol snapshots above so
