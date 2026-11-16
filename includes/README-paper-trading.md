@@ -206,6 +206,27 @@ the book is being swapped, not how much is being moved, so deploying idle cash
 scores zero — otherwise the first rebalance of any new account would breach
 every sane limit.
 
+## Units
+
+**`historical_prices` holds London prices in pence; the engine works in
+pounds.** `strategy_price_asof()` and `strategy_next_price()` convert, and
+everything downstream - sizing, fills, average cost, valuations, the page,
+the backtest - is in pounds because it reads them. `fill_price` and
+`avg_price` are pounds in the database.
+
+This was wrong for the first two days of the engine's life: it read 690p as
+£690, so a £100,000 account invested about £1,000, the £5.95 commission was a
+tenth of every order and the £250 minimum order was really £25,000.
+
+`stock_symbols.quote_ccy` (sql/strategy_prices.sql) says what each share is
+quoted in, written by the FMP loader from the profile's `currency`. Null means
+pence on XLON, which is what the exchange quotes in. The case matters: the
+provider writes pence as `GBp` and pounds as `GBP`, the same three letters a
+hundred times apart. A minor unit (`GBp`, `ZAc`, `ILA`) is divided by 100 and
+then converted; a major foreign unit (`USD`, `EUR`) is converted and **not**
+divided. A foreign quote with no stored rate is unpriceable, and the engine
+refuses to trade a share it cannot price.
+
 ## Costs
 
 Stamp duty 0.5% on purchases, £5.95 commission per order, 25bps slippage each

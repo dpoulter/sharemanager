@@ -760,6 +760,177 @@
     /* Put the full set of scores back for the tests below. */
     foreach ($S_SYMBOLS as $i => $symbol) { s_stat($symbol,'momentum_score',$SASOF,100-$i); }
 
+    echo "\n--- strategies: London prices are pence, costs are pounds ---\n";
+
+    /* The fault that stopped trading on the second deploy.
+       historical_prices holds London prices as the provider sends them,
+       which is PENCE. The manual portfolio has always known that -
+       portfolio_functions.php divides by 100 throughout - but the engine did
+       not, so it read 690p as 690 pounds:
+
+         BUY  EZJ    9 @ ~690      the engine thought 6,210; it was 62.10
+         BUY  SHEL   1 @ ~3719.5   the engine thought 3,719; it was 37.20
+
+       A 100,000 pound account invested about 1,000 pounds, the 5.95
+       commission was a tenth of every order, the 250 pound minimum order was
+       really 25,000, and "one share of Shell" made the weights meaningless.
+
+       The figures below are the brief's own worked example. */
+    $PX = 'test_pence';
+    s_drop($PX);
+    db()->exec("delete from historical_prices where symbol='PENCE1' and exchange='XLON'");
+    db()->exec("delete from stock_symbols where symbol in ('PENCE1','DOLLAR1','POUND1')");
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market)
+                   values ('PENCE1','Pence Test PLC','Pence Test PLC','XLON','Y','Sector 0','Main Market')")
+      ->execute();
+
+    /* 690p on the as-of date, and the same the next session so a fill has a
+       price. */
+    $px_prices = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                                values ('PENCE1','XLON',?,690)");
+    $px_prices->execute([$SASOF]);
+    $px_prices->execute([$SNEXT]);
+
+    check('a 690p share is sixty nine pence to the engine, not 690 pounds',
+          abs(strategy_price_asof('PENCE1', 'XLON', $SASOF) - 6.90) < 0.0001,
+          var_export(strategy_price_asof('PENCE1', 'XLON', $SASOF), true));
+    check('and the price it would fill at is in pounds too',
+          abs(strategy_next_price('PENCE1', 'XLON', $SASOF)['price'] - 6.90) < 0.0001,
+          json_encode(strategy_next_price('PENCE1', 'XLON', $SASOF)));
+
+    /* The brief's example: a 6,667 pound target at 690p buys 966 shares.
+       Sized through the engine rather than worked out here, so this is the
+       sizing and not my arithmetic. */
+    s_account($PX, 100000);
+    db()->prepare("insert into strategy_targets
+                     (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                   values (?,?,'PENCE1','XLON',0.066666,now())")->execute([$PX, $SASOF]);
+
+    $px_plan = strategy_plan_orders($PX, $SASOF);
+    $px_order = null;
+    foreach ($px_plan['orders'] as $order) {
+        if ($order['symbol'] === 'PENCE1') { $px_order = $order; }
+    }
+
+    check('a 6,667 pound target at 690p buys 966 shares, not 9',
+          $px_order !== null && (int) $px_order['quantity'] === 966,
+          json_encode([$px_order, $px_plan['errors']]));
+    check('the reference price on the order is pounds',
+          $px_order !== null && abs((float) $px_order['reference_price'] - 6.90) < 0.0001);
+
+    /* And the valuation of that holding: 966 at 690p is 6,665.40. */
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'PENCE1','XLON',966,6.90,now())")->execute([$PX]);
+    db()->prepare("update strategy_accounts set cash=0 where strategy=?")->execute([$PX]);
+
+    $px_value = strategy_write_values($PX, $SASOF, 'XLON');
+    check('966 shares at 690p is valued at 6,665.40, not 666,540',
+          abs($px_value['holdings_value'] - 6665.40) < 0.01,
+          json_encode($px_value));
+
+    /* The costs are pounds and were always pounds: that is why the price had
+       to be. 5.95 commission on a 6,665 pound order is 0.09% of it; on the
+       engine's old reading of 62 pounds it was a tenth of the trade. */
+    $px_costs = strategy_costs('BUY', 966, 6.90);
+    check('commission is 5.95 on that order, which is a tenth of a per cent',
+          abs($px_costs['commission'] - 5.95) < 0.0001
+          && $px_costs['commission'] / $px_costs['consideration'] < 0.001,
+          json_encode($px_costs));
+    check('and stamp duty is half a per cent of a real consideration',
+          abs($px_costs['stamp_duty'] - 6665.40 * 0.005) < 0.01,
+          json_encode($px_costs));
+
+    /* The minimum order means what it says again: 250 pounds, not 25,000. */
+    check('the minimum order value is a real 250 pounds against a pounds price',
+          abs(STRATEGY_MIN_ORDER_VALUE - 250.0) < 0.0001
+          && (36 * 6.90) < STRATEGY_MIN_ORDER_VALUE
+          && (37 * 6.90) > STRATEGY_MIN_ORDER_VALUE);
+
+    /* The signature of the fault, as a standing guard: a fill price over
+       1,000 for a share whose price in pounds is nowhere near that. If the
+       conversion is ever lost, the engine stores 690 and this fails. */
+    s_drop($PX); s_account($PX, 100000);
+    db()->prepare("insert into strategy_targets
+                     (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                   values (?,?,'PENCE1','XLON',0.066666,now())")->execute([$PX, $SASOF]);
+    run_script('run_paper_execution.php', [$PX, $SASOF]);
+
+    $px_fills = rows("select symbol, fill_price, consideration, quantity from strategy_orders
+                       where strategy=? and status='FILLED'", [$PX]);
+    $px_absurd = [];
+    foreach ($px_fills as $fill) {
+        $pounds = strategy_price_asof($fill['symbol'], 'XLON', $SASOF);
+        if ($pounds !== null && $pounds < 100 && (float) $fill['fill_price'] > 1000) {
+            $px_absurd[] = $fill;
+        }
+    }
+    check('no fill is stored at a price a hundred times the share\'s own',
+          count($px_fills) > 0 && count($px_absurd) === 0,
+          json_encode($px_fills));
+    check('and the average cost on the position is pounds as well',
+          (float) scalar("select avg_price from strategy_positions
+                           where strategy=? and symbol='PENCE1'", [$PX]) < 100,
+          (string) scalar("select avg_price from strategy_positions
+                            where strategy=? and symbol='PENCE1'", [$PX]));
+
+    echo "\n--- strategies: GBp and GBP are not the same currency ---\n";
+
+    /* The trap in the data: the provider writes pence as "GBp" and pounds as
+       "GBP". Same three letters, a hundred times apart, and upper-casing the
+       column before reading it would put the whole fault back. */
+    db()->prepare("update stock_symbols set quote_ccy='GBp' where symbol='PENCE1'")->execute();
+    check("'GBp' is pence",
+          strategy_quote_ccy('PENCE1', 'XLON') === 'GBX'
+          && abs(strategy_price_pounds(690, 'PENCE1', 'XLON', $SASOF) - 6.90) < 0.0001,
+          strategy_quote_ccy('PENCE1', 'XLON'));
+
+    /* A different symbol for the pounds case, because strategy_quote_ccy()
+       caches per symbol the way the engine calls it. */
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market,quote_ccy)
+                   values ('POUND1','Pound Test PLC','Pound Test PLC','XLON','Y','Sector 0','Main Market','GBP')")
+      ->execute();
+    check("'GBP' is pounds, and is not divided by a hundred",
+          strategy_quote_ccy('POUND1', 'XLON') === 'GBP'
+          && abs(strategy_price_pounds(690, 'POUND1', 'XLON', $SASOF) - 690.0) < 0.0001,
+          strategy_quote_ccy('POUND1', 'XLON'));
+
+    /* A London line quoted in dollars: converted through fx_rates, and NOT
+       divided by a hundred - a dollar quote is in dollars, not cents. */
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market,quote_ccy)
+                   values ('DOLLAR1','Dollar Test PLC','Dollar Test PLC','XLON','Y','Sector 0','Main Market','USD')")
+      ->execute();
+    db()->prepare("replace into fx_rates (date, base, quote_ccy, rate, source)
+                   values (?, 'GBP', 'USD', 1.25, 'test')")->execute([$SASOF]);
+
+    check('a dollar quote is converted at the rate, not divided by a hundred',
+          abs(strategy_price_pounds(50, 'DOLLAR1', 'XLON', $SASOF) - 40.0) < 0.0001,
+          var_export(strategy_price_pounds(50, 'DOLLAR1', 'XLON', $SASOF), true));
+
+    /* A minor unit of a foreign currency needs both corrections. South
+       African cents on a dual-listed line is a hundredth of a rand, then
+       rand into pounds: either correction alone is wrong by a hundred. The
+       same list python/fmp.py keeps for the market cap. */
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market,quote_ccy)
+                   values ('CENTS1','Cents Test PLC','Cents Test PLC','XLON','Y','Sector 0','Main Market','ZAc')")
+      ->execute();
+    db()->prepare("replace into fx_rates (date, base, quote_ccy, rate, source)
+                   values (?, 'GBP', 'ZAR', 20.0, 'test')")->execute([$SASOF]);
+    check('a cents quote is divided by a hundred and then converted',
+          abs(strategy_price_pounds(2000, 'CENTS1', 'XLON', $SASOF) - 1.0) < 0.0001,
+          var_export(strategy_price_pounds(2000, 'CENTS1', 'XLON', $SASOF), true));
+
+    /* No rate, no price. A position sized through a missing exchange rate is
+       a wrong position rather than a late one, so the engine refuses it the
+       same way it refuses a share with no price at all. */
+    db()->exec("delete from fx_rates where quote_ccy='USD'");
+    check('a foreign quote with no rate is unpriceable rather than guessed at',
+          strategy_price_pounds(50, 'DOLLAR1', 'XLON', $SASOF) === null);
+
+    db()->exec("delete from stock_symbols where symbol in ('PENCE1','DOLLAR1','POUND1','CENTS1')");
+    db()->exec("delete from historical_prices where symbol='PENCE1' and exchange='XLON'");
+    db()->exec("delete from fx_rates where source='test'");
+    s_drop($PX);
+
     echo "\n--- strategies: a weight that cannot divide one ---\n";
 
     /* The fault that stopped both strategies on the first live dry run.
@@ -961,8 +1132,12 @@
        and spread for a decimal place, so anything inside two percentage
        points is left alone - and anything outside it is not. */
     s_drop($S); s_rules($S, ['holdings'=>5]); s_reset($S);
-    $drift_price = (float)scalar("select price from historical_prices
-                                   where symbol='AAA' and exchange='XLON' and date=?", [$SASOF]);
+    /* The engine's own view of the price, which is POUNDS: historical_prices
+       holds London prices in pence. Reading the column straight here would
+       size this fixture a hundred times too small and the band would not be
+       what the test is measuring - which is the same mistake the engine
+       itself was making. */
+    $drift_price = strategy_price_asof('AAA', 'XLON', $SASOF);
     $drift_target = (int)floor((0.2 * 100000) / $drift_price);
 
     /* Inside the band: hold 95% of the target quantity, which is a weight

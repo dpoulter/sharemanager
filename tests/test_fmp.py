@@ -299,6 +299,27 @@ check("a profile that does not say is left alone rather than guessed at",
       fmp.is_fund_flag({}) is None and fmp.is_fund_flag(None) is None
       and fmp.is_fund_flag({"isFund": "perhaps"}) is None)
 
+# The quote currency, which the paper engine needs to size a trade in pounds.
+# The case is the data: this provider writes pence as "GBp" and pounds as
+# "GBP", the same three letters a hundred times apart, so the helper must not
+# normalise it. The engine read every pence quote as pounds until this column
+# existed and sized every trade a hundred times too small.
+check("the quote currency comes back exactly as the provider spells it",
+      fmp.quote_currency({"currency": "GBp"}) == "GBp"
+      and fmp.quote_currency({"currency": "GBP"}) == "GBP"
+      and fmp.quote_currency({"currency": "USD"}) == "USD")
+check("surrounding space is trimmed, because a column of three is unforgiving",
+      fmp.quote_currency({"currency": " EUR "}) == "EUR")
+check("a profile that does not say is left alone rather than guessed at",
+      fmp.quote_currency({}) is None
+      and fmp.quote_currency(None) is None
+      and fmp.quote_currency({"currency": None}) is None)
+check("and anything that is not a three letter code is refused",
+      fmp.quote_currency({"currency": "pounds sterling"}) is None
+      and fmp.quote_currency({"currency": "GB1"}) is None
+      and fmp.quote_currency({"currency": ""}) is None
+      and fmp.quote_currency({"currency": 826}) is None)
+
 # It goes into stock_info under Derived, beside the other computed figures,
 # and it uses the raw market cap rather than the pence-normalised one: the
 # cash flow figures are in major units and so is marketCap.

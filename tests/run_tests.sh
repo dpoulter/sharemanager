@@ -100,6 +100,10 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_rules.sql" > /dev/null || exit 1
 echo "applying sql/strategy_backtest.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_backtest.sql" > /dev/null || exit 1
 
+# After sql/report_currency.sql, which adds the column this one sits after.
+echo "applying sql/strategy_prices.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_prices.sql" > /dev/null || exit 1
+
 echo "running provider client tests (offline, no key needed)"
 python3 "$TESTS_DIR/test_eodhd.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp.py"        || PY_FAILED=1

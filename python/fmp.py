@@ -92,6 +92,36 @@ def _first(body):
     return body if isinstance(body, dict) else None
 
 
+def quote_currency(profile):
+    """The currency a share is QUOTED in, from Profile.currency, or None.
+
+    Returned as the provider spells it, case and all, because the case is
+    the data: the convention writes pence as "GBp" and pounds as "GBP", the
+    same three letters a hundred times apart. Upper-casing here would hand
+    the engine a pound price for every pence-quoted London line, which is
+    the fault this column exists to fix.
+
+    None means the profile did not say, which is left alone rather than
+    guessed at - the engine then assumes the exchange's own currency.
+    """
+    if not isinstance(profile, dict):
+        return None
+
+    value = profile.get("currency")
+
+    if not isinstance(value, str):
+        return None
+
+    value = value.strip()
+
+    # Three letters, nothing else. A currency code is not a sentence, and a
+    # column of varchar(3) will truncate anything longer into nonsense.
+    if len(value) != 3 or not value.isalpha():
+        return None
+
+    return value
+
+
 def is_fund_flag(profile):
     """'Y', 'N' or None from Profile.isFund.
 

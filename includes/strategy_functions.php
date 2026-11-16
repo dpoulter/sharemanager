@@ -116,13 +116,144 @@
 	}
 
 	/**
-	 * Last known price on or before a date. Returns null when there is none,
-	 * which callers must treat as "do not trade this symbol".
+	 * What currency a share is quoted in, upper case, with pence spelled GBX.
+	 *
+	 * stock_symbols.quote_ccy when the loader has looked it up, otherwise
+	 * pence on XLON and pounds anywhere else. Pence is not a guess there: it
+	 * is what the London exchange quotes in, and what the rest of the
+	 * application already assumes - portfolio_functions.php divides by 100
+	 * in half a dozen places.
+	 *
+	 * Not report_ccy, which is what the company's ACCOUNTS are in. Shell
+	 * reports in dollars and is quoted in pence; the two corrections are for
+	 * different sums. See sql/strategy_prices.sql.
+	 */
+	function strategy_quote_ccy($symbol,$exchange) {
+
+		static $cache=[];
+		$key=$exchange.'|'.$symbol;
+
+		if (isset($cache[$key])){ return $cache[$key]; }
+
+		$default=(strtoupper((string)$exchange)==='XLON') ? 'GBX' : 'GBP';
+
+		$ready=query("select count(*) n from information_schema.columns
+		               where table_schema=database() and table_name='stock_symbols'
+		                 and column_name='quote_ccy'");
+
+		if (!count($ready)||(int)$ready[0]['n']!==1){
+			/* sql/strategy_prices.sql has not been applied. Carry on with
+			   the exchange's own currency rather than refusing to trade: the
+			   column tells pence from dollars, it does not tell London from
+			   nothing. */
+			return $cache[$key]=$default;
+		}
+
+		$rows=query("select quote_ccy from stock_symbols where symbol=? and exchange=?",
+		            $symbol,$exchange);
+
+		if (!count($rows)||$rows[0]['quote_ccy']===null
+		    ||trim((string)$rows[0]['quote_ccy'])===''){
+			return $cache[$key]=$default;
+		}
+
+		$raw=trim((string)$rows[0]['quote_ccy']);
+
+		/* THE CASE MATTERS, and this is the one place in the application
+		   where it does. The provider writes pence as "GBp" and pounds as
+		   "GBP": the same three letters, a hundred times apart. Upper-casing
+		   first would turn every pence-quoted London line into a
+		   pound-quoted one and put the hundred-times fault straight back.
+		
+		   Normalised to GBX, the ISO code for pence, so nothing downstream
+		   has to remember this. ZAc and ILA need no such care: they differ
+		   from ZAR and ILS in more than case. */
+		if ($raw==='GBp'||strtoupper($raw)==='GBX'||strtoupper($raw)==='GBPENCE'){
+			return $cache[$key]='GBX';
+		}
+
+		return $cache[$key]=strtoupper($raw);
+	}
+
+	/**
+	 * A stored price, in pounds.
+	 *
+	 * The engine sizes, fills, values and costs in pounds, because the costs
+	 * are in pounds: 5.95 a trade and a 250 pound minimum order mean nothing
+	 * against a number that might be pence. So the conversion happens once,
+	 * here, at the two places a price enters the engine.
+	 *
+	 * This is the second deploy's fault. historical_prices holds London
+	 * prices as the provider sends them, which is pence, and the engine read
+	 * 690p as 690 pounds - so a 100,000 pound account invested about 1,000,
+	 * the commission was a tenth of every order, and "one share of Shell"
+	 * made the weights meaningless.
+	 *
+	 *   GBX, ZAC, ILA   a minor unit   divided by 100, then converted
+	 *   GBP             pounds         as it is
+	 *   anything else   a major unit   converted through fx_rates, NOT
+	 *                                  divided: a dollar quote is in
+	 *                                  dollars, not in cents
+	 *
+	 * Returns null when a foreign quote has no rate for the date. That is
+	 * deliberate, and it is the same contract as "no price": a position
+	 * sized through a missing exchange rate is a wrong position rather than
+	 * a late one.
+	 */
+	function strategy_price_pounds($price,$symbol,$exchange,$date) {
+
+		if ($price===null){ return null; }
+
+		$price=(float)$price;
+		$currency=strategy_quote_ccy($symbol,$exchange);
+
+		/* The same list python/fmp.py keeps in MINOR_UNIT_CURRENCIES, which
+		   it uses to put the market cap in the same unit as the price.
+		   Dividing before converting is what makes a dual-listed line work:
+		   a ZAc quote needs both corrections, and either alone is wrong by a
+		   factor of a hundred. */
+		$minor_units=['GBX'=>'GBP','ZAC'=>'ZAR','ILA'=>'ILS'];
+
+		if (isset($minor_units[$currency])){
+			$price=$price/100.0;
+			$currency=$minor_units[$currency];
+		}
+
+		if ($currency==='GBP'){ return $price; }
+
+		/* fx_rates holds quote units per pound, so a price in dollars is
+		   divided by GBPUSD to get pounds. The rate on the date if there is
+		   one, else the most recent before it: a rate is a daily figure and
+		   Friday's is the right one for Saturday. */
+		if (!function_exists('fx_rate_for')){ return null; }
+
+		$rate=fx_rate_for($date,$currency);
+
+		if ($rate===null){
+			$rows=query("select rate from fx_rates where base='GBP' and quote_ccy=? and date<=?
+			              order by date desc limit 1",$currency,$date);
+			$rate=count($rows) ? (float)$rows[0]['rate'] : null;
+		}
+
+		if ($rate===null||$rate<=0){
+			write_log("strategy","no ".$currency." rate for ".$date." to price ".$symbol
+			          ."; refusing to value or trade it");
+			return null;
+		}
+
+		return $price/$rate;
+	}
+
+	/**
+	 * Last known price on or before a date, IN POUNDS. Returns null when
+	 * there is none, which callers must treat as "do not trade this symbol".
 	 */
 	function strategy_price_asof($symbol,$exchange,$date) {
-		$rows=query("select price from historical_prices where symbol=? and exchange=? and date<=? order by date desc limit 1",
+		$rows=query("select date, price from historical_prices where symbol=? and exchange=? and date<=? order by date desc limit 1",
 			$symbol,$exchange,$date);
-		return (count($rows)>0&&$rows[0]['price']!==null) ? (float)$rows[0]['price'] : null;
+		if (!count($rows)||$rows[0]['price']===null){ return null; }
+		return strategy_price_pounds($rows[0]['price'],$symbol,$exchange,
+		                             substr((string)$rows[0]['date'],0,10));
 	}
 
 	/**
@@ -138,9 +269,18 @@
 	 * broker fills at an unadjusted traded price.
 	 */
 	function strategy_next_price($symbol,$exchange,$date) {
+
 		$rows=query("select date, price from historical_prices where symbol=? and exchange=? and date>? and price is not null order by date asc limit 1",
 			$symbol,$exchange,$date);
-		return count($rows)>0 ? ['date'=>$rows[0]['date'],'price'=>(float)$rows[0]['price']] : null;
+
+		if (!count($rows)){ return null; }
+
+		$pounds=strategy_price_pounds($rows[0]['price'],$symbol,$exchange,
+		                              substr((string)$rows[0]['date'],0,10));
+
+		if ($pounds===null){ return null; }
+
+		return ['date'=>$rows[0]['date'],'price'=>$pounds];
 	}
 
 	function strategy_account($strategy) {

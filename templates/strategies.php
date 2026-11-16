@@ -214,8 +214,11 @@
 						<tr>
 							<th>Share</th><th></th>
 							<th class="text-end">Quantity</th>
-							<th class="text-end">Average cost</th>
-							<th class="text-end">Last price</th>
+							<?php /* Pounds, both of them. The engine converts the stored pence
+							         once, at strategy_price_asof(), so everything from the
+							         sizing to this column is in the currency the costs are in. */ ?>
+							<th class="text-end">Average cost (&pound;)</th>
+							<th class="text-end">Last price (&pound;)</th>
 							<th class="text-end">Value</th>
 							<th class="text-end">Weight</th>
 							<th class="text-end">Gain</th>
@@ -309,7 +312,7 @@
 							<tr>
 								<th>Date</th><th>Side</th><th>Share</th>
 								<th class="text-end">Quantity</th>
-								<th class="text-end">Price</th>
+								<th class="text-end">Price (&pound;)</th>
 								<th class="text-end">Costs</th>
 								<th>Reason</th><th>Status</th>
 							</tr>
