@@ -3273,12 +3273,22 @@
           && stripos($pv_prompt, 'not a forecast') !== false);
 
     /* The quote page says the same thing in words rather than leaving the
-       reader to work out what a bare number in a column headed "Price" is. */
+       reader to work out what a bare number in a column headed "Price" is.
+       It now says it twice over: the column in each peer modal is still
+       headed "Implied price at <sector|industry> median", and the card on
+       the page spells the whole comparison out - "Implied price 341.0p
+       against 1,350.6p, 74.8% below" - where it used to show a bare 341 in
+       a red badge. */
     $pv_quote = (string)file_get_contents(dirname(__DIR__) . '/templates/quote.php');
     check('the quote page labels the sector figure an implied price',
-          strpos($pv_quote, 'Implied price at sector median') !== false);
+          strpos($pv_quote, "Implied price at ") !== false
+          && strpos($pv_quote, "'sector'") !== false);
     check('the quote page labels the industry figure an implied price',
-          strpos($pv_quote, 'Implied price at industry median') !== false);
+          strpos($pv_quote, "Implied price at ") !== false
+          && strpos($pv_quote, 'industry') !== false);
+    check('and the card says it in a sentence, not as a bare number',
+          strpos((string)file_get_contents($INCLUDES . '/quote_view.php'),
+                 "'Implied price '") !== false);
 
     echo "\n--- get_statistics_test.php is out of the live tree ---\n";
 
@@ -4524,7 +4534,7 @@
 
     $hs_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/quote.php');
     check('the health card is no longer commented out',
-          strpos($hs_tpl, 'Financial Health') !== false);
+          stripos($hs_tpl, 'Financial health') !== false);
     check('the links that called handlers nothing defines are gone',
           strpos($hs_tpl, 'load_piotroski_modal') === false
           && strpos($hs_tpl, 'load_altman_modal') === false
@@ -7458,6 +7468,175 @@
     db()->exec("truncate rns_announcements");
     if ($hp_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $hp_saved_exchange; }
+
+    echo "\n--- the quote page: the figures under the name ---\n";
+
+    require_once($INCLUDES . '/quote_view.php');
+
+    $qh_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+
+    /* A share with a year of closes the test owns, so the range and the
+       capitalisation are arithmetic. */
+    db()->exec("delete from stock_symbols where symbol='QHD'");
+    db()->exec("delete from historical_prices where symbol='QHD'");
+    db()->exec("delete from stock_info where symbol='QHD'");
+    db()->prepare("insert into stock_symbols (symbol, name, exchange, enabled, market, sector, logo)
+                   values ('QHD', 'Quote Header PLC', 'XLON', 'Y', 'FTSE 250', 'Industrials', 'N/A')")
+        ->execute();
+
+    $qh_asof = asof_date();
+    $qh_ins = db()->prepare("insert into historical_prices (symbol, exchange, date, price)
+                             values ('QHD', 'XLON', ?, ?)");
+    /* A year of closes between 80p and 400p, with the last two 300p then
+       330p so the day's change is +30p and +10.0%. */
+    for ($qh_i = 400; $qh_i >= 2; $qh_i--) {
+        $qh_day = date('Y-m-d', strtotime($qh_asof . ' -' . $qh_i . ' day'));
+        $qh_ins->execute([$qh_day, $qh_i % 2 ? 80.0 : 400.0]);
+    }
+    $qh_ins->execute([date('Y-m-d', strtotime($qh_asof . ' -1 day')), 300.0]);
+    $qh_ins->execute([$qh_asof, 330.0]);
+
+    $qh = quote_header('QHD', 'XLON');
+
+    check('the price is the last stored close, not a live quote',
+          abs($qh['price'] - 330.0) < 0.005 && $qh['as_of'] === $qh_asof,
+          json_encode([$qh['price'], $qh['as_of'], $qh_asof]));
+    check("and the day's change is against the close before it",
+          abs($qh['change'] - 30.0) < 0.005 && abs($qh['change_pct'] - 10.0) < 0.005,
+          json_encode([$qh['change'], $qh['change_pct']]));
+
+    /* The 52 week range was blank on every share: it comes from a provider
+       endpoint this plan does not include. A year of stored closes is a
+       year of stored closes. */
+    check('the 52 week range comes from the price history',
+          abs($qh['low_52w'] - 80.0) < 0.005 && abs($qh['high_52w'] - 400.0) < 0.005,
+          json_encode([$qh['low_52w'], $qh['high_52w']]));
+    check('and the marker sits where today is in that range',
+          abs($qh['range_pct'] - ((330.0 - 80.0) / (400.0 - 80.0) * 100)) < 0.05,
+          $qh['range_pct']);
+    check('closes older than a year are not in it',
+          (int) scalar("select count(*) from historical_prices
+                         where symbol='QHD' and date <= date_sub(?, interval 1 year)",
+                       [$qh_asof]) > 0
+          && abs($qh['low_52w'] - 80.0) < 0.005);
+
+    /* A logo only when the provider supplied one. "N/A" in the column drew
+       an img that could not load, with the company name as its alt text. */
+    check('"N/A" in the logo column is no logo, not a broken image',
+          $qh['logo'] === null, json_encode($qh['logo']));
+    db()->exec("update stock_symbols set logo='https://example.invalid/qhd.png' where symbol='QHD'");
+    check('and a real one is shown',
+          quote_header('QHD', 'XLON')['logo'] === 'https://example.invalid/qhd.png');
+
+    /* Capitalisation is worked out from the shares and the close rather than
+       taken from the provider: a stored capitalisation is stale the moment
+       the price moves. */
+    db()->prepare("insert into stock_info (symbol, asofdate, attribute, value)
+                   values ('QHD', ?, 'SharesStats.SharesOutstanding', '1000000')")
+        ->execute([$qh_asof]);
+    $qh2 = quote_header('QHD', 'XLON');
+    check('the market capitalisation is the shares times the close, in pounds',
+          abs($qh2['market_cap'] - (1000000 * 330.0 / 100)) < 0.5,
+          json_encode([$qh2['shares'], $qh2['market_cap']]));
+    check('and it is shortened rather than printed in full',
+          fmt_money_compact($qh2['market_cap']) === "\xc2\xa33.3m",
+          fmt_money_compact($qh2['market_cap']));
+
+    $qh_none = quote_header('NOSUCHSYMBOL', 'XLON');
+    check('an unknown symbol gives blanks rather than a warning',
+          $qh_none['price'] === null && $qh_none['name'] === null);
+
+    echo "\n--- the quote page: what the peers imply ---\n";
+
+    /* "Relative to Industry" and a red badge reading 341. 341 is the price
+       the share would be if it were valued like its peers; the badge was red
+       because that is a quarter of what it costs, which is to say it was red
+       for being a bargain. */
+    [$vw_words, $vw_class] = valuation_words(['value' => 341, 'price' => 900], 1350.6);
+    check('a relative valuation says what the number is',
+          strpos($vw_words, 'Implied price 341.0p') !== false
+          && strpos($vw_words, '1,350.6p') !== false
+          && strpos($vw_words, 'below') !== false,
+          $vw_words);
+    check('and it is measured against the price the page is showing',
+          strpos($vw_words, '900') === false, $vw_words);
+    check('cheap against its peers is red, dear is green',
+          $vw_class === 'sm-down'
+          && valuation_words(['value' => 2000, 'price' => 1350.6], 1350.6)[1] === 'sm-up');
+    check('the percentage is the gap, not the ratio',
+          strpos($vw_words, '74.8%') !== false, $vw_words);
+
+    /* Every peer ratio missing gives an implied price of nought, which as a
+       price reads "0.0p, 100% below" - a statement about the company rather
+       than about the data. */
+    check('an implied price of nought is no valuation at all',
+          valuation_words(['value' => 0, 'price' => 1350.6], 1350.6)[0] === null
+          && valuation_words(['value' => null, 'price' => 1350.6], 1350.6)[0] === null);
+    check('and neither is one with no price to compare against',
+          valuation_words(['value' => 341, 'price' => 0], null)[0] === null);
+
+    echo "\n--- the quote page: one P/E, not two ---\n";
+
+    /* The header shows four ratios that are also in the Ratios tab, read out
+       of the same structure so the two cannot disagree. */
+    $qi_quote = [['category' => ['name' => 'value', 'description' => 'Value'],
+                  'indicators' => [['name' => 'pe', 'description' => 'P/E', 'value' => '17.6234',
+                                    'percentile' => 60, 'market_average' => 14, 'sector_average' => 15],
+                                   ['name' => 'div_yield', 'description' => 'Yield', 'value' => '0.0311',
+                                    'percentile' => 70, 'market_average' => 0.03, 'sector_average' => 0.03]]]];
+    check('a named ratio is found wherever its category is',
+          abs(quote_indicator_value($qi_quote, 'pe') - 17.6234) < 0.00005
+          && abs(quote_indicator_value($qi_quote, 'div_yield') - 0.0311) < 0.00005);
+    check('one that is not there is null rather than nought',
+          quote_indicator_value($qi_quote, 'price_book_ratio') === null
+          && quote_indicator_value(null, 'pe') === null);
+    /* div_yield is stored as a fraction: 0.0311 is 3.11%. Printing it as a
+       percentage without multiplying would read 0.03%. */
+    check('a yield stored as a fraction is shown as a percentage',
+          fmt_yield(quote_indicator_value($qi_quote, 'div_yield') * 100) === '3.11%',
+          fmt_yield(quote_indicator_value($qi_quote, 'div_yield') * 100));
+
+    echo "\n--- the quote page: what is on it ---\n";
+
+    $qt = php_strip_whitespace(dirname(__DIR__) . '/templates/quote.php');
+
+    /* A second set of controls for the same thing: it reloaded the page to
+       redraw a chart the buttons above redraw without one. */
+    check('the old Timespan / Type / Go form is gone',
+          strpos($qt, 'selected_timespan') === false
+          && preg_match('/<select[^>]+name="timespan"/', $qt) !== 1
+          && preg_match('/value="Go"/', $qt) !== 1);
+    check('but the chart buttons and Explain this move are not',
+          strpos($qt, 'data-chart-span') !== false
+          && strpos($qt, 'Explain this move') !== false);
+    check('the Back link is gone; the browser and the navbar do that',
+          preg_match('/>\s*Back\s*</', $qt) !== 1
+          && strpos($qt, 'history.go(-1)') === false);
+    /* Announcements were inside a tab nobody had a reason to open. */
+    check('recent announcements are above the tabs, not inside one',
+          strpos($qt, 'Recent announcements') !== false
+          && strpos($qt, 'Recent announcements') < strpos($qt, 'quoteTabs'));
+    check('the tabs offered are Profile, News and Ratios',
+          substr_count($qt, 'data-bs-toggle="tab"') === 3
+          && strpos($qt, 'href="#profile"') !== false
+          && strpos($qt, 'href="#news"') !== false
+          && strpos($qt, 'href="#statistics"') !== false);
+    check('the scores use the one scale, not four colour schemes of their own',
+          substr_count($qt, 'score_badge_html') >= 4
+          && strpos($qt, 'text-bg-warning') === false
+          && strpos($qt, 'text-bg-info') === false);
+    /* The chart axis was printing the library's default - 1350.60 - beside a
+       header reading 1,350.6p. */
+    check('the chart axis is in pence like everything else',
+          strpos((string) file_get_contents(dirname(__DIR__) . '/templates/chart.js'),
+                 'priceFormatter') !== false);
+
+    db()->exec("delete from stock_symbols where symbol='QHD'");
+    db()->exec("delete from historical_prices where symbol='QHD'");
+    db()->exec("delete from stock_info where symbol='QHD'");
+    if ($qh_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $qh_saved_exchange; }
 
     echo "\n--- one way to print a number ---\n";
 

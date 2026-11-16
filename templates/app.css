@@ -298,3 +298,11 @@ th.sm-num,
 	width: 100%;
 	min-height: 260px;
 }
+
+/* The company logo beside the name on the quote page, when the provider
+   supplied one. Bounded so a 600px PNG does not become the headline. */
+.sm-logo {
+	max-height: 36px;
+	max-width: 120px;
+	object-fit: contain;
+}

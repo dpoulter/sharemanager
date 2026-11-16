@@ -46,7 +46,18 @@
 		grid: { vertLines: { color: "#eee" }, horzLines: { color: "#eee" } },
 		rightPriceScale: { borderColor: "#ccc" },
 		timeScale: { borderColor: "#ccc" },
-		crosshair: { mode: 0 }
+		crosshair: { mode: 0 },
+		/* London prices are pence, and the rest of the page writes them as
+		   "1,350.6p". The axis was printing the library's default, 1350.60,
+		   so the chart and the header beside it were quoting the same price
+		   two ways. */
+		localization: {
+			priceFormatter: function (value) {
+				return Number(value).toLocaleString("en-GB", {
+					minimumFractionDigits: 1, maximumFractionDigits: 1
+				}) + "p";
+			}
+		}
 	});
 
 	var priceLine = chart.addLineSeries({ color: "#0d6efd", lineWidth: 2, title: "Close" });

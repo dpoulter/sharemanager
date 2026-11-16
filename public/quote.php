@@ -2,7 +2,8 @@
 
     // configuration
     require("../includes/config.php");
-    require_once("../includes/rns.php"); 
+    require_once("../includes/rns.php");
+    require_once("../includes/quote_view.php");
 
 	
 	// if form was submitted
@@ -98,29 +99,24 @@
 			write_log("quote.php","4");
 			
 			
+			/* The Financial Statements and Ratings panes read these. Neither
+			   is reachable - the tab list offers Profile, News and Ratios -
+			   so between them they are seven queries a page for markup
+			   nobody can open. Left alone rather than removed: that is a
+			   decision about what the page should offer, not about how it
+			   should look, and it is in the redesign notes to be made. */
 			$income_statement=income_statement($symbol);
-			write_log("quote.php","5");
 			$balance_sheet=balance_sheet($symbol);
-			write_log("quote.php","6");
 			$cash_flow_statement=cash_flow_statement($symbol);
-			//templates/quote.php has a Ratings tab reading $ratings, which
-			//neither this page nor index.php passed, so the tab rendered
-			//undefined once the page got far enough to reach it.
-			write_log("quote.php","7");
 			$ratings=ratings($symbol);
+			$momentum_statistics=get_momentum_statistics($symbol);
+			$growth_statistics=get_growth_statistics($symbol);
+			$value_statistics=get_value_statistics($symbol);
+			$quality_statistics=get_quality_statistics($symbol);
+
 			$valuation=get_valuation($symbol);
 			$industry_valuation=get_industry_valuation($symbol);
 			write_log("quote.php","8");
-			$momentum_statistics=get_momentum_statistics($symbol);
-			//$momentum_statistics=null;
-			write_log("quote.php","9");
-			$growth_statistics=get_growth_statistics($symbol);
-			write_log("quote.php","10");
-			$value_statistics=get_value_statistics($symbol);
-			write_log("quote.php","11");
-			$quality_statistics=get_quality_statistics($symbol);
-			//$quality_statistics=null;
-			write_log("quote.php","12");
 			$scores = get_scores($symbol);
 			//$scores = null;
 			/* Null for a sterling reporter: nothing was converted, so the page
@@ -159,30 +155,45 @@
 			   tab shows the same rows as the "In the news" page. */
 			$announcements = rns_recent($symbol, 10);
 
+			/* The band under the company name. Stored closes rather than the
+			   live quote, so the price above the chart is the price the chart
+			   ends on, and the three figures that were blank on every share -
+			   capitalisation, shares, the 52 week range - are derived from
+			   the price history. */
+			$head = quote_header($symbol);
+
+			/* The four ratios in that band come out of the same structure the
+			   Ratios tab reads, so the two cannot disagree. */
+			$pe         = quote_indicator_value($quote, 'pe');
+			$price_book = quote_indicator_value($quote, 'price_book_ratio');
+			$div_yield  = quote_indicator_value($quote, 'div_yield');
+
 
 			//render form
 			write_log("quote.php","Start render form");
 
-			 if(isset($screen_id))
-				render("quote.php", ["title" => session_exchange().":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
-					
-					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations,"share_info"=> $share_info
-					, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"screen_id"=>$screen_id,"incomestatement"=>$income_statement
-					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
-					,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks
-					,"qualityranks"=>$qualityranks,"announcements"=>$announcements,"health_scores"=>$health_scores
-					,"currency_note"=>$currency_note]);
-			 else
-				render("quote.php", ["title" => session_exchange().":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
-					
-					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations
-					,"share_info"=> $share_info, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"incomestatement"=>$income_statement
-					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"ratings"=>$ratings,"momentum_statistics"=>$momentum_statistics
-					,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics
-					,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks,"qualityranks"=>$qualityranks
-					,"announcements"=>$announcements
-					,"health_scores"=>$health_scores,"currency_note"=>$currency_note]);
+			$view = ["title" => session_exchange().":".$symbol, "symbol"=>$symbol,
+			         "head"=>$head, "pe"=>$pe, "price_book"=>$price_book, "div_yield"=>$div_yield,
+			         "valuation"=>$valuation, "industry_valuation"=>$industry_valuation,
+			         "relative_sector_valuations"=>$relative_sector_valuations,
+			         "relative_industry_valuations"=>$relative_industry_valuations,
+			         "share_info"=> $share_info, "quote" => $quote, "chart"=>$chart,
+			         "timespan"=>$timespan, "type"=>$type,
+			         "incomestatement"=>$income_statement, "balancesheet"=>$balance_sheet,
+			         "cashflowstatement"=>$cash_flow_statement, "ratings"=>$ratings,
+			         "momentum_statistics"=>$momentum_statistics, "growth_statistics"=>$growth_statistics,
+			         "value_statistics"=>$value_statistics, "quality_statistics"=>$quality_statistics,
+			         "scores"=>$scores, "valueranks"=>$valueranks, "momentumranks"=>$momentumranks,
+			         "qualityranks"=>$qualityranks, "announcements"=>$announcements,
+			         "health_scores"=>$health_scores, "currency_note"=>$currency_note];
 
+			/* screen_id used to pick between two copies of this list that
+			   differed in one key. The Back button it fed is gone - the
+			   browser and the navbar already do that - so it is carried only
+			   so a screen can link here and be linked back from. */
+			if (isset($screen_id)) { $view["screen_id"] = $screen_id; }
+
+			render("quote.php", $view);
 			
 			write_log("quote.php","End render form");
 		

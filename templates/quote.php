@@ -1,916 +1,704 @@
+<?php
+/**
+ * One share.
+ *
+ * Top to bottom: who it is and what it costs, the figures a reader checks
+ * first, the chart, the scores, the outlook, what the company has announced,
+ * and then the detail in tabs.
+ *
+ * The header reads stored closes rather than the live quote, so the price
+ * above the chart is the price the chart ends on. Three of its figures -
+ * market capitalisation, shares in issue and the 52 week range - were blank
+ * on every share because they come from a provider endpoint this plan does
+ * not include; includes/quote_view.php derives them from the price history.
+ */
 
+$price_ccy = ($head['price'] === null) ? null : fmt_pence($head['price']);
+?>
 
-    
-		<?php write_log ("quote.php","1")?>
-		<div class="container">
-			
-			<div class="row">
-			    <div class="col-md-12">
-			     <h3><?=$share_info["name"]?> (<?=$title?>)</h3> 
-			    </div>  
-			</div>	    
-		
-			<div class="row">
-				<div class="col-md-12">
-			    	<?php if ($share_info["change"]>0)
-							$arrow='/img/16px-Green-Up-Arrow.svg.png';
-						elseif ($share_info["change"]<0) 
-							$arrow='/img/16px-RedDownArrow.svg.png';
-						else $arrow='';
-					?>
-					<h4> <?=$share_info["price"]?> <!-- () 	<img src="<//?php print($arrow)?>"></img>--></h4>
-			     </div>
+<div class="d-flex flex-wrap align-items-center gap-3 mb-1">
+	<?php if ($head['logo'] !== null): ?>
+		<?php /* Only when the provider supplied one. The page used to draw an
+		         <img> whatever the column held, so a share with no logo got a
+		         grey box with the company name written across it. */ ?>
+		<img src="<?= e($head['logo']) ?>" alt="" height="36" class="sm-logo">
+	<?php endif ?>
+	<h1 class="mb-0"><?= e($head['name']) ?> <span class="text-muted">(<?= e($symbol) ?>)</span></h1>
+</div>
+
+<p class="sm-sub">
+	<span class="h4"><?= e($price_ccy === null ? VIEW_DASH : $price_ccy) ?></span>
+	<?php if ($head['change'] !== null): ?>
+		<span class="<?= move_class($head['change']) ?>">
+			<?= e(($head['change'] >= 0 ? '+' : '-') . fmt_pence(abs($head['change']))) ?>
+		</span>
+		<?= move_pct_html($head['change_pct']) ?>
+	<?php endif ?>
+	at the <?= e(fmt_date($head['as_of'])) ?> close.
+	<?= score_key_html() ?>
+</p>
+
+<?php /* ---------------- the figures a reader checks first ---------------- */ ?>
+<div class="card">
+	<div class="card-body">
+		<div class="sm-strip">
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">Market cap</div>
+				<div class="sm-strip-value"><?= e(fmt_money_compact($head['market_cap'])) ?></div>
 			</div>
-		</div>
-		
-		<?php write_log ("quote.php","2")?>
-      	<div class="container">
-      		<div class="row">
-      			<div class="col-md-8">
-      				<div class="row">
-      				
-						
-							<table class="table table-sm table-borderless ">
-						      	<tr>
-								     <td><b>Symbol</b></td><td><?=$title?></td><td><b>Mkt cap</b></td><td><?=number_or_blank($share_info["capital"])?></td>
-							    </tr>
-								<tr>
-								     <td><b>Price</b></td><td><?=$share_info["price"]?></td><td><b>Shares</b></td><td><?=number_or_blank($share_info["shares"])?></td>
-							    </tr>
-								<tr>
-								     <td><b>52 Wk Low</b></td><td><?=number_or_blank($share_info["52w_low"])?></td><td><b>52 Wk High</b></td><td><?=number_or_blank($share_info["52w_high"])?></td>
-							    </tr>
-							</table>
-						
-					
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">P/E</div>
+				<div class="sm-strip-value"><?= e(fmt_ratio($pe)) ?></div>
+			</div>
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">Dividend yield</div>
+				<?php /* div_yield is stored as a fraction - 0.0412 is 4.12% -
+				         which is why this one is multiplied and the ratios
+				         beside it are not. */ ?>
+				<div class="sm-strip-value"><?= e($div_yield === null ? VIEW_DASH : fmt_yield($div_yield * 100)) ?></div>
+			</div>
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">P/B</div>
+				<div class="sm-strip-value"><?= e(fmt_ratio($price_book)) ?></div>
+			</div>
+			<div class="sm-strip-item" style="min-width: 12rem">
+				<div class="sm-strip-label">52 week range</div>
+				<?php if ($head['low_52w'] === null): ?>
+					<div class="sm-strip-value"><?= view_missing_html("no price history for the last year") ?></div>
+				<?php else: ?>
+					<div class="sm-strip-value" style="font-size:1rem">
+						<?= e(fmt_pence($head['low_52w'])) ?> &ndash; <?= e(fmt_pence($head['high_52w'])) ?>
 					</div>
-					<?php write_log ("quote.php","3")?>
-					<div class="row">
-						<div class="card card-default">
-							<div class="card-body">
-								<?php /* The interactive chart, with a dot on every day that had
-								         news. templates/chart.js draws it; the old stockgraph.php
-								         image stays underneath as the fallback and is hidden by
-								         the script once the library has loaded, so a browser with
-								         JavaScript off - or a server where fetch_assets.sh has not
-								         run - still gets a chart. */ ?>
-								<div class="d-flex justify-content-between align-items-center mb-2">
-									<div class="btn-group btn-group-sm" role="group" aria-label="Timespan">
-										<button type="button" class="btn btn-outline-secondary" data-chart-span="30">1M</button>
-										<button type="button" class="btn btn-outline-secondary" data-chart-span="91">3M</button>
-										<button type="button" class="btn btn-outline-secondary" data-chart-span="182">6M</button>
-										<button type="button" class="btn btn-outline-secondary active" data-chart-span="365">1Y</button>
-										<button type="button" class="btn btn-outline-secondary" data-chart-span="1825">5Y</button>
-									</div>
-									<div>
-										<label class="visually-hidden" for="news-filter">Kind of news</label>
-										<select id="news-filter" class="form-select form-select-sm">
-											<option value="">All news</option>
-											<option value="market">Market</option>
-											<option value="earnings">Earnings</option>
-											<option value="product">Product</option>
-											<option value="policy">Policy</option>
-											<option value="competition">Competition</option>
-											<option value="management">Management</option>
-											<option value="other">Other</option>
-										</select>
-									</div>
-								</div>
-								<div id="price-chart" data-symbol="<?=htmlspecialchars($symbol)?>"></div>
-								<small id="chart-status" class="text-body-secondary d-block mt-1"></small>
-								<div id="price-chart-fallback">
-									<noscript><p class="text-body-secondary">The interactive chart needs JavaScript; this is the static one.</p></noscript>
-									<img src="stockgraph.php?symbol=<?=urlencode($symbol)?>&timespan=<?=urlencode($timespan)?>" alt="Price chart"></img>
-								</div>
-								<?php /* Why did it move? The same pattern as the outlook panel:
-								         nothing happens until the button is pressed, the answer is
-								         cached per range, and Regenerate is the way to pay for it
-								         again. The dates default to what is on screen. */ ?>
-								<div class="d-flex flex-wrap align-items-end gap-2 mt-2">
-									<div>
-										<label class="form-label mb-0" for="explain-from"><small>From</small></label>
-										<input type="date" id="explain-from" class="form-control form-control-sm">
-									</div>
-									<div>
-										<label class="form-label mb-0" for="explain-to"><small>To</small></label>
-										<input type="date" id="explain-to" class="form-control form-control-sm">
-									</div>
-									<button type="button" id="explain-go" class="btn btn-sm btn-outline-primary"
-									        data-symbol="<?=htmlspecialchars($symbol)?>">Explain this move</button>
-									<button type="button" id="explain-again" class="btn btn-sm btn-outline-secondary"
-									        style="display:none">Regenerate</button>
-								</div>
-								<div id="explain-panel" class="mt-2"></div>
-								<div id="news-panel" class="mt-2"></div>
-								<?php /* After the container, so the script finds it. Only on this
-								         page: a charting library on every page is a download
-								         nobody else needs. */ ?>
-								<script src="/js/lightweight-charts.standalone.production.js"></script>
-								<script src="/js/chart.js"></script>
-							</div>
-							<form action="quote.php">
-							 <input type="hidden" value="<?=$symbol?>" name="symbol"></input>
-								<table>
-									<thead>
-										
-										<tr>
-											<td><small>Timespan</small></td>
-											<td>
-												<select name="timespan" value="1d">
-												  <option <?php if ($timespan=='1m'): ?>selected="selected" <?php endif?> value="1m">1 Month</option>
-												  <option <?php if ($timespan=='3m'): ?>selected="selected" <?php endif?>value="3m">3 Months</option>
-												  <option <?php if ($timespan=='6m'): ?>selected="selected" <?php endif?>value="6m">6 Months</option>
-												  <option <?php if ($timespan=='1y'): ?>selected="selected" <?php endif?>value="1y">1 Year</option>
-												  <option <?php if ($timespan=='2y'): ?>selected="selected" <?php endif?>value="2y">2 Years</option>
-												  <option <?php if ($timespan=='5y'): ?>selected="selected" <?php endif?>value="5y">5 Years</option>
-												  <option <?php if ($timespan=='10y'): ?>selected="selected" <?php endif?>value="10y">10 Years</option>
-												</select> 
-											</td>
-											<td><small>   Type</small></td>
-											<td>
-												<select name="type" value="l">
-												  <option value="l">Line</option>
-												  <option value="b">Bar</option>
-												  <option value="c">Candle</option>
-												</select> 
-											</td>
-											<td>
-												<input type="submit" class="btn btn-link" value="Go">
-											</td>
-										</tr>
-									</thead>
-								</table>	
-									
-							</form>
-						</div>
-						
+					<div class="sm-range" title="<?= e('Today at ' . fmt_pct($head['range_pct']) . ' of the range') ?>"
+					     data-bs-toggle="tooltip">
+						<span class="sm-range-mark" style="left: <?= e(number_format($head['range_pct'], 1)) ?>%"></span>
 					</div>
-				</div>
-				<div class="col-md-4">
-				<?php write_log ("quote.php","4")?>	
-					<div class="card card-default">
-					
-  						<div class="card-body">
-  							
-								
-  						
-  							<ul class="list-group">
-	  							<?php if ($scores['momentum'] <= 25)
-										 $badge_color='text-bg-danger';
-									  elseif ($scores['momentum'] <= 50)
-									  	$badge_color='text-bg-warning';
-									  elseif ($scores['momentum'] <= 75)
-									  	$badge_color='text-bg-info';
-									  elseif ($scores['momentum'] <= 100)
-									  	$badge_color='text-bg-success';
-								?>
-  								<li class="list-group-item">
-    								<span class="badge <?php print($badge_color)?>"><?php print(round($scores['momentum'],0))?></span>
-    								<a data-bs-toggle="modal" href="#MomentumModal" >Momentum</a>
-    							</li>
-    							<?php /* An investment fund has no value, quality or overall score:
-							             the ratios they are built from describe a wrapper rather
-							             than a business, so the nightly job writes no score row
-							             for a fund at all. get_scores() would hand back its
-							             neutral 50 for each, which reads as a real middling
-							             score rather than an absent one. */ ?>
-								<?php if (!empty($scores['is_fund'])) { ?>
-								<li class="list-group-item">
-									Not scored: investment fund
-								</li>
-								<?php } else { ?>
-    							<?php if ($scores['value'] <= 25)
-										 $badge_color='text-bg-danger';
-									  elseif ($scores['value'] <= 50)
-									  	$badge_color='text-bg-warning';
-									  elseif ($scores['value'] <= 75)
-									  	$badge_color='text-bg-info';
-									  elseif ($scores['value'] <= 100)
-									  	$badge_color='text-bg-success';
-								?>
-	  							<li class="list-group-item">
-	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['value'],0))?></span>
-	    							<a data-bs-toggle="modal" href="#ValueModal" >Value</a>
-	  							</li>
-						
-	  							<?php if ($scores['quality'] <= 25)
-										 $badge_color='text-bg-danger';
-									  elseif ($scores['quality'] <= 50)
-									  	$badge_color='text-bg-warning';
-									  elseif ($scores['quality'] <= 75)
-									  	$badge_color='text-bg-info';
-									  elseif ($scores['quality'] <= 100)
-									  	$badge_color='text-bg-success';
-								?>
-								<li class="list-group-item">
-	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['quality'],0))?></span>
-	    							<a data-bs-toggle="modal" href="#QualityModal" >Quality</a>
-	  							</li>
-								<?php } ?>
-							</ul>
-		  				</div>
-						  <?php write_log ("quote.php","5")?>
-		  		
-  						<div class="card-footer">
-	  						<?php if (!empty($scores['is_fund'])) { ?>
-	  						<ul class="list-group">
-	  							<li class="list-group-item">
-	    							Not scored: investment fund
-	  							</li>
-							</ul>
-							<?php } else { ?>
-	  						<?php if ($scores['overall'] <= 25)
-										 $badge_color='text-bg-danger';
-									  elseif ($scores['overall'] <= 50)
-									  	$badge_color='text-bg-warning';
-									  elseif ($scores['overall'] <= 75)
-									  	$badge_color='text-bg-info';
-									  elseif ($scores['overall'] <= 100)
-									  	$badge_color='text-bg-success';
-								?>
-	  						<ul class="list-group">
-	  							<li class="list-group-item">
-	    						<span class="badge <?php print($badge_color)?>"><?php print(round($scores['overall'],0))?></span>
-	    							ShareRank
-	  							</li>
-							</ul>
-							<?php } ?>
-  						
-  						</div>
-					</div>
-					<?php write_log ("quote.php","6")?>
-				<?php /* The health card was commented out for years: the scores it
-				         showed were worked out from financial_statement_values,
-				         which is empty, and its three links called
-				         load_piotroski_modal(), load_altman_modal() and
-				         load_altman_nonman_modal() - none of which exists in any
-				         script on the page. Both scores come from the provider
-				         now, so the card shows them, with the percentile that
-				         feeds the quality score beside each. */ ?>
-				<div class="card card-default">
-					<div class="card-header">
-						Financial Health
-						<small class="text-body-secondary d-block">From the provider's own figures</small>
-					</div>
-					<div class="card-body">
-						<table class="table table-borderless table-sm">
-						<?php foreach ($health_scores as $health_name => $health): ?>
-							<tr>
-								<td width="60%"><?=htmlspecialchars($health['label'])?></td>
-								<td style="text-align:right">
-									<?php if ($health['value'] === null): ?>
-										<span class="text-body-secondary">no figure</span>
-									<?php else: ?>
-										<?=htmlspecialchars(rtrim(rtrim(number_format($health['value'], 2), '0'), '.'))?>
-									<?php endif?>
-								</td>
-								<td style="text-align:right">
-									<?php if ($health['not_ranked'] !== null): ?>
-										<span class="badge text-bg-secondary" data-bs-toggle="tooltip"
-										      title="<?=htmlspecialchars($health['not_ranked'])?>">not ranked</span>
-									<?php elseif ($health['percentile'] === null): ?>
-										<span class="text-body-secondary">&nbsp;</span>
-									<?php else:
-										if ($health['percentile'] <= 25)      $badge_color='text-bg-danger';
-										elseif ($health['percentile'] <= 50)  $badge_color='text-bg-warning';
-										elseif ($health['percentile'] <= 75)  $badge_color='text-bg-info';
-										else                                  $badge_color='text-bg-success';
-									?>
-										<span class="badge <?=$badge_color?>" data-bs-toggle="tooltip"
-										      title="Percentile against the rest of the index"><?=round($health['percentile'])?></span>
-									<?php endif?>
-								</td>
-							</tr>
-						<?php endforeach?>
-						</table>
-						<?php foreach ($health_scores as $health): ?>
-							<?php if ($health['not_ranked'] !== null): ?>
-							<small class="text-body-secondary d-block"><?=htmlspecialchars($health['label'])?>:
-								<?=htmlspecialchars($health['not_ranked'])?>, so it is shown but not ranked and
-								does not count towards the quality score.</small>
-							<?php endif?>
-						<?php endforeach?>
-					</div>
-				</div>
-
-				
-				<?php write_log ("quote.php","7")?>
-	  				
-	  				<div class="card card-default">
-	  					<div class="card-header">
-							Price Valuation
-							<small class="text-body-secondary d-block">Implied price if the share were valued like its peers</small>
-							<?php if (!empty($currency_note)): ?>
-							<small class="text-body-secondary d-block">
-								Reports in <?=htmlspecialchars($currency_note['currency'])?>;
-								<?php if ($currency_note['rate'] !== null): ?>
-									ratios converted at <?=htmlspecialchars(rtrim(rtrim(number_format($currency_note['rate'], 4), '0'), '.'))?>
-								<?php else: ?>
-									no rate was available, so its price ratios are not shown or ranked today
-								<?php endif?>
-							</small>
-							<?php endif?>
-						</div>
-						<div class="card-body">
-							<table class="table table-borderless table-sm">
-							<tr>
-								<?php 
-									if ($valuation['ratio'] <= 25)
-							 			$label_color='text-bg-danger';
-						  	  		elseif ($valuation['ratio'] <= 50)
-						  				$label_color='text-bg-warning';
-						  	  		elseif ($valuation['ratio'] <= 100)
-						  				$label_color='text-bg-info';
-						  	  		elseif ($valuation['ratio'] > 100)
-						  				$label_color='text-bg-success';
-					 				
-									 $ratio=$valuation['ratio'];
-					 			?>
-								<td width="80%">
-									<a data-bs-toggle="modal" href="#RelativeSectorModal" >Relative to Sector</a>  <?php $valuation['ratio']?>
-								</td>	
-		  						<td style="text-align:right">
-		  							<span data-bs-toggle="tooltip" title="Implied price at sector median: <?php print($ratio)?>% of the current price" class="badge <?php print($label_color)?>"><?php print($valuation["value"])?></span>
-								</td>
-							</tr>
-							<tr>
-								
-								<?php 
-									if ($industry_valuation['ratio'] <= 25)
-							 			$label_color='text-bg-danger';
-						  	  		elseif ($industry_valuation['ratio'] <= 50)
-						  				$label_color='text-bg-warning';
-						  	  		elseif ($industry_valuation['ratio'] <= 100)
-						  				$label_color='text-bg-info';
-						  	  		elseif ($industry_valuation['ratio'] > 100)
-						  				$label_color='text-bg-success';
-					 				
-									 $ratio=$industry_valuation['ratio'];
-					 			?>
-								<td width="80%">
-									<a data-bs-toggle="modal" href="#RelativeIndustryModal" >Relative to Industry</a>  <?php $industry_valuation['ratio']?>
-								</td>	
-		  						<td style="text-align:right">
-		  							<span data-bs-toggle="tooltip" title="Implied price at industry median: <?php print($ratio)?>% of the current price" class="badge <?php print($label_color)?>"><?php print($industry_valuation["value"])?></span>
-								</td>
-							</tr>
-							</table>
-	  					</div>
-	  				</div>
-	  				
-					  <?php write_log ("quote.php","8")?>
-	  				
-	  				
+				<?php endif ?>
+			</div>
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">Index</div>
+				<div class="sm-strip-value" style="font-size:1rem">
+					<?= $head['market'] === null || trim((string) $head['market']) === ''
+					    ? view_missing_html("the index this share is in has not been loaded")
+					    : e($head['market']) ?>
 				</div>
 			</div>
 		</div>
-		</br>
-		
-		<!-- AI outlook -->
-		<div class="container">
+	</div>
+</div>
+
+<div class="row">
+
+	<div class="col-12 col-lg-8">
+
+		<?php /* ---------------- the chart ---------------- */ ?>
+		<div class="card">
+			<div class="card-body">
+				<?php /* templates/chart.js draws it; the old stockgraph.php image
+				         stays underneath as the fallback and is hidden by the
+				         script once the library has loaded, so a browser with
+				         JavaScript off - or a server where fetch_assets.sh has
+				         not run - still gets a chart.
+
+				         The Timespan / Type / Go form that used to sit under it
+				         is gone. It was a second set of controls for the same
+				         thing: it reloaded the whole page to redraw a chart the
+				         buttons above redraw without one, and its Type never did
+				         anything, because the chart draws a line whatever is
+				         chosen. */ ?>
+				<div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+					<div class="btn-group btn-group-sm" role="group" aria-label="Timespan">
+						<button type="button" class="btn btn-outline-secondary" data-chart-span="30">1M</button>
+						<button type="button" class="btn btn-outline-secondary" data-chart-span="91">3M</button>
+						<button type="button" class="btn btn-outline-secondary" data-chart-span="182">6M</button>
+						<button type="button" class="btn btn-outline-secondary active" data-chart-span="365">1Y</button>
+						<button type="button" class="btn btn-outline-secondary" data-chart-span="1825">5Y</button>
+					</div>
+					<div>
+						<label class="visually-hidden" for="news-filter">Kind of news</label>
+						<select id="news-filter" class="form-select form-select-sm">
+							<option value="">All news</option>
+							<option value="market">Market</option>
+							<option value="earnings">Earnings</option>
+							<option value="product">Product</option>
+							<option value="policy">Policy</option>
+							<option value="competition">Competition</option>
+							<option value="management">Management</option>
+							<option value="other">Other</option>
+						</select>
+					</div>
+				</div>
+				<div id="price-chart" class="sm-chart" data-symbol="<?= e($symbol) ?>"></div>
+				<small id="chart-status" class="text-body-secondary d-block mt-1"></small>
+				<div id="price-chart-fallback">
+					<noscript><p class="text-body-secondary">The interactive chart needs JavaScript; this is the static one.</p></noscript>
+					<img src="stockgraph.php?symbol=<?= urlencode($symbol) ?>&timespan=<?= urlencode($timespan) ?>"
+					     class="img-fluid" alt="Price chart">
+				</div>
+
+				<?php /* Why did it move? Nothing happens until the button is
+				         pressed, the answer is cached per range, and Regenerate
+				         is the way to pay for it again. */ ?>
+				<div class="d-flex flex-wrap align-items-end gap-2 mt-2">
+					<div>
+						<label class="form-label mb-0" for="explain-from"><small>From</small></label>
+						<input type="date" id="explain-from" class="form-control form-control-sm">
+					</div>
+					<div>
+						<label class="form-label mb-0" for="explain-to"><small>To</small></label>
+						<input type="date" id="explain-to" class="form-control form-control-sm">
+					</div>
+					<button type="button" id="explain-go" class="btn btn-sm btn-outline-primary"
+					        data-symbol="<?= e($symbol) ?>">Explain this move</button>
+					<button type="button" id="explain-again" class="btn btn-sm btn-outline-secondary"
+					        style="display:none">Regenerate</button>
+				</div>
+				<div id="explain-panel" class="mt-2"></div>
+				<div id="news-panel" class="mt-2"></div>
+
+				<?php /* After the container, so the script finds it. Only on this
+				         page: a charting library on every page is a download
+				         nobody else needs. */ ?>
+				<script src="/js/lightweight-charts.standalone.production.js"></script>
+				<script src="/js/chart.js"></script>
+			</div>
+		</div>
+
+		<?php /* ---------------- the AI outlook ---------------- */ ?>
 		<?php
 			require_once(__DIR__ . '/../includes/ai_outlook.php');
-			$outlook_scope  = 'share';
-			$outlook_symbol = $symbol;
-			$outlook_title  = 'AI outlook';
+			$outlook_scope    = 'share';
+			$outlook_symbol   = $symbol;
+			$outlook_title    = 'AI outlook';
+			$outlook_collapse = true;
 			include(__DIR__ . '/ai_outlook_panel.php');
 		?>
-		</div>
 
-		<!-- Business Profile, News and Ratios  --> 
-		
-		<div class="container">
-		
-			<div class="row">
-			
-				<ul class="nav nav-tabs" id="myTab" role="tabList">
-				    <li class="nav-item"><a class="nav-link active" id="profile-tab" data-bs-toggle="tab" role="tab" aria-controls="profile" aria-selected="true" href="#profile">Profile</a></li>
-					<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" role="tab" href="#news">News</a></li>
-					<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" role="tab" href="#statistics">Ratios</a></li>
-				<!--	<li role="presentation" ><a data-bs-toggle="tab" href="#financials">Financial Statements</a></li>-->
-		   		</ul>
-		   		
-	    		<div class="tab-content">
-	    		
-   	 				<div class="tab-pane active" id="profile" role="tab-card" aria-labelledby="profile-tab">
-   	 				<?php write_log ("quote.php","8")?>
-   	 					<?php $profile=get_profile($symbol); ?>
-   	 					<div class="container">
-							<div class="row">
-								<div class="col-md-6">
-									<table  class="table table-borderless table-sm">
-										<tr>
-											<td><b>Business Summary</b></td>
-										</tr>
-										<tr>
-												<td><?php print($profile['description']) ?><td>
-										</tr>
-										
-									</table>
-									<?php write_log ("quote.php","9")?>
-								</div>
-								<div class="col-md-6">
-									<table  class="table table-borderless table-sm">
-										<tr>
-											<td><b>Sector</b></td><td><a href="<?php print("sector_companies.php?sector=".$share_info["sector"])?>"><?php print($share_info["sector"])?></td>
-										</tr>
-										<tr>
-											<td><b>Industry Group</b></td><td><?php print($share_info["industry_group"])?></td>
-										</tr>
-										<tr>
-											<td><b>Industry</b></td><td><?php print($share_info["industry"])?></td>
-										</tr>
-										<tr>
-												<td><b>Website</b></td><td><?php if($profile['website']!='N/A') print('<a target="_blank" href="'.$profile['website'].'">'.$profile['website'].'</a>'); else print('N/A');?></td>
-										</tr>
-										<tr>
-												<td><b>Employees</b></td><td><?php print($profile['employees']) ?></td>
-										</tr>
-										<tr>
-												<td><b>Directors</b></td><td><?php print($profile['directors']) ?></td>
-										</tr>
-										<tr>
-												<td></td><td><?php if (!empty($profile['logo'])) { print('<img alt="'.htmlspecialchars($profile['name'] ?? '').' logo" src="'.htmlspecialchars($profile['logo']).'">'); } ?></td><td></td>
-										</tr>
-									</table>
-									
-									
-								</div>
-							</div>
-	 					</div>
-	 				</div>
-					
-	 				<div class="tab-pane" id="news">
-						<div class="container">
-						<?php
-							/* The company's own regulatory announcements, scored.
-							   Same rows as the "In the news" page, by design: the
-							   two should never disagree about what a day's news
-							   was. Everything that came from an announcement goes
-							   out through htmlspecialchars() - it is somebody
-							   else's text relayed by a model, which makes it
-							   somebody else's text twice over. */
-						?>
-						<?php if (empty($announcements)): ?>
-							<p>No regulatory announcements stored for <?=htmlspecialchars($symbol)?>.
-							   The nightly job collects them; routine filings are left out.</p>
-						<?php else: ?>
-							<table class="table table-sm table-hover">
-							<?php foreach($announcements as $announcement): ?>
-								<?php [$band_colour, $band_word] = rns_band($announcement["sentiment"]); ?>
-								<tr>
-									<td style="white-space: nowrap"><?=htmlspecialchars((string)$announcement["published"])?></td>
-									<td style="white-space: nowrap">
-										<span title="<?=htmlspecialchars((string)$announcement["sentiment"])?>"
-										      style="display:inline-block;width:40px;height:11px;border-radius:3px;background:<?=$band_colour?>"></span>
-										<small><?=$band_word?></small>
-									</td>
-									<td><small class="text-muted"><?=htmlspecialchars((string)$announcement["ann_type"])?></small></td>
-									<td>
-										<details>
-											<summary><?=htmlspecialchars((string)($announcement["summary"] ?: $announcement["title"]))?></summary>
-											<div class="mt-2">
-												<div><strong><?=htmlspecialchars((string)$announcement["title"])?></strong></div>
-												<?php foreach (rns_key_figures($announcement["key_figures"]) as $figure): ?>
-													<div><?=htmlspecialchars($figure)?></div>
-												<?php endforeach ?>
-												<?php if (trim((string)$announcement["vs_expectations"]) !== '' && $announcement["vs_expectations"] !== 'not stated'): ?>
-													<div>Against expectations: <?=htmlspecialchars((string)$announcement["vs_expectations"])?></div>
-												<?php endif ?>
-												<?php if (trim((string)$announcement["bull_point"]) !== ''): ?>
-													<div><span style="color:#15803d">&plus;</span> <?=htmlspecialchars((string)$announcement["bull_point"])?></div>
-												<?php endif ?>
-												<?php if (trim((string)$announcement["bear_point"]) !== ''): ?>
-													<div><span style="color:#b91c1c">&minus;</span> <?=htmlspecialchars((string)$announcement["bear_point"])?></div>
-												<?php endif ?>
-												<div class="mt-1">
-													<a href="<?=htmlspecialchars((string)$announcement["url"])?>" target="_blank" rel="noopener noreferrer">The announcement on Investegate</a>
-												</div>
-											</div>
-										</details>
-									</td>
-								</tr>
-							<?php endforeach?>
-							</table>
-							<p class="text-muted"><small>Announcement text is from Investegate and
-							   is kept for personal reference only.</small></p>
-						<?php endif?>
-						</div>
-			      	</div>
-			      	<?php write_log ("quote.php","11")?>
-					<div class="tab-pane" id="statistics" >
-						<div class="container">
-						
-							<?php $i=0; foreach ($quote as $category_indicator): ?>
-							
-								<?php if (($i % 2) == 0): ?>
-									<div class="row">
-				  				<?php endif?>	
-				  				
-				  				<?php if ($category_indicator["category"]["name"]!='other'): ?>
-								
-										<div class="col-md-6">
-											<div class="card card-default">
-							  					<div class="card-header"><?= $category_indicator["category"]["description"]?>
-							  						<?php if (!empty($currency_note) && $currency_note['rate'] !== null): ?>
-							  						<small class="text-body-secondary d-block">Reports in <?=htmlspecialchars($currency_note['currency'])?>; ratios converted at <?=htmlspecialchars(rtrim(rtrim(number_format($currency_note['rate'], 4), '0'), '.'))?></small>
-							  						<?php endif?>
-							  					</div>
-							  					<div class="card-body">
-							  						<table class="table table-striped table-bordered table-sm">
-											    
-														<thead>
-														<tr><th width="20%"></th><th width="20%">Share</th><th width="20%">Sector median</th><th width="20%">Market median</th ><th width="20%">Rank</th></tr>
-														</thead>
-														<tbody>
-														<?php foreach ($category_indicator["indicators"] as $indicator): ?>
-															
-															<tr><td width="20%"><?php print($indicator["description"]);?></td><td width="20%"> <?php print (number_or_blank($indicator["value"], 2) ); ?> </td><td width="20%"><?php print(number_or_blank($indicator["sector_average"], 2));?></td>
-																
-																	<td width="20%">
-																		<?php print(number_or_blank($indicator["market_average"], 2));?>
-																	</td>
-																	<td width="20%">	
-																		<div class="progress">
-																			<?php if ($indicator["percentile"] <= 25)
-																			 	$progress_bar='bg-danger';
-																		  	  elseif ($indicator["percentile"] <= 50)
-																		  		$progress_bar='bg-warning';
-																		  	  elseif ($indicator["percentile"] <= 75)
-																		  		$progress_bar='bg-info';
-																		  	  elseif ($indicator["percentile"] <= 100)
-																		  		$progress_bar='bg-success';
-																	 		?>
-																			<div class="progress-bar <?php print ($progress_bar); ?>" role="progressbar" aria-valuenow="<?php print($indicator["percentile"]);?>" aria-valuemin="0" aria-valuemax="100" style="width:<?php print($indicator["percentile"]);?>%"><?php print($indicator["percentile"]);?>
-																			</div>
-																		</div>
-																		
-																	</td>
-														
-															</tr>
-														<?php endforeach?>
-														</tbody>
-												
-							                 		</table>
-							                 	</div>
+		<?php /* ---------------- what the company has announced ---------------- */ ?>
+		<?php /* Above the tabs rather than inside one. An announcement is the
+		         company's own account of what has happened to it, which is
+		         worth more than the ratios two clicks away - and the reader had
+		         no way of knowing the News tab held anything. Same rows as the
+		         "In the news" page: the two must never disagree about what a
+		         day's news was. */ ?>
+		<div class="card">
+			<div class="card-header d-flex justify-content-between align-items-center">
+				<span>Recent announcements</span>
+				<a class="small" href="in_the_news.php">In the news</a>
+			</div>
+			<?php if (empty($announcements)): ?>
+				<div class="card-body">
+					<p class="text-muted mb-0">
+						No regulatory announcements stored for <?= e($symbol) ?>.
+						The nightly job collects them; routine filings are left out.
+					</p>
+				</div>
+			<?php else: ?>
+				<div class="table-responsive">
+					<table class="table table-sm mb-0">
+						<thead>
+							<tr>
+								<th>Date</th>
+								<th>Sentiment</th>
+								<th>Type</th>
+								<th>What was said</th>
+							</tr>
+						</thead>
+						<tbody>
+						<?php foreach (array_slice($announcements, 0, 5) as $announcement): ?>
+							<tr>
+								<td style="white-space: nowrap"><?= e(fmt_date_short($announcement["published"])) ?></td>
+								<td style="white-space: nowrap"><?= sentiment_html($announcement["sentiment"]) ?></td>
+								<td><small class="text-muted"><?= e($announcement["ann_type"]) ?></small></td>
+								<td>
+									<details>
+										<summary><?= e($announcement["summary"] ?: $announcement["title"]) ?></summary>
+										<div class="mt-2">
+											<div><strong><?= e($announcement["title"]) ?></strong></div>
+											<?php foreach (rns_key_figures($announcement["key_figures"]) as $figure): ?>
+												<div><?= e($figure) ?></div>
+											<?php endforeach ?>
+											<?php if (trim((string) $announcement["vs_expectations"]) !== ''
+											          && $announcement["vs_expectations"] !== 'not stated'): ?>
+												<div>Against expectations: <?= e($announcement["vs_expectations"]) ?></div>
+											<?php endif ?>
+											<?php if (trim((string) $announcement["bull_point"]) !== ''): ?>
+												<div><span class="sm-up">&plus;</span> <?= e($announcement["bull_point"]) ?></div>
+											<?php endif ?>
+											<?php if (trim((string) $announcement["bear_point"]) !== ''): ?>
+												<div><span class="sm-down">&minus;</span> <?= e($announcement["bear_point"]) ?></div>
+											<?php endif ?>
+											<div class="mt-1">
+												<a href="<?= e($announcement["url"]) ?>" target="_blank" rel="noopener noreferrer">The announcement on Investegate</a>
 											</div>
 										</div>
-										
-								<?php endif?>
-								
-								<?php if (($i % 2) == 1): ?>
-									</div>
-				  				<?php endif?>	
-								
-						<?php $i++; endforeach; ?>
-						
-						<?php if (($i % 2) == 1): ?>
-									</div>
-				  		<?php endif?>	
-					</div>	
-			      </div>
-				  <?php write_log ("quote.php","12")?>
-		<div class="tab-pane" id="financials" >
-			<ul class="nav nav-pills">
-				<li class="active"><a data-bs-toggle="pill" href="#incomestatement">Income Statement</a></li>
-				<li><a data-bs-toggle="pill" href="#balancesheet">Balance Sheet</a></li>
-				<li><a data-bs-toggle="pill" href="#cashflowstatement">Cash Flow Statement</a></li>
-			</ul>
-			<div class="tab-content">
-				<div class="tab-pane active" id="incomestatement">
-						<table class="table table-striped table-bordered">
-							<tr><td>Numbers in millions</td></tr>
-							<tr><td></td><?php for ($i=0; $i<count($incomestatement['periods']);$i++): ?><td> <strong><?php print($incomestatement['periods'][$i]["end_date"])?></strong></td><?php endfor?></tr>
-							<?php foreach ($incomestatement["period_items"] as $period_item ): ?>
-								<tr><td><?php print($period_item['description'])?></td><?php for ($i=0; $i<count($period_item['values']);$i++): ?><td><?php print($period_item['values'][$i])?></td><?php endfor?></tr>
-							<?php endforeach?>
-							<tr><td></td></tr>
-						 </table>
+									</details>
+								</td>
+							</tr>
+						<?php endforeach ?>
+						</tbody>
+					</table>
 				</div>
-				<div class="tab-pane" id="balancesheet">
-						<table class="table table-striped table-bordered">
-							<tr><td>Numbers in millions</td></tr>
-							<tr><td></td><?php for ($i=0; $i<count($balancesheet['periods']);$i++): ?><td> <strong><?php print($balancesheet['periods'][$i]["end_date"])?></strong></td><?php endfor?></tr>
-							<?php foreach ($balancesheet["period_items"] as $period_item ): ?>
-								<tr><td><?php  print($period_item['description'])?></td><?php for ($i=0; $i<count($period_item['values']);$i++): ?><td><?php print($period_item['values'][$i])?></td><?php endfor?></tr>
-							<?php endforeach?>
-							<tr><td></td></tr>
-						 </table>
+				<div class="card-body py-2">
+					<small class="text-muted">
+						Announcement text is from Investegate and is kept for personal reference only.
+					</small>
 				</div>
-				<div class="tab-pane" id="cashflowstatement">
-						<table class="table table-striped table-bordered">
-							<tr><td>Numbers in millions</td></tr>
-							<tr><td></td><?php for ($i=0; $i<count($cashflowstatement['periods']);$i++): ?><td> <strong><?php print($cashflowstatement['periods'][$i]["end_date"])?></strong></td><?php endfor?></tr>
-							<?php foreach ($cashflowstatement["period_items"] as $period_item ): ?>
-								<tr><td><?php  print($period_item['description'])?></td><?php for ($i=0; $i<count($period_item['values']);$i++): ?><td><?php print($period_item['values'][$i])?></td><?php endfor?></tr>
-							<?php endforeach?>
-							<tr><td></td></tr>
-						 </table>
-				</div>
-			</div>
+			<?php endif ?>
 		</div>
-		<?php write_log ("quote.php","13")?>
-	 	<div class="tab-pane" id="ratings" >
-	 	
-	 		<div class="container">	
-	 	
-				<table class="table table-striped table-bordered">
-					<tr><th>Rating</th><th>Value out of 5</th></tr>
-					<tr><td>Momentum Rating</td><td><?=$ratings["momentum_rating"]?></td></tr>
-					<tr><td>Growth Rating</td><td><?=$ratings["growth_rating"]?></td></tr>
-					<tr><td>Value Rating</td><td><?=$ratings["value_rating"]?></td></tr>
-					<tr><td>Quality Rating</td><td><?=$ratings["quality_rating"]?></td></tr>
-					<tr><td><b>Overall Rating</b></td><td><b><?=$ratings["overall_rating"]?></b></td></tr>
-				</table>
-				<table class="table table-striped table-bordered">
-					<tr>
-					<td>
-					<table class="table table-striped table-bordered">
-					<tr><th>Momentum Statistics</th><th></th></tr>
-					<?php foreach($momentum_statistics as $momentum): ?><tr> <td><?php print($momentum["description"])?></td><td><?php print($momentum["value"])?></td></tr><?php endforeach?>
-					</table>
-					</td>
-					<td>
-					<table class="table table-striped table-bordered">
-					<tr><th>Growth Statistics</th><th></th></tr>
-					<?php foreach($growth_statistics as $growth): ?><tr> <td><?php print($growth["description"])?></td><td><?php print($growth["value"])?></td></tr><?php endforeach?>
-					</table>
-					</td>
-					</tr>
-					<tr>
-					<td>
-					<table class="table table-striped table-bordered">
-					<tr><th>Value Statistics</th><th></th></tr>
-					<?php foreach($value_statistics as $value): ?><tr> <td><?php print($value["description"])?></td><td><?php print($value["value"])?></td></tr><?php endforeach?>
-					</table>
-					</td>
-					<td>
-					<table class="table table-striped table-bordered">
-					<tr><th>Quality Statistics</th><th></th></tr>
-					<?php foreach($quality_statistics as $quality): ?><tr> <td><?php print($quality["description"])?></td><td><?php print($quality["value"])?></td></tr><?php endforeach?>
-					</table>
-					</td>
-					</tr>
-				</table>
-			</div>
-		</div>
-		
+
 	</div>
-	<?php write_log ("quote.php","14")?>
 
-		<?php if (isset($screen_id)): ?>
-			<FORM action="screen_list.php" METHOD="POST" NAME="myForm">
-			<INPUT TYPE="HIDDEN" NAME="btnRun" VALUE="Y">
-			<INPUT TYPE="hidden" NAME="screen" VALUE=<?=$screen_id?>>
-			<A HREF="#" onClick="document.myForm.submit();return false">Back</A>
-			</FORM>
-		<?php else: ?>
-			<a href="javascript:history.go(-1);">Back</a></br>
-		<?php endif ?>
+	<div class="col-12 col-lg-4">
 
-	
-	<!--  Modals   -->
+		<?php /* ---------------- the scores ---------------- */ ?>
+		<div class="card">
+			<div class="card-header">Scores</div>
+			<div class="card-body">
+				<?php /* One scale, the one on every other page. These were four
+				         different colour schemes - danger, warning, info, success
+				         on four different boundaries - so a 60 here and a 60 on
+				         the dashboard were different colours. */ ?>
+				<table class="table table-sm table-borderless mb-0">
+					<tr>
+						<td><a data-bs-toggle="modal" href="#MomentumModal">Momentum</a></td>
+						<td class="sm-num"><?= score_badge_html($scores['momentum'], 'Momentum') ?></td>
+					</tr>
+					<?php if (!empty($scores['is_fund'])): ?>
+						<?php /* An investment fund has no value, quality or overall
+						         score: the ratios they are built from describe a
+						         wrapper rather than a business, so the nightly job
+						         writes no score row for a fund at all. Said twice
+						         because they are two absences - the two ratio
+						         scores, and the ShareRank built from them - and a
+						         reader who scrolls to the bottom line should not
+						         have to scroll back to find out why it is missing. */ ?>
+						<tr><td colspan="2" class="text-muted">Not scored: investment fund</td></tr>
+						<tr class="sm-total-row">
+							<td colspan="2" class="text-muted">Not scored: investment fund</td>
+						</tr>
+					<?php else: ?>
+						<tr>
+							<td><a data-bs-toggle="modal" href="#ValueModal">Value</a></td>
+							<td class="sm-num"><?= score_badge_html($scores['value'], 'Value') ?></td>
+						</tr>
+						<tr>
+							<td><a data-bs-toggle="modal" href="#QualityModal">Quality</a></td>
+							<td class="sm-num"><?= score_badge_html($scores['quality'], 'Quality') ?></td>
+						</tr>
+						<tr class="sm-total-row">
+							<td>ShareRank</td>
+							<td class="sm-num"><?= score_badge_html($scores['overall'], 'ShareRank') ?></td>
+						</tr>
+					<?php endif ?>
+				</table>
+			</div>
+		</div>
 
-        <div id="MomentumModal" class="modal fade" tabindex="-1" role="dialog" >
-			  <div class="modal-dialog">
-			  	
-			    <div class="modal-content">
-			    	<div class="modal-header">
-          				<h4 class="modal-title">Momentum</h4>
-        			</div>
-					<div class="modal-body">
-						<table class="table borderless">
-			    
-						<thead>
-						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market median</th><th width="25%">Rank</th></tr>
-						</thead>
-						<tbody>
-							<?php foreach($momentumranks as $momentumrank): ?>
-							<tr>
-								<td width="25%"><?php print($momentumrank["description"]);?></td>
-								<td width="25%"> <?php print ($momentumrank["share_value"] ); ?> </td>
-								<td width="25%"><?php print($momentumrank["market_value"]);?></td>
-								<td width="25%">
-									<div class="progress">
-										<?php if ($momentumrank["percentile"] <= 25)
-												 $progress_bar='bg-danger';
-											  elseif ($momentumrank["percentile"] <= 50)
-											  	$progress_bar='bg-warning';
-											  elseif ($momentumrank["percentile"] <= 75)
-											  	$progress_bar='bg-info';
-											  elseif ($momentumrank["percentile"] <= 100)
-											  	$progress_bar='bg-success';
-										 ?>
-										<div class="progress-bar <?php print ($progress_bar); ?>" role="progressbar" aria-valuenow="<?php print($momentumrank["percentile"]);?>" aria-valuemin="0" aria-valuemax="100" style="width:<?php print($momentumrank["percentile"]);?>%"><?php print($momentumrank["percentile"]);?></div>
+		<?php /* ---------------- financial health ---------------- */ ?>
+		<div class="card">
+			<div class="card-header">
+				Financial health
+				<small class="text-body-secondary d-block">From the provider's own figures</small>
+			</div>
+			<div class="card-body">
+				<table class="table table-borderless table-sm mb-0">
+				<?php foreach ($health_scores as $health): ?>
+					<tr>
+						<td><?= e($health['label']) ?></td>
+						<td class="sm-num">
+							<?= $health['value'] === null
+							    ? view_missing_html("the provider did not supply this score")
+							    : e(fmt_ratio($health['value'], 2)) ?>
+						</td>
+						<td class="sm-num">
+							<?php if ($health['not_ranked'] !== null): ?>
+								<span class="sm-badge sm-score-none" data-bs-toggle="tooltip"
+								      title="<?= e($health['not_ranked']) ?>">not ranked</span>
+							<?php elseif ($health['percentile'] === null): ?>
+								<span class="sm-muted">&nbsp;</span>
+							<?php else: ?>
+								<?= score_badge_html($health['percentile'], $health['label'] . ' percentile') ?>
+							<?php endif ?>
+						</td>
+					</tr>
+				<?php endforeach ?>
+				</table>
+				<?php foreach ($health_scores as $health): ?>
+					<?php if ($health['not_ranked'] !== null): ?>
+					<small class="text-body-secondary d-block"><?= e($health['label']) ?>:
+						<?= e($health['not_ranked']) ?>, so it is shown but not ranked and
+						does not count towards the quality score.</small>
+					<?php endif ?>
+				<?php endforeach ?>
+			</div>
+		</div>
+
+		<?php /* ---------------- what the peers imply ---------------- */ ?>
+		<div class="card">
+			<div class="card-header">
+				Price valuation
+				<small class="text-body-secondary d-block">What the share would cost if it were valued like its peers</small>
+				<?php if (!empty($currency_note)): ?>
+				<small class="text-body-secondary d-block">
+					Reports in <?= e($currency_note['currency']) ?>;
+					<?php if ($currency_note['rate'] !== null): ?>
+						ratios converted at <?= e(fmt_ratio($currency_note['rate'], 4)) ?>
+					<?php else: ?>
+						no rate was available, so its price ratios are not shown or ranked today
+					<?php endif ?>
+				</small>
+				<?php endif ?>
+			</div>
+			<div class="card-body">
+				<?php /* A red badge reading 341. 341 is the price the share would
+				         be if it were valued like its peers, in pence, and the
+				         badge was red because that is a quarter of what it costs
+				         - which is to say it was red for being a bargain.
+				         Neither the number nor the colour said any of that, and
+				         "Relative to Sector" showed no figure at all. */ ?>
+				<?php foreach ([['Sector', $valuation, 'RelativeSectorModal'],
+				                ['Industry', $industry_valuation, 'RelativeIndustryModal']]
+				               as [$v_label, $v_data, $v_modal]): ?>
+					<?php [$v_words, $v_class] = valuation_words($v_data, $head['price']); ?>
+					<div class="mb-2">
+						<div><a data-bs-toggle="modal" href="#<?= e($v_modal) ?>">Against the <?= e(strtolower($v_label)) ?></a></div>
+						<div class="<?= e($v_class) ?>">
+							<?= $v_words === null
+							    ? view_missing_html("the peer median for this share could not be worked out")
+							    : e($v_words) ?>
+						</div>
+					</div>
+				<?php endforeach ?>
+			</div>
+		</div>
+
+	</div>
+</div>
+
+<?php /* ---------------- the detail ---------------- */ ?>
+<ul class="nav nav-tabs" id="quoteTabs" role="tablist">
+	<li class="nav-item"><a class="nav-link active" id="profile-tab" data-bs-toggle="tab" role="tab"
+	                        aria-controls="profile" aria-selected="true" href="#profile">Profile</a></li>
+	<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" role="tab" href="#news">News</a></li>
+	<li class="nav-item"><a class="nav-link" data-bs-toggle="tab" role="tab" href="#statistics">Ratios</a></li>
+</ul>
+
+<div class="tab-content pt-3">
+
+	<div class="tab-pane active" id="profile" role="tabpanel" aria-labelledby="profile-tab">
+		<?php $profile = get_profile($symbol); ?>
+		<div class="row">
+			<div class="col-12 col-lg-6">
+				<div class="card">
+					<div class="card-header">Business summary</div>
+					<div class="card-body"><?= e($profile['description']) ?></div>
+				</div>
+			</div>
+			<div class="col-12 col-lg-6">
+				<div class="card">
+					<div class="card-header">The company</div>
+					<div class="card-body">
+						<table class="table table-borderless table-sm mb-0">
+							<tr><td>Sector</td>
+								<td><a href="sector_companies.php?sector=<?= urlencode((string) $head['sector']) ?>"><?= e($head['sector']) ?></a></td></tr>
+							<tr><td>Industry group</td><td><?= e($share_info["industry_group"]) ?></td></tr>
+							<tr><td>Industry</td><td><?= e($share_info["industry"]) ?></td></tr>
+							<tr><td>Index</td><td><?= trim((string) $head['market']) === ''
+								? view_missing_html("the index this share is in has not been loaded")
+								: e($head['market']) ?></td></tr>
+							<tr><td>Shares in issue</td><td class="sm-num"><?= e(fmt_quantity($head['shares'])) ?></td></tr>
+							<?php /* get_profile() returns the string "N/A" where the
+							         provider sent nothing. Printed as it stands, three
+							         rows of a six row table read N/A, which looks like
+							         a value. */ ?>
+							<?php $absent = function ($value) {
+								return $value === null || trim((string) $value) === ''
+								    || strtoupper(trim((string) $value)) === 'N/A'; } ?>
+							<tr><td>Website</td>
+								<td><?php if (!$absent($profile['website'])): ?>
+									<a target="_blank" rel="noopener noreferrer" href="<?= e($profile['website']) ?>"><?= e($profile['website']) ?></a>
+								<?php else: ?><?= view_missing_html("the provider did not supply a website") ?><?php endif ?></td></tr>
+							<tr><td>Employees</td><td class="sm-num"><?= $absent($profile['employees'])
+								? view_missing_html("the provider did not supply a headcount")
+								: e(is_numeric($profile['employees']) ? fmt_quantity($profile['employees']) : $profile['employees']) ?></td></tr>
+							<tr><td>Directors</td><td><?= $absent($profile['directors'])
+								? view_missing_html("the provider did not supply a board list")
+								: e($profile['directors']) ?></td></tr>
+						</table>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="tab-pane" id="news" role="tabpanel">
+		<div class="card">
+			<div class="card-header">Every stored announcement</div>
+			<?php if (empty($announcements)): ?>
+				<div class="card-body"><p class="text-muted mb-0">
+					No regulatory announcements stored for <?= e($symbol) ?>.
+				</p></div>
+			<?php else: ?>
+			<div class="table-responsive">
+				<table class="table table-sm mb-0">
+					<thead>
+						<tr><th>Date</th><th>Sentiment</th><th>Type</th><th>What was said</th></tr>
+					</thead>
+					<tbody>
+					<?php foreach ($announcements as $announcement): ?>
+						<tr>
+							<td style="white-space: nowrap"><?= e(fmt_date_short($announcement["published"])) ?></td>
+							<td style="white-space: nowrap"><?= sentiment_html($announcement["sentiment"]) ?></td>
+							<td><small class="text-muted"><?= e($announcement["ann_type"]) ?></small></td>
+							<td>
+								<details>
+									<summary><?= e($announcement["summary"] ?: $announcement["title"]) ?></summary>
+									<div class="mt-2">
+										<div><strong><?= e($announcement["title"]) ?></strong></div>
+										<?php foreach (rns_key_figures($announcement["key_figures"]) as $figure): ?>
+											<div><?= e($figure) ?></div>
+										<?php endforeach ?>
+										<div class="mt-1">
+											<a href="<?= e($announcement["url"]) ?>" target="_blank" rel="noopener noreferrer">The announcement on Investegate</a>
+										</div>
 									</div>
-								</td>
-							</tr>
-							<?php endforeach?>
-						</tbody>
-		
-                 		</table>
-                 </div>
-		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
-        		</div>         		
-		 				
-			    </div>
-			    
-			  </div>
-		
+								</details>
+							</td>
+						</tr>
+					<?php endforeach ?>
+					</tbody>
+				</table>
 			</div>
+			<div class="card-body py-2">
+				<small class="text-muted">
+					Announcement text is from Investegate and is kept for personal reference only.
+				</small>
+			</div>
+			<?php endif ?>
+		</div>
+	</div>
 
-			<?php write_log ("quote.php","15")?>
-        <div id="QualityModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="QualityModal" aria-hidden="true">
-			  <div class="modal-dialog modal-lg">
-			  	
-			    <div class="modal-content">
-			    	<div class="modal-header">
-          				<h4 class="modal-title">Quality</h4>
-        			</div>
-					<div class="modal-body">
-						<table class="table borderless">
-			    
-						<thead>
-						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market median</th><th width="25%">Rank</th></tr>
-						</thead>
-						<tbody>
-							<?php foreach($qualityranks as $qualityrank): ?>
-							<tr>
-								<td width="25%"><?php print($qualityrank["description"]);?></td>
-								<td width="25%"> <?php print ($qualityrank["share_value"] ); ?> </td>
-								<td width="25%"><?php print($qualityrank["market_value"]);?></td>
-								<td width="25%">
-									<div class="progress">
-										<?php if ($qualityrank["percentile"] <= 25)
-												 $progress_bar='bg-danger';
-											  elseif ($qualityrank["percentile"] <= 50)
-											  	$progress_bar='bg-warning';
-											  elseif ($qualityrank["percentile"] <= 75)
-											  	$progress_bar='bg-info';
-											  elseif ($qualityrank["percentile"] <= 100)
-											  	$progress_bar='bg-success';
-										 ?>
-										<div class="progress-bar <?php print ($progress_bar); ?>" role="progressbar" aria-valuenow="<?php print($qualityrank["percentile"]);?>" aria-valuemin="0" aria-valuemax="100" style="width:<?php print($qualityrank["percentile"]);?>%"><?php print($qualityrank["percentile"]);?></div>
-									</d
-							</tr>
-							<?php endforeach?>
-						</tbody>
-		
-                 		</table>
-                 </div>
-                 
-                 
-		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
-        		</div>         		
-		 				
-			    </div>
-			    
-			  </div>
-		
-			</div>
-			
-			<?php write_log ("quote.php","16")?>
-			
-			
-			<div id="ValueModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="ValueModal" aria-hidden="true">
-			  <div class="modal-dialog modal-lg">
-			  	
-			    <div class="modal-content">
-			    	<div class="modal-header">
-          				<h4 class="modal-title">Value</h4>
-        			</div>
-					<div class="modal-body">
-						<table class="table borderless">
-			    
-						<thead>
-						<tr><th width="25%">Ratio</th><th width="25%">Share</th><th width="25%">Market median</th><th width="25%">Rank</th></tr>
-						</thead>
-						<tbody>
-							<?php foreach($valueranks as $valuerank): ?>
-							<tr>
-								<td width="25%"><?php print($valuerank["description"]);?></td>
-								<td width="25%"> <?php print ($valuerank["share_value"] ); ?> </td>
-								<td width="25%"><?php print($valuerank["market_value"]);?></td>
-								<td width="25%">
-									<div class="progress">
-										<?php if ($valuerank["percentile"] <= 25)
-												 $progress_bar='bg-danger';
-											  elseif ($valuerank["percentile"] <= 50)
-											  	$progress_bar='bg-warning';
-											  elseif ($valuerank["percentile"] <= 75)
-											  	$progress_bar='bg-info';
-											  elseif ($valuerank["percentile"] <= 100)
-											  	$progress_bar='bg-success';
-										 ?>
-										<div class="progress-bar <?php print ($progress_bar); ?>" role="progressbar" aria-valuenow="<?php print($valuerank["percentile"]);?>" aria-valuemin="0" aria-valuemax="100" style="width:<?php print($valuerank["percentile"]);?>%"><?php print($valuerank["percentile"]);?></div>
-									</div>
-								</td>
-							</tr>
-							<?php endforeach?>
-						</tbody>
-		
-                 		</table>
-                  </div>
-		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
-        		</div>         		
-		 				
-			    </div>
-			    
-			  </div>
-		
-			</div>
-                 
-			<?php write_log ("quote.php","17")?>
-			
-         <div id="RelativeSectorModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="RelativeSectorModal" aria-hidden="true">
-			  <div class="modal-dialog modal-lg">
-			  	
-			    <div class="modal-content">
-			    	<div class="modal-header">
-          				<h4 class="modal-title">Relative to Sector</h4>
-        			</div>
-					<div class="modal-body">
-						<table class="table borderless">
-			    
-						<th>Ratio</th><th>Share</th><th>Sector peer median (excl. this share)</th><th>Implied price at sector median</th>
-						<tbody>
-							<?php foreach($relative_sector_valuations as $sector_valuation): ?>
-							<tr>
-								<td width="25%"><?php print($sector_valuation["indicator"]);?></td>
-								<td width="25%"> <?php print ($sector_valuation["share_stat"] ); ?> </td>
-								<td width="25%"> <?php print ($sector_valuation["sector_stat"] ); ?> </td>
-								<td width="25%"> <?php print ($sector_valuation["value"] ); ?> </td>
-							</tr>
-							
-							<?php endforeach?>
-							<tr>
-								<td width="25%"><h5>Average</h5></td>
-								<td width="25%">  </td>
-								<td width="25%">  </td>
-								<td width="25%"> <h5><?php print ($valuation["value"] ); ?></h5> </td>
-							</tr>
-						</tbody>
-		
-                 		</table>
-                 </div>
-		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
-        		</div>         		
-		 				
-			    </div>
-			    
-			  </div>
-		
-			</div>
-			<?php write_log ("quote.php","18")?>
-         <div id="RelativeIndustryModal" class="modal fade bs-example-modal-lg" tabindex="-1" role="dialog" aria-labelledby="RelativeIndustryModal" aria-hidden="true">
-			  <div class="modal-dialog modal-lg">
-			  	
-			    <div class="modal-content">
-			    	<div class="modal-header">
-          				<h4 class="modal-title">Relative to Industry</h4>
-        			</div>
-					<div class="modal-body">
-						<table class="table borderless">
-			    
-						<th>Ratio</th><th>Share</th><th>Industry peer median (excl. this share)</th><th>Implied price at industry median</th>
-						<tbody>
-							<?php foreach($relative_industry_valuations as $valuation): ?>
-							<tr>
-								<td width="25%"><?php print($valuation["indicator"]);?></td>
-								<td width="25%"> <?php print ($valuation["share_stat"] ); ?> </td>
-								<td width="25%"> <?php print ($valuation["industry_stat"] ); ?> </td>
-								<td width="25%"> <?php print ($valuation["value"] ); ?> </td>
-							</tr>
-							
-							<?php endforeach?>
-							<tr>
-								<td width="25%"><h5>Average</h5></td>
-								<td width="25%">  </td>
-								<td width="25%">  </td>
-								<td width="25%"> <h5><?php print ($industry_valuation["value"] ); ?></h5> </td>
-							</tr>
-						</tbody>
-		
-                 		</table>
-                 </div>
-		        <div class="modal-footer">
-          			<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
-        		</div>         		
-		 				
-			    </div>
-			    
-			  </div>
-		
-			</div>
+	<?php /* The Financial Statements and Ratings panes.
 
-			<?php write_log ("quote.php","19")?>
-			<?php /* The Piotroski, Altman and Altman2 modals were here. They
-			         listed the components of each score out of
-			         health_indicators, which nothing writes, behind links
-			         calling onclick handlers that do not exist. The scores
-			         themselves are on the Financial Health card above. */ ?>
-				<?php write_log ("quote.php","22")?>
+	         Neither is reachable: the tab list above offers Profile, News and
+	         Ratios, and nothing opens these two. They are kept because the
+	         figures in them are real and a tab could be given back to them in
+	         a line; they are listed in the redesign notes as something to
+	         decide about rather than quietly deleted. */ ?>
+	<div class="tab-pane" id="financials" role="tabpanel">
+		<ul class="nav nav-pills mb-3">
+			<li class="nav-item"><a class="nav-link active" data-bs-toggle="pill" href="#incomestatement">Income statement</a></li>
+			<li class="nav-item"><a class="nav-link" data-bs-toggle="pill" href="#balancesheet">Balance sheet</a></li>
+			<li class="nav-item"><a class="nav-link" data-bs-toggle="pill" href="#cashflowstatement">Cash flow statement</a></li>
+		</ul>
+		<div class="tab-content">
+		<?php foreach ([['incomestatement', 'Income statement', $incomestatement, true],
+		                ['balancesheet', 'Balance sheet', $balancesheet, false],
+		                ['cashflowstatement', 'Cash flow statement', $cashflowstatement, false]]
+		               as [$fs_id, $fs_title, $fs_data, $fs_active]): ?>
+			<div class="tab-pane<?= $fs_active ? ' active' : '' ?>" id="<?= e($fs_id) ?>">
+				<div class="card">
+					<div class="card-header"><?= e($fs_title) ?>
+						<small class="text-body-secondary d-block">Figures in millions</small>
+					</div>
+					<div class="table-responsive">
+						<table class="table table-sm table-striped mb-0">
+							<thead>
+								<tr><th></th>
+								<?php foreach ($fs_data['periods'] as $fs_period): ?>
+									<th class="sm-num"><?= e(fmt_date($fs_period["end_date"])) ?></th>
+								<?php endforeach ?>
+								</tr>
+							</thead>
+							<tbody>
+							<?php foreach ($fs_data["period_items"] as $fs_item): ?>
+								<tr><td><?= e($fs_item['description']) ?></td>
+								<?php foreach ($fs_item['values'] as $fs_value): ?>
+									<td class="sm-num"><?= e(fmt_ratio($fs_value, 2)) ?></td>
+								<?php endforeach ?>
+								</tr>
+							<?php endforeach ?>
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+		<?php endforeach ?>
+		</div>
+	</div>
+
+	<div class="tab-pane" id="ratings" role="tabpanel">
+		<div class="card">
+			<div class="card-header">Ratings</div>
+			<div class="table-responsive">
+				<table class="table table-sm mb-0">
+					<thead><tr><th>Rating</th><th class="sm-num">Out of 5</th></tr></thead>
+					<tbody>
+					<?php foreach ([['Momentum', 'momentum_rating'], ['Growth', 'growth_rating'],
+					                ['Value', 'value_rating'], ['Quality', 'quality_rating']] as [$rt_label, $rt_key]): ?>
+						<tr><td><?= e($rt_label) ?></td><td class="sm-num"><?= e(fmt_ratio($ratings[$rt_key])) ?></td></tr>
+					<?php endforeach ?>
+					<tr class="sm-total-row"><td>Overall</td>
+						<td class="sm-num"><?= e(fmt_ratio($ratings["overall_rating"])) ?></td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+		<div class="row">
+		<?php foreach ([['Momentum', $momentum_statistics], ['Growth', $growth_statistics],
+		                ['Value', $value_statistics], ['Quality', $quality_statistics]]
+		               as [$st_title, $st_rows]): ?>
+			<div class="col-12 col-xl-6">
+				<div class="card">
+					<div class="card-header"><?= e($st_title) ?> statistics</div>
+					<div class="table-responsive">
+						<table class="table table-sm mb-0">
+							<tbody>
+							<?php foreach ($st_rows as $st_row): ?>
+								<tr><td><?= e($st_row["description"]) ?></td>
+									<td class="sm-num"><?= e(fmt_ratio($st_row["value"], 2)) ?></td></tr>
+							<?php endforeach ?>
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+		<?php endforeach ?>
+		</div>
+	</div>
+
+	<div class="tab-pane" id="statistics" role="tabpanel">
+		<div class="row">
+		<?php foreach ($quote as $category_indicator): ?>
+			<?php if ($category_indicator["category"]["name"] === 'other') { continue; } ?>
+			<div class="col-12 col-xl-6">
+				<div class="card">
+					<div class="card-header"><?= e($category_indicator["category"]["description"]) ?>
+						<?php if (!empty($currency_note) && $currency_note['rate'] !== null): ?>
+						<small class="text-body-secondary d-block">Reports in <?= e($currency_note['currency']) ?>;
+							ratios converted at <?= e(fmt_ratio($currency_note['rate'], 4)) ?></small>
+						<?php endif ?>
+					</div>
+					<div class="table-responsive">
+						<table class="table table-sm table-striped sm-table-sort mb-0">
+							<thead>
+								<tr>
+									<th data-sort="text">Ratio</th>
+									<th class="sm-num" data-sort="number">Share</th>
+									<th class="sm-num" data-sort="number">Sector median</th>
+									<th class="sm-num" data-sort="number">Market median</th>
+									<th class="sm-num" data-sort="number">Rank</th>
+								</tr>
+							</thead>
+							<tbody>
+							<?php foreach ($category_indicator["indicators"] as $indicator): ?>
+								<tr>
+									<td><?= e($indicator["description"]) ?></td>
+									<td class="sm-num" data-value="<?= e($indicator["value"]) ?>"><?= e(fmt_ratio($indicator["value"], 2)) ?></td>
+									<td class="sm-num" data-value="<?= e($indicator["sector_average"]) ?>"><?= e(fmt_ratio($indicator["sector_average"], 2)) ?></td>
+									<td class="sm-num" data-value="<?= e($indicator["market_average"]) ?>"><?= e(fmt_ratio($indicator["market_average"], 2)) ?></td>
+									<td class="sm-num" data-value="<?= e($indicator["percentile"]) ?>"><?= score_badge_html($indicator["percentile"], $indicator["description"] . ' percentile') ?></td>
+								</tr>
+							<?php endforeach ?>
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+		<?php endforeach ?>
+		</div>
+	</div>
+</div>
+
+<?php /* ---------------- modals ----------------
+
+   Five modals with one shape between them, generated from a list rather
+   than copied five times. One of the copies had an unterminated </d where
+   a </div></td> belonged, which the browser closed wherever it felt like.
+
+   The Piotroski, Altman and Altman2 modals that used to be here listed the
+   components of each score out of health_indicators, which nothing writes,
+   behind links calling onclick handlers that do not exist. The scores
+   themselves are on the Financial Health card.                           */ ?>
+<?php
+	$rank_modals = [
+		['id' => 'MomentumModal', 'title' => 'Momentum',
+		 'rows' => $momentumranks, 'kind' => 'rank'],
+		['id' => 'QualityModal', 'title' => 'Quality',
+		 'rows' => $qualityranks, 'kind' => 'rank'],
+		['id' => 'ValueModal', 'title' => 'Value',
+		 'rows' => $valueranks, 'kind' => 'rank'],
+		['id' => 'RelativeSectorModal', 'title' => 'Against the sector',
+		 'rows' => $relative_sector_valuations, 'kind' => 'sector',
+		 'implied' => $valuation['value']],
+		['id' => 'RelativeIndustryModal', 'title' => 'Against the industry',
+		 'rows' => $relative_industry_valuations, 'kind' => 'industry',
+		 'implied' => $industry_valuation['value']],
+	];
+?>
+<?php foreach ($rank_modals as $modal): ?>
+<div id="<?= e($modal['id']) ?>" class="modal fade" tabindex="-1" role="dialog"
+     aria-labelledby="<?= e($modal['id']) ?>Label" aria-hidden="true">
+	<div class="modal-dialog modal-lg">
+		<div class="modal-content">
+			<div class="modal-header">
+				<h2 class="modal-title h5" id="<?= e($modal['id']) ?>Label"><?= e($modal['title']) ?></h2>
+				<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+			</div>
+			<div class="modal-body">
+				<div class="table-responsive">
+				<table class="table table-sm mb-0">
+					<thead>
+					<?php if ($modal['kind'] === 'rank'): ?>
+						<tr><th>Ratio</th><th class="sm-num">Share</th>
+						    <th class="sm-num">Market median</th><th class="sm-num">Rank</th></tr>
+					<?php else: ?>
+						<?php /* "excl. this share" is not pedantry: a median that
+						         included the share would move towards it, and the
+						         figure is there to say what the others are doing. */ ?>
+						<tr><th>Ratio</th><th class="sm-num">Share</th>
+						    <th class="sm-num"><?= e($modal['kind'] === 'sector'
+						        ? 'Sector peer median (excl. this share)'
+						        : 'Industry peer median (excl. this share)') ?></th>
+						    <th class="sm-num">Implied price at <?= e($modal['kind']) ?> median</th></tr>
+					<?php endif ?>
+					</thead>
+					<tbody>
+					<?php if (!count($modal['rows'])): ?>
+						<tr><td colspan="4" class="text-muted">Nothing calculated for this share yet.</td></tr>
+					<?php endif ?>
+					<?php foreach ($modal['rows'] as $row): ?>
+						<?php if ($modal['kind'] === 'rank'): ?>
+							<tr>
+								<td><?= e($row["description"]) ?></td>
+								<td class="sm-num"><?= e(fmt_ratio($row["share_value"], 2)) ?></td>
+								<td class="sm-num"><?= e(fmt_ratio($row["market_value"], 2)) ?></td>
+								<td class="sm-num"><?= score_badge_html($row["percentile"], $row["description"] . ' percentile') ?></td>
+							</tr>
+						<?php else: ?>
+							<tr>
+								<td><?= e($row["indicator"]) ?></td>
+								<td class="sm-num"><?= e(fmt_ratio($row["share_stat"], 2)) ?></td>
+								<td class="sm-num"><?= e(fmt_ratio($modal['kind'] === 'sector' ? $row["sector_stat"] : $row["industry_stat"], 2)) ?></td>
+								<td class="sm-num"><?= e(fmt_pence($row["value"])) ?></td>
+							</tr>
+						<?php endif ?>
+					<?php endforeach ?>
+					<?php if ($modal['kind'] !== 'rank'): ?>
+						<tr class="sm-total-row">
+							<td>Average</td><td class="sm-num"></td><td class="sm-num"></td>
+							<td class="sm-num"><?= e(fmt_pence($modal['implied'])) ?></td>
+						</tr>
+					<?php endif ?>
+					</tbody>
+				</table>
+				</div>
+			</div>
+			<div class="modal-footer">
+				<button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Close</button>
+			</div>
+		</div>
+	</div>
+</div>
+<?php endforeach ?>
