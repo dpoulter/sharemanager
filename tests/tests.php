@@ -897,7 +897,7 @@
        Found by the pence fix rather than by this test: the same weights in
        a hundredth of the units round to a far finer number of shares, so
        the account is fully invested and the gap has no slack to eat. */
-    s_drop($PX); s_account($PX, 100000);
+    s_drop($PX);
     db()->exec("delete from historical_prices where symbol='PENCE1' and exchange='XLON'");
     $px_gap = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
                              values ('PENCE1','XLON',?,?)");
@@ -906,9 +906,29 @@
        opposite and perfectly ordinary. */
     $px_gap->execute([$SNEXT, 724.5]);
 
-    db()->prepare("insert into strategy_targets
-                     (strategy,as_of_date,symbol,exchange,target_weight,created_at)
-                   values (?,?,'PENCE1','XLON',0.999999,now())")->execute([$PX, $SASOF]);
+    /* A fully invested account with one name left to buy, which is what the
+       last order of a rebalance is. It has to be built this way round
+       because no single position may exceed 20% of the account: four
+       holdings already at their target weight, a fifth to buy, and only the
+       20% of cash the fifth needs - so a five per cent gap up puts the
+       order just out of reach.
+
+       The four are at their targets, so the drift band leaves them alone
+       and the only order is the one under test. */
+    s_account($PX, 20000);
+    $px_hold = db()->prepare("insert into strategy_positions
+                                (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                              values (?,?,'XLON',?,?,now())");
+    $px_target = db()->prepare("insert into strategy_targets
+                                  (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                                values (?,?,?,'XLON',0.2,now())");
+
+    foreach (['AAA','BBB','CCC','DDD'] as $px_symbol) {
+        $px_price = strategy_price_asof($px_symbol, 'XLON', $SASOF);
+        $px_hold->execute([$PX, $px_symbol, (int) floor(20000 / $px_price), $px_price]);
+        $px_target->execute([$PX, $SASOF, $px_symbol]);
+    }
+    $px_target->execute([$PX, $SASOF, 'PENCE1']);
 
     run_script('run_paper_execution.php', [$PX, $SASOF]);
     $px_gap_order = rows("select status, quantity, fill_price, note from strategy_orders
