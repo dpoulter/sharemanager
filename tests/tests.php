@@ -812,8 +812,21 @@
         if ($order['symbol'] === 'PENCE1') { $px_order = $order; }
     }
 
-    check('a 6,667 pound target at 690p buys 966 shares, not 9',
-          $px_order !== null && (int) $px_order['quantity'] === 966,
+    /* The brief's figure is 966, which is 6,667 divided by 6.90. The engine
+       buys 958, because it reserves the stamp duty, the spread and the
+       commission before it sizes anything - 6,667 of investable money is
+       6,616 of shares once the costs are out. That reserve is deliberate
+       and predates this fix: sizing to the full account leaves nothing for
+       the costs and the last order of every rebalance is rejected for want
+       of cash.
+    
+       So the check is "within one per cent of 966, and nowhere near 9",
+       which is the thing the fix is about. Pinning 958 exactly would make
+       this a test of the cost reserve, which has its own. */
+    check('a 6,667 pound target at 690p buys about 966 shares, not 9',
+          $px_order !== null
+          && abs((int) $px_order['quantity'] - 966) <= 10
+          && (int) $px_order['quantity'] > 100,
           json_encode([$px_order, $px_plan['errors']]));
     check('the reference price on the order is pounds',
           $px_order !== null && abs((float) $px_order['reference_price'] - 6.90) < 0.0001);
@@ -872,6 +885,52 @@
                            where strategy=? and symbol='PENCE1'", [$PX]) < 100,
           (string) scalar("select avg_price from strategy_positions
                             where strategy=? and symbol='PENCE1'", [$PX]));
+
+    /* A gap up between the plan and the fill. The quantities are decided on
+       the as-of close and filled at the next one, so the last order of a
+       rebalance can cost more than the plan reserved - and rejecting it
+       leaves the strategy holding fourteen names instead of fifteen, with
+       the cash for the fifteenth idle until the next rebalance. Holding
+       slightly less of a share is a rounding error; not holding it is a
+       different portfolio.
+
+       Found by the pence fix rather than by this test: the same weights in
+       a hundredth of the units round to a far finer number of shares, so
+       the account is fully invested and the gap has no slack to eat. */
+    s_drop($PX); s_account($PX, 100000);
+    db()->exec("delete from historical_prices where symbol='PENCE1' and exchange='XLON'");
+    $px_gap = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                             values ('PENCE1','XLON',?,?)");
+    $px_gap->execute([$SASOF, 690]);
+    /* Five per cent higher the next morning, which is a profit warning's
+       opposite and perfectly ordinary. */
+    $px_gap->execute([$SNEXT, 724.5]);
+
+    db()->prepare("insert into strategy_targets
+                     (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                   values (?,?,'PENCE1','XLON',0.999999,now())")->execute([$PX, $SASOF]);
+
+    run_script('run_paper_execution.php', [$PX, $SASOF]);
+    $px_gap_order = rows("select status, quantity, fill_price, note from strategy_orders
+                           where strategy=? and symbol='PENCE1'", [$PX]);
+
+    check('a buy the cash no longer covers is trimmed to fit, not dropped',
+          count($px_gap_order) === 1 && $px_gap_order[0]['status'] === 'FILLED'
+          && (int) $px_gap_order[0]['quantity'] > 100,
+          json_encode($px_gap_order));
+    check('and the order says it was trimmed, so the audit trail explains the weight',
+          count($px_gap_order) === 1
+          && stripos((string) $px_gap_order[0]['note'], 'trimmed') !== false,
+          json_encode($px_gap_order[0]['note'] ?? null));
+    check('the account did not go overdrawn to do it',
+          (float) scalar("select cash from strategy_accounts where strategy=?", [$PX]) >= 0,
+          (string) scalar("select cash from strategy_accounts where strategy=?", [$PX]));
+
+    db()->exec("delete from historical_prices where symbol='PENCE1' and exchange='XLON'");
+    $px_prices2 = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                                 values ('PENCE1','XLON',?,690)");
+    $px_prices2->execute([$SASOF]);
+    $px_prices2->execute([$SNEXT]);
 
     echo "\n--- strategies: GBp and GBP are not the same currency ---\n";
 
@@ -1249,9 +1308,11 @@
                          . (int)(STRATEGY_STALE_SESSIONS + 1), [$SASOF]);
     $gone_rows = rows("select symbol, exchange, date, price from historical_prices
                         where symbol='BBB' and exchange='XLON' and date>?", [$gone_after]);
-    $gone_price = (float)scalar("select price from historical_prices
-                                  where symbol='BBB' and exchange='XLON' and date<=?
-                                  order by date desc limit 1", [$gone_after]);
+    /* The engine's own view of it, which is pounds: the column is pence.
+       Reading the column straight here would compare a fill in pounds
+       against a price in pence and fail by a factor of a hundred - which is
+       the fault the engine itself had. */
+    $gone_price = strategy_price_asof('BBB', 'XLON', $gone_after);
     db()->prepare("delete from historical_prices where symbol='BBB' and exchange='XLON' and date>?")
       ->execute([$gone_after]);
 

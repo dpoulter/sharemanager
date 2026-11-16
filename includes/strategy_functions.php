@@ -618,8 +618,55 @@
 		$positions=strategy_positions($order['strategy']);
 		$held=isset($positions[$order['symbol']]) ? (int)$positions[$order['symbol']]['quantity'] : 0;
 
+		/* A buy the cash no longer covers is trimmed to fit rather than
+		   rejected.
+		
+		   The quantities are decided from the as of close and filled at the
+		   next one, so an overnight gap up makes the last order of a
+		   rebalance cost more than the plan reserved - and rejecting it
+		   leaves the strategy holding fourteen names instead of fifteen,
+		   with the cash for the fifteenth sitting idle until the next
+		   rebalance. Holding slightly less of a share than intended is a
+		   rounding error; not holding it at all is a different portfolio.
+		
+		   This showed up when London prices started being read as pence:
+		   the same weights in a hundredth of the units round to a far finer
+		   number of shares, so the account is fully invested and there is no
+		   slack left for the gap. The fault was always there - it just
+		   needed the last order to be within a rounding error of the cash.
+		
+		   Never increased, only reduced, and the trim is noted on the order
+		   so the audit trail says why the position is not the target. */
 		if ($order['side']==='BUY'&&((float)$account['cash']+$costs['total_cost'])<0){
-			return $reject("insufficient cash: need ".round(-$costs['total_cost'],2)." have ".$account['cash']);
+
+			$cash=(float)$account['cash'];
+			$per_share=$fill['price']*(1+STRATEGY_STAMP_DUTY_RATE+(STRATEGY_SLIPPAGE_BPS/10000));
+			$affordable=($per_share>0)
+			          ? (int)floor(($cash-STRATEGY_COMMISSION)/$per_share) : 0;
+
+			if ($affordable<1){
+				return $reject("insufficient cash: need ".round(-$costs['total_cost'],2)
+				               ." have ".$account['cash']);
+			}
+
+			write_log("strategy","trimming ".$client_order_id." from ".$quantity." to "
+			          .$affordable." shares: the fill price moved against the plan");
+
+			$quantity=$affordable;
+			$costs=strategy_costs($order['side'],$quantity,$fill['price']);
+
+			query("update strategy_orders set quantity=?, note=? where client_order_id=?",
+			      $quantity,
+			      substr('trimmed to fit cash: '.(string)$order['note'],0,255),
+			      $client_order_id);
+
+			/* Belt and braces: if the trimmed order still does not fit, the
+			   arithmetic above is wrong and the right answer is to refuse
+			   rather than to overdraw a paper account. */
+			if (($cash+$costs['total_cost'])<0){
+				return $reject("insufficient cash after trimming to ".$quantity
+				               .": need ".round(-$costs['total_cost'],2)." have ".$cash);
+			}
 		}
 		if ($order['side']==='SELL'&&$quantity>$held){
 			//No shorting in a long only paper book.
