@@ -207,14 +207,11 @@
 	 */
 	function view_palette() {
 		return [
-			/* Scores out of 100. One scale for Momentum, Value, Quality,
-			   ShareRank and the financial health ranks - they were four
-			   different colour schemes, so a reader comparing two scores
-			   was comparing two languages. */
-			'score-bad'    => ['#b91c1c', '#ffffff'],
-			'score-weak'   => ['#b45309', '#ffffff'],
-			'score-fair'   => ['#4d7c0f', '#ffffff'],
-			'score-good'   => ['#15803d', '#ffffff'],
+			/* A score nobody has worked out. The scored ones are not here:
+			   they are a continuous scale now, mixed in oklch between the
+			   two ends below, and a browser is the only thing that can tell
+			   you what colour a score of 62 comes out as. The phone-width
+			   test asks one, in both colour schemes. */
 			'score-none'   => ['#4b5563', '#ffffff'],
 			/* Status. One style each, so "PAPER" never looks like a warning
 			   and "halted" never looks like a label. */
@@ -223,6 +220,28 @@
 			'status-halt'  => ['#b91c1c', '#ffffff'],
 			'status-due'   => ['#b45309', '#ffffff'],
 		];
+	}
+
+	/**
+	 * The two ends of the score scale, as oklch.
+	 *
+	 * 0 is the first, 100 the second, and every value between them is
+	 * color-mix(in oklch, ...) of the two - a continuous scale rather than
+	 * four steps, so 49 and 50 stop being different colours for no reason a
+	 * reader can see.
+	 *
+	 * oklch rather than sRGB because mixing in sRGB goes through mud: red to
+	 * green passes through a dark grey-brown in the middle, and the
+	 * lightness wanders, so the text on the badge is readable at the ends
+	 * and not in the middle. In oklch the lightness is held - both ends are
+	 * L 0.52 - so white text measures between 5.1:1 and 6.1:1 the whole way
+	 * across, which is AA at every value.
+	 *
+	 * Here as well as in app.css so a test can name them; the stylesheet is
+	 * what the browser reads.
+	 */
+	function view_score_scale() {
+		return ['low' => 'oklch(0.52 0.18 25)', 'high' => 'oklch(0.52 0.15 148)'];
 	}
 
 	/** Moves and returns, as text on the page background rather than badges. */
@@ -278,14 +297,22 @@
 	 * where higher was better and one where it was not.
 	 */
 	function score_badge_html($score, $label = 'Score', $higher_is_better = true) {
-		$band = score_band($score);
-		if ($band === 'score-none') {
+
+		if (score_band($score) === 'score-none') {
 			return view_missing_html($label . ' has not been scored for this share');
 		}
+
+		/* The score itself, as a custom property, and the stylesheet mixes
+		   the colour from it. The four fixed bands are gone from the badge;
+		   the band word stays, in the tooltip, because "strong" is what a
+		   reader wants in words and a colour cannot say it. */
+		$value = max(0, min(100, (int) round((float) $score)));
+
 		$title = $label . ' ' . fmt_score($score) . '/100: '
 		       . ($higher_is_better ? 'higher is better' : 'lower is better')
 		       . ' (' . score_band_word($score) . ')';
-		return '<span class="sm-badge sm-' . $band . '" title="'
+
+		return '<span class="sm-badge sm-score" style="--score: ' . $value . '" title="'
 		     . htmlspecialchars($title, ENT_QUOTES) . '" data-bs-toggle="tooltip">'
 		     . fmt_score($score) . '</span>';
 	}
@@ -441,6 +468,34 @@
 		return $name;
 	}
 
+	/**
+	 * The user's colour scheme: 'system', 'light' or 'dark'.
+	 *
+	 * Cached in the session like the username: wanted on every page, cannot
+	 * change underneath a session except through theme.php, which updates
+	 * the cache when it does. 'system' where the column is not there yet, so
+	 * a host one deploy behind follows the machine rather than failing.
+	 */
+	function view_theme() {
+		if (isset($_SESSION["sm_theme"])) { return (string) $_SESSION["sm_theme"]; }
+		if (empty($_SESSION["id"])) { return 'system'; }
+
+		static $has_column = null;
+		if ($has_column === null) {
+			$found = query("select count(*) n from information_schema.columns
+			                 where table_schema=database() and table_name='users'
+			                   and column_name='theme'");
+			$has_column = count($found) && (int) $found[0]['n'] > 0;
+		}
+		if (!$has_column) { return 'system'; }
+
+		$rows = query("select theme from users where id=?", $_SESSION["id"]);
+		$theme = count($rows) ? (string) $rows[0]['theme'] : 'system';
+		if (!in_array($theme, ['system', 'light', 'dark'], true)) { $theme = 'system'; }
+		$_SESSION["sm_theme"] = $theme;
+		return $theme;
+	}
+
 	/** Shorthand for htmlspecialchars on a value that may be null. */
 	function e($value) {
 		return htmlspecialchars((string) $value, ENT_QUOTES);
@@ -457,7 +512,7 @@
 		$rows = [[12, '0-24'], [37, '25-49'], [62, '50-74'], [88, '75-100']];
 		$body = '<div class="sm-key">';
 		foreach ($rows as [$example, $range]) {
-			$body .= '<div><span class="sm-badge sm-' . score_band($example) . '">'
+			$body .= '<div><span class="sm-badge sm-score" style="--score: ' . $example . '">'
 			       . $range . '</span> ' . score_band_word($example) . '</div>';
 		}
 		$body .= '</div>';

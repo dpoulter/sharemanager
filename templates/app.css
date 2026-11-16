@@ -13,22 +13,68 @@
  * other fails the suite rather than quietly giving one page its own scheme.
  */
 
+/* ---------------------------------------------------------------------------
+   Colour.
+
+   Every token is light-dark(), so the page follows the system setting with no
+   second set of rules and no media query to keep in step. color-scheme on
+   :root is what makes light-dark() work and what makes the browser's own
+   widgets - scrollbars, form controls, the date picker - match.
+
+   data-bs-theme is Bootstrap 5.3's switch and is set from the user's own
+   preference; pinning color-scheme to match it is what keeps light-dark()
+   and Bootstrap saying the same thing. With "system" the attribute is set
+   from the media query by the small script in header.php, so Bootstrap
+   follows too.
+   --------------------------------------------------------------------------- */
+
 :root {
-	--sm-score-bad:   #b91c1c;
-	--sm-score-weak:  #b45309;
-	--sm-score-fair:  #4d7c0f;
-	--sm-score-good:  #15803d;
-	--sm-score-none:  #4b5563;
+	color-scheme: light dark;
+
+	/* The two ends of the score scale. Every score between them is a
+	   color-mix in oklch of the two: a continuous scale rather than four
+	   steps, so 49 and 50 stop being different colours for no reason a
+	   reader can see. Mixing in oklch holds the lightness, so white text
+	   measures between 5.1:1 and 6.1:1 the whole way across - AA at every
+	   value. The same two values are in view_score_scale(). */
+	--sm-score-low:  oklch(0.52 0.18 25);
+	--sm-score-high: oklch(0.52 0.15 148);
+
+	/* The status badges keep one colour in both schemes. They carry white
+	   text on their own background, so what they have to clear is the
+	   contrast against that text, not against the page - and lightening
+	   them for dark mode took PAPER to 3.7:1 and "rebalance tonight" to
+	   3.2:1, which is a badge nobody can read on either. */
+	--sm-score-none:   #4b5563;
 	--sm-status-paper: #1d4ed8;
 	--sm-status-off:   #4b5563;
 	--sm-status-halt:  #b91c1c;
 	--sm-status-due:   #b45309;
-	--sm-up:    #15803d;
-	--sm-down:  #b91c1c;
-	--sm-flat:  #6b7280;
-	--sm-muted: #6b7280;
-	--sm-rule:  #e5e7eb;
+
+	/* Moves and returns, as text on the page. The dark values are lighter,
+	   because the measurement is against the background behind them and
+	   #15803d on near-black is 3.2:1. */
+	--sm-up:    light-dark(#15803d, #4ade80);
+	--sm-down:  light-dark(#b91c1c, #f87171);
+	--sm-flat:  light-dark(#6b7280, #9ca3af);
+	--sm-muted: light-dark(#6b7280, #9ca3af);
+
+	--sm-rule:  light-dark(#e5e7eb, #343a40);
+	/* The charts read these rather than carrying their own greys, so a chart
+	   in dark mode is not black lines on a black card. */
+	--sm-chart-text:   light-dark(#333333, #c7cbd1);
+	--sm-chart-grid:   light-dark(#eeeeee, #2b2f33);
+	--sm-chart-border: light-dark(#cccccc, #3a3f44);
+	--sm-page:  light-dark(#f8f9fa, #16181b);
+	--sm-card:  light-dark(#ffffff, #1f2225);
+	--sm-ink:   light-dark(#212529, #dee2e6);
 }
+
+/* The two pinned settings. Without these light-dark() follows the system
+   while Bootstrap follows the attribute, and on a machine set to dark with
+   the app set to light the page comes out half of each. */
+:root[data-bs-theme="light"] { color-scheme: light; }
+:root[data-bs-theme="dark"]  { color-scheme: dark; }
 
 /* ---------------------------------------------------------------------------
    Page frame.
@@ -39,7 +85,8 @@
    --------------------------------------------------------------------------- */
 
 body {
-	background: #f8f9fa;
+	background: var(--sm-page);
+	color: var(--sm-ink);
 }
 
 .sm-page {
@@ -73,10 +120,16 @@ body {
 	border-radius: 0.5rem;
 	box-shadow: none;
 	margin-bottom: 1rem;
+	background: var(--sm-card);
+	/* Each card is its own container, so what is inside it lays out on the
+	   card's width rather than the window's. The same card then works in the
+	   dashboard's two-column grid and on a phone without either knowing
+	   about the other. */
+	container-type: inline-size;
 }
 
 .card-header {
-	background: #fff;
+	background: var(--sm-card);
 	border-bottom: 1px solid var(--sm-rule);
 	font-weight: 600;
 }
@@ -128,10 +181,19 @@ th.sm-num,
 	cursor: help;
 }
 
-.sm-score-bad    { background: var(--sm-score-bad); }
-.sm-score-weak   { background: var(--sm-score-weak); }
-.sm-score-fair   { background: var(--sm-score-fair); }
-.sm-score-good   { background: var(--sm-score-good); }
+/* The score itself arrives as --score on the badge, and the colour is mixed
+   from it. 0 is all of the low end, 100 is all of the high end.
+
+   The fallback matters: a browser without color-mix() in oklch gets the
+   grey, which is legible and says nothing - rather than no background at
+   all, which is white text on white. */
+.sm-score {
+	background: var(--sm-score-none);
+	background: color-mix(in oklch,
+	                      var(--sm-score-low) calc(100% - var(--score, 50) * 1%),
+	                      var(--sm-score-high));
+}
+
 .sm-score-none   { background: var(--sm-score-none); }
 .sm-status-paper { background: var(--sm-status-paper); cursor: default; }
 .sm-status-off   { background: var(--sm-status-off);   cursor: default; }
@@ -222,13 +284,32 @@ th.sm-num,
    --------------------------------------------------------------------------- */
 
 .sm-strip {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 1.5rem;
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 0.75rem 1.25rem;
+}
+
+/* The column count comes from a container query, so it answers to the width
+   of the card the strip is in rather than to the width of the window. The
+   same card then reads the same way in the dashboard's two-column desktop
+   layout, in one column on a phone, and in the quote page's narrow right
+   hand column - none of which has to know about the others. */
+@container (min-width: 360px) {
+	.sm-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@container (min-width: 760px) {
+	.sm-strip { grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); }
+}
+
+/* A browser with no container query support lays them out on the window
+   width instead, which is what it would have had before. */
+@supports not (container-type: inline-size) {
+	.sm-strip { grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); }
 }
 
 .sm-strip-item {
-	min-width: 7rem;
+	min-width: 0;
 }
 
 .sm-strip-label {
@@ -291,6 +372,78 @@ th.sm-num,
 	.table-responsive {
 		max-width: 100%;
 	}
+}
+
+/* ---------------------------------------------------------------------------
+   Things that fold away.
+
+   <details> rather than a JavaScript collapse: the browser opens and closes
+   it, so it works with scripting off, needs no id tying a control to a panel,
+   and cannot get stuck half open because a script did not load.
+
+   The marker is drawn here because the browser's default triangle sits at a
+   different size and colour in every engine, and these are links in prose.
+   --------------------------------------------------------------------------- */
+
+/* interpolate-size lets a height animate to and from auto. Where it is not
+   supported the details still opens, just without the slide. */
+:root {
+	interpolate-size: allow-keywords;
+}
+
+.sm-reveal > summary {
+	cursor: pointer;
+	list-style: none;
+	color: var(--bs-link-color, #0d6efd);
+	font-size: 0.875rem;
+	width: fit-content;
+}
+
+/* Safari draws its own marker through this pseudo-element. */
+.sm-reveal > summary::-webkit-details-marker {
+	display: none;
+}
+
+.sm-reveal > summary::before {
+	content: "\25B8";
+	display: inline-block;
+	margin-right: 0.35rem;
+	transition: transform 0.15s ease;
+}
+
+.sm-reveal[open] > summary::before {
+	transform: rotate(90deg);
+}
+
+.sm-reveal > summary:hover,
+.sm-reveal > summary:focus-visible {
+	text-decoration: underline;
+}
+
+/* The summaries inside the announcements table are the company's own words
+   rather than a link, so they are set as text. */
+.table .sm-reveal > summary {
+	color: inherit;
+	font-size: inherit;
+}
+
+.sm-reveal-body {
+	overflow: hidden;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.sm-reveal::details-content {
+		block-size: 0;
+		overflow: hidden;
+		transition: block-size 0.2s ease, content-visibility 0.2s allow-discrete;
+	}
+	.sm-reveal[open]::details-content {
+		block-size: auto;
+	}
+}
+
+.sm-routine {
+	margin-top: 1rem;
 }
 
 /* Charts are given their height by the page and their width by the column. */

@@ -40,12 +40,22 @@
 
 	if (fallback) { fallback.style.display = "none"; }
 
+	/* The page's own colours, so a chart in dark mode is not black lines on
+	   a black card. Read at build time from the custom properties app.css
+	   sets; the fallbacks are the values the charts used to carry. */
+	function token(name, fallback) {
+		var value = getComputedStyle(document.documentElement).getPropertyValue(name);
+		value = (value || "").trim();
+		return value === "" ? fallback : value;
+	}
+
+
 	var chart = LightweightCharts.createChart(root, {
 		height: 320,
-		layout: { background: { color: "transparent" }, textColor: "#333" },
-		grid: { vertLines: { color: "#eee" }, horzLines: { color: "#eee" } },
-		rightPriceScale: { borderColor: "#ccc" },
-		timeScale: { borderColor: "#ccc" },
+		layout: { background: { color: "transparent" }, textColor: token("--sm-chart-text", "#333") },
+		grid: { vertLines: { color: token("--sm-chart-grid", "#eee") }, horzLines: { color: token("--sm-chart-grid", "#eee") } },
+		rightPriceScale: { borderColor: token("--sm-chart-border", "#ccc") },
+		timeScale: { borderColor: token("--sm-chart-border", "#ccc") },
 		crosshair: { mode: 0 },
 		/* London prices are pence, and the rest of the page writes them as
 		   "1,350.6p". The axis was printing the library's default, 1350.60,

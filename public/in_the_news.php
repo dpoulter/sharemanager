@@ -49,9 +49,9 @@
 
     /* Routine filings - type "other" and neutral in tone - are the long tail
        of this page and they were mixed in with the results and the
-       warnings. Hidden unless asked for, with a count, so it is clear what
-       has been left out rather than silently dropped. */
-    $routine = ($_GET['routine'] ?? '') === '1';
+       warnings. They are folded away rather than left out, in a <details>
+       the browser opens: no round trip, and the count on the summary says
+       what is behind it. */
     $tone   = in_array($_GET['tone'] ?? '', ['positive','negative'], true)
             ? $_GET['tone'] : '';
     $type   = isset($_GET['type'])   && is_string($_GET['type'])   ? trim($_GET['type'])   : '';
@@ -81,12 +81,17 @@
         $rows[$i]['figures']    = rns_key_figures($row['key_figures']);
     }
 
-    $routine_count = news_routine_count($rows);
-    if (!$routine) { $rows = news_without_routine($rows); }
+    $routine_rows = [];
+    $main_rows    = [];
+    foreach ($rows as $row) {
+        if (news_is_routine($row)) { $routine_rows[] = $row; }
+        else                       { $main_rows[] = $row; }
+    }
 
-    /* One entry per company per day. A company that files three times in a
-       morning was three rows of the same company. */
-    $groups = news_group_by_day($rows);
+    /* One entry per company per day, on each side. A company that files
+       three times in a morning was three rows of the same company. */
+    $groups         = news_group_by_day($main_rows);
+    $routine_groups = news_group_by_day($routine_rows);
 
     /* The best and worst boxes carry what the share has done since, as well
        as the score. The same function the dashboard uses, so the two pages
@@ -95,10 +100,10 @@
 
     render("in_the_news.php", [
         "title"       => "In the news",
-        "rows"          => $rows,
-        "groups"        => $groups,
-        "routine"       => $routine,
-        "routine_count" => $routine_count,
+        "rows"           => $rows,
+        "groups"         => $groups,
+        "routine_groups" => $routine_groups,
+        "routine_count"  => count($routine_rows),
         "movers"      => $movers,
         "types"       => rns_types_present($from, $as_of),
         "markets"     => rns_markets(),

@@ -48,12 +48,22 @@
 		return;
 	}
 
+	/* The page's own colours, so a chart in dark mode is not black lines on
+	   a black card. Read at build time from the custom properties app.css
+	   sets; the fallbacks are the values the charts used to carry. */
+	function token(name, fallback) {
+		var value = getComputedStyle(document.documentElement).getPropertyValue(name);
+		value = (value || "").trim();
+		return value === "" ? fallback : value;
+	}
+
+
 	var chart = LightweightCharts.createChart(root, {
 		height: 360,
-		layout: { background: { color: "#ffffff" }, textColor: "#333" },
+		layout: { background: { color: "#ffffff" }, textColor: token("--sm-chart-text", "#333") },
 		grid: { vertLines: { color: "#f0f0f0" }, horzLines: { color: "#f0f0f0" } },
-		rightPriceScale: { borderColor: "#ccc" },
-		timeScale: { borderColor: "#ccc" },
+		rightPriceScale: { borderColor: token("--sm-chart-border", "#ccc") },
+		timeScale: { borderColor: token("--sm-chart-border", "#ccc") },
 		crosshair: { mode: 1 }
 	});
 

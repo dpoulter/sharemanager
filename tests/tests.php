@@ -7983,7 +7983,8 @@
           && strpos(screen_cell_html('6mnth', 9.0568), '+9.1%') !== false,
           screen_cell_html('close_price', 196.8153) . ' / ' . screen_cell_html('6mnth', 9.0568));
     check('a score is a badge on the one scale',
-          strpos(screen_cell_html('momentum_score', 82), 'sm-score-good') !== false,
+          strpos(screen_cell_html('momentum_score', 82), 'sm-badge sm-score') !== false
+          && strpos(screen_cell_html('momentum_score', 82), '--score: 82') !== false,
           screen_cell_html('momentum_score', 82));
     check('and a yield stored as a fraction is a percentage',
           strpos(screen_cell_html('div_yield', 0.0311), '3.11%') !== false,
@@ -8115,9 +8116,12 @@
           $nv_sorted[0]['symbol'] === 'BBB' && $nv_sorted[1]['symbol'] === 'AAA');
 
     $nv_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/in_the_news.php');
+    /* A fold rather than a link back to the server: the rows are already on
+       the page, so showing them is the browser's job and closing it again
+       does not need a second word for it. */
     check('the page offers the routine items rather than hiding that it hid them',
           strpos($nv_tpl, 'Show routine items') !== false
-          && strpos($nv_tpl, 'Hide routine items') !== false);
+          && strpos($nv_tpl, '<details class="sm-reveal sm-routine">') !== false);
     check('sentiment is the number, the word and the swatch',
           substr_count($nv_tpl, 'sentiment_html') >= 2
           && strpos($nv_tpl, 'rns_band(') === false);
@@ -8179,7 +8183,7 @@
        none of this is real - in the middle of it. */
     check('the opening paragraph is two lines with the rest folded away',
           strpos($st_tpl, 'How this works') !== false
-          && strpos($st_tpl, 'id="how-this-works"') !== false
+          && strpos($st_tpl, '<summary>How this works</summary>') !== false
           && strpos($st_tpl, 'No real orders are ever placed') !== false
           && strpos($st_tpl, 'No real orders are ever placed')
              < strpos($st_tpl, 'How this works'));
@@ -8690,6 +8694,175 @@
           count($sf_stray) === 0, implode(', ', $sf_stray));
     check('and the orphan controller in templates is gone',
           !file_exists(dirname(__DIR__) . '/templates/index.php'));
+
+    echo "\n--- one colour scale, mixed rather than stepped ---\n";
+
+    /* The four fixed bands made 49 and 50 different colours for no reason a
+       reader can see. The badge carries the score as a custom property and
+       the stylesheet mixes the colour from it; the band word stays, in the
+       tooltip, because "strong" is what a reader wants in words and a
+       colour cannot say it. */
+    check('the badge carries the score rather than a band class',
+          strpos(score_badge_html(62, 'Quality'), '--score: 62') !== false
+          && strpos(score_badge_html(62, 'Quality'), 'sm-score-fair') === false,
+          score_badge_html(62, 'Quality'));
+    check('and still says what it is and which way is better',
+          strpos(score_badge_html(62, 'Quality'), 'Quality 62/100') !== false
+          && strpos(score_badge_html(62, 'Quality'), 'higher is better') !== false
+          && strpos(score_badge_html(62, 'Quality'), 'above average') !== false);
+    check('a score outside 0 to 100 is brought back into it',
+          strpos(score_badge_html(140, 'Quality'), '--score: 100') !== false
+          && strpos(score_badge_html(-20, 'Quality'), '--score: 0') !== false);
+    check('and an unscored share is still a dash, not a badge at nought',
+          strpos(score_badge_html(null, 'Quality'), 'sm-missing') !== false);
+
+    /* The band helper has not gone: the tooltip and the key use it. */
+    $cs_bands = [0 => 'poor', 24 => 'poor', 25 => 'below average', 49 => 'below average',
+                 50 => 'above average', 74 => 'above average', 75 => 'strong', 100 => 'strong'];
+    $cs_wrong = [];
+    foreach ($cs_bands as $cs_score => $cs_word) {
+        if (score_band_word($cs_score) !== $cs_word) { $cs_wrong[] = $cs_score; }
+    }
+    check('the band words still change at 25, 50 and 75',
+          count($cs_wrong) === 0, implode(',', $cs_wrong));
+
+    $cs_css = (string) file_get_contents(dirname(__DIR__) . '/templates/app.css');
+    $cs_scale = view_score_scale();
+    check('the stylesheet mixes in oklch between the two ends',
+          strpos($cs_css, 'color-mix(in oklch') !== false
+          && strpos($cs_css, $cs_scale['low']) !== false
+          && strpos($cs_css, $cs_scale['high']) !== false,
+          json_encode($cs_scale));
+    /* Mixing in sRGB goes through mud and the lightness wanders, so the text
+       is readable at the ends and not in the middle. */
+    check('and not in sRGB, which would take red to green through grey',
+          strpos($cs_css, 'color-mix(in srgb') === false);
+    /* White text on no background at all is white text on white. */
+    check('a browser without color-mix gets a legible fallback',
+          preg_match('/\.sm-score \{\s*background: var\(--sm-score-none\);/', $cs_css) === 1);
+
+    echo "\n--- light, dark, or whatever the machine says ---\n";
+
+    check('every colour the page owns is written for both schemes',
+          substr_count($cs_css, 'light-dark(') >= 8, substr_count($cs_css, 'light-dark('));
+    check('and color-scheme is set, or light-dark() has nothing to go on',
+          strpos($cs_css, 'color-scheme: light dark') !== false);
+    /* With light-dark() following the system while Bootstrap follows the
+       attribute, a machine set to dark and the app set to light comes out
+       half of each. */
+    check('the two pinned settings keep Bootstrap and light-dark together',
+          strpos($cs_css, ':root[data-bs-theme="light"] { color-scheme: light; }') !== false
+          && strpos($cs_css, ':root[data-bs-theme="dark"]  { color-scheme: dark; }') !== false);
+    /* The status badges carry white text on their own background, so what
+       they clear is the contrast against that text, not against the page. */
+    check('the status badges are one colour in both schemes',
+          strpos($cs_css, '--sm-status-paper: #1d4ed8;') !== false
+          && strpos($cs_css, 'light-dark(#1d4ed8') === false);
+
+    $th_header = (string) file_get_contents(dirname(__DIR__) . '/templates/header.php');
+    check('the preference is on the page before the stylesheets',
+          strpos($th_header, 'data-bs-theme="') !== false
+          && strpos($th_header, '$sm_theme') < strpos($th_header, 'bootstrap.min.css'));
+    /* A theme applied by script after the page has painted is a white flash
+       on every load. */
+    check('and the system setting is applied before the body, not after it',
+          strpos($th_header, 'prefers-color-scheme: dark') !== false
+          && strpos($th_header, 'prefers-color-scheme: dark') < strpos($th_header, '<body>'));
+    /* Buttons in a form, not links: a link is something a prefetch or a
+       link preview can follow on your behalf, and a form works with
+       JavaScript off. */
+    check('the menu offers all three, as a form rather than links',
+          strpos($th_header, 'action="theme.php"') !== false
+          && strpos($th_header, 'method="post"') !== false
+          && strpos($th_header, "'light' => 'Light', 'dark' => 'Dark', 'system' => 'System'") !== false
+          && preg_match('/<a [^>]*href="theme\.php/', $th_header) === 0);
+
+    /* Stored on the user, so it is the same on the phone and the desktop. */
+    check('the column is there and defaults to the system setting',
+          (int) scalar("select count(*) from information_schema.columns
+                         where table_schema=database() and table_name='users'
+                           and column_name='theme'") === 1);
+
+    $th_saved_id = $_SESSION["id"] ?? null;
+    $_SESSION["id"] = 1;
+    unset($_SESSION["sm_theme"]);
+    db()->exec("update users set theme='dark' where id=1");
+    check('and the page reads it', view_theme() === 'dark', view_theme());
+    unset($_SESSION["sm_theme"]);
+    db()->exec("update users set theme='nonsense' where id=1");
+    check('a value that is not one of the three reads as the system setting',
+          view_theme() === 'system', view_theme());
+    unset($_SESSION["sm_theme"]);
+    db()->exec("update users set theme='system' where id=1");
+    if ($th_saved_id === null) { unset($_SESSION["id"]); } else { $_SESSION["id"] = $th_saved_id; }
+    unset($_SESSION["sm_theme"]);
+
+    $th_endpoint = (string) file_get_contents(dirname(__DIR__) . '/public/theme.php');
+    check('the endpoint takes only the three values',
+          strpos($th_endpoint, "['system', 'light', 'dark']") !== false);
+    check('it refuses GET, so a link preview cannot change the theme',
+          strpos($th_endpoint, "!== 'POST'") !== false);
+    /* A Location built from the request is a redirect somebody else can aim. */
+    check('and it only ever goes back to a page on this site',
+          strpos($th_endpoint, '^[A-Za-z0-9_\-]+\.php') !== false);
+
+    echo "\n--- things that fold away without a script ---\n";
+
+    /* A Bootstrap collapse does not work with JavaScript off, can get stuck
+       half open if the script does not load, and needs an id tying the
+       control to the panel. */
+    $fold_files = ['templates/ai_outlook_panel.php', 'templates/strategies.php',
+                   'templates/in_the_news.php', 'templates/home.php',
+                   'templates/quote.php', 'templates/portfolio.php'];
+    $fold_left = [];
+    foreach ($fold_files as $fold_file) {
+        $fold_text = php_strip_whitespace(dirname(__DIR__) . '/' . $fold_file);
+        if (strpos($fold_text, 'data-bs-toggle="collapse"') !== false) { $fold_left[] = $fold_file; }
+    }
+    check('no page folds anything away with a collapse any more',
+          count($fold_left) === 0, implode(', ', $fold_left));
+
+    check('the outlook folds with a details',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/ai_outlook_panel.php'),
+                 '<details class="sm-reveal"') !== false);
+    check('and so does "How this works"',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php'),
+                 '<summary>How this works</summary>') !== false);
+
+    /* The routine filings used to be a link back to the server with the
+       filter in the query string: a page reload to see rows the page
+       already had. */
+    $fold_news = php_strip_whitespace(dirname(__DIR__) . '/templates/in_the_news.php');
+    check('the routine items are behind a fold rather than behind a reload',
+          strpos($fold_news, 'Show routine items') !== false
+          && strpos($fold_news, 'sm-routine') !== false
+          && strpos($fold_news, 'routine=1') === false
+          && strpos((string) file_get_contents(dirname(__DIR__) . '/public/in_the_news.php'),
+                    "\$_GET['routine']") === false);
+    /* One table renderer, used for both, so the fold cannot drift from the
+       page above it. */
+    check('and both tables are drawn by the same function',
+          substr_count($fold_news, 'news_table(') === 3);
+
+    check('the marker is drawn rather than left to the engine',
+          strpos($cs_css, '.sm-reveal > summary::before') !== false
+          && strpos($cs_css, '::-webkit-details-marker') !== false);
+    check('and the open animates where the browser can do it',
+          strpos($cs_css, 'interpolate-size: allow-keywords') !== false
+          && strpos($cs_css, '::details-content') !== false);
+
+    echo "\n--- cards that lay out on their own width ---\n";
+
+    /* A card in the dashboard's two-column grid is about the width of a
+       phone. Laying its contents out on the window width is what made the
+       same card read differently in the two places. */
+    check('every card is a container',
+          preg_match('/\.card \{[^}]*container-type: inline-size/s', $cs_css) === 1);
+    check('and the figures inside switch columns on the card, not the window',
+          strpos($cs_css, '@container (min-width: 360px)') !== false
+          && strpos($cs_css, '@container (min-width: 760px)') !== false);
+    check('with a layout for a browser that has no container queries',
+          strpos($cs_css, '@supports not (container-type: inline-size)') !== false);
 
     echo "\n--- one way to print a number ---\n";
 

@@ -41,11 +41,12 @@
 		close after dealing costs.
 		<strong>No real orders are ever placed</strong> and nothing here is
 		connected to a broker.
-		<a class="small ms-1" data-bs-toggle="collapse" href="#how-this-works"
-		   role="button" aria-expanded="false" aria-controls="how-this-works">How this works</a>
 	</p>
-	<div class="collapse mb-3" id="how-this-works">
-		<div class="card card-body py-2">
+	<?php /* A <details>, not a Bootstrap collapse: the browser does the work,
+	         so it opens with JavaScript off. */ ?>
+	<details class="sm-reveal mb-3">
+		<summary>How this works</summary>
+		<div class="card card-body py-2 sm-reveal-body">
 			<small class="text-muted mb-0">
 				Each strategy starts with a notional GBP100,000 and holds equally
 				weighted positions chosen by its own rules. The nightly job decides
@@ -60,7 +61,7 @@
 				Not financial advice.
 			</small>
 		</div>
-	</div>
+	</details>
 
 	<?php if ($halted): ?>
 	<div class="alert alert-danger">

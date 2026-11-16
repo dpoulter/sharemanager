@@ -1,5 +1,6 @@
 <!doctype html>
-<html lang="en">
+<?php $sm_theme = function_exists("view_theme") ? view_theme() : 'system'; ?>
+<html lang="en"<?= $sm_theme === 'system' ? '' : ' data-bs-theme="' . htmlspecialchars($sm_theme) . '"' ?>>
 <?php
 header("Cache-Control: no-cache, no-store, must-revalidate"); // HTTP 1.1.
 header("Pragma: no-cache"); // HTTP 1.0.
@@ -34,6 +35,28 @@ $sm_user = function_exists("view_username") ? view_username() : "";
         <!-- Required meta tags -->
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+        <?php if ($sm_theme === 'system'): ?>
+        <!-- Following the machine. app.css does this on its own through
+             color-scheme and light-dark(); Bootstrap 5.3 needs the attribute,
+             so it is set here - before the stylesheets, so the page is never
+             painted in the wrong one and corrected afterwards. With
+             JavaScript off this does nothing and Bootstrap stays light while
+             the application's own colours follow the system, which is the
+             right way round for it to degrade. -->
+        <script>
+          (function () {
+            var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+            function apply(on) {
+              document.documentElement.setAttribute("data-bs-theme", on ? "dark" : "light");
+            }
+            if (!dark) { return; }
+            apply(dark.matches);
+            //The system setting can change while the page is open.
+            if (dark.addEventListener) { dark.addEventListener("change", function (e) { apply(e.matches); }); }
+          }());
+        </script>
+        <?php endif ?>
 
         <!-- One Bootstrap stylesheet: version 5, matching the bundle below.
              bootstrap.css and bootstrap-theme.min.css used to be loaded here
@@ -143,6 +166,21 @@ $sm_user = function_exists("view_username") ? view_username() : "";
         <i class="fa-regular fa-user me-1" aria-hidden="true"></i><?= htmlspecialchars($sm_user !== '' ? $sm_user : 'Account') ?>
       </a>
       <div class="dropdown-menu dropdown-menu-end" aria-labelledby="smUserMenu">
+        <?php /* A form rather than links, so it works with JavaScript off and
+                 so changing the theme is a POST rather than something a link
+                 preview can do on your behalf. */ ?>
+        <h6 class="dropdown-header">Appearance</h6>
+        <form action="theme.php" method="post" class="px-2 pb-2">
+          <input type="hidden" name="from" value="<?= htmlspecialchars($sm_here) ?>">
+          <div class="btn-group btn-group-sm w-100" role="group" aria-label="Colour scheme">
+          <?php foreach (['light' => 'Light', 'dark' => 'Dark', 'system' => 'System'] as $sm_key => $sm_label): ?>
+            <button type="submit" name="theme" value="<?= $sm_key ?>"
+                    class="btn btn-outline-secondary<?= $sm_theme === $sm_key ? ' active' : '' ?>"
+                    <?= $sm_theme === $sm_key ? 'aria-current="true"' : '' ?>><?= $sm_label ?></button>
+          <?php endforeach ?>
+          </div>
+        </form>
+        <div class="dropdown-divider"></div>
         <a class="dropdown-item" href="logout.php">Log Out</a>
       </div>
     </li>

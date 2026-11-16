@@ -147,7 +147,6 @@
 	</div>
 
 	<input type="hidden" name="sort" value="<?= e($sort) ?>">
-	<?php if ($routine): ?><input type="hidden" name="routine" value="1"><?php endif ?>
 
 	<div class="col-auto">
 		<button type="submit" class="btn btn-sm btn-outline-primary">Apply</button>
@@ -157,38 +156,23 @@
 
 <?php
 	$base  = ["days" => $days, "type" => $type, "tone" => $tone, "market" => $market];
-	if ($routine) { $base["routine"] = "1"; }
 	$heads = [["date", "Date"], ["symbol", "Share"], [null, "Type"],
 	          ["sentiment", "Sentiment"], [null, "Vs expectations"],
 	          [null, "What they said"], ["move", "Move since"]];
-?>
 
-<p class="mb-2">
-	<strong><?= e(fmt_quantity(count($groups))) ?></strong>
-	<?= count($groups) === 1 ? 'company-day' : 'company-days' ?>,
-	<strong><?= e(fmt_quantity(count($rows))) ?></strong>
-	announcement<?= count($rows) === 1 ? '' : 's' ?>.
-	<?php /* Hidden rather than dropped: the count says what is behind the
-	         toggle, so nobody has to wonder whether the page is complete. */ ?>
-	<?php if ($routine_count > 0 || $routine): ?>
-		<a class="small ms-2"
-		   href="<?= e(news_link($routine ? array_diff_key($base, ["routine" => 1])
-		                                  : $base + ["routine" => "1"])) ?>">
-			<?= $routine
-			    ? 'Hide routine items'
-			    : 'Show routine items (' . e(fmt_quantity($routine_count)) . ')' ?>
-		</a>
-	<?php endif ?>
-</p>
-
-<div class="card">
+	/* One table of company-days. Written once and used twice - the main one
+	   and the routine one behind the fold show the same thing, and a second
+	   copy would be a second thing to keep in step. The sort links are only
+	   on the main table: sorting the fold would reload the page and close
+	   it. */
+	function news_table($groups, $heads, $base, $sort, $sortable = true) { ?>
 	<div class="table-responsive">
-		<table class="table table-sm table-hover mb-0" id="news-table">
+		<table class="table table-sm table-hover mb-0">
 			<thead>
 				<tr>
 				<?php foreach ($heads as [$key, $label]): ?>
-					<th<?= in_array($label, ['Move since'], true) ? ' class="sm-num"' : '' ?>>
-						<?php if ($key === null): ?>
+					<th<?= $label === 'Move since' ? ' class="sm-num"' : '' ?>>
+						<?php if ($key === null || !$sortable): ?>
 							<?= e($label) ?>
 						<?php else: ?>
 							<a href="<?= e(news_link($base + ["sort" => $key])) ?>"
@@ -226,8 +210,9 @@
 					<td style="white-space: nowrap"><?= sentiment_html($lead['sentiment']) ?></td>
 					<td><?= e($lead['vs_expectations']) ?></td>
 					<td>
-						<details>
+						<details class="sm-reveal">
 							<summary><?= e($lead['summary']) ?></summary>
+							<div class="sm-reveal-body">
 							<?php if ($group['count'] === 1): ?>
 								<?php news_detail($lead) ?>
 							<?php else: ?>
@@ -248,6 +233,7 @@
 									</div>
 								<?php endforeach ?>
 							<?php endif ?>
+							</div>
 						</details>
 					</td>
 					<td class="sm-num"><?= move_pct_html($lead['price_move']) ?></td>
@@ -256,4 +242,35 @@
 			</tbody>
 		</table>
 	</div>
+	<?php }
+?>
+
+<p class="mb-2">
+	<strong><?= e(fmt_quantity(count($groups))) ?></strong>
+	<?= count($groups) === 1 ? 'company-day' : 'company-days' ?>,
+	<strong><?= e(fmt_quantity(count($rows))) ?></strong>
+	announcement<?= count($rows) === 1 ? '' : 's' ?>.
+</p>
+
+<div class="card">
+	<?php news_table($groups, $heads, $base, $sort) ?>
 </div>
+
+<?php /* The routine filings - type "other" and neutral in tone - folded away
+         rather than left out. A <details> the browser opens: no round trip,
+         and the count on the summary says what is behind it, so nobody has
+         to wonder whether the page is complete. */ ?>
+<?php if ($routine_count > 0): ?>
+<details class="sm-reveal sm-routine">
+	<summary>Show routine items (<?= e(fmt_quantity($routine_count)) ?>)</summary>
+	<div class="sm-reveal-body">
+		<p class="text-muted small mb-2">
+			Filings typed "other" that scored neutral: nobody is going to act on
+			these, but they are here rather than dropped.
+		</p>
+		<div class="card">
+			<?php news_table($routine_groups, $heads, $base, $sort, false) ?>
+		</div>
+	</div>
+</details>
+<?php endif ?>

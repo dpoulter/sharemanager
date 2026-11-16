@@ -34,10 +34,6 @@ $outlook_collapse = !empty($outlook_collapse);
 $outlook_fresh = $outlook_latest !== null
                && substr((string) $outlook_latest["created_at"], 0, 10) === date('Y-m-d');
 $outlook_open  = !$outlook_collapse || $outlook_fresh;
-/* One id per panel, because the quote page shows a share outlook and the
-   dashboard a market one and two panels with the same id collapse together. */
-$outlook_id = 'outlook-rest-' . preg_replace('/[^a-z0-9]+/i', '-',
-                 $outlook_scope . '-' . (string) ($outlook_symbol ?? 'market'));
 ?>
 <div class="card card-default mb-3 sm-outlook"
      data-scope="<?= htmlspecialchars($outlook_scope) ?>"
@@ -72,18 +68,17 @@ $outlook_id = 'outlook-rest-' . preg_replace('/[^a-z0-9]+/i', '-',
 
             <p<?= $outlook_collapse ? ' class="mb-2"' : '' ?>><?= htmlspecialchars((string) ($o["summary"] ?? '')) ?></p>
 
+            <?php /* A <details>, not a Bootstrap collapse. The browser opens
+                     and closes it, which means it works with JavaScript off,
+                     needs no id to tie the control to the panel, and cannot
+                     get stuck half open if the script does not load. */ ?>
             <?php if ($outlook_collapse): ?>
-                <p class="mb-2">
-                    <a class="small" data-bs-toggle="collapse" href="#<?= htmlspecialchars($outlook_id) ?>"
-                       role="button" aria-expanded="<?= $outlook_open ? 'true' : 'false' ?>"
-                       aria-controls="<?= htmlspecialchars($outlook_id) ?>">Read the full outlook</a>
-                </p>
+            <details class="sm-reveal"<?= $outlook_open ? ' open' : '' ?>>
+                <summary>Read the full outlook</summary>
+                <div class="sm-reveal-body">
+            <?php else: ?>
+            <div>
             <?php endif ?>
-
-            <div<?= $outlook_collapse
-                     ? ' class="collapse' . ($outlook_open ? ' show' : '') . '" id="'
-                       . htmlspecialchars($outlook_id) . '"'
-                     : '' ?>>
 
             <?php if (!empty($o["positives"])): ?>
                 <p class="mb-1"><strong>For</strong></p>
@@ -123,7 +118,12 @@ $outlook_id = 'outlook-rest-' . preg_replace('/[^a-z0-9]+/i', '-',
                 cost $<?= htmlspecialchars(number_format((float) $outlook_latest["cost"], 4)) ?>.
                 Not financial advice.
             </p>
+            <?php if ($outlook_collapse): ?>
+                </div>
+            </details>
+            <?php else: ?>
             </div>
+            <?php endif ?>
         <?php endif ?>
         </div>
     </div>
