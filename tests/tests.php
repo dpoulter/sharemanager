@@ -772,26 +772,50 @@
        Rounded down instead, the sum is at or just under one and the
        remainder stays as cash. Three counts, because the arithmetic differs
        between them and the one that bit was the one nobody tried. */
-    foreach ([3, 7, 15] as $holdings) {
+    /* The counts that broke it, and the arithmetic for each.
+    
+       Not 3, even though it is the smallest count that does not divide: a
+       third of an account is over the 20% position ceiling, so a three
+       holding strategy is refused for that instead and can never trade -
+       which the limits section above tests on purpose. The weight it writes
+       is still checked here, just not by planning orders from it.
+    
+       The fixture has twelve symbols, so a fifteen holding strategy finds
+       twelve names and the weights sum to twelve fifteenths rather than to
+       one. That is the behaviour the brief asked for - hold fewer, keep the
+       rest in cash - so the check is "at most one", not "about one". */
+    foreach ([[3, false], [7, true], [15, true]] as [$holdings, $should_trade]) {
 
         s_drop($S); s_rules($S, ['holdings' => $holdings]); s_reset($S);
         $written = strategy_write_targets($S, $SASOF);
 
         /* Read the weights back out of the database rather than trusting the
            value PHP wrote: the column's precision is the whole point. */
-        $sum = (float) scalar("select sum(target_weight) from strategy_targets
-                                where strategy=? and as_of_date=?", [$S, $SASOF]);
-        $plan = strategy_plan_orders($S, $SASOF);
+        $stored = rows("select target_weight from strategy_targets
+                         where strategy=? and as_of_date=?", [$S, $SASOF]);
+        $sum = 0.0;
+        foreach ($stored as $row) { $sum += (float) $row['target_weight']; }
 
+        $expected = floor((1.0 / $holdings) * 1000000) / 1000000;
+
+        check("$holdings holdings: each stored weight is one over the holdings, rounded down",
+              count($stored) > 0
+              && abs((float) $stored[0]['target_weight'] - $expected) < 1e-9,
+              "stored=" . var_export($stored[0]['target_weight'] ?? null, true)
+              . " expected=" . var_export($expected, true));
+        check("$holdings holdings: and they sum to at most one, never over it",
+              $sum <= 1.0000001 && $sum > 0,
+              "sum=" . var_export($sum, true) . " over " . count($stored) . " names");
+
+        if (!$should_trade) { continue; }
+
+        $plan = strategy_plan_orders($S, $SASOF);
         $over = false;
         foreach ($plan['errors'] as $error) {
             if (strpos($error, 'sum to') !== false) { $over = true; }
         }
 
-        check("$holdings holdings: the stored weights sum to at most one",
-              $sum <= 1.0000001 && $sum > 0.99,
-              "sum=" . var_export($sum, true) . " weight=" . var_export($written['weight'], true));
-        check("$holdings holdings: and the rebalance plans orders rather than being refused",
+        check("$holdings holdings: the rebalance plans orders rather than being refused",
               !$over && count($plan['orders']) > 0,
               json_encode($plan['errors']));
     }
@@ -6580,13 +6604,16 @@
           substr($drop_out, -400));
     check('it retried before giving up on a company',
           (int) scalar("select count(*) from message_log
-                         where message like '%retrying once%'") > 0,
-          (string) scalar("select message from message_log
-                            where message like '%no answer%' limit 1"));
+                         where message_text like '%retrying once%'") > 0,
+          (string) scalar("select message_text from message_log
+                            where message_text like '%no answer%' limit 1"));
     check('and the night is written down as what it was',
-          (int) scalar("select count(*) from message_log where message like '%dropped=%'") > 0
-          && (int) scalar("select count(*) from message_log where message like '%refused=0%'") > 0,
-          (string) scalar("select message from message_log where message like '%dropped=%' limit 1"));
+          (int) scalar("select count(*) from message_log
+                         where message_text like '%dropped=%'") > 0
+          && (int) scalar("select count(*) from message_log
+                            where message_text like '%refused=0%'") > 0,
+          (string) scalar("select message_text from message_log
+                            where message_text like '%dropped=%' limit 1"));
     check('nothing was stored from a connection that never answered',
           (int) scalar("select count(*) from rns_announcements") === 0);
 
