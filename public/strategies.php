@@ -4,13 +4,13 @@
      * The paper strategies: what each one holds, what it has done, and how
      * it compares with the market.
      *
-     *   strategies.php                 the cards, holdings and trades
-     *   strategies.php (POST dry_run)  what tonight's run would do
+     *   strategies.php            the cards, holdings and trades
+     *   strategy_dry_run.php      what tonight's run would do, in a popup
      *
      * PAPER ONLY. Nothing reachable from this page can place a real order.
-     * The dry run calls strategy_run_night($strategy, $as_of, true), which
-     * computes a plan and writes nothing at all - no targets, no orders, no
-     * cash movement - and the kill switch stops even that.
+     * The dry run endpoint calls strategy_run_night($strategy, $as_of,
+     * true), which computes a plan and writes nothing at all - no targets,
+     * no orders, no cash movement - and the kill switch stops even that.
      *
      * config.php applies the same authentication gate as every other page
      * here. There is no second copy of it to drift out of step with the
@@ -40,7 +40,6 @@
             "ready"      => false,
             "cards"      => [],
             "benchmark"  => [],
-            "dry_run"    => null,
             "halted"     => strategy_halted(),
             "switch_file" => STRATEGY_KILL_SWITCH_FILE,
             "switch_readable" => strategy_kill_switch_readable(),
@@ -58,19 +57,11 @@
         if (!strategy_reserved($row['strategy'])) { $strategies[] = $row['strategy']; }
     }
 
-    /* The dry run. A POST, because it is an action rather than a view, even
-       though it changes nothing: a GET that somebody can link to would be
-       run by every crawler and every preview. One strategy at a time, named
-       in the form, and checked against the list above so the parameter
-       cannot name something else. */
-    $dry_run = null;
-
-    if (($_SERVER["REQUEST_METHOD"] ?? 'GET') === 'POST'
-        && isset($_POST['dry_run'])
-        && in_array($_POST['dry_run'], $strategies, true)) {
-
-        $dry_run = strategy_run_night($_POST['dry_run'], $as_of, true, $exchange);
-    }
+    /* The dry run lives at strategy_dry_run.php now and opens in a popup
+       over this page. It used to be a POST back to here that printed the
+       engine's own lines in a <pre> block at the top - hard to read, and
+       sitting away from the strategy it belonged to. There is deliberately
+       no second route: two ways to ask the same question drift apart. */
 
     $cards = [];
     foreach ($strategies as $strategy) {
@@ -91,7 +82,6 @@
         "ready"     => true,
         "cards"     => $cards,
         "benchmark" => strategy_series(STRATEGY_BENCHMARK),
-        "dry_run"   => $dry_run,
         /* The switch, and whether PHP can see where it lives: "not halted"
            from a path open_basedir blocks is an assumption, and the page
            should not present an assumption as an answer. */

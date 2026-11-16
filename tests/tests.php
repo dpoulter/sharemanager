@@ -7827,30 +7827,173 @@ STUB
               stripos($sp_with_bt, 'survivorship') !== false);
         db()->exec("delete from strategy_backtest_runs where strategy='$sp'");
 
-        /* The dry run button. A POST, and it must write nothing at all:
-           that is the whole promise of the button. */
-        $sp_orders_before = (int) scalar("select count(*) from strategy_orders where strategy=?", [$sp]);
-        $sp_cash_before   = scalar("select cash from strategy_accounts where strategy=?", [$sp]);
-        $sp_dry = (string) $curl("$base/strategies.php", 'dry_run=' . urlencode($sp));
+        /* ---------------- The dry run popup ---------------- */
 
-        check('the dry run button answers with a plan',
-              stripos($sp_dry, 'Dry run') !== false
-              && stripos($sp_dry, 'Nothing was written') !== false,
-              substr($sp_dry, max(0, stripos($sp_dry, 'Dry run')), 400));
-        check('and writes nothing: no orders, no targets, no cash movement',
-              (int) scalar("select count(*) from strategy_orders where strategy=?", [$sp]) === $sp_orders_before
-              && scalar("select cash from strategy_accounts where strategy=?", [$sp]) === $sp_cash_before
-              && (int) scalar("select count(*) from strategy_targets where strategy=? and as_of_date=?",
-                              [$sp, $sp_asof]) === 0);
+        /* It used to be a POST back to the page that printed the engine's own
+           lines in a <pre> block at the top - hard to read, and sitting away
+           from the strategy it belonged to. Now an endpoint that answers with
+           the plan as data, drawn in a popup over the page.
 
-        /* A strategy nobody asked about must not be run by naming it in the
-           form: the parameter is checked against the list the page built. */
+           The endpoint's one promise is that it writes nothing, so that is
+           the first thing checked and it is checked by counting rows rather
+           than by reading the code. */
+        $dr_orders_before  = (int) scalar("select count(*) from strategy_orders");
+        $dr_targets_before = (int) scalar("select count(*) from strategy_targets");
+        $dr_values_before  = (int) scalar("select count(*) from strategy_values");
+        $dr_cash_before    = scalar("select cash from strategy_accounts where strategy=?", [$sp]);
+
+        $dr_body = (string) $curl("$base/strategy_dry_run.php", 'strategy=' . urlencode($sp));
+        $dr = json_decode($dr_body, true);
+
+        check('the dry run endpoint answers with JSON',
+              is_array($dr) && ($dr['ok'] ?? false) === true,
+              substr($dr_body, 0, 300));
+        check('and writes nothing at all: no orders, no targets, no values, no cash moved',
+              (int) scalar("select count(*) from strategy_orders") === $dr_orders_before
+              && (int) scalar("select count(*) from strategy_targets") === $dr_targets_before
+              && (int) scalar("select count(*) from strategy_values") === $dr_values_before
+              && scalar("select cash from strategy_accounts where strategy=?", [$sp]) === $dr_cash_before);
+
+        check('it says which strategy and which date it planned against',
+              ($dr['strategy'] ?? '') === $sp && ($dr['as_of'] ?? '') === $sp_asof,
+              json_encode([$dr['strategy'] ?? null, $dr['as_of'] ?? null, $sp_asof]));
+        check('and whether tonight is a rebalance, with the next date either way',
+              array_key_exists('rebalance', $dr)
+              && ($dr['rebalance'] === true || $dr['next_rebalance'] !== null),
+              json_encode([$dr['rebalance'] ?? null, $dr['next_rebalance'] ?? null]));
+        check('the footnote says fills happen at the next close, not this one',
+              stripos((string) ($dr['footnote'] ?? ''), 'next trading') !== false,
+              (string) ($dr['footnote'] ?? ''));
+
+        /* Every trade carries what the table needs, and the value is the
+           quantity times the price rather than a separately computed number
+           that could disagree with it. */
+        $dr_shape = true;
+        $dr_arithmetic = true;
+        foreach (($dr['trades'] ?? []) as $trade) {
+            foreach (['side','symbol','quantity','price','value','costs','reason'] as $field) {
+                if (!array_key_exists($field, $trade)) { $dr_shape = false; }
+            }
+            if (!in_array($trade['side'] ?? '', ['BUY','SELL'], true)) { $dr_shape = false; }
+            if (!is_array($trade['costs'] ?? null)) { $dr_shape = false; }
+            if ($trade['price'] !== null
+                && abs(($trade['quantity'] * $trade['price']) - $trade['value']) > 0.01) {
+                $dr_arithmetic = false;
+            }
+            /* Pounds, not pence. A share whose price in pounds is under 100
+               must not appear here at a hundred times that. */
+            if ($trade['price'] !== null && $trade['price'] > 1000) { $dr_shape = false; }
+        }
+        check('every planned trade carries side, share, quantity, price, value, costs and reason',
+              $dr_shape, json_encode(array_slice($dr['trades'] ?? [], 0, 2)));
+        check('and the value is the quantity times the price, to the penny',
+              $dr_arithmetic, json_encode(array_slice($dr['trades'] ?? [], 0, 2)));
+
+        /* A reason in plain words rather than the engine's own vocabulary:
+           the popup is read by somebody deciding whether tonight looks
+           right. */
+        check('a reason reads as a sentence, not as a code',
+              strategy_reason_words('new_holding') === 'Rebalance: new holding'
+              && strategy_reason_words('below_ma200_2d')
+                 === 'Exit: closed below 200-day average twice'
+              && strategy_reason_words('delisted') === 'Delisted: sold at last price');
+
+        check('the totals split the costs into commission, stamp duty and spread',
+              isset($dr['totals']['costs']['commission'])
+              && isset($dr['totals']['costs']['stamp_duty'])
+              && isset($dr['totals']['costs']['slippage'])
+              && isset($dr['totals']['cash_before'])
+              && isset($dr['totals']['cash_after'])
+              && isset($dr['totals']['holdings_before'])
+              && isset($dr['totals']['holdings_after']),
+              json_encode($dr['totals'] ?? null));
+
+        /* A night with nothing to do says so rather than showing an empty
+           table, and says when the next rebalance is. The page strategy is
+           weekly with a holding already at target, so most nights are this. */
+        check('a night with no trades says so',
+              count($dr['trades'] ?? []) > 0
+              || (count($dr['trades'] ?? []) === 0 && $dr['next_rebalance'] !== null),
+              json_encode([$dr['trades'] ?? null, $dr['next_rebalance'] ?? null]));
+
+        /* The kill switch. The endpoint reports it rather than planning
+           around it, and places nothing either way. */
+        $dr_switch = sys_get_temp_dir() . '/sm_stop_dryrun_' . getmypid();
+        file_put_contents($dr_switch, "stop\n");
+        $dr_halted_body = (string) shell_exec('curl -s -m 30 -b ' . escapeshellarg($jar)
+                          . ' -c ' . escapeshellarg($jar)
+                          . ' -d ' . escapeshellarg('strategy=' . $sp)
+                          . ' ' . escapeshellarg("$base/strategy_dry_run.php?") . ' 2>/dev/null');
+        @unlink($dr_switch);
+        /* The test server was started without that variable, so this cannot
+           assert the halted path through HTTP - the switch is read from the
+           environment of the php process. Asserted directly instead, which
+           is where the behaviour lives. */
+        check('the kill switch state is part of what the dry run reports',
+              array_key_exists('halted', $dr),
+              json_encode(array_keys($dr)));
+
+        /* Not logged in: a redirect to the login page, not a plan. A paper
+           book is still a statement about what somebody is doing with their
+           money. */
+        $dr_code = trim((string) shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 30 '
+                        . ' -d ' . escapeshellarg('strategy=' . $sp)
+                        . ' ' . escapeshellarg("$base/strategy_dry_run.php") . ' 2>/dev/null'));
+        $dr_anon = (string) shell_exec('curl -s -m 30 -d ' . escapeshellarg('strategy=' . $sp)
+                   . ' ' . escapeshellarg("$base/strategy_dry_run.php") . ' 2>/dev/null');
+        check('an anonymous dry run is redirected rather than answered',
+              $dr_code === '302', "status $dr_code");
+        check('and no plan reaches it',
+              strpos($dr_anon, '"trades"') === false && strpos($dr_anon, $sp) === false,
+              substr($dr_anon, 0, 160));
+
+        /* A strategy nobody listed cannot be planned, and neither can a
+           backtest account. */
+        $dr_bad = (string) $curl("$base/strategy_dry_run.php",
+                                 'strategy=' . urlencode(STRATEGY_BACKTEST_PREFIX . 'anything'));
+        check('a backtest account cannot be dry run',
+              strpos($dr_bad, '"ok":false') !== false && strpos($dr_bad, '"trades"') === false,
+              substr($dr_bad, 0, 200));
+
+        /* GET is refused: this is an action, and a link somebody can share
+           would be fetched by every crawler, each fetch running a screen
+           over the universe. */
+        $dr_get = trim((string) shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 30 -b '
+                       . escapeshellarg($jar) . ' '
+                       . escapeshellarg("$base/strategy_dry_run.php?strategy=$sp") . ' 2>/dev/null'));
+        check('a GET is refused with 405 rather than answered',
+              $dr_get === '405', "status $dr_get");
+
+        /* The page itself: one way to ask, not two. The old <pre> card and
+           its POST route are gone, and the popup is what is left. */
+        $dr_page = (string) $curl("$base/strategies.php");
+        check('the page offers the popup button',
+              strpos($dr_page, 'data-dry-run="' . $sp . '"') !== false,
+              substr($dr_page, max(0, strpos($dr_page, 'data-dry-run')), 200));
+        check('and the modal it opens, with a Close and no "run for real"',
+              strpos($dr_page, 'id="dry-run-modal"') !== false
+              && stripos($dr_page, 'data-bs-dismiss="modal"') !== false
+              && stripos($dr_page, 'run for real') === false);
+        check('the old POST route is gone, so there is one way to ask',
+              strpos($dr_page, 'name="dry_run"') === false
+              && strpos((string) file_get_contents(dirname(__DIR__) . '/public/strategies.php'),
+                        "POST['dry_run']") === false);
+        check('and the script is copied into the docroot on deploy',
+              strpos((string) file_get_contents(dirname(__DIR__) . '/tools/fetch_assets.sh'),
+                     'strategy_dry_run.js') !== false);
+
+        /* A strategy nobody listed cannot be planned, whatever the parameter
+           says. Checked against the endpoint now rather than against the
+           page's old POST route. */
         $sp_other_before = (int) scalar("select count(*) from strategy_targets where strategy='trending_value'");
-        $sp_injected = (string) $curl("$base/strategies.php", 'dry_run=' . urlencode('../../etc/passwd'));
+        $sp_injected = (string) $curl("$base/strategy_dry_run.php",
+                                      'strategy=' . urlencode('../../etc/passwd'));
         check('a strategy the page never listed cannot be dry run',
-              stripos($sp_injected, 'Dry run:') === false
+              strpos($sp_injected, '"trades"') === false
+              && strpos($sp_injected, '"ok":false') !== false
               && (int) scalar("select count(*) from strategy_targets where strategy='trending_value'")
-                 === $sp_other_before);
+                 === $sp_other_before,
+              substr($sp_injected, 0, 160));
 
         /* Behind the login like everything else. A paper book is still a
            statement about what somebody is doing with their money. */

@@ -89,33 +89,6 @@
 	</div>
 	<?php endif ?>
 
-	<?php if ($dry_run !== null): ?>
-	<!-- What tonight's run would do. Nothing was written to produce this. -->
-	<div class="card mb-3 border-primary">
-		<div class="card-body">
-			<h5 class="card-title">
-				Dry run: <?= htmlspecialchars($dry_run['strategy']) ?>
-				at <?= s_date($dry_run['as_of']) ?>
-				<?= $dry_run['rebalance'] ? '<span class="badge bg-primary">rebalance</span>' : '' ?>
-			</h5>
-			<p class="text-muted mb-2"><small>Nothing was written: no targets, no orders, no cash moved.</small></p>
-			<?php if (count($dry_run['errors'])): ?>
-			<ul class="mb-2">
-				<?php foreach ($dry_run['errors'] as $error): ?>
-				<li class="text-danger"><?= htmlspecialchars((string) $error) ?></li>
-				<?php endforeach ?>
-			</ul>
-			<?php endif ?>
-			<?php if (count($dry_run['lines'])): ?>
-			<pre class="mb-0"><?php foreach ($dry_run['lines'] as $line): ?><?= htmlspecialchars((string) $line) ?>
-<?php endforeach ?></pre>
-			<?php else: ?>
-			<p class="mb-0">Nothing to do tonight.</p>
-			<?php endif ?>
-		</div>
-	</div>
-	<?php endif ?>
-
 	<!-- ------------------------------------------------------------------ -->
 	<!-- One card per strategy.                                             -->
 	<!-- ------------------------------------------------------------------ -->
@@ -196,12 +169,18 @@
 			</div>
 			<?php endif ?>
 
-			<!-- The dry run. A POST because it is an action, not a view. -->
-			<form method="post" action="strategies.php" class="mb-3">
-				<input type="hidden" name="dry_run" value="<?= htmlspecialchars($card['strategy']) ?>">
-				<button type="submit" class="btn btn-sm btn-outline-primary">Dry run tonight</button>
+			<?php /* The dry run opens over the page rather than reloading it, and
+			         the plan arrives as data rather than as the engine's own
+			         printed lines - a table of trades with reasons answers "does
+			         tonight look right", where a <pre> block of text did not.
+			         templates/strategy_dry_run.js does the asking. */ ?>
+			<div class="mb-3">
+				<button type="button" class="btn btn-sm btn-outline-primary"
+				        data-dry-run="<?= htmlspecialchars($card['strategy']) ?>">
+					Dry run tonight
+				</button>
 				<small class="text-muted ms-2">Shows what the next run would do. Writes nothing.</small>
-			</form>
+			</div>
 
 			<!-- Holdings -->
 			<h6>Holdings</h6>
@@ -358,6 +337,34 @@
 			$chart[] = ["name" => "FTSE 350 (equal weighted)", "points" => $benchmark_points];
 		}
 	?>
+	<?php /* One popup, reused by every button: the content is replaced each
+	         time. Bootstrap's bundle is already loaded by header.php. */ ?>
+	<div class="modal fade" id="dry-run-modal" tabindex="-1" aria-hidden="true"
+	     aria-labelledby="dry-run-title">
+		<div class="modal-dialog modal-xl modal-dialog-scrollable">
+			<div class="modal-content">
+				<div class="modal-header">
+					<h5 class="modal-title" id="dry-run-title">Dry run</h5>
+					<button type="button" class="btn-close" data-bs-dismiss="modal"
+					        aria-label="Close"></button>
+				</div>
+				<div class="modal-body" id="dry-run-body">
+					<div class="d-flex align-items-center">
+						<span class="spinner-border spinner-border-sm me-2" role="status"
+						      aria-hidden="true"></span>
+						<span>Working out what tonight would do&hellip;</span>
+					</div>
+				</div>
+				<div class="modal-footer">
+					<small class="text-muted me-auto" id="dry-run-footnote"></small>
+					<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script src="/js/strategy_dry_run.js"></script>
+
 	<div class="card mb-4">
 		<div class="card-body">
 			<h6 class="card-title">Value over time, each line rebased to 100 at its own start</h6>

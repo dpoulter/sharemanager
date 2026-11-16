@@ -417,6 +417,14 @@
 					'symbol'=>$symbol,'exchange'=>$target['exchange'],
 					'side'=>$delta>0?'BUY':'SELL','quantity'=>abs($delta),
 					'reference_price'=>$price,
+					/* What the order is for, in data rather than in prose.
+					   The dry run shows this to somebody deciding whether
+					   tonight looks right, and "BUY 2876 PENCE1" on its own
+					   does not answer that. */
+					'held'=>$held,
+					'held_weight'=>($account_value>0) ? ($held*$price)/$account_value : null,
+					'target_weight'=>$weight,
+					'reason_code'=>($held===0) ? 'new_holding' : 'back_to_target',
 				];
 			}
 		}
@@ -425,10 +433,16 @@
 		foreach ($positions as $symbol=>$position) {
 			if (!isset($wanted[$symbol])&&(int)$position['quantity']>0){
 				$price=strategy_price_asof($symbol,$position['exchange'],$as_of_date);
+				$held=(int)$position['quantity'];
 				$plan['orders'][]=[
 					'symbol'=>$symbol,'exchange'=>$position['exchange'],
-					'side'=>'SELL','quantity'=>(int)$position['quantity'],
+					'side'=>'SELL','quantity'=>$held,
 					'reference_price'=>$price,
+					'held'=>$held,
+					'held_weight'=>($account_value>0&&$price!==null)
+					              ? ($held*$price)/$account_value : null,
+					'target_weight'=>0.0,
+					'reason_code'=>'no_longer_selected',
 				];
 			}
 		}
@@ -1417,7 +1431,7 @@
 
 		$night=['strategy'=>$strategy,'as_of'=>substr((string)$as_of,0,10),
 		        'dry_run'=>$dry_run,'rebalance'=>false,'exits'=>[],
-		        'targets'=>[],'lines'=>[],'errors'=>[],
+		        'targets'=>[],'lines'=>[],'errors'=>[],'orders'=>[],
 		        'filled'=>0,'rejected'=>0,'skipped'=>0,'pending'=>0,
 		        'account_value'=>null];
 
@@ -1462,6 +1476,10 @@
 			$night['rejected']=$report['rejected'];
 			$night['skipped']=$report['skipped'];
 			$night['pending']=$report['pending'];
+			/* The plan itself, not only the lines printed from it. The
+			   strategy page's dry run shows a table of what tonight would
+			   do, and a table cannot be built from sentences. */
+			$night['orders']=$report['orders'];
 			$night['account_value']=$report['account_value'];
 			$night['halted']=!empty($report['halted']);
 		}
@@ -2069,6 +2087,221 @@
 
 		return query("select * from strategy_backtest_runs where strategy=?
 		               order by started_at desc, run_id desc limit ".$limit,$strategy);
+	}
+
+
+	/* ---------------------------------------------------------------------
+	   The dry run, as data.
+
+	   The command line prints lines; the strategy page shows a table in a
+	   popup. Both come from here, so the two cannot disagree about what
+	   tonight would do.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * Why a trade is happening, in words somebody can read.
+	 *
+	 * The engine's own vocabulary is a reason code; this is the sentence.
+	 * Kept together in one function so the page, the order note and any
+	 * future report say the same thing about the same decision.
+	 */
+	function strategy_reason_words($code) {
+
+		$words = [
+			'new_holding'        => 'Rebalance: new holding',
+			'back_to_target'     => 'Rebalance: back to target weight',
+			'no_longer_selected' => 'Rebalance: no longer selected',
+			'below_ma200_2d'     => 'Exit: closed below 200-day average twice',
+			'delisted'           => 'Delisted: sold at last price',
+		];
+
+		$code = (string) $code;
+
+		return isset($words[$code]) ? $words[$code] : $code;
+	}
+
+	/**
+	 * Everything tonight would do, for one strategy, as structured data.
+	 *
+	 * Writes nothing: strategy_run_night() is called with dry_run true, and
+	 * the only other thing here is arithmetic over what it returned.
+	 *
+	 * Sells first, then buys, which is the order the engine fills in - the
+	 * cash a sale raises is what pays for a purchase, and a table that shows
+	 * the purchases first invites the question "with what money".
+	 */
+	function strategy_dry_run($strategy,$as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		$rules=strategy_rules($strategy);
+		$account=strategy_account($strategy);
+		$positions=strategy_positions($strategy);
+
+		$report=[
+			'strategy'=>$strategy,
+			'as_of'=>$as_of,
+			'halted'=>strategy_halted(),
+			'rebalance'=>false,
+			'next_rebalance'=>strategy_next_rebalance($rules,$as_of),
+			'errors'=>[],
+			'trades'=>[],
+			'totals'=>[],
+			'currency'=>($account===null) ? 'GBP' : (string)$account['currency'],
+		];
+
+		if ($account===null){
+			$report['errors'][]="There is no paper account for ".$strategy.".";
+			return $report;
+		}
+
+		$night=strategy_run_night($strategy,$as_of,true,$exchange);
+
+		$report['rebalance']=$night['rebalance'];
+		$report['lines']=$night['lines'];
+
+		/* "No targets for tonight" is the normal state of a monthly strategy
+		   on the other thirty nights of the month, not something to put in
+		   red in front of somebody. The popup says "no rebalance tonight,
+		   next on <date>" instead, which is the same fact without the
+		   alarm. On a night that IS a rebalance, no targets is a real
+		   problem and stays. */
+		foreach ($night['errors'] as $error) {
+			if (!$report['rebalance']&&strpos($error,'no targets for')===0){ continue; }
+			$report['errors'][]=$error;
+		}
+
+		$cash_before=(float)$account['cash'];
+		$holdings_before=0;
+		foreach ($positions as $position) {
+			if ((int)$position['quantity']>0){ $holdings_before++; }
+		}
+
+		$companies=[];
+		foreach (query("select symbol, name from stock_symbols where exchange=?",$exchange) as $row) {
+			$companies[$row['symbol']]=$row['name'];
+		}
+
+		$account_value=strategy_account_value($strategy,$as_of);
+
+		$add=function($symbol,$side,$quantity,$price,$reason_code,$held,$held_weight,$target_weight)
+		     use (&$report,$companies) {
+
+			$quantity=(int)$quantity;
+			$costs=($price===null) ? null : strategy_costs($side,$quantity,(float)$price);
+
+			$report['trades'][]=[
+				'side'=>$side,
+				'symbol'=>$symbol,
+				'company'=>isset($companies[$symbol]) ? $companies[$symbol] : null,
+				'quantity'=>$quantity,
+				'price'=>($price===null) ? null : round((float)$price,4),
+				'value'=>($price===null) ? null : round($quantity*(float)$price,2),
+				'costs'=>($costs===null) ? null : [
+					'commission'=>round($costs['commission'],2),
+					'stamp_duty'=>round($costs['stamp_duty'],2),
+					'slippage'=>round($costs['slippage'],2),
+					'total'=>round($costs['commission']+$costs['stamp_duty']+$costs['slippage'],2),
+				],
+				'held'=>(int)$held,
+				'weight_now'=>($held_weight===null) ? null : round($held_weight,4),
+				'weight_target'=>($target_weight===null) ? null : round($target_weight,4),
+				'reason_code'=>$reason_code,
+				'reason'=>strategy_reason_words($reason_code),
+			];
+		};
+
+		/* The exits first: they are sales, and they are decided before the
+		   rebalance is. A holding the exits are selling is dropped from the
+		   rebalance below - the engine would skip it anyway, because one
+		   order per symbol per date is the rule, and showing it twice would
+		   read as two trades. */
+		$exited=[];
+
+		foreach ($night['exits'] as $exit) {
+
+			$exited[$exit['symbol']]=true;
+			$price=strategy_price_asof($exit['symbol'],$exit['exchange'],$as_of);
+			$held=(int)$exit['quantity'];
+
+			$add($exit['symbol'],'SELL',$held,$price,$exit['reason'],$held,
+			     ($account_value!==null&&$account_value>0&&$price!==null)
+			       ? ($held*$price)/$account_value : null,
+			     0.0);
+		}
+
+		$sells=[];
+		$buys=[];
+
+		foreach (($night['orders'] ?? []) as $order) {
+			if (isset($exited[$order['symbol']])){ continue; }
+			if ($order['side']==='SELL'){ $sells[]=$order; } else { $buys[]=$order; }
+		}
+
+		foreach (array_merge($sells,$buys) as $order) {
+			$add($order['symbol'],$order['side'],$order['quantity'],$order['reference_price'],
+			     isset($order['reason_code']) ? $order['reason_code'] : 'back_to_target',
+			     isset($order['held']) ? $order['held'] : 0,
+			     isset($order['held_weight']) ? $order['held_weight'] : null,
+			     isset($order['target_weight']) ? $order['target_weight'] : null);
+		}
+
+		/* The totals. Cash after is cash before plus the signed effect of
+		   every fill, which for a sale is what it raises less its costs and
+		   for a purchase is what it costs including them. */
+		$bought=$sold=0.0;
+		$commission=$stamp=$slippage=0.0;
+		$buy_count=$sell_count=0;
+		$cash_after=$cash_before;
+		$holdings_after=$holdings_before;
+
+		foreach ($report['trades'] as $trade) {
+
+			if ($trade['value']===null){ continue; }
+
+			if ($trade['side']==='BUY'){
+				$buy_count++;
+				$bought += $trade['value'];
+				$cash_after -= $trade['value']+$trade['costs']['total'];
+				if ((int)$trade['held']===0){ $holdings_after++; }
+			}
+			else {
+				$sell_count++;
+				$sold += $trade['value'];
+				$cash_after += $trade['value']-$trade['costs']['total'];
+				if ((int)$trade['quantity']>=(int)$trade['held']){ $holdings_after--; }
+			}
+
+			$commission += $trade['costs']['commission'];
+			$stamp      += $trade['costs']['stamp_duty'];
+			$slippage   += $trade['costs']['slippage'];
+		}
+
+		$report['totals']=[
+			'buys'=>$buy_count,
+			'sells'=>$sell_count,
+			'value_bought'=>round($bought,2),
+			'value_sold'=>round($sold,2),
+			'costs'=>['commission'=>round($commission,2),
+			          'stamp_duty'=>round($stamp,2),
+			          'slippage'=>round($slippage,2),
+			          'total'=>round($commission+$stamp+$slippage,2)],
+			'cash_before'=>round($cash_before,2),
+			'cash_after'=>round($cash_after,2),
+			/* The estimate prices every fill at the as of close, while the
+			   engine fills the sales first and then trims the last purchase
+			   to whatever cash is left. So a small negative here is not an
+			   overdraft, it is the arithmetic saying "the last order will be
+			   a few shares smaller than this" - which is what the engine
+			   will do. Said plainly rather than rounded up to zero. */
+			'trim_expected'=>($cash_after<0),
+			'holdings_before'=>$holdings_before,
+			'holdings_after'=>max(0,$holdings_after),
+			'account_value'=>($account_value===null) ? null : round($account_value,2),
+		];
+
+		return $report;
 	}
 
 ?>
