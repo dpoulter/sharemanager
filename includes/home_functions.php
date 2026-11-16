@@ -123,13 +123,140 @@
 	   --------------------------------------------------------------------- */
 
 	/**
+	 * Whether the nightly breadth table is there.
+	 *
+	 * sql/market_breadth.sql creates it. Guarded so the dashboard works on a
+	 * host that is one deploy behind the migration rather than failing on an
+	 * unknown table - it falls back to computing the figures, which is what
+	 * it always did.
+	 */
+	function market_breadth_ready() {
+		static $known = null;
+		if ($known !== null) { return $known; }
+		$found = query("select count(*) n from information_schema.tables
+		                 where table_schema=database() and table_name='market_breadth'");
+		$known = count($found) && (int) $found[0]['n'] > 0;
+		return $known;
+	}
+
+	/**
+	 * The breadth figures for one date, worked out from statistics.
+	 *
+	 * The rule, in one place: a close above the 200 day average, counted
+	 * over the shares that have a 200 day average, plus the 50/200 crossover
+	 * and the median twelve month return. This is what the nightly job
+	 * stores and what the test compares the stored figures against - if it
+	 * lived in two places they would answer differently the first time one
+	 * of them was changed.
+	 */
+	function market_breadth_compute($date, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+
+		$rows = query("select s.symbol,
+		                      max(case when s.indicator='close_price' then s.value end) close_price,
+		                      max(case when s.indicator='ma50'        then s.value end) ma50,
+		                      max(case when s.indicator='ma200'       then s.value end) ma200,
+		                      max(case when s.indicator='12mnth'      then s.value end) momentum_12m
+		                 from statistics s, stock_symbols ss
+		                where ss.symbol=s.symbol and ss.enabled='Y' and ss.exchange=?
+		                  and s.exchange=? and s.date=?
+		                group by s.symbol", $exchange, $exchange, $date);
+
+		$with_ma200 = 0; $above = 0; $golden = 0; $momentum = [];
+		foreach ($rows as $row) {
+			if ($row['momentum_12m'] !== null) { $momentum[] = (float) $row['momentum_12m']; }
+			if ($row['ma200'] === null) { continue; }
+			$with_ma200++;
+			if ($row['close_price'] !== null && (float) $row['close_price'] > (float) $row['ma200']) { $above++; }
+			if ($row['ma50'] !== null && (float) $row['ma50'] > (float) $row['ma200']) { $golden++; }
+		}
+
+		$pct = function ($n, $of) { return $of > 0 ? round($n / $of * 100, 2) : null; };
+
+		sort($momentum);
+		$median = null;
+		if (count($momentum)) {
+			$middle = (int) floor(count($momentum) / 2);
+			$median = count($momentum) % 2
+			        ? round($momentum[$middle], 4)
+			        : round(($momentum[$middle - 1] + $momentum[$middle]) / 2, 4);
+		}
+
+		return ['date'                 => substr((string) $date, 0, 10),
+		        'exchange'             => $exchange,
+		        'pct_above_ma200'      => $pct($above, $with_ma200),
+		        'pct_ma50_above_ma200' => $pct($golden, $with_ma200),
+		        'median_12m'           => $median,
+		        'shares_counted'       => $with_ma200];
+	}
+
+	/** Work one date out and store it. Returns what was stored. */
+	function market_breadth_write($date, $exchange = null) {
+		$figures = market_breadth_compute($date, $exchange);
+		if (!market_breadth_ready()) { return $figures; }
+		query("insert into market_breadth
+		         (date, exchange, pct_above_ma200, pct_ma50_above_ma200,
+		          median_12m, shares_counted, written_at)
+		       values (?,?,?,?,?,?,now())
+		       on duplicate key update
+		         pct_above_ma200=values(pct_above_ma200),
+		         pct_ma50_above_ma200=values(pct_ma50_above_ma200),
+		         median_12m=values(median_12m),
+		         shares_counted=values(shares_counted),
+		         written_at=now()",
+		      $figures['date'], $figures['exchange'], $figures['pct_above_ma200'],
+		      $figures['pct_ma50_above_ma200'], $figures['median_12m'],
+		      $figures['shares_counted']);
+		return $figures;
+	}
+
+	/**
+	 * The breadth figures the dashboard shows: the stored row if there is
+	 * one, worked out on the spot if there is not.
+	 *
+	 * Falling back rather than showing nothing, because the figures are
+	 * right either way - the only difference is who waits for them. A host
+	 * where the migration has not run, or a night the job did not, gets the
+	 * old behaviour and the old second and a bit.
+	 */
+	function market_breadth($date, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+
+		if (market_breadth_ready()) {
+			$rows = query("select date, exchange, pct_above_ma200, pct_ma50_above_ma200,
+			                      median_12m, shares_counted
+			                 from market_breadth where date=? and exchange=?",
+			              substr((string) $date, 0, 10), $exchange);
+			if (count($rows)) {
+				return ['date'                 => substr((string) $rows[0]['date'], 0, 10),
+				        'exchange'             => $rows[0]['exchange'],
+				        'pct_above_ma200'      => $rows[0]['pct_above_ma200'] === null
+				                                ? null : (float) $rows[0]['pct_above_ma200'],
+				        'pct_ma50_above_ma200' => $rows[0]['pct_ma50_above_ma200'] === null
+				                                ? null : (float) $rows[0]['pct_ma50_above_ma200'],
+				        'median_12m'           => $rows[0]['median_12m'] === null
+				                                ? null : (float) $rows[0]['median_12m'],
+				        'shares_counted'       => (int) $rows[0]['shares_counted'],
+				        'stored'               => true];
+			}
+		}
+
+		$figures = market_breadth_compute($date, $exchange);
+		$figures['stored'] = false;
+		return $figures;
+	}
+
+	/**
 	 * How much of the market is in an uptrend, as a six month line.
 	 *
-	 * The same rule as outlook_market_inputs() - a close above the 200 day
-	 * average - applied to every stored date rather than only to the latest
-	 * one, so the figure on the card has a shape behind it. One query: the
-	 * per symbol pivot happens in a derived table and the proportion is
-	 * counted per date.
+	 * Read from market_breadth, which the nightly job fills. It used to
+	 * pivot statistics across every date in the range on every page load:
+	 * 1.57 seconds of the dashboard, for figures that change once a night.
+	 *
+	 * Falls back to the old query where the table is missing or empty, so a
+	 * host one deploy behind still draws the line.
 	 *
 	 * Returns [] when the statistics do not go back far enough, and the card
 	 * then shows the figure without a line rather than an empty box.
@@ -139,6 +266,14 @@
 		$exchange = $exchange === null ? session_exchange() : $exchange;
 		$months   = max(1, (int) $months);
 		$from     = date('Y-m-d', strtotime($as_of . ' -' . $months . ' month'));
+
+		if (market_breadth_ready()) {
+			$rows = query("select date, pct_above_ma200 pct from market_breadth
+			                where exchange=? and date between ? and ?
+			                  and pct_above_ma200 is not null
+			                order by date", $exchange, $from, $as_of);
+			if (count($rows)) { return $rows; }
+		}
 
 		return query("select d.date, round(sum(d.above)/count(*)*100, 1) pct
 		                from (select s.date, s.symbol,

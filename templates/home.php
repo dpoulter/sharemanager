@@ -82,7 +82,7 @@
 					</div>
 					<div class="sm-strip-item">
 						<div class="sm-strip-label">Median 12 month</div>
-						<div class="sm-strip-value"><?= move_pct_html($breadth['median_12_month_momentum']) ?></div>
+						<div class="sm-strip-value"><?= move_pct_html($breadth['median_12m']) ?></div>
 					</div>
 				</div>
 

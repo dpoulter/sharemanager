@@ -383,37 +383,25 @@ How to answer:
 
 		$index = outlook_index_series(OUTLOOK_INDEX_SYMBOL, $as_of);
 
-		//Breadth over the enabled universe at the as of date. One query per
-		//figure would re-scan the same rows three times.
-		$rows = query("select s.symbol,
-		                      max(case when s.indicator='close_price' then s.value end) close_price,
-		                      max(case when s.indicator='ma50'        then s.value end) ma50,
-		                      max(case when s.indicator='ma200'       then s.value end) ma200,
-		                      max(case when s.indicator='12mnth'      then s.value end) momentum_12m
-		                 from statistics s, stock_symbols ss
-		                where ss.symbol=s.symbol and ss.enabled='Y' and ss.exchange=?
-		                  and s.exchange=? and s.date=?
-		                group by s.symbol", session_exchange(), session_exchange(), $as_of);
-
-		$with_ma200 = 0; $above_ma200 = 0; $golden = 0; $momentum = [];
-		foreach ($rows as $row) {
-			if ($row['momentum_12m'] !== null) { $momentum[] = (float) $row['momentum_12m']; }
-			if ($row['ma200'] === null) { continue; }
-			$with_ma200++;
-			if ($row['close_price'] !== null && (float) $row['close_price'] > (float) $row['ma200']) { $above_ma200++; }
-			if ($row['ma50'] !== null && (float) $row['ma50'] > (float) $row['ma200']) { $golden++; }
-		}
-
-		$pct = function ($n, $of) { return $of > 0 ? round($n / $of * 100, 1) : null; };
+		/* Breadth over the enabled universe at the as of date.
+		
+		   The pivot that used to be here is market_breadth_compute(), and
+		   the nightly job stores its answer - so this reads the stored row
+		   where there is one and works it out where there is not. The model
+		   and the dashboard are then quoting the same three numbers, which
+		   they were not obliged to be while each had its own copy of the
+		   rule. */
+		require_once("home_functions.php");
+		$breadth = market_breadth($as_of, session_exchange());
 
 		return [
 			"as_of_date" => $as_of,
 			"index" => $index,
 			"breadth" => [
-				"shares_with_200_days"       => $with_ma200,
-				"pct_above_ma200"            => $pct($above_ma200, $with_ma200),
-				"pct_ma50_above_ma200"       => $pct($golden, $with_ma200),
-				"median_12_month_momentum"   => outlook_median($momentum),
+				"shares_with_200_days"       => $breadth['shares_counted'],
+				"pct_above_ma200"            => $breadth['pct_above_ma200'],
+				"pct_ma50_above_ma200"       => $breadth['pct_ma50_above_ma200'],
+				"median_12_month_momentum"   => $breadth['median_12m'],
 			],
 		];
 	}

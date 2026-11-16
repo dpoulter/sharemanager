@@ -74,7 +74,8 @@
                 'purchases', 'shares', 'dividends', 'cash_history', 'performance',
                 'portfolio_performance', 'strategy_targets', 'strategy_orders',
                 'strategy_values', 'strategy_backtest_runs', 'ai_outlook',
-                'price_valuation', 'price_momentum', 'message_log', 'history',
+                'price_valuation', 'price_momentum', 'market_breadth',
+                'message_log', 'history',
                 'financial_statement_values', 'fin_stmts'];
 
     $present = [];

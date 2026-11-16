@@ -8215,6 +8215,142 @@
                          where table_schema=database() and table_name='strategy_accounts'
                            and column_name='display_name'") === 1);
 
+    echo "\n--- the index that makes the dashboard possible ---\n";
+
+    /* statistics had one index, (symbol, indicator, date, exchange), which is
+       right for "everything about this share" and useless for the question
+       the dashboard, the ranked lists, the screens and the strategy engine
+       all ask: one indicator, one date, every share. With 2.3 million rows of
+       history behind it the home page took 9.4 seconds. */
+    check('statistics has an index led by the indicator',
+          (int) scalar("select count(*) from information_schema.statistics
+                         where table_schema=database() and table_name='statistics'
+                           and index_name='statistics_indicator_date'
+                           and seq_in_index=1 and column_name='indicator'") === 1);
+    check('and the one it had is still there, for the other question',
+          (int) scalar("select count(*) from information_schema.statistics
+                         where table_schema=database() and table_name='statistics'
+                           and index_name='symbol' and seq_in_index=1
+                           and column_name='symbol'") === 1);
+
+    $ix_mig = (string) file_get_contents(dirname(__DIR__) . '/sql/statistics_indicator_index.sql');
+    check('the migration adds it only if it is missing',
+          stripos($ix_mig, 'information_schema.statistics') !== false
+          && stripos($ix_mig, 'statistics_indicator_date') !== false);
+    /* A live table of this size cannot be taken offline to index it. */
+    check('and adds it without locking the table',
+          stripos($ix_mig, 'algorithm=inplace') !== false
+          && stripos($ix_mig, 'lock=none') !== false);
+
+    /* The query that was slow, actually using it. */
+    $ix_plan = rows("explain select s.symbol, s.value from statistics s
+                      where s.indicator='ma200' and s.date=? and s.exchange='XLON'",
+                    [asof_date()]);
+    check('the breadth query uses it rather than scanning',
+          count($ix_plan) > 0
+          && stripos((string) ($ix_plan[0]['key'] ?? ''), 'statistics_indicator_date') !== false,
+          json_encode($ix_plan));
+
+    echo "\n--- the breadth figures are worked out once a night ---\n";
+
+    $mb_asof = asof_date();
+
+    check('the table is there',
+          market_breadth_ready());
+
+    /* The brief's check: the stored figures are what the live calculation
+       gives. Written here first rather than trusted from the last nightly
+       run - the tests above add and remove statistics rows, so a row
+       written before them describes a different universe, which is exactly
+       what a stale stored figure looks like and exactly what this check
+       would otherwise be unable to tell apart from a wrong one. */
+    market_breadth_write($mb_asof, 'XLON');
+    $mb_live   = market_breadth_compute($mb_asof, 'XLON');
+    $mb_stored = market_breadth($mb_asof, 'XLON');
+
+    check('the dashboard reads the stored row rather than counting again',
+          ($mb_stored['stored'] ?? false) === true, json_encode($mb_stored));
+    check('and it says the same as counting again would',
+          abs((float) $mb_stored['pct_above_ma200'] - (float) $mb_live['pct_above_ma200']) < 0.005
+          && abs((float) $mb_stored['pct_ma50_above_ma200'] - (float) $mb_live['pct_ma50_above_ma200']) < 0.005
+          && abs((float) $mb_stored['median_12m'] - (float) $mb_live['median_12m']) < 0.0005
+          && (int) $mb_stored['shares_counted'] === (int) $mb_live['shares_counted'],
+          json_encode([$mb_stored, $mb_live]));
+
+    /* The denominator is stored because a proportion without one cannot be
+       checked, and on a night the statistics job half ran it is the thing
+       that gives it away. */
+    check('the count the proportion is over is stored with it',
+          (int) $mb_stored['shares_counted'] > 0
+          && (int) $mb_stored['shares_counted']
+             <= (int) scalar("select count(*) from stock_symbols where exchange='XLON' and enabled='Y'"),
+          $mb_stored['shares_counted']);
+
+    /* A host one deploy behind, or a night the job did not run, gets the old
+       behaviour rather than an empty card. */
+    db()->exec("delete from market_breadth where date='$mb_asof' and exchange='XLON'");
+    $mb_fallback = market_breadth($mb_asof, 'XLON');
+    check('with no stored row it works the figures out instead',
+          ($mb_fallback['stored'] ?? true) === false
+          && abs((float) $mb_fallback['pct_above_ma200'] - (float) $mb_live['pct_above_ma200']) < 0.005,
+          json_encode($mb_fallback));
+
+    /* And the model is given the same three numbers the page shows, which it
+       was not obliged to be while each had its own copy of the rule. */
+    $mb_outlook = outlook_market_inputs($mb_asof)['breadth'];
+    check('the outlook is told the same breadth the dashboard shows',
+          abs((float) $mb_outlook['pct_above_ma200'] - (float) $mb_live['pct_above_ma200']) < 0.005
+          && (int) $mb_outlook['shares_with_200_days'] === (int) $mb_live['shares_counted'],
+          json_encode([$mb_outlook, $mb_live]));
+
+    [$mb_out, $mb_rc] = run_script('write_market_breadth.php', [], ['SM_EXCHANGE' => 'XLON']);
+    check('the nightly job writes the latest date', $mb_rc === 0, $mb_out);
+    check('and the row is back',
+          (int) scalar("select count(*) from market_breadth where date=? and exchange='XLON'",
+                       [$mb_asof]) === 1);
+
+    /* A range backfills. */
+    db()->exec("delete from market_breadth where exchange='XLON'");
+    [$mb_out, $mb_rc] = run_script('write_market_breadth.php',
+                                   ['2000-01-01', $mb_asof], ['SM_EXCHANGE' => 'XLON']);
+    $mb_dates = (int) scalar("select count(*) from market_breadth where exchange='XLON'");
+    check('a range backfills every date the statistics cover',
+          $mb_rc === 0 && $mb_dates > 0
+          && $mb_dates === (int) scalar("select count(distinct date) from statistics
+                                          where exchange='XLON'
+                                            and indicator in ('close_price','ma200')"),
+          $mb_dates . ' dates, rc ' . $mb_rc);
+    /* A date the statistics job never covered has no breadth, and writing a
+       zero for it would put a false bottom in the line. */
+    check('and writes nothing for a date the statistics never covered',
+          (int) scalar("select count(*) from market_breadth
+                         where exchange='XLON' and date not in
+                           (select distinct date from statistics where exchange='XLON')") === 0);
+
+    [$mb_out, $mb_rc] = run_script('write_market_breadth.php', ['not-a-date'],
+                                   ['SM_EXCHANGE' => 'XLON']);
+    check('a date it cannot read is refused rather than interpreted',
+          $mb_rc === 2 && stripos($mb_out, 'YYYY-MM-DD') !== false, $mb_out);
+    [$mb_out, $mb_rc] = run_script('write_market_breadth.php', ['2026-11-16', '2026-01-01'],
+                                   ['SM_EXCHANGE' => 'XLON']);
+    check('and a range that starts after it ends', $mb_rc === 2, $mb_out);
+
+    /* The six month line comes from the table now. */
+    $mb_history = home_breadth_history($mb_asof, 6, 'XLON');
+    check('the six month line is read rather than pivoted',
+          count($mb_history) > 0 && array_key_exists('pct', $mb_history[0]),
+          count($mb_history) . ' points');
+    check('and its latest point is the figure on the card',
+          abs((float) end($mb_history)['pct'] - (float) $mb_live['pct_above_ma200']) < 0.011,
+          json_encode([end($mb_history), $mb_live['pct_above_ma200']]));
+
+    $mb_job = (string) file_get_contents(dirname(__DIR__) . '/includes/refresh_all.sh');
+    check('the nightly run writes it, after the job that feeds it',
+          strpos($mb_job, 'write_market_breadth.php') !== false
+          && strpos($mb_job, 'get_statistics.php') < strpos($mb_job, 'write_market_breadth.php'));
+    check('and a failure there does not take the run with it',
+          preg_match('/write_market_breadth\.php" \|\| echo/', $mb_job) === 1);
+
     echo "\n--- one way to print a number ---\n";
 
     /* Formatting used to live in each template, and the same figure was

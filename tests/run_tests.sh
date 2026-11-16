@@ -103,6 +103,12 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_display_name.sql" > /dev/null || exit
 echo "applying sql/strategy_backtest.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_backtest.sql" > /dev/null || exit 1
 
+echo "applying sql/market_breadth.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/market_breadth.sql" > /dev/null || exit 1
+
+echo "applying sql/statistics_indicator_index.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/statistics_indicator_index.sql" > /dev/null || exit 1
+
 echo "applying sql/screen_last_run.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/screen_last_run.sql" > /dev/null || exit 1
 
@@ -148,10 +154,21 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
   && php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/seed.php" > /dev/null \
   && for migration in trend_screens ai_outlook fund_sectors report_currency \
                       shareholder_yield fmp_scores news trending_value rns \
-                      strategy_rules screen_last_run strategy_display_name \
+                      strategy_rules market_breadth statistics_indicator_index screen_last_run \
+                      strategy_display_name \
                       strategy_backtest strategy_prices; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
      done
+
+# The seed holds prices and a portfolio; the statistics are calculated, and the
+# jobs that calculate them are what the suite runs. Without this the restored
+# database has no scores, so the dashboard and the screens are empty for
+# anybody who looks at the application afterwards.
+SM_DB_NAME="$SM_TEST_DB" SM_DB_HOST="$SM_TEST_HOST" \
+SM_DB_USER="$SM_TEST_USER" SM_DB_PASS="$SM_TEST_PASS" SM_EXCHANGE=XLON \
+  sh -c "php -d include_path='$INCLUDE_PATH' '$REPO_DIR/includes/get_momentum_statistics.php' > /dev/null 2>&1;
+         php -d include_path='$INCLUDE_PATH' '$REPO_DIR/includes/get_statistics.php' > /dev/null 2>&1;
+         php -d include_path='$INCLUDE_PATH' '$REPO_DIR/includes/write_market_breadth.php' > /dev/null 2>&1"
 
 if [ "${PY_FAILED:-0}" = 1 ] || [ "${PHP_FAILED:-0}" = 1 ] \
    || [ "${PHONE_FAILED:-0}" = 1 ] || [ "${EMPTY_FAILED:-0}" = 1 ]; then

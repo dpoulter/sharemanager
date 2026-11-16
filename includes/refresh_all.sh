@@ -107,6 +107,16 @@ fi
 "$PHP" "$APP_DIR/includes/get_statistics.php"
 "$PHP" "$APP_DIR/includes/performance_function.php"
 
+# How much of the market is in an uptrend, stored for the dashboard. After
+# get_statistics.php, because that is the job that writes the close, the two
+# moving averages and the twelve month return this counts.
+#
+# The dashboard used to work these out on every page load, pivoting the whole
+# universe twice - 2.6 seconds of a 3.2 second page, for figures that change
+# once a night. Allowed to fail without taking the run with it: the page falls
+# back to computing them, which is what it did before.
+"$PHP" "$APP_DIR/includes/write_market_breadth.php" || echo "refresh_all: market breadth failed" >&2
+
 # The paper strategies: exit checks, a rebalance if one is due tonight, the
 # execution, and then what each one is worth. After get_statistics.php,
 # because a strategy selects on the statistics and the screens that job

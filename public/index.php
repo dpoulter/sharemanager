@@ -42,7 +42,11 @@
     $as_of = last_trading_date($exchange);
     if ($as_of === null) { $as_of = date('Y-m-d'); }
 
-    $market = outlook_market_inputs($as_of);
+    /* The breadth figures, from the table the nightly job fills. They used
+       to be worked out here on every page load, pivoting the whole universe
+       twice - 2.6 seconds of a 3.2 second page, for figures that change once
+       a night. */
+    $breadth = market_breadth($as_of, $exchange);
 
     /* Seven trading days back, counted off the stored closes. */
     $news_from = home_news_window($as_of, 7, $exchange);
@@ -56,7 +60,7 @@
         "title"            => "Dashboard",
         "as_of"            => $as_of,
         "portfolio"        => home_portfolio_strip($_SESSION["id"], $exchange),
-        "breadth"          => $market["breadth"],
+        "breadth"          => $breadth,
         "breadth_history"  => home_breadth_history($as_of, 6, $exchange),
         "news"             => home_news_week($news_from, $as_of, 5, $exchange),
         "news_from"        => $news_from,
