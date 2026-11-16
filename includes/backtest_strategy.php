@@ -52,33 +52,43 @@
 	$from=isset($args[1]) ? $args[1] : null;
 	$to  =isset($args[2]) ? $args[2] : null;
 
+	/* A usage refusal exits non-zero. Most of the scripts here exit(0) with
+	   a message, which is fine for something a person is watching; this one
+	   is also run from a script that checks, so "I did not do it" has to be
+	   distinguishable from "I did it". */
+	$refuse_usage=function($message) {
+		fwrite(STDERR,$message."\r\n");
+		echo $message."\r\n";
+		exit(2);
+	};
+
 	if ($strategy===null||$from===null||$to===null){
-		exit("Usage: php backtest_strategy.php <strategy> <from> <to> [--keep]\r\n");
+		$refuse_usage("Usage: php backtest_strategy.php <strategy> <from> <to> [--keep]");
 	}
 
 	foreach ([$from,$to] as $date) {
 		if (date_create_from_format('Y-m-d',$date)===false
 		    ||date_format(date_create_from_format('Y-m-d',$date),'Y-m-d')!==$date){
-			exit("Invalid date '".$date."', expected Y-m-d\r\n");
+			$refuse_usage("Invalid date '".$date."', expected Y-m-d");
 		}
 	}
-	if ($from>$to){ exit("The start date is after the end date\r\n"); }
+	if ($from>$to){ $refuse_usage("The start date is after the end date"); }
 
-	if (!strategy_rules_ready()){ exit("sql/strategy_rules.sql has not been applied\r\n"); }
-	if (!strategy_backtest_ready()){ exit("sql/strategy_backtest.sql has not been applied\r\n"); }
+	if (!strategy_rules_ready()){ $refuse_usage("sql/strategy_rules.sql has not been applied"); }
+	if (!strategy_backtest_ready()){ $refuse_usage("sql/strategy_backtest.sql has not been applied"); }
 
 	/* Before anything else, including before asking whether it has rules: a
 	   reserved name is refused for being one. Backtesting a backtest is a
 	   mistake however it is spelled, and the answer should not depend on
 	   whether that particular run still exists. */
 	if (strategy_reserved($strategy)){
-		exit("'".$strategy."' is a reserved name; backtest the strategy it came from\r\n");
+		$refuse_usage("'".$strategy."' is a reserved name; backtest the strategy it came from");
 	}
 
 	/* The rules are the live strategy's. Nothing else about it is read, and
 	   nothing about it is written. */
 	$rules=strategy_rules($strategy);
-	if ($rules===null){ exit("No rules for '".$strategy."'; see sql/strategy_rules.sql\r\n"); }
+	if ($rules===null){ $refuse_usage("No rules for '".$strategy."'; see sql/strategy_rules.sql"); }
 
 	$account_before=strategy_account($strategy);
 	$cash_before=($account_before===null) ? null : (float)$account_before['cash'];
@@ -97,7 +107,7 @@
 	/* Belt and braces: the engine is about to be pointed at this name, so
 	   prove it is a backtest account before anything is written. */
 	if (strpos($bt,STRATEGY_BACKTEST_PREFIX)!==0){
-		exit("refusing to run: '".$bt."' is not a backtest account name\r\n");
+		$refuse_usage("refusing to run: '".$bt."' is not a backtest account name");
 	}
 
 	query("update strategy_backtest_runs set account=? where run_id=?",$bt,$run_id);

@@ -1284,9 +1284,13 @@
     /* Tomorrow. The next session's price arrives and the next run fills
        what was waiting, at that price rather than at the close it was
        decided on. */
+    /* A flat next session. A rise would be more interesting and would test
+       something else: the orders were sized against tonight's close, so on
+       a 1% gap up the last one no longer fits the cash and is rejected for
+       want of it - which is correct, and not what this test is about. */
     $tomorrow = date('Y-m-d', strtotime($LATEST . ' +1 day'));
     $tomorrow_rows = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
-                                    select symbol, exchange, ?, price * 1.01
+                                    select symbol, exchange, ?, price
                                       from historical_prices
                                      where exchange='XLON' and date=?");
     $tomorrow_rows->execute([$tomorrow, $LATEST]);
@@ -1311,6 +1315,10 @@
        past but that has no price of its own is a real failure, and is still
        rejected. That is what stops a dead symbol being filled at some
        convenient number. */
+    /* The fabricated session goes first: LLL's rows are about to be saved
+       and put back, and saving the fabricated one would leave it behind. */
+    db()->prepare("delete from historical_prices where date=?")->execute([$tomorrow]);
+
     $dead_rows = rows("select symbol, exchange, date, price from historical_prices
                         where symbol='LLL' and exchange='XLON' and date>?", [$SASOF]);
     db()->prepare("delete from historical_prices where symbol='LLL' and exchange='XLON' and date>?")
@@ -1328,7 +1336,6 @@
     foreach ($dead_rows as $row) {
         $dead_restore->execute([$row['symbol'],$row['exchange'],$row['date'],$row['price']]);
     }
-    db()->prepare("delete from historical_prices where date=?")->execute([$tomorrow]);
     s_drop($LAST);
     check('the fabricated session is gone again and LLL has its prices back',
           (int)scalar("select count(*) from historical_prices where date=?", [$tomorrow]) === 0
