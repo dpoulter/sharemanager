@@ -100,9 +100,25 @@ select 'trending_value', 'screen',
  where not exists (select 1 from strategy_rules where strategy = 'trending_value')
    and exists (select 1 from screen where name = 'Trending Value');
 
--- Trend following: hold what is above its 200 day average, ranked by
--- momentum, rebalanced weekly, and leave a holding that closes below the
+-- Trend following: hold what is above its 200 day average, ranked by the six
+-- month return, rebalanced weekly, and leave a holding that closes below the
 -- average twice in a row rather than waiting for the week to end.
+--
+-- Ranked by 6mnth rather than by momentum_score, which is what this first
+-- said. Two reasons, and the second is the one that decided it:
+--
+--   momentum_score is a composite of the ranks of the three momentum
+--   indicators, so it is a statement about where a share sits in today's
+--   cross-section. 6mnth is the share's own return over six months, which
+--   is what "trending" means on its own terms;
+--
+--   momentum_score has only ever been stored on the monthly as of dates
+--   get_momentum_statistics.php calculates, so a backtest over daily
+--   history would find no value on almost every rebalance date, select
+--   nothing, and draw a flat line that looked like a result. A six month
+--   return is computable from prices alone, so it can be backfilled
+--   honestly over the whole price history - see
+--   includes/backfill_trend_statistics.php.
 insert into strategy_accounts (strategy, cash, currency, mode, enabled, created_at, note)
 select 'trend_following', 100000, 'GBP', 'PAPER', 'Y', now(),
        'Paper. Above the 200 day average, weekly.'
@@ -112,8 +128,8 @@ insert into strategy_rules (strategy, selection, screen_id, rank_by, holdings,
                             rebalance, exit_rules, exclude_funds, updated_at, note)
 select 'trend_following', 'screen',
        (select id from screen where name = 'Trend following (200-day)'),
-       'momentum_score', 15, 'weekly', 'below_ma200_2d', 'Y', now(),
-       'Weekly. Sells a holding that closes below its 200 day average twice.'
+       '6mnth', 15, 'weekly', 'below_ma200_2d', 'Y', now(),
+       'Weekly. Best six month return of what is above its 200 day average.'
  where not exists (select 1 from strategy_rules where strategy = 'trend_following')
    and exists (select 1 from screen where name = 'Trend following (200-day)');
 
@@ -137,7 +153,7 @@ update strategy_rules
    set selection = 'screen',
        screen_id = ifnull((select id from screen where name = 'Trend following (200-day)'), screen_id),
        score_indicator = null,
-       rank_by = 'momentum_score',
+       rank_by = '6mnth',
        holdings = 15,
        rebalance = 'weekly',
        exit_rules = 'below_ma200_2d',

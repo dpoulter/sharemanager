@@ -37,7 +37,7 @@ two that run:
 | strategy | selects | holdings | rebalance | exits between rebalances |
 | --- | --- | --- | --- | --- |
 | `trending_value` | the Trending Value screen | 15 | monthly | none |
-| `trend_following` | the Trend following (200-day) screen, ranked by `momentum_score` | 15 | weekly | `below_ma200_2d` |
+| `trend_following` | the Trend following (200-day) screen, ranked by `6mnth` | 15 | weekly | `below_ma200_2d` |
 
 Both start with £100,000 of paper money. `momentum_top10`, which only ever
 existed to exercise the engine, is disabled and keeps its row.
@@ -103,6 +103,24 @@ same treatment the strategies get, so the comparison is like for like.
 php includes/backfill_trend_statistics.php 2015-01-02 2026-11-16   # once
 php includes/backtest_strategy.php trend_following 2016-01-04 2026-11-14
 ```
+
+`backfill_trend_statistics.php` writes the indicators that prices alone
+decide - `close_price`, `ma50`, `ma200`, `3mnth`, `6mnth`, `12mnth` - over a
+range of dates, from the prices up to each date. That list is the line, not
+a convenience: a close, a moving average and a return over N months are
+facts about a price series, so working one out for an old date invents
+nothing, while a value or quality score is a statement about figures that
+had not been published yet. It uses the same definitions and the same
+windows as `get_statistics.php` and `get_momentum_statistics.php`, and the
+suite checks its `6mnth` against the momentum job's own value to the last
+decimal place - a backtest ranking on a slightly different number from the
+live strategy is measuring a different strategy.
+
+It is needed because `get_momentum_statistics.php` only ever wrote the
+momentum indicators for its own monthly as of dates. Without it a weekly
+strategy ranking on `6mnth` would find no value on almost every rebalance
+date in history, select nothing, and draw a flat line that looked like a
+result.
 
 `backtest_strategy.php` replays a strategy's own rules through the same
 engine, under its own account named `bt_<strategy>_<run_id>`. That prefix is

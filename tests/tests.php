@@ -607,11 +607,20 @@
           $tv_rules !== null
           && scalar("select name from screen where id=?", [$tv_rules['screen_id']]) === 'Trending Value',
           var_export($tv_rules['screen_id'] ?? null, true));
-    check('Trend following is weekly, ranked by momentum, and has the 200-day exit',
+    check('Trend following is weekly, ranked by the six month return, and has the 200-day exit',
           $tf_rules !== null && $tf_rules['rebalance'] === 'weekly'
-          && $tf_rules['rank_by'] === 'momentum_score'
+          && $tf_rules['rank_by'] === '6mnth'
           && $tf_rules['exit_list'] === ['below_ma200_2d'],
           json_encode($tf_rules));
+    /* Ranked by 6mnth rather than momentum_score, and the reason is worth a
+       check of its own: momentum_score is a rank within today's
+       cross-section and has only ever been stored on the monthly as of
+       dates, so a backtest would find no value on almost every rebalance
+       date, select nothing, and draw a flat line that looked like a result.
+       A six month return is a fact about a price series. */
+    check('and by an indicator that prices alone decide, so it can be backfilled',
+          in_array($tf_rules['rank_by'], ['3mnth','6mnth','12mnth','close_price','ma50','ma200'], true),
+          (string) $tf_rules['rank_by']);
     check('and at the 200-day trend screen, also by name',
           $tf_rules !== null
           && scalar("select name from screen where id=?", [$tf_rules['screen_id']])
@@ -638,7 +647,8 @@
     $tf_rules = strategy_rules('trend_following');
     check('re-running the migration puts an edited strategy back',
           (int)$tf_rules['holdings'] === 15 && $tf_rules['rebalance'] === 'weekly'
-          && $tf_rules['exit_rules'] === 'below_ma200_2d',
+          && $tf_rules['exit_rules'] === 'below_ma200_2d'
+          && $tf_rules['rank_by'] === '6mnth',
           json_encode($tf_rules));
 
     /* ------------------------------------------------------------------ */
@@ -1417,6 +1427,64 @@
                         where indicator in ('close_price','ma50','ma200')") === $bf_rows,
           "$bf_rows -> " . scalar("select count(*) from statistics
                                     where indicator in ('close_price','ma50','ma200')"));
+
+    /* The momentum returns matter more than the averages now: the trend
+       strategy ranks on 6mnth, and get_momentum_statistics.php only ever
+       wrote it for its own monthly as of dates. The backfill is what makes
+       a daily backtest possible, so the one thing it must not get wrong is
+       the definition - a backtest ranking on a slightly different number
+       from the live strategy is measuring a different strategy.
+
+       So compare it against the job itself: run the nightly momentum job,
+       take the date it wrote, and backfill the same date. The two have to
+       agree exactly, not approximately. */
+    reset_calculated();
+    run_script('get_momentum_statistics.php');
+    $mo_date = scalar("select max(date) from statistics where indicator='6mnth'");
+    $mo_job  = rows("select symbol, value from statistics
+                      where indicator='6mnth' and date=? order by symbol", [$mo_date]);
+
+    db()->prepare("delete from statistics where indicator='6mnth' and date=?")->execute([$mo_date]);
+    run_script('backfill_trend_statistics.php', [$mo_date, $mo_date, '6mnth']);
+    $mo_backfill = rows("select symbol, value from statistics
+                          where indicator='6mnth' and date=? order by symbol", [$mo_date]);
+
+    check('the momentum job wrote something to compare against',
+          count($mo_job) > 5 && $mo_date !== null && $mo_date !== false,
+          var_export($mo_date, true) . ' ' . count($mo_job) . ' rows');
+    check('the backfill writes the same six month return for every share',
+          count($mo_backfill) === count($mo_job) && $mo_backfill == $mo_job,
+          json_encode(['job' => array_slice($mo_job, 0, 3),
+                       'backfill' => array_slice($mo_backfill, 0, 3)]));
+    check('and to the last decimal place, not approximately',
+          json_encode($mo_backfill) === json_encode($mo_job),
+          json_encode(array_slice($mo_backfill, 0, 2)));
+
+    /* The three months and twelve months versions come from the same code
+       path, so one date of each is enough to know the window is being
+       read rather than hard coded. */
+    run_script('backfill_trend_statistics.php', [$mo_date, $mo_date, '3mnth', '12mnth']);
+    check('three and twelve month returns are written too, and differ from the six',
+          (int)scalar("select count(*) from statistics where indicator='3mnth' and date=?", [$mo_date]) > 5
+          && (int)scalar("select count(*) from statistics where indicator='12mnth' and date=?", [$mo_date]) > 5
+          && scalar("select value from statistics where indicator='3mnth' and date=? and symbol='AAA'", [$mo_date])
+             !== scalar("select value from statistics where indicator='6mnth' and date=? and symbol='AAA'", [$mo_date]));
+
+    /* And the backfill writes nothing it cannot work out from prices. A
+       value score is a statement about figures that were not published on
+       the date in question, and no SQL makes that honest. */
+    [$refuse_out] = run_script('backfill_trend_statistics.php', [$mo_date, $mo_date, 'value_score']);
+    check('it refuses an indicator prices do not decide',
+          stripos($refuse_out, 'Unknown indicator') !== false,
+          substr($refuse_out, 0, 200));
+
+    /* reset_calculated() above emptied the statistics the range backfill
+       wrote, and the backtest below needs them: a backtest whose indicators
+       are missing is refused, which is correct and would make the next
+       section test the refusal twice over instead of the replay. */
+    run_script('backfill_trend_statistics.php', [$bf_from, $bf_to]);
+    check('the range the backtest needs is backfilled again after the reset',
+          (int)scalar("select count(distinct date) from statistics where indicator='ma200'") > 10);
 
     echo "\n--- strategies: the backtest uses the same engine ---\n";
 
