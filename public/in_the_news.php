@@ -42,7 +42,7 @@
     $from = count($dates) ? (string) end($dates)['date']
                           : date('Y-m-d', strtotime($as_of . ' -' . $days . ' day'));
 
-    $sort   = in_array($_GET['sort'] ?? '', ['date','sentiment','symbol'], true)
+    $sort   = in_array($_GET['sort'] ?? '', ['date','sentiment','symbol','move'], true)
             ? $_GET['sort'] : 'date';
     $tone   = in_array($_GET['tone'] ?? '', ['positive','negative'], true)
             ? $_GET['tone'] : '';
@@ -53,30 +53,24 @@
                           ["type" => $type, "market" => $market, "tone" => $tone],
                           $sort);
 
-    /* The price move is one query per row rather than part of the listing
-       query: the close before an announcement depends on what time of day it
-       was made, which is a rule in PHP (see rns_baseline_date()) and not
-       something a join can express. A week of announcements is tens of rows,
-       not thousands.
+    /* The price move comes off the row. It used to be worked out here, once
+       per row: the close before an announcement depends on what time of day
+       it was made, which is a rule in PHP rather than something a join can
+       express (see rns_baseline_date()), so it was four queries a row. With
+       three thousand announcements stored that made this page take 27
+       seconds.
 
-       Sorting by the move therefore happens here, once the moves are known. */
+       The rule has not moved - rns_refresh_price_moves() still applies it,
+       in PHP, once a night for the window this page shows. What changed is
+       that the page reads the answer instead of working it out while
+       somebody waits. Sorting by the move is the database's job now too.
+
+       A row whose move has not been worked out yet shows no move rather
+       than a zero: the figure arrives on the next nightly run. */
     foreach ($rows as $i => $row) {
-        $rows[$i]['price_move'] = rns_price_move($row['symbol'], $row['published_at'],
-                                                 $as_of, session_exchange());
+        $rows[$i]['price_move'] = $row['price_move'] === null
+                                ? null : (float) $row['price_move'];
         $rows[$i]['figures']    = rns_key_figures($row['key_figures']);
-    }
-
-    if (($_GET['sort'] ?? '') === 'move') {
-        $sort = 'move';
-        usort($rows, function ($a, $b) {
-            /* A share with no usable baseline has an unknown move, not a
-               flat one, so it sorts to the end either way rather than
-               claiming the middle. */
-            if ($a['price_move'] === null && $b['price_move'] === null) { return 0; }
-            if ($a['price_move'] === null) { return 1; }
-            if ($b['price_move'] === null) { return -1; }
-            return $a['price_move'] <=> $b['price_move'];
-        });
     }
 
     render("in_the_news.php", [

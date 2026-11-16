@@ -180,8 +180,13 @@ trade. With resume after the gate, a crashed run could never recover on its own.
   reconciliation problem stops the run. A breached limit aborts the whole
   rebalance rather than trimming it: half a rebalance is a different portfolio
   from the one the signal asked for.
-- **Kill switch.** `STOP_TRADING` is checked before every order, so dropping the
-  file stops a run in progress.
+- **Kill switch.** `/var/lib/sharemanager/STOP_TRADING` is checked before every
+  order, so dropping the file stops a run in progress. It stops the nightly
+  run, the command line and the page's dry run alike, and the page shows a
+  banner while it is there. `SM_KILL_SWITCH_FILE` overrides the path, which
+  has to be inside php-fpm's `open_basedir` or the page cannot read it - the
+  old default, `/var/www/shares/STOP_TRADING`, was outside it and did not
+  exist, so the switch could not be operated at all.
 - **Long only.** Selling more than is held is rejected, never shorted.
 
 ## Limits

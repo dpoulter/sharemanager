@@ -114,9 +114,16 @@ fi
 # scores.
 #
 # PAPER ONLY. Nothing in this path can place a real order: every account is
-# mode='PAPER' and no code supports anything else. The kill switch
-# (STRATEGY_KILL_SWITCH_FILE, /var/www/shares/STOP_TRADING by default) stops
-# it with a file.
+# mode='PAPER' and no code supports anything else. The kill switch stops it
+# with a file:
+#
+#   sudo install -d /var/lib/sharemanager
+#   sudo touch /var/lib/sharemanager/STOP_TRADING     # stop
+#   sudo rm /var/lib/sharemanager/STOP_TRADING        # resume
+#
+# SM_KILL_SWITCH_FILE in /etc/sharemanager.env overrides the path. It has to
+# be somewhere php-fpm's open_basedir allows as well, or the strategy page
+# can see the switch but the nightly run is the only thing that obeys it.
 #
 # Allowed to fail without taking the run with it. A strategy that cannot
 # decide what to hold tonight is a strategy that does nothing tonight, which

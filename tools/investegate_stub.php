@@ -91,8 +91,9 @@ print('<html><body>Not found</body></html>');
 
 /* ------------------------------------------------------------------------ */
 
-/* A date $days ago, written the way a listing writes it. */
-function stub_when($days, $time = '07:00', $format = 'j M Y') {
+/* A date $days ago, written the way a listing writes it: day, month, year,
+   then a twelve hour time with AM or PM. */
+function stub_when($days, $time = '07:00 AM', $format = 'j M Y') {
     return gmdate($format, strtotime("-$days day")) . ' ' . $time;
 }
 
@@ -109,10 +110,21 @@ function stub_default_listing($path) {
        Dated from today rather than from a fixed day, so the suite does not
        quietly stop testing the fetcher the month these dates fall outside
        the job's window. */
+    /* The fourth is twenty days old on purpose: it is inside the thirty day
+       backfill a company with nothing stored gets, and outside the one day
+       window a company with a recent announcement gets. That difference is
+       the per-company window, and with only recent items the stub could not
+       tell the two apart.
+    
+       The times use the twelve hour clock Investegate writes - and one of
+       them is in the afternoon, because reading "05:30 PM" as 05:30 is what
+       put every afternoon announcement twelve hours early on the first live
+       run. */
     $items = [
-        ['9001', 'rns', 'trading-update',            stub_when(0)],
-        ['9002', 'rns', 'transaction-in-own-shares', stub_when(1, '16:35')],
-        ['9003', 'eqs', 'director-pdmr-shareholding-purchase-of-shares', stub_when(2)],
+        ['9001', 'rns', 'trading-update',            stub_when(0, '07:00 AM')],
+        ['9002', 'rns', 'transaction-in-own-shares', stub_when(1, '04:35 PM')],
+        ['9003', 'eqs', 'director-pdmr-shareholding-purchase-of-shares', stub_when(2, '05:30 PM')],
+        ['9004', 'rns', 'final-results',             stub_when(20, '07:00 AM')],
     ];
 
     /* Title first, then the date - which is the order the live page uses,

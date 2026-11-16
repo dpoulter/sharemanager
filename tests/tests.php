@@ -760,6 +760,62 @@
     /* Put the full set of scores back for the tests below. */
     foreach ($S_SYMBOLS as $i => $symbol) { s_stat($symbol,'momentum_score',$SASOF,100-$i); }
 
+    echo "\n--- strategies: a weight that cannot divide one ---\n";
+
+    /* The fault that stopped both strategies on the first live dry run.
+       target_weight is decimal(9,6), and one fifteenth rounded to six places
+       is 0.066667: fifteen of those sum to 1.000005, which the executor's
+       "weights must not sum over 1" check correctly refuses. Every holdings
+       count that does not divide one exactly planned nothing at all, and
+       every fixture here used five, which does.
+
+       Rounded down instead, the sum is at or just under one and the
+       remainder stays as cash. Three counts, because the arithmetic differs
+       between them and the one that bit was the one nobody tried. */
+    foreach ([3, 7, 15] as $holdings) {
+
+        s_drop($S); s_rules($S, ['holdings' => $holdings]); s_reset($S);
+        $written = strategy_write_targets($S, $SASOF);
+
+        /* Read the weights back out of the database rather than trusting the
+           value PHP wrote: the column's precision is the whole point. */
+        $sum = (float) scalar("select sum(target_weight) from strategy_targets
+                                where strategy=? and as_of_date=?", [$S, $SASOF]);
+        $plan = strategy_plan_orders($S, $SASOF);
+
+        $over = false;
+        foreach ($plan['errors'] as $error) {
+            if (strpos($error, 'sum to') !== false) { $over = true; }
+        }
+
+        check("$holdings holdings: the stored weights sum to at most one",
+              $sum <= 1.0000001 && $sum > 0.99,
+              "sum=" . var_export($sum, true) . " weight=" . var_export($written['weight'], true));
+        check("$holdings holdings: and the rebalance plans orders rather than being refused",
+              !$over && count($plan['orders']) > 0,
+              json_encode($plan['errors']));
+    }
+
+    /* The check itself stays: a selection that would invest more than the
+       account holds is still refused. Proved by writing such a set of
+       targets by hand, because nothing the rules can say will produce one. */
+    s_drop($S); s_rules($S, ['holdings'=>5]); s_reset($S);
+    db()->prepare("delete from strategy_targets where strategy=?")->execute([$S]);
+    $greedy = db()->prepare("insert into strategy_targets
+                               (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                             values (?,?,?,'XLON',0.2,now())");
+    foreach (['AAA','BBB','CCC','DDD','EEE','FFF'] as $symbol) {
+        $greedy->execute([$S, $SASOF, $symbol]);
+    }
+    $greedy_plan = strategy_plan_orders($S, $SASOF);
+    $greedy_refused = false;
+    foreach ($greedy_plan['errors'] as $error) {
+        if (strpos($error, 'sum to') !== false) { $greedy_refused = true; }
+    }
+    check('weights that really do sum over one are still refused',
+          $greedy_refused && count($greedy_plan['orders']) === 0,
+          json_encode($greedy_plan['errors']));
+
     echo "\n--- strategies: funds are not companies ---\n";
 
     /* An investment trust passes a value screen for being a wrapper rather
@@ -1224,6 +1280,53 @@
           substr($kill_dry_out, 0, 300));
 
     @unlink($kill_file);
+
+    echo "\n--- strategies: a kill switch somebody can reach ---\n";
+
+    /* The switch defaulted to /var/www/shares/STOP_TRADING, the pre-2026
+       server layout. The directory does not exist and php-fpm's
+       open_basedir blocked it, so the page logged a warning on every load
+       and could never see the switch, and on the command line it only
+       worked if somebody knew to create a file in a directory that was not
+       there. A safety mechanism nobody can reach is not one. */
+    [$ks_out] = run_script('run_strategies.php', [$SASOF, '--dry-run'],
+                           ['SM_KILL_SWITCH_FILE' => '']);
+    check('the default switch path is somewhere a deployed app can read',
+          strpos((string) file_get_contents(dirname(__DIR__) . '/includes/strategy_functions.php'),
+                 '/var/lib/sharemanager/STOP_TRADING') !== false
+          && strpos((string) file_get_contents(dirname(__DIR__) . '/includes/strategy_functions.php'),
+                    '/var/www/shares/STOP_TRADING') === false);
+
+    /* SM_KILL_SWITCH_FILE is the name the rest of the application's
+       settings use, and it has to win. */
+    $ks_file = sys_get_temp_dir() . '/sm_stop_sm_name_' . getmypid();
+    file_put_contents($ks_file, "stop\n");
+    s_drop($GOOD); s_rules($GOOD, ['holdings'=>5]); s_reset($GOOD);
+
+    [$ks_sm_out, $ks_sm_rc] = run_script('run_strategies.php', [$SASOF],
+                                         ['SM_KILL_SWITCH_FILE' => $ks_file]);
+    check('SM_KILL_SWITCH_FILE stops the run',
+          $ks_sm_rc === 4 && stripos($ks_sm_out, 'HALTED') !== false,
+          substr($ks_sm_out, 0, 300));
+    check('and nothing was placed',
+          (int)scalar("select count(*) from strategy_orders where strategy=?", [$GOOD]) === 0);
+
+    [$ks_dry_out, $ks_dry_rc] = run_script('run_strategies.php', [$SASOF, '--dry-run'],
+                                           ['SM_KILL_SWITCH_FILE' => $ks_file]);
+    check('including the dry run, which is where it was invisible before',
+          $ks_dry_rc === 4 && stripos($ks_dry_out, 'HALTED') !== false,
+          substr($ks_dry_out, 0, 300));
+    @unlink($ks_file);
+
+    /* A path PHP cannot look at is not "not halted". The page says which it
+       is rather than presenting an assumption as an answer. */
+    [$ks_blind_out] = run_script('run_strategies.php', [$SASOF, '--dry-run'],
+                                 ['SM_KILL_SWITCH_FILE' => '/nowhere/at/all/STOP_TRADING']);
+    check('an unreadable switch path does not stop the run but is noticed',
+          stripos($ks_blind_out, 'HALTED') === false,
+          substr($ks_blind_out, 0, 200));
+    check('and the page can tell a path it cannot read from one with no file in it',
+          function_exists('strategy_kill_switch_readable'));
 
     echo "\n--- strategies: a dry run writes nothing ---\n";
 
@@ -6120,6 +6223,59 @@
     check('an unknown baseline is an unknown move, not a flat one',
           rns_price_move('RNB', '2020-01-02 07:00:00', '2026-11-10', 'XTST') === null);
 
+    /* The move is stored on the row now, worked out once a night instead of
+       four queries per row while somebody waits for a page: "In the news"
+       took 27 seconds with three thousand announcements stored, against
+       0.16 for the quote page.
+
+       The rule has not moved - rns_refresh_price_moves() calls the same
+       rns_price_move() these checks just exercised - so the one thing worth
+       testing is that the stored number is that number, and that an
+       announcement with no usable baseline stores nothing rather than a
+       zero. */
+    db()->exec("truncate rns_announcements");
+    $mv_insert = db()->prepare("insert into rns_announcements
+        (announcement_id, symbol, source, title, published_at, url, body, body_hash,
+         skipped, first_seen)
+        values (?, ?, 'RNS', 'Trading Update', ?, 'https://example.invalid/a', 'text',
+                sha1('text'), 'N', now())");
+    $mv_insert->execute(['6101', 'RNB', '2026-11-06 07:00:00']);
+    $mv_insert->execute(['6102', 'RNB', '2026-11-06 17:00:00']);
+    /* A symbol with no prices at all: the move is unknown, which is not the
+       same as nothing having happened. */
+    $mv_insert->execute(['6103', 'RNNOPRICE', '2026-11-06 07:00:00']);
+
+    $mv_report = rns_refresh_price_moves('2026-11-10', 'XTST', 30);
+    $mv_rows = rows("select announcement_id, price_move, price_move_date
+                       from rns_announcements order by announcement_id");
+    $mv_by_id = [];
+    foreach ($mv_rows as $r) { $mv_by_id[$r['announcement_id']] = $r; }
+
+    check('the stored move is the move the rule works out',
+          abs((float) $mv_by_id['6101']['price_move'] - 10.0) < 0.0001
+          && abs((float) $mv_by_id['6102']['price_move'] - 7.84) < 0.0001,
+          json_encode($mv_by_id));
+    check('and each row says which close it was measured to',
+          substr((string) $mv_by_id['6101']['price_move_date'], 0, 10) === '2026-11-10');
+    check('an announcement with no usable baseline stores no move rather than a zero',
+          $mv_by_id['6103']['price_move'] === null
+          && $mv_by_id['6103']['price_move_date'] === null,
+          json_encode($mv_by_id['6103']));
+    check('the run says how many it worked out and how many it could not',
+          $mv_report['written'] === 2 && $mv_report['unknown'] === 1,
+          json_encode($mv_report));
+
+    /* Run again at a later close and the number changes, which is the whole
+       point of a figure that runs to the latest price. */
+    $mv_second = rns_refresh_price_moves('2026-11-09', 'XTST', 30);
+    check('a later run re-measures to the new close rather than keeping the old answer',
+          (float) scalar("select price_move from rns_announcements where announcement_id='6101'")
+            !== (float) $mv_by_id['6101']['price_move']
+          && $mv_second['written'] === 2,
+          json_encode([scalar("select price_move from rns_announcements where announcement_id='6101'"),
+                       $mv_by_id['6101']['price_move']]));
+
+    db()->exec("truncate rns_announcements");
     db()->exec("delete from historical_prices where exchange='XTST'");
     db()->exec("delete from stock_symbols where exchange='XTST'");
 
@@ -6178,8 +6334,12 @@
                              summary, body_truncated, scored_at, length(body) body_length,
                              date(published_at) published
                         from rns_announcements order by announcement_id");
-    check('three announcements were listed and all three are on record',
-          count($rns_rows) === 3, json_encode(array_column($rns_rows, 'announcement_id')));
+    /* Four now: three from the last few days and one twenty days old, which
+       is inside the backfill a company with nothing stored gets. The fourth
+       is what makes the per-company window testable - see "an interrupted
+       backfill finishes" below. */
+    check('every announcement in the window is on record',
+          count($rns_rows) === 4, json_encode(array_column($rns_rows, 'announcement_id')));
 
     $rns_by_id = [];
     foreach ($rns_rows as $r) { $rns_by_id[$r['announcement_id']] = $r; }
@@ -6226,6 +6386,23 @@
           && ($rns_by_id['9003']['published'] ?? '') === gmdate('Y-m-d', strtotime('-2 day')),
           json_encode(array_combine(array_column($rns_rows, 'announcement_id'),
                                     array_column($rns_rows, 'published'))));
+
+    /* And its own row's TIME, on a twelve hour clock. The live listing
+       writes "05:30 PM", which the first version stored as 05:30 - so every
+       afternoon announcement was filed twelve hours early and measured its
+       price move from the wrong close, because 05:30 is before the open and
+       17:30 is after it. */
+    $rns_times = rows("select announcement_id, time(published_at) t from rns_announcements
+                        order by announcement_id");
+    $rns_time_by_id = [];
+    foreach ($rns_times as $r) { $rns_time_by_id[$r['announcement_id']] = substr((string) $r['t'], 0, 5); }
+    check('a morning announcement keeps its morning time',
+          ($rns_time_by_id['9001'] ?? '') === '07:00',
+          json_encode($rns_time_by_id));
+    check('and an afternoon one is stored in the afternoon, not twelve hours early',
+          ($rns_time_by_id['9002'] ?? '') === '16:35'
+          && ($rns_time_by_id['9003'] ?? '') === '17:30',
+          json_encode($rns_time_by_id));
     check('and the text that was scored is the announcement, not the page round it',
           (int) ($rns_by_id['9001']['body_length'] ?? 0) > 400
           && (string) scalar("select body from rns_announcements where announcement_id='9001'")
@@ -6237,8 +6414,8 @@
 
     $rns_fetched = array_values(array_filter($rns_requests,
                        fn($line) => strpos($line, '/announcement/') !== false));
-    check('only the two worth reading were fetched, not all three',
-          count($rns_fetched) === 2, implode(' | ', $rns_fetched));
+    check('only the three worth reading were fetched, not all four',
+          count($rns_fetched) === 3, implode(' | ', $rns_fetched));
 
     check('the ticker that answered is remembered, so tomorrow asks once',
           (string) scalar("select tidm from stock_symbols where symbol='RNX'") !== '',
@@ -6250,7 +6427,7 @@
     [$rns_out2, $rns_rc2] = run_script('fetch_rns.php', [], $rns_env);
     check('a second run completes', $rns_rc2 === 0, substr($rns_out2, -400));
     check('and stores nothing new, because the announcement id is the key',
-          (int) scalar("select count(*) from rns_announcements") === 3,
+          (int) scalar("select count(*) from rns_announcements") === 4,
           scalar("select count(*) from rns_announcements") . ' rows');
     $rns_refetched = array_values(array_filter(explode("\n",
                          (string) @file_get_contents("$rns_dir/requests")),
@@ -6326,6 +6503,116 @@
           stripos($rns_out5, 'refusal') !== false, substr($rns_out5, -300));
     check('and stores nothing',
           (int) scalar("select count(*) from rns_announcements") === 0);
+
+    echo "\n--- an interrupted backfill finishes ---\n";
+
+    /* The window used to be one date for the whole run: a day before the
+       newest announcement in the table. The first live run stopped after 73
+       of 350 companies, which left that date at yesterday - so the next run
+       would have looked back one day for the other 277 and their October
+       announcements would never have been fetched at all. An interrupted
+       backfill could never finish, and nothing said so.
+
+       Three steps, because the fault only shows in the second and third. */
+    db()->exec("truncate rns_announcements");
+    file_put_contents("$rns_dir/site_mode", 'ok');
+    db()->exec("update stock_symbols set enabled='N' where exchange='XLON' and symbol<>'RNX'");
+    db()->exec("update stock_symbols set enabled='Y' where symbol='RNX'");
+
+    /* One: nothing stored for this company, so it gets the whole backfill
+       and the twenty day old announcement comes with it. */
+    run_script('fetch_rns.php', [], $rns_env);
+    check('a company with nothing stored is read back the whole backfill',
+          (int) scalar("select count(*) from rns_announcements where announcement_id='9004'") === 1,
+          json_encode(array_column(rows("select announcement_id from rns_announcements"), 'announcement_id')));
+
+    /* Two: with recent announcements on record, the window is a day before
+       this company's own newest, so the old one is behind it and the
+       listing stops there. */
+    db()->exec("delete from rns_announcements where announcement_id='9004'");
+    file_put_contents("$rns_dir/requests", '');
+    run_script('fetch_rns.php', [], $rns_env);
+    check('and a company with recent announcements is not read back a month every night',
+          (int) scalar("select count(*) from rns_announcements where announcement_id='9004'") === 0,
+          json_encode(array_column(rows("select announcement_id from rns_announcements"), 'announcement_id')));
+
+    /* Three: the fault itself. Another company has an announcement from
+       today, so the TABLE's newest is today - but this company has nothing,
+       and it must still be read back the whole backfill. Under the old
+       global window it got one day and its month was lost. */
+    db()->exec("truncate rns_announcements");
+    db()->prepare("insert into rns_announcements
+                     (announcement_id, symbol, source, title, published_at, url, body,
+                      body_hash, skipped, first_seen)
+                   values ('8899','OTHERCO','RNS','Someone else''s news', ?,
+                           'https://example.invalid/a','text',sha1('text'),'N',now())")
+      ->execute([gmdate('Y-m-d') . ' 07:00:00']);
+
+    run_script('fetch_rns.php', [], $rns_env);
+    check('a company with nothing of its own is not held back by another company\'s news',
+          (int) scalar("select count(*) from rns_announcements where announcement_id='9004'") === 1,
+          json_encode(array_column(rows("select announcement_id, symbol from rns_announcements"),
+                                   'announcement_id')));
+
+    db()->exec("delete from rns_announcements where symbol='OTHERCO'");
+
+    echo "\n--- a connection that drops is not a refusal ---\n";
+
+    /* Three "status 0" results in a row stopped the first live run after 73
+       companies. That is a connection failing, not Investegate refusing: the
+       site answered normally a minute later. Each one is retried once, they
+       are counted separately from refusals, and they have their own higher
+       limit - a network that drops one request will drop two, but the run
+       should still give up rather than hammer a dead link 350 times.
+
+       A port with nothing listening is a connection failure that costs no
+       waiting, which is what makes this testable at all. */
+    db()->exec("truncate rns_announcements");
+    $dead_port = $rns_site_port + 40;
+    [$drop_out, $drop_rc] = run_script('fetch_rns.php', [],
+        array_merge($rns_env, ['RNS_BASE_URL' => "http://127.0.0.1:$dead_port",
+                               'RNS_MAX_DROPPED' => '2']));
+
+    check('the job does not fail when the connection does', $drop_rc === 0, substr($drop_out, -400));
+    check('it says it stopped on connection failures, not on refusals',
+          stripos($drop_out, 'connection failure') !== false
+          && stripos($drop_out, 'refusal') === false,
+          substr($drop_out, -400));
+    check('it retried before giving up on a company',
+          (int) scalar("select count(*) from message_log
+                         where message like '%retrying once%'") > 0,
+          (string) scalar("select message from message_log
+                            where message like '%no answer%' limit 1"));
+    check('and the night is written down as what it was',
+          (int) scalar("select count(*) from message_log where message like '%dropped=%'") > 0
+          && (int) scalar("select count(*) from message_log where message like '%refused=0%'") > 0,
+          (string) scalar("select message from message_log where message like '%dropped=%' limit 1"));
+    check('nothing was stored from a connection that never answered',
+          (int) scalar("select count(*) from rns_announcements") === 0);
+
+    echo "\n--- the skip list after the first live run ---\n";
+
+    /* Five rules Jarvis added on the server after reading what the fetcher
+       brought back. In the migration now, so a rebuild keeps them. */
+    foreach ([['Irish Form 38',       'Irish Form 38 - Dealings by a Party'],
+              ['Irishform38',         'Irishform38 Dealings'],
+              ['Gearing Disclosure',  'Gearing Disclosure - 31 October 2026'],
+              ['Issue of Shares',     'Issue of Shares'],
+              ['Director Declaration', 'Director Declaration']] as [$pattern, $title]) {
+
+        check("the migration carries the '$pattern' rule",
+              (int) scalar("select count(*) from rns_skip_rules where pattern=? and enabled='Y'",
+                           [$pattern]) === 1);
+        check("and '$title' is skipped before its text is fetched",
+              rns_skip_reason($title) !== null,
+              var_export(rns_skip_reason($title), true));
+    }
+
+    /* The exception that still has to work: an investment trust tapping out
+       shares is routine, a placing is not. */
+    check('a placing is still worth reading',
+          rns_skip_reason('Placing of New Ordinary Shares') === null,
+          var_export(rns_skip_reason('Placing of New Ordinary Shares'), true));
 
     /* Back to one symbol, so what follows is about the scorer rather than
        about how many companies the seed has. */
@@ -6726,6 +7013,28 @@
               !preg_match('/(Fatal error|SQLSTATE|You have an error)/i', $itn_odd)
               && strpos($itn_odd, 'Trading ahead of expectations') === false,
               substr($itn_odd, 0, 200));
+        /* The move comes off the row, not out of a query per row. Planted
+           as a number the arithmetic could not produce: if the page still
+           worked the move out, it would show the real one instead. This is
+           what took the page from 27 seconds to one query. */
+        db()->prepare("update rns_announcements set price_move=?, price_move_date=?
+                        where announcement_id='5001'")->execute([42.5, $itn_asof]);
+        $itn_moved = (string) $curl("$base/in_the_news.php");
+        check('the price move on the page is the one stored on the row',
+              strpos($itn_moved, '42.5') !== false, substr($itn_moved, 0, 200));
+
+        /* And sorting by it is the database's job now. The negative
+           announcement has no stored move at all, so it sorts last either
+           way: an unknown move is not the biggest fall. */
+        db()->prepare("update rns_announcements set price_move=?, price_move_date=?
+                        where announcement_id='5002'")->execute([-11.2, $itn_asof]);
+        $itn_by_move = (string) $curl("$base/in_the_news.php?sort=move");
+        check('sorting by the move puts the worst first',
+              strpos($itn_by_move, '-11.2') !== false
+              && strpos($itn_by_move, 'BBB') !== false
+              && strpos($itn_by_move, 'BBB') < strpos($itn_by_move, 'AAA'),
+              substr($itn_by_move, max(0, strpos($itn_by_move, 'BBB') - 100), 300));
+
         $itn_days = (string) $curl("$base/in_the_news.php?days=99999");
         check('a period nobody offered falls back to the week rather than reading everything',
               strpos($itn_days, 'Last 7 trading days') !== false

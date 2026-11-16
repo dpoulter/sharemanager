@@ -56,9 +56,22 @@
 	</p>
 
 	<?php if ($halted): ?>
+	<div class="alert alert-danger">
+		<strong>Trading halted.</strong>
+		The kill switch file exists, so the nightly run, the command line and
+		the dry run below all place nothing for any strategy.
+		<br><small>Remove <code><?= htmlspecialchars((string) $switch_file) ?></code> to resume.</small>
+	</div>
+	<?php elseif (!$switch_readable): ?>
 	<div class="alert alert-warning">
-		Trading is halted: the kill switch file exists, so the nightly run
-		places nothing for any strategy.
+		<strong>The kill switch cannot be read.</strong>
+		<code><?= htmlspecialchars((string) $switch_file) ?></code> is not
+		somewhere this page can look - the directory is missing, or it is
+		outside php-fpm's <code>open_basedir</code> - so "not halted" here is
+		an assumption rather than an answer. The nightly job may still see
+		it.
+		<br><small>Create the directory and add it to <code>open_basedir</code>, or set
+		<code>SM_KILL_SWITCH_FILE</code> to a path both can read.</small>
 	</div>
 	<?php endif ?>
 

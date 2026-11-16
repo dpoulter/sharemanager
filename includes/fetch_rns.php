@@ -76,25 +76,51 @@
 			exit(3);
 		}
 
-		/* How far back to look. Empty table means the first run, which is the
-		   backfill; after that, from a day before the newest announcement
-		   already stored, so an announcement filed late is still picked up. */
-		$newest = query("select max(date(published_at)) d from rns_announcements")[0]['d'];
-		$from   = ($newest === null)
-		        ? date('Y-m-d', strtotime($asOf . ' -' . RNS_BACKFILL_DAYS . ' day'))
-		        : date('Y-m-d', strtotime($newest . ' -1 day'));
+		/* How far back to look, worked out PER COMPANY.
+		
+		   It used to be one window for the whole run: a day before the
+		   newest announcement in the table. The first live run stopped after
+		   73 companies, which left the newest row at yesterday - so the
+		   next run would have looked back one day for the other 277 and
+		   their October announcements would never have been fetched at all.
+		   An interrupted backfill could never finish, and nothing would have
+		   said so.
+		
+		   Per company, a company with nothing stored (or no tidm yet, which
+		   means it has never been successfully read) gets the full backfill
+		   and one with a history gets a day before its own newest. The run
+		   can then be interrupted as often as it likes and each company
+		   picks up where it left off. */
+		$company_newest = [];
+		foreach (query("select symbol, max(date(published_at)) d
+		                  from rns_announcements group by symbol") as $row) {
+			if ($row['d'] !== null) { $company_newest[$row['symbol']] = (string) $row['d']; }
+		}
 
-		print_r("looking for announcements published on or after ".$from."\r\n");
-		write_log("fetch_rns", "window from=".$from." to=".$asOf
-		                      .($newest === null ? " (first run, backfill)" : ""));
+		$backfill_from = date('Y-m-d', strtotime($asOf . ' -' . RNS_BACKFILL_DAYS . ' day'));
+
+		$window_for = function ($symbol) use ($company_newest, $backfill_from) {
+			if (!isset($company_newest[$symbol])) { return $backfill_from; }
+			$since = date('Y-m-d', strtotime($company_newest[$symbol] . ' -1 day'));
+			/* Never look further forward than the backfill would: a company
+			   whose newest announcement is from last year still only needs
+			   the last RNS_BACKFILL_DAYS. */
+			return max($since, $backfill_from);
+		};
+
+		print_r("looking back to ".$backfill_from." for a company with nothing stored,"
+		        ." or a day before its own newest\r\n");
+		write_log("fetch_rns", "window per company, backfill from=".$backfill_from
+		                      ." to=".$asOf." companies_with_history=".count($company_newest));
 
 		$symbols = query("select symbol from stock_symbols
 		                   where enabled='Y' and exchange=? order by symbol", $exchange);
 
 		$counts = ["companies" => 0, "listed" => 0, "new" => 0, "skipped" => 0,
 		           "duplicate" => 0, "corrected" => 0, "undated" => 0, "thin" => 0,
-		           "refused" => 0];
-		$refusals = 0;
+		           "refused" => 0, "dropped" => 0, "retried" => 0];
+		$refusals = 0;      // the site saying no: 429, 403, the limit page
+		$dropped  = 0;      // the connection failing: status 0
 		$stop     = null;
 		$started  = microtime(true);
 		$last     = 0.0;
@@ -104,15 +130,46 @@
 		   sort of page was asked for, so the limit check knows what the page
 		   failing to carry would make it a limit page. */
 		$fetch = function ($url, $kind = 'announcement')
-		         use (&$last, &$refusals, &$counts, &$stop) {
+		         use (&$last, &$refusals, &$dropped, &$counts, &$stop) {
 
-			$wait = RNS_FETCH_INTERVAL - (microtime(true) - $last);
-			if ($wait > 0) { usleep((int) round($wait * 1000000)); }
+			$attempt = function ($url) use (&$last) {
+				$wait = RNS_FETCH_INTERVAL - (microtime(true) - $last);
+				if ($wait > 0) { usleep((int) round($wait * 1000000)); }
+				$answer = rns_http_get($url);
+				$last = microtime(true);
+				return $answer;
+			};
 
-			[$status, $body] = rns_http_get($url);
-			$last = microtime(true);
+			[$status, $body] = $attempt($url);
 
-			if ($status === 429 || $status >= 500) {
+			/* Status 0 is no answer at all: the connection failed, timed out
+			   or was reset. That is not the site refusing - on the first
+			   live run three of them in a row stopped the night after 73
+			   companies, and the site answered normally a minute later - so
+			   it is retried once after the back-off and counted separately.
+			   Its own limit is higher, because a network that drops one
+			   request will drop two, and the run should still give up rather
+			   than hammer a dead link 350 times. */
+			if ($status === 0) {
+				$dropped++;
+				$counts['dropped']++;
+				write_log("fetch_rns", "level=WARN no answer from ".$url
+				                      ." (connection failed); retrying once"
+				                      ." (".$dropped." of ".RNS_MAX_DROPPED.")");
+				if (RNS_BACKOFF_SECONDS > 0) { sleep((int) min(30, RNS_BACKOFF_SECONDS)); }
+
+				[$status, $body] = $attempt($url);
+				$counts['retried']++;
+
+				if ($status === 0) {
+					write_log("fetch_rns", "level=WARN still no answer from ".$url);
+					return null;
+				}
+
+				write_log("fetch_rns", "the retry of ".$url." answered ".$status);
+			}
+
+			if ($status === 429 || $status === 403) {
 				$refusals++;
 				$counts['refused']++;
 				write_log("fetch_rns", "level=WARN ".$status." from ".$url
@@ -125,9 +182,23 @@
 				return null;
 			}
 
+			if ($status >= 500) {
+				/* The server is having a bad time rather than telling us to
+				   go away. Backed off like a refusal but counted with the
+				   dropped connections: both are "the other end is not
+				   working", and neither is Investegate saying no. */
+				$dropped++;
+				$counts['dropped']++;
+				write_log("fetch_rns", "level=WARN ".$status." from ".$url
+				                      ."; backing off (".$dropped." of ".RNS_MAX_DROPPED.")");
+				$backoff = RNS_BACKOFF_SECONDS * $dropped;
+				if ($backoff > 0) { sleep(min(30, $backoff)); }
+				return null;
+			}
+
 			if ($status !== 200 || $body === '') {
-				$refusals++;
-				$counts['refused']++;
+				$dropped++;
+				$counts['dropped']++;
 				write_log("fetch_rns", "level=WARN status ".$status." from ".$url);
 				return null;
 			}
@@ -143,11 +214,14 @@
 
 		foreach ($symbols as $row) {
 
-			if ($stop !== null || $refusals >= RNS_MAX_REFUSALS) { break; }
+			if ($stop !== null
+			    || $refusals >= RNS_MAX_REFUSALS
+			    || $dropped >= RNS_MAX_DROPPED) { break; }
 
 			$symbol = $row['symbol'];
 			$links  = [];
 			$tidm   = null;
+			$from   = $window_for($symbol);
 
 			foreach (rns_tidm_candidates($symbol) as $candidate) {
 
@@ -185,7 +259,7 @@
 				}
 
 				/* The listing is newest first, so the first one older than
-				   the window means the rest are too. */
+				   this company's own window means the rest are too. */
 				if (substr($link['published_at'], 0, 10) < $from) { break; }
 
 				/* Already on record. Still handed to rns_store(), which
@@ -267,6 +341,7 @@
 		        ." announcements listed, ".$counts['new']." stored, "
 		        .$counts['skipped']." skipped, ".$counts['duplicate']." already had, "
 		        .$counts['corrected']." dates corrected, "
+		        .$counts['dropped']." connection failures, "
 		        .$elapsed."s\r\n");
 		write_log("fetch_rns", "companies=".$counts['companies']
 		                      ." listed=".$counts['listed']
@@ -277,6 +352,8 @@
 		                      ." undated=".$counts['undated']
 		                      ." thin=".$counts['thin']
 		                      ." refused=".$counts['refused']
+		                      ." dropped=".$counts['dropped']
+		                      ." retried=".$counts['retried']
 		                      ." seconds=".$elapsed);
 
 		if ($stop !== null) {
@@ -287,6 +364,11 @@
 			print_r("stopped early after ".$refusals." refusals\r\n");
 			write_log("fetch_rns", "level=WARN stopped after ".$refusals
 			                      ." refusals; the rest are left for the next run");
+		} elseif ($dropped >= RNS_MAX_DROPPED) {
+			print_r("stopped early after ".$dropped." connection failures\r\n");
+			write_log("fetch_rns", "level=WARN stopped after ".$dropped
+			                      ." connection failures; the rest are left for the next run."
+			                      ." This is a network or a server problem rather than a refusal.");
 		}
 
 		/* Scoring. Capped, so a backfill that finds a thousand announcements
@@ -310,6 +392,15 @@
 			                      ." announcements were waiting; the rest are left for"
 			                      ." the next run");
 		}
+
+		/* The price moves, stored on the row so the page does not work them
+		   out while somebody waits. After scoring, because a new
+		   announcement should arrive with its move, and over the whole
+		   window rather than only tonight's rows: the move runs to the
+		   latest close, so every announcement's move changed today. */
+		$moves = rns_refresh_price_moves($asOf, $exchange);
+		print_r("worked out ".$moves['written']." price moves ("
+		        .$moves['unknown']." without a baseline)\r\n");
 
 		/* The indicators, from whatever is scored now. */
 		$written = rns_write_indicators($asOf, $exchange);

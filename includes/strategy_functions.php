@@ -22,10 +22,22 @@
 	define("STRATEGY_MAX_POSITION_WEIGHT", 0.20);  // no single holding over 20%
 	define("STRATEGY_MAX_ORDERS_PER_RUN",  50);
 	define("STRATEGY_MAX_TURNOVER",        0.50);  // total traded value / account value
-	//Overridable so the halt path can actually be tested; production leaves
-	//the variable unset and gets the fixed path.
+	/* The kill switch: a file whose existence stops everything.
+	
+	   /var/lib/sharemanager, not /var/www/shares, which was the pre-2026
+	   server layout and does not exist. php-fpm's open_basedir blocked it,
+	   so the page's dry run logged a warning on every load and could never
+	   see the switch, and on the command line it only worked if somebody
+	   knew to create a file in a directory that was not there. A safety
+	   mechanism nobody can reach is not one.
+	
+	   SM_KILL_SWITCH_FILE overrides it, named like the application's other
+	   environment settings. STRATEGY_KILL_SWITCH_FILE is still read after
+	   it: the test suite has used that name since the engine was written,
+	   and renaming a variable is not worth breaking a halt path over. */
 	define("STRATEGY_KILL_SWITCH_FILE",
-		getenv("STRATEGY_KILL_SWITCH_FILE") ?: "/var/www/shares/STOP_TRADING");
+		getenv("SM_KILL_SWITCH_FILE")
+		?: (getenv("STRATEGY_KILL_SWITCH_FILE") ?: "/var/lib/sharemanager/STOP_TRADING"));
 
 	// UK dealing costs. Stamp duty is 0.5% on purchases of UK shares; AIM
 	// stocks are exempt, which this does not model, so buy costs are if
@@ -60,7 +72,31 @@
 	 * order, not once per run, so dropping the file stops a run in progress.
 	 */
 	function strategy_halted() {
-		return file_exists(STRATEGY_KILL_SWITCH_FILE);
+		/* Silenced deliberately. file_exists() on a path outside php-fpm's
+		   open_basedir raises a warning rather than answering, and this is
+		   called on every page load and before every order: the answer
+		   "I cannot see that path" has to be "not halted" without printing
+		   anything into the page. A switch the server cannot read is a
+		   configuration problem, reported by the page's own banner and by
+		   the deploy notes, not by a warning in somebody's HTML. */
+		return @file_exists(STRATEGY_KILL_SWITCH_FILE);
+	}
+
+	/**
+	 * Whether the kill switch file can be seen at all, for the page to say
+	 * so. False means the path is outside what PHP is allowed to read, so
+	 * "not halted" is an assumption rather than an answer.
+	 */
+	function strategy_kill_switch_readable() {
+
+		$directory=dirname(STRATEGY_KILL_SWITCH_FILE);
+
+		if (@is_dir($directory)){ return true; }
+
+		/* open_basedir makes is_dir() false for a path outside it, and so
+		   does a directory that simply is not there. The two are different
+		   problems and the message says which it cannot tell. */
+		return false;
 	}
 
 	/**
@@ -868,7 +904,21 @@
 		$result['errors']=$selection['errors'];
 		if (!count($selection['symbols'])){ return $result; }
 
-		$weight=round(1.0/$rules['holdings'],6);
+		/* Rounded DOWN to the six decimal places strategy_targets.target_weight
+		   stores, not to the nearest. One fifteenth is 0.0666666..., and
+		   round() makes that 0.066667: fifteen of those sum to 1.000005,
+		   which the executor's "weights must not sum over 1" check
+		   correctly refuses - so every strategy with a holdings count that
+		   does not divide one exactly (3, 6, 7, 9, 11, 12, 13, 14, 15 ...)
+		   planned no orders at all. Found on the first live dry run; the
+		   suite missed it because every fixture used 5.
+
+		   floor() leaves the sum at or just under 1 and the remainder as
+		   cash: at most 0.000015 of the account, which is ten pence on a
+		   hundred thousand. The check stays as it is - it is a real guard
+		   against a selection that would try to invest more than the
+		   account holds. */
+		$weight=floor((1.0/$rules['holdings'])*1000000)/1000000;
 		$result['weight']=$weight;
 
 		//The score is kept for the audit trail: what the strategy thought of

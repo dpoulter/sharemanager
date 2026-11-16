@@ -42,6 +42,8 @@
             "benchmark"  => [],
             "dry_run"    => null,
             "halted"     => strategy_halted(),
+            "switch_file" => STRATEGY_KILL_SWITCH_FILE,
+            "switch_readable" => strategy_kill_switch_readable(),
         ]);
         exit;
     }
@@ -90,7 +92,12 @@
         "cards"     => $cards,
         "benchmark" => strategy_series(STRATEGY_BENCHMARK),
         "dry_run"   => $dry_run,
+        /* The switch, and whether PHP can see where it lives: "not halted"
+           from a path open_basedir blocks is an assumption, and the page
+           should not present an assumption as an answer. */
         "halted"    => strategy_halted(),
+        "switch_file" => STRATEGY_KILL_SWITCH_FILE,
+        "switch_readable" => strategy_kill_switch_readable(),
     ]);
 
 ?>

@@ -76,6 +76,12 @@
 
     define("RNS_SCORE_MAX_PER_RUN", (int) (getenv("RNS_SCORE_MAX_PER_RUN") ?: 300));
     define("RNS_MAX_REFUSALS", (int) (getenv("RNS_MAX_REFUSALS") ?: 3));
+    define("RNS_MAX_DROPPED", (int) (getenv("RNS_MAX_DROPPED") ?: 10));
+    /* How far back the nightly run refreshes the stored price move. The page
+       offers 7 and 30 days, so 31 covers both with a day to spare; older
+       announcements keep whatever move they last had, which is what the page
+       shows if somebody asks for an older window. */
+    define("RNS_MOVE_WINDOW_DAYS", (int) (getenv("RNS_MOVE_WINDOW_DAYS") ?: 31));
     //The first back-off after a refusal, in seconds, multiplied by how many
     //refusals have happened. A site answering 429 wants less traffic, not the
     //same traffic a second later. Zero in the suite, which has no real site

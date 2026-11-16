@@ -209,6 +209,18 @@
     //How many consecutive fetches may fail, or come back as a limit page,
     //before the run gives up for the night and leaves the rest for tomorrow.
     define("RNS_MAX_REFUSALS", (int) (getenv("RNS_MAX_REFUSALS") ?: 3));
+    /* Connection failures are not refusals: the first live run stopped after
+       three timeouts in a row and the site answered normally a minute later.
+       Each one is retried once; this is how many may fail before the run
+       gives up on the night. Higher than the refusal limit, because a
+       network that drops one request will drop two, and lower than 350,
+       because a run should not hammer a dead link all night. */
+    define("RNS_MAX_DROPPED", (int) (getenv("RNS_MAX_DROPPED") ?: 10));
+    /* How far back the nightly run refreshes the stored price move. The page
+       offers 7 and 30 days, so 31 covers both with a day to spare; older
+       announcements keep whatever move they last had, which is what the page
+       shows if somebody asks for an older window. */
+    define("RNS_MOVE_WINDOW_DAYS", (int) (getenv("RNS_MOVE_WINDOW_DAYS") ?: 31));
 
     //The first back-off after a refusal, in seconds, multiplied by how many
     //refusals have happened. A site answering 429 wants less traffic, not the

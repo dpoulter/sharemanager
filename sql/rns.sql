@@ -188,6 +188,63 @@ select 'Director/PDMR Shareholding',
  where not exists (select 1 from rns_skip_rules where pattern = 'Director/PDMR Shareholding');
 
 -- ---------------------------------------------------------------------------
+-- The price move, stored rather than worked out per row.
+-- ---------------------------------------------------------------------------
+--
+-- "In the news" took 27 seconds with 3,000 announcements stored, against
+-- 0.16 for the quote page. The cause was arithmetic, not SQL: the move from
+-- the close before an announcement to the latest close depends on what time
+-- of day it was published (see rns_baseline_date()), so it was worked out in
+-- PHP per row - four queries each, 750 rows, 3,000 queries.
+--
+-- The rule stays in PHP, where it is tested and where the London clock can
+-- be reasoned about. What changes is when it runs: once a night for the
+-- window the page shows, into these columns, which the page then reads. A
+-- figure that is a few hours stale on a page of yesterday's news is not a
+-- figure anybody is trading on.
+alter table rns_announcements add column if not exists price_move decimal(14,6) after cost_usd;
+alter table rns_announcements add column if not exists price_move_date date after price_move;
+
+-- The two the page actually filters and sorts on. Without them every view is
+-- a full scan of the table, which only gets slower.
+create index if not exists rns_published_skipped on rns_announcements (published_at, skipped);
+create index if not exists rns_symbol_published on rns_announcements (symbol, published_at);
+
+-- ---------------------------------------------------------------------------
+-- Added after the first live run (16 Nov 2026), from what the fetcher
+-- actually brought back. Added on the server first; here so a rebuild keeps
+-- them.
+-- ---------------------------------------------------------------------------
+
+insert into rns_skip_rules (pattern, keep_if, description, enabled)
+select 'Irish Form 38', null,
+       'Irish Takeover Panel disclosure, the Irish equivalent of a Form 8.', 'Y'
+ where not exists (select 1 from rns_skip_rules where pattern = 'Irish Form 38');
+
+-- The same announcement with the spaces lost out of the title, which is how
+-- some wires file it. A second rule rather than a cleverer pattern: the skip
+-- list is matched by name and read by people.
+insert into rns_skip_rules (pattern, keep_if, description, enabled)
+select 'Irishform38', null,
+       'The same, filed with the spaces lost out of the title.', 'Y'
+ where not exists (select 1 from rns_skip_rules where pattern = 'Irishform38');
+
+insert into rns_skip_rules (pattern, keep_if, description, enabled)
+select 'Gearing Disclosure', null,
+       'An investment trust''s monthly gearing. Routine by construction.', 'Y'
+ where not exists (select 1 from rns_skip_rules where pattern = 'Gearing Disclosure');
+
+insert into rns_skip_rules (pattern, keep_if, description, enabled)
+select 'Issue of Shares', null,
+       'An investment trust issuing shares into demand. A placing is titled Placing.', 'Y'
+ where not exists (select 1 from rns_skip_rules where pattern = 'Issue of Shares');
+
+insert into rns_skip_rules (pattern, keep_if, description, enabled)
+select 'Director Declaration', null,
+       'Notice of a director''s other appointments.', 'Y'
+ where not exists (select 1 from rns_skip_rules where pattern = 'Director Declaration');
+
+-- ---------------------------------------------------------------------------
 -- What the run did.
 -- ---------------------------------------------------------------------------
 

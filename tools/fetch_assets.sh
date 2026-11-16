@@ -98,8 +98,15 @@ fetch "$CDN/typeahead.js/0.11.1/typeahead.jquery.min.js"          "$PUBLIC/js/ty
 #
 # The standalone build, because the page has no bundler and loads plain
 # script tags. If this file is missing the quote page keeps the old
-# stockgraph.php image, which is what templates/chart.js falls back to.
-fetch "$CDN/lightweight-charts/4.2.0/lightweight-charts.standalone.production.js" \
+# stockgraph.php image, which is what templates/chart.js falls back to - and
+# the strategy chart has no library at all, which is how this was found.
+#
+# From jsdelivr rather than from cdnjs with everything else: cdnjs answers
+# 404 for lightweight-charts at every version, so the quote page had been
+# falling back to the image chart since the chart was written and nobody
+# knew, because a missing chart library degrades quietly by design. The size
+# check below is what turns the next dead link into a loud failure instead.
+fetch "https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js" \
       "$PUBLIC/js/lightweight-charts.standalone.production.js"                  40000 || failed=1
 # Font Awesome 6. header.php loads this locally now rather than from the
 # fontawesome CDN, so the page needs nothing at request time from a third party.

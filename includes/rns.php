@@ -271,9 +271,17 @@
 		$months = 'January|February|March|April|May|June|July|August|September'
 		        . '|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec';
 
+		/* The time is optional, and so is an am/pm after it. Investegate
+		   writes a twelve hour clock - "07:05 AM", "05:30 PM" - and reading
+		   that as a twenty four hour one stored every afternoon
+		   announcement twelve hours early: a 17:30 director dealing became
+		   05:30, which measures its price move from the wrong close,
+		   because 05:30 is before the open and 17:30 is after it. */
 		$patterns = [
-			'~\b(\d{1,2})\s+(' . $months . ')\s+(\d{4})\b(?:[^\d]{0,8}(\d{1,2}):(\d{2}))?~i',
-			'~\b(\d{1,2})/(\d{1,2})/(\d{4})\b(?:[^\d]{0,8}(\d{1,2}):(\d{2}))?~',
+			'~\b(\d{1,2})\s+(' . $months . ')\s+(\d{4})\b'
+			. '(?:[^\d]{0,8}(\d{1,2}):(\d{2})(?:\s*([AaPp])\.?[Mm]\.?)?)?~i',
+			'~\b(\d{1,2})/(\d{1,2})/(\d{4})\b'
+			. '(?:[^\d]{0,8}(\d{1,2}):(\d{2})(?:\s*([AaPp])\.?[Mm]\.?)?)?~',
 		];
 
 		/* Every match from both spellings, with where it was found, so the
@@ -301,6 +309,15 @@
 			$year  = (int) $m[3][0];
 			$hour  = isset($m[4]) && $m[4][0] !== '' ? (int) $m[4][0] : 0;
 			$min   = isset($m[5]) && $m[5][0] !== '' ? (int) $m[5][0] : 0;
+
+			/* Noon and midnight are the two the twelve hour clock gets
+			   wrong if it is treated as arithmetic: 12 PM is 12:00, not
+			   24:00, and 12 AM is 00:00, not 12:00. */
+			$meridiem = isset($m[6]) && $m[6][0] !== '' ? strtoupper($m[6][0]) : '';
+			if ($meridiem === 'P' && $hour < 12)  { $hour += 12; }
+			if ($meridiem === 'A' && $hour === 12) { $hour = 0; }
+
+			if ($hour > 23 || $min > 59) { continue; }
 
 			if (!checkdate((int) $month, $day, $year)) { continue; }
 
@@ -1234,7 +1251,7 @@
 		$columns = ['id', 'announcement_id', 'symbol', 'source', 'category', 'title',
 		            'published_at', 'url', 'sentiment', 'ann_type', 'vs_expectations',
 		            'summary', 'key_figures', 'bull_point', 'bear_point',
-		            'body_truncated', 'scored_at'];
+		            'body_truncated', 'scored_at', 'price_move', 'price_move_date'];
 
 		$out = [];
 		foreach ($columns as $column) { $out[] = $prefix . $column; }
@@ -1319,10 +1336,14 @@
 		if (($filters['tone'] ?? '') === 'positive') { $where[] = "a.sentiment > 0.05"; }
 		if (($filters['tone'] ?? '') === 'negative') { $where[] = "a.sentiment < -0.05"; }
 
+		/* The move is a column now, so sorting by it is the database's job
+		   rather than PHP's. A row whose move is not known yet sorts last
+		   either way round: "no answer" is not the biggest fall. */
 		$order = [
 			'date'      => "a.published_at desc, a.symbol asc",
 			'sentiment' => "a.sentiment asc, a.published_at desc",
 			'symbol'    => "a.symbol asc, a.published_at desc",
+			'move'      => "a.price_move is null, a.price_move asc, a.published_at desc",
 		];
 		$order_by = $order[$sort] ?? $order['date'];
 
@@ -1332,6 +1353,56 @@
 		         order by " . $order_by;
 
 		return call_user_func_array('query', array_merge([$sql], $args));
+	}
+
+	/**
+	 * Work out the price move for every announcement in the window and store
+	 * it on the row.
+	 *
+	 * Run once a night, after scoring. The rule itself is unchanged and
+	 * still in PHP - rns_baseline_date() decides which close an
+	 * announcement is measured from, and that depends on the time of day in
+	 * London - but it runs here rather than while somebody waits for a page.
+	 *
+	 * Every announcement in the window is refreshed, not only the new ones:
+	 * the move runs to the latest close, so last Tuesday's announcement has
+	 * a different move today than it had yesterday. That is the whole point
+	 * of the figure.
+	 *
+	 * price_move_date records which close it was measured to, so a stale
+	 * figure can be told from a fresh one.
+	 */
+	function rns_refresh_price_moves($as_of, $exchange = null, $days = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+		$as_of    = substr((string) $as_of, 0, 10);
+		$days     = $days === null ? RNS_MOVE_WINDOW_DAYS : (int) $days;
+
+		$from = date('Y-m-d', strtotime($as_of . ' -' . max(1, $days) . ' day'));
+
+		$rows = query("select id, symbol, published_at from rns_announcements
+		                where skipped='N' and date(published_at) between ? and ?
+		                order by published_at desc", $from, $as_of);
+
+		$written = 0;
+		$unknown = 0;
+
+		foreach ($rows as $row) {
+
+			$move = rns_price_move($row['symbol'], $row['published_at'], $as_of, $exchange);
+
+			query("update rns_announcements set price_move=?, price_move_date=? where id=?",
+			      $move === null ? null : round($move, 6),
+			      $move === null ? null : $as_of,
+			      $row['id']);
+
+			if ($move === null) { $unknown++; } else { $written++; }
+		}
+
+		write_log("rns", "price moves refreshed to ".$as_of.": ".$written." worked out, "
+		          .$unknown." without a usable baseline, over ".count($rows)." announcements");
+
+		return ['written' => $written, 'unknown' => $unknown, 'considered' => count($rows)];
 	}
 
 	/**
