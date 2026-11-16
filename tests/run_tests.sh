@@ -131,8 +131,16 @@ python3 "$TESTS_DIR/test_db_functions.py" || PY_FAILED=1
 echo "running tests"
 php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/tests.php" || PHP_FAILED=1
 
+# Last, because it empties the database: every page against a database where
+# the tables exist and no job has ever run. That is the first night after a
+# deploy, when every empty state on every page is being seen for the first
+# time. The schema is reloaded at the top of this script, so leaving it empty
+# costs nothing.
+echo "running empty database checks"
+php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/empty_db.php" || EMPTY_FAILED=1
+
 if [ "${PY_FAILED:-0}" = 1 ] || [ "${PHP_FAILED:-0}" = 1 ] \
-   || [ "${PHONE_FAILED:-0}" = 1 ]; then
+   || [ "${PHONE_FAILED:-0}" = 1 ] || [ "${EMPTY_FAILED:-0}" = 1 ]; then
   exit 1
 fi
 exit 0
