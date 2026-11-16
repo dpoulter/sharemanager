@@ -659,19 +659,21 @@
        sort either side of each other where the order matters. */
     function s_rules($strategy, $overrides = []) {
         $r = array_merge(['selection'=>'score','screen_id'=>null,'score_indicator'=>'momentum_score',
-                          'rank_by'=>null,'holdings'=>5,'rebalance'=>'monthly','exit_rules'=>'',
-                          'exclude_funds'=>'Y','start_date'=>null], $overrides);
+                          'rank_by'=>null,'holdings'=>5,'hold_rank'=>null,'rebalance'=>'monthly',
+                          'exit_rules'=>'','exclude_funds'=>'Y','start_date'=>null], $overrides);
         db()->prepare("insert into strategy_rules
-                         (strategy,selection,screen_id,score_indicator,rank_by,holdings,
+                         (strategy,selection,screen_id,score_indicator,rank_by,holdings,hold_rank,
                           rebalance,exit_rules,exclude_funds,start_date,updated_at)
-                       values (?,?,?,?,?,?,?,?,?,?,now())
+                       values (?,?,?,?,?,?,?,?,?,?,?,now())
                        on duplicate key update selection=values(selection), screen_id=values(screen_id),
                          score_indicator=values(score_indicator), rank_by=values(rank_by),
-                         holdings=values(holdings), rebalance=values(rebalance),
+                         holdings=values(holdings), hold_rank=values(hold_rank),
+                         rebalance=values(rebalance),
                          exit_rules=values(exit_rules), exclude_funds=values(exclude_funds),
                          start_date=values(start_date), updated_at=now()")
           ->execute([$strategy,$r['selection'],$r['screen_id'],$r['score_indicator'],$r['rank_by'],
-                     $r['holdings'],$r['rebalance'],$r['exit_rules'],$r['exclude_funds'],$r['start_date']]);
+                     $r['holdings'],$r['hold_rank'],$r['rebalance'],$r['exit_rules'],
+                     $r['exclude_funds'],$r['start_date']]);
     }
     function s_account($strategy, $cash = 100000, $enabled = 'Y') {
         db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
@@ -8863,6 +8865,159 @@
           && strpos($cs_css, '@container (min-width: 760px)') !== false);
     check('with a layout for a browser that has no container queries',
           strpos($cs_css, '@supports not (container-type: inline-size)') !== false);
+
+    echo "\n--- the rank buffer: held until it drops out of the top N ---\n";
+
+    /* The first backtest of trend following returned +62.8% and paid
+       GBP53,553 in dealing costs on GBP100,000 of starting capital. Weekly
+       re-ranking churns the names: a holding that slips from fifteenth to
+       sixteenth is sold and bought back a week later, both ways paying
+       commission, stamp duty and the spread.
+
+       hold_rank is the buffer. The fixture is eight symbols ranked by a
+       score written straight in, so "ranked twentieth" is exact rather than
+       whatever the data happens to give. */
+    $HR = 'test_hold_rank';
+    $hr_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+    $hr_asof = asof_date();
+
+    $hr_universe = ['AAA','BBB','CCC','DDD','EEE','FFF','GGG','HHH'];
+    /* Highest score ranks first. AAA 80 down to HHH 10. */
+    foreach ($hr_universe as $hr_i => $hr_symbol) {
+        s_stat($hr_symbol, 'hr_score', $hr_asof, 80 - $hr_i * 10);
+    }
+
+    $hr_rank_of = function ($symbol) use ($hr_universe) {
+        return array_search($symbol, $hr_universe, true) + 1;
+    };
+
+    s_drop($HR);
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>3,'hold_rank'=>null]);
+    s_reset($HR);
+
+    $hr_select = function () use ($HR, $hr_asof) {
+        $rules = strategy_rules($HR);
+        $out = strategy_select_symbols($rules, $hr_asof, 'XLON');
+        return $out['symbols'];
+    };
+
+    check('with no buffer the selection is the top three',
+          $hr_select() === ['AAA','BBB','CCC'], json_encode($hr_select()));
+
+    /* A holding that has slipped. DDD is ranked fourth, outside the three
+       slots but inside a buffer of five. */
+    $hr_hold = function ($symbol, $quantity = 100) use ($HR) {
+        db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                       values (?,?,'XLON',?,1.0,now())
+                       on duplicate key update quantity=values(quantity)")
+          ->execute([$HR,$symbol,$quantity]);
+    };
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$HR]);
+    $hr_hold('AAA'); $hr_hold('BBB'); $hr_hold('DDD');
+
+    check('without a buffer the one that slipped is sold',
+          !in_array('DDD', $hr_select(), true) && $hr_select() === ['AAA','BBB','CCC'],
+          json_encode($hr_select()));
+
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>3,'hold_rank'=>5]);
+    check('with a buffer of five it is kept, because it is still ranked fourth',
+          in_array('DDD', $hr_select(), true), json_encode($hr_select()));
+    check('and the free slot is filled from the top of the ranking',
+          $hr_select() === ['AAA','BBB','DDD'], json_encode($hr_select()));
+    check('not from the name just outside the buffer',
+          !in_array('FFF', $hr_select(), true) && !in_array('GGG', $hr_select(), true));
+
+    /* The brief's case: ranked twentieth, kept with a buffer of thirty and
+       sold with none. Eight names here, so ranked sixth with a buffer of
+       seven. */
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$HR]);
+    $hr_hold('AAA'); $hr_hold('BBB'); $hr_hold('FFF');
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>3,'hold_rank'=>7]);
+    check('a holding ranked sixth is kept with a buffer of seven',
+          $hr_rank_of('FFF') === 6 && in_array('FFF', $hr_select(), true),
+          json_encode($hr_select()));
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>3,'hold_rank'=>5]);
+    check('and sold with a buffer of five, which it is outside',
+          !in_array('FFF', $hr_select(), true), json_encode($hr_select()));
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>3,'hold_rank'=>null]);
+    check('and sold with none',
+          !in_array('FFF', $hr_select(), true), json_encode($hr_select()));
+
+    /* Leaving the selection is not the same as slipping down it, and both
+       end in the same place - which is what makes this one rule. */
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>3,'hold_rank'=>8]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$HR]);
+    $hr_hold('AAA'); $hr_hold('HHH');
+    check('a holding at the bottom of a buffer that covers everything is kept',
+          in_array('HHH', $hr_select(), true), json_encode($hr_select()));
+    db()->prepare("delete from statistics where symbol='HHH' and indicator='hr_score'
+                    and date=? and exchange='XLON'")->execute([$hr_asof]);
+    check('and sold the moment it leaves the selection, whatever its rank',
+          !in_array('HHH', $hr_select(), true), json_encode($hr_select()));
+    s_stat('HHH', 'hr_score', $hr_asof, 10);
+
+    /* Slots fill from rank 1 downward, skipping names already held. */
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>4,'hold_rank'=>6]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$HR]);
+    $hr_hold('EEE');
+    $hr_filled = $hr_select();
+    check('a single holding inside the buffer keeps its place',
+          in_array('EEE', $hr_filled, true), json_encode($hr_filled));
+    check('and the other three slots are the best names not already held',
+          count($hr_filled) === 4
+          && in_array('AAA', $hr_filled, true) && in_array('BBB', $hr_filled, true)
+          && in_array('CCC', $hr_filled, true)
+          && !in_array('DDD', $hr_filled, true),
+          json_encode($hr_filled));
+
+    /* More holdings inside the buffer than there are slots. */
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>2,'hold_rank'=>6]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$HR]);
+    $hr_hold('BBB'); $hr_hold('DDD'); $hr_hold('FFF');
+    check('with more kept names than slots, the best ranked stay',
+          $hr_select() === ['BBB','DDD'], json_encode($hr_select()));
+
+    /* A buffer below the holdings count would be stricter than no buffer,
+       which is not what a buffer is. */
+    s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score','rank_by'=>'hr_score',
+                  'holdings'=>4,'hold_rank'=>2]);
+    check('a buffer narrower than the book is floored at the book',
+          strategy_rules($HR)['hold_rank'] === 4, strategy_rules($HR)['hold_rank']);
+    check('and a buffer of nought is no buffer at all',
+          (function () use ($HR) {
+              s_rules($HR, ['selection'=>'score','score_indicator'=>'hr_score',
+                            'rank_by'=>'hr_score','holdings'=>3,'hold_rank'=>0]);
+              return strategy_rules($HR)['hold_rank'] === null;
+          })());
+
+    /* The page says why a holding that slipped two places is still there. */
+    check('the card says what the buffer is',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php'),
+                 'falls out of the top') !== false);
+
+    $hr_mig = (string) file_get_contents(dirname(__DIR__) . '/sql/strategy_hold_rank.sql');
+    check('the migration adds the column only if it is missing',
+          stripos($hr_mig, 'information_schema.columns') !== false
+          && stripos($hr_mig, 'hold_rank') !== false);
+    check('and leaves both live strategies without a buffer for now',
+          stripos($hr_mig, 'update strategy_rules set hold_rank') === false);
+
+    s_drop($HR);
+    foreach ($hr_universe as $hr_symbol) {
+        db()->prepare("delete from statistics where symbol=? and indicator='hr_score'")
+          ->execute([$hr_symbol]);
+    }
+    if ($hr_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $hr_saved_exchange; }
 
     echo "\n--- one way to print a number ---\n";
 

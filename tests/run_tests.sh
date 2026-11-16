@@ -97,6 +97,9 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/rns.sql" > /dev/null || exit 1
 echo "applying sql/strategy_rules.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_rules.sql" > /dev/null || exit 1
 
+echo "applying sql/strategy_hold_rank.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_hold_rank.sql" > /dev/null || exit 1
+
 echo "applying sql/strategy_display_name.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_display_name.sql" > /dev/null || exit 1
 
@@ -158,7 +161,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
   && for migration in trend_screens ai_outlook fund_sectors report_currency \
                       shareholder_yield fmp_scores news trending_value rns \
                       strategy_rules user_theme market_breadth statistics_indicator_index screen_last_run \
-                      strategy_display_name \
+                      strategy_hold_rank strategy_display_name \
                       strategy_backtest strategy_prices; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
      done

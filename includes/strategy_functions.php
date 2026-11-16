@@ -965,6 +965,17 @@
 		$rules['exit_list']=array_values(array_filter(array_map('trim',
 		                      explode(',',strtolower((string)$rules['exit_rules'])))));
 		$rules['rank_by']=trim((string)$rules['rank_by'])===''  ? null : trim((string)$rules['rank_by']);
+
+		/* The rank buffer: hold a name until it drops out of the top N
+		   rather than out of the book. Null, and absent, both mean the old
+		   behaviour - only the top `holdings` are kept - so a host that has
+		   not applied sql/strategy_hold_rank.sql behaves as it did.
+
+		   Below `holdings` it would be stricter than no buffer at all,
+		   which is not what a buffer is, so it is floored there. */
+		$rules['hold_rank']=(isset($rules['hold_rank'])&&$rules['hold_rank']!==null
+		                     &&(int)$rules['hold_rank']>0)
+		                  ? max((int)$rules['hold_rank'],$rules['holdings']) : null;
 		$rules['score_indicator']=trim((string)$rules['score_indicator'])===''
 		                        ? null : trim((string)$rules['score_indicator']);
 
@@ -1150,16 +1161,56 @@
 			return $out;
 		}
 
+		/* The whole selection in rank order, not just the top slice: the
+		   buffer below needs to know where a holding sits, and "not in the
+		   top fifteen" and "not in the selection at all" are different
+		   answers. Without a buffer the slice is taken straight away, as
+		   before. */
+		$want=$rules['holdings'];
+		$depth=($rules['hold_rank']===null) ? $want : max($want,$rules['hold_rank']);
+
 		if ($rules['rank_by']!==null){
 			$ranked=top_n_list($kept,$rules['rank_by'],
 			                   strategy_rank_order($rules['rank_by']),
-			                   $rules['holdings'],$as_of);
+			                   $depth,$as_of);
 		}
 		else {
-			$ranked=array_slice($kept,0,$rules['holdings']);
+			$ranked=array_slice($kept,0,$depth);
 		}
 
-		foreach ($ranked as $row) { $out['symbols'][]=$row['symbol']; }
+		if ($rules['hold_rank']===null){
+			foreach (array_slice($ranked,0,$want) as $row) { $out['symbols'][]=$row['symbol']; }
+			return $out;
+		}
+
+		/* With a buffer: keep what is held and still ranked inside it, then
+		   fill the slots that are free from the top of the ranking.
+
+		   A holding that is not in $ranked at all has either left the
+		   screen or fallen past the buffer, and is sold either way - the
+		   brief's "leaves the screen" and "falls below that rank" land in
+		   the same place, which is what makes this one rule rather than
+		   two. */
+		$held=[];
+		foreach (strategy_positions($rules['strategy']) as $symbol => $position) {
+			if ((int)$position['quantity']>0){ $held[$symbol]=true; }
+		}
+
+		$keeping=[]; $spare=[];
+		foreach ($ranked as $row) {
+			if (isset($held[$row['symbol']])){ $keeping[]=$row['symbol']; }
+			else { $spare[]=$row['symbol']; }
+		}
+
+		/* More holdings still inside the buffer than there are slots: the
+		   best ranked of them stay. $ranked is already in rank order, so
+		   this is the top of the list. */
+		$out['symbols']=array_slice($keeping,0,$want);
+
+		foreach ($spare as $symbol) {
+			if (count($out['symbols'])>=$want){ break; }
+			$out['symbols'][]=$symbol;
+		}
 
 		return $out;
 	}

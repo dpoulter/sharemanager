@@ -130,6 +130,13 @@
 					<?= e(strategy_rebalance_words($card['rules']['rebalance'])) ?>.
 					<?php $rank = strategy_rank_words($card['rules']['rank_by']); ?>
 					<?php if ($rank !== null): ?><?= e($rank) ?>.<?php endif ?>
+					<?php /* The buffer, when there is one. Without it the card
+					         says nothing about why a holding that slipped two
+					         places is still there. */ ?>
+					<?php if (!empty($card['rules']['hold_rank'])): ?>
+						Held until it falls out of the top
+						<?= e(fmt_quantity($card['rules']['hold_rank'])) ?>.
+					<?php endif ?>
 					<?php foreach ($card['rules']['exit_list'] as $exit): ?>
 						<?= e(strategy_exit_words($exit)) ?>.
 					<?php endforeach ?>
