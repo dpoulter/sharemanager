@@ -47,6 +47,8 @@ copy_repo_assets() {
   echo "  js/strategy_dry_run.js copied from templates/"
   cp "$REPO_DIR/templates/typeahead.css" "$PUBLIC/css/typeahead.css"
   echo "  css/typeahead.css      copied from templates/"
+  cp "$REPO_DIR/templates/app.css"       "$PUBLIC/css/app.css"
+  echo "  css/app.css            copied from templates/"
 }
 
 if [ -n "$FROM" ]; then
@@ -117,10 +119,9 @@ for f in fa-solid-900 fa-regular-400 fa-brands-400; do
   fetch "$CDN/font-awesome/6.5.2/webfonts/$f.woff2"               "$PUBLIC/webfonts/$f.woff2"             5000 || failed=1
 done
 
-# header.php also loads bootstrap-theme.min.css. That is Bootstrap 3 and exists
-# for neither 4.x nor 5.x, so an empty file keeps the page from 404ing on it.
-[ -f "$PUBLIC/css/bootstrap-theme.min.css" ] || \
-  echo "/* Bootstrap 3 theme, absent from Bootstrap 4. Placeholder. */" > "$PUBLIC/css/bootstrap-theme.min.css"
+# bootstrap-theme.min.css used to be written here as an empty placeholder,
+# because header.php asked for a Bootstrap 3 theme that exists for neither 4.x
+# nor 5.x. header.php no longer asks for it, so there is nothing to place.
 
 # styles1.css is this application's own stylesheet and is not on any CDN. A
 # placeholder stops the 404; use --from to get the real one.

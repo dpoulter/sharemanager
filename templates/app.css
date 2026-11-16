@@ -1,0 +1,300 @@
+/*
+ * app.css - the application's own stylesheet.
+ *
+ * Copied to public/css/app.css by tools/fetch_assets.sh, because public/css
+ * is in .gitignore (it holds downloaded third-party libraries). Loaded last
+ * in templates/header.php, so it wins against Bootstrap and against
+ * styles1.css, the older stylesheet that exists only on the server.
+ *
+ * The colours here are the same values as view_palette() and
+ * view_text_colours() in includes/view.php. They are in two places because
+ * PHP cannot read a stylesheet and a stylesheet cannot call PHP; a test
+ * checks that the two agree, so a colour changed in one place and not the
+ * other fails the suite rather than quietly giving one page its own scheme.
+ */
+
+:root {
+	--sm-score-bad:   #b91c1c;
+	--sm-score-weak:  #b45309;
+	--sm-score-fair:  #4d7c0f;
+	--sm-score-good:  #15803d;
+	--sm-score-none:  #4b5563;
+	--sm-status-paper: #1d4ed8;
+	--sm-status-off:   #4b5563;
+	--sm-status-halt:  #b91c1c;
+	--sm-status-due:   #b45309;
+	--sm-up:    #15803d;
+	--sm-down:  #b91c1c;
+	--sm-flat:  #6b7280;
+	--sm-muted: #6b7280;
+	--sm-rule:  #e5e7eb;
+}
+
+/* ---------------------------------------------------------------------------
+   Page frame.
+
+   The old fixed container stopped at 1140px and left a third of a wide screen
+   empty while the tables inside it scrolled sideways. Wider, but not edge to
+   edge: a table 2,000px across is unreadable in a different way.
+   --------------------------------------------------------------------------- */
+
+body {
+	background: #f8f9fa;
+}
+
+.sm-page {
+	max-width: 1400px;
+	margin: 0 auto;
+	padding: 0 1rem 3rem;
+}
+
+/* The navbar is fixed, so the first element on every page needs clearing. */
+.sm-page-top {
+	padding-top: 4.5rem;
+}
+
+.sm-page h1 {
+	font-size: 1.6rem;
+	margin-bottom: 0.25rem;
+}
+
+.sm-page h2 {
+	font-size: 1.25rem;
+}
+
+.sm-sub {
+	color: var(--sm-muted);
+	margin-bottom: 1.25rem;
+}
+
+/* One card style, so a panel on Home looks like a panel on the quote page. */
+.card {
+	border: 1px solid var(--sm-rule);
+	border-radius: 0.5rem;
+	box-shadow: none;
+	margin-bottom: 1rem;
+}
+
+.card-header {
+	background: #fff;
+	border-bottom: 1px solid var(--sm-rule);
+	font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+   Numbers.
+
+   tabular-nums is the whole reason this block exists: in the proportional
+   figures Bootstrap inherits, a column of prices does not line up on the
+   decimal point, and a reader scanning for the largest number is reading the
+   widest one instead.
+   --------------------------------------------------------------------------- */
+
+.sm-num,
+td.sm-num,
+th.sm-num,
+.table td.sm-num,
+.table th.sm-num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.sm-up    { color: var(--sm-up); }
+.sm-down  { color: var(--sm-down); }
+.sm-flat  { color: var(--sm-flat); }
+.sm-muted { color: var(--sm-muted); }
+
+.sm-missing {
+	color: var(--sm-muted);
+	cursor: help;
+	border-bottom: 1px dotted var(--sm-muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Badges and swatches.
+   --------------------------------------------------------------------------- */
+
+.sm-badge {
+	display: inline-block;
+	min-width: 2.25rem;
+	padding: 0.15rem 0.4rem;
+	border-radius: 0.3rem;
+	font-size: 0.8125rem;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+	color: #fff;
+	cursor: help;
+}
+
+.sm-score-bad    { background: var(--sm-score-bad); }
+.sm-score-weak   { background: var(--sm-score-weak); }
+.sm-score-fair   { background: var(--sm-score-fair); }
+.sm-score-good   { background: var(--sm-score-good); }
+.sm-score-none   { background: var(--sm-score-none); }
+.sm-status-paper { background: var(--sm-status-paper); cursor: default; }
+.sm-status-off   { background: var(--sm-status-off);   cursor: default; }
+.sm-status-halt  { background: var(--sm-status-halt);  cursor: default; }
+.sm-status-due   { background: var(--sm-status-due);   cursor: default; }
+
+/* Smaller, for three of them in a table cell. */
+.sm-badges-tight .sm-badge {
+	min-width: 1.9rem;
+	padding: 0.1rem 0.25rem;
+	font-size: 0.75rem;
+}
+
+.sm-swatch {
+	display: inline-block;
+	width: 46px;
+	height: 12px;
+	border-radius: 3px;
+	vertical-align: middle;
+}
+
+.sm-key div {
+	margin-bottom: 0.25rem;
+}
+
+/* ---------------------------------------------------------------------------
+   The freshness indicator in the navbar.
+   --------------------------------------------------------------------------- */
+
+.sm-fresh,
+.sm-fresh-amber,
+.sm-fresh-red {
+	display: inline-block;
+	padding: 0.2rem 0.5rem;
+	border-radius: 0.3rem;
+	font-size: 0.8125rem;
+	white-space: nowrap;
+}
+
+.sm-fresh       { background: rgba(255,255,255,0.15); color: #fff; }
+.sm-fresh-amber { background: #b45309; color: #fff; }
+.sm-fresh-red   { background: #b91c1c; color: #fff; }
+
+/* ---------------------------------------------------------------------------
+   Tables.
+
+   A table that is too wide scrolls inside its own card. Letting the page
+   scroll sideways instead moves the navbar off screen, which is how a phone
+   ends up with no way back to Home.
+   --------------------------------------------------------------------------- */
+
+.table-responsive {
+	-webkit-overflow-scrolling: touch;
+}
+
+.table > :not(caption) > * > * {
+	padding: 0.45rem 0.5rem;
+}
+
+.table thead th {
+	border-bottom: 2px solid var(--sm-rule);
+	font-size: 0.8125rem;
+	text-transform: none;
+	white-space: nowrap;
+}
+
+.sm-table-sort th[data-sort] {
+	cursor: pointer;
+	user-select: none;
+}
+
+.sm-table-sort th[data-sort]::after {
+	content: "\2195";
+	opacity: 0.3;
+	margin-left: 0.25rem;
+}
+
+.sm-table-sort th[data-sort].sm-sorted-asc::after  { content: "\2191"; opacity: 0.9; }
+.sm-table-sort th[data-sort].sm-sorted-desc::after { content: "\2193"; opacity: 0.9; }
+
+.sm-total-row td {
+	border-top: 2px solid var(--sm-rule);
+	font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+   Summary strips: the figures at the top of Home and Portfolio.
+   --------------------------------------------------------------------------- */
+
+.sm-strip {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 1.5rem;
+}
+
+.sm-strip-item {
+	min-width: 7rem;
+}
+
+.sm-strip-label {
+	color: var(--sm-muted);
+	font-size: 0.8125rem;
+}
+
+.sm-strip-value {
+	font-size: 1.35rem;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	line-height: 1.2;
+}
+
+/* A horizontal bar showing where today's price sits in the 52-week range. */
+.sm-range {
+	position: relative;
+	height: 6px;
+	border-radius: 3px;
+	background: linear-gradient(90deg, #e5e7eb, #cbd5e1);
+	margin: 0.35rem 0 0.2rem;
+}
+
+.sm-range-mark {
+	position: absolute;
+	top: -3px;
+	width: 2px;
+	height: 12px;
+	background: #111827;
+}
+
+/* ---------------------------------------------------------------------------
+   Phones. Everything in this stylesheet has to work at 390px.
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 575.98px) {
+
+	.sm-page {
+		padding-left: 0.75rem;
+		padding-right: 0.75rem;
+	}
+
+	.sm-page-top {
+		padding-top: 4rem;
+	}
+
+	.sm-strip {
+		gap: 1rem;
+	}
+
+	.sm-strip-item {
+		min-width: 6rem;
+	}
+
+	.sm-strip-value {
+		font-size: 1.1rem;
+	}
+
+	/* Nothing may make the page itself scroll sideways. */
+	.table-responsive {
+		max-width: 100%;
+	}
+}
+
+/* Charts are given their height by the page and their width by the column. */
+.sm-chart {
+	width: 100%;
+	min-height: 260px;
+}

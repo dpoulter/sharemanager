@@ -21,6 +21,9 @@
     require("constants.php");
     require("functions.php");
     require("share_functions.php");
+    // How numbers, dates and colours are printed. Loaded for every page so a
+    // template never has to decide for itself what a price looks like.
+    require("view.php");
 
     // Session cookies. httponly keeps the id away from any script that manages
     // to run on the page, samesite blunts cross site posts, and secure is set

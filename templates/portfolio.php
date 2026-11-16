@@ -1,14 +1,33 @@
-<h3>Portfolio</h3>
-<div>
-	<div>
-        <pre><?php print("Cash: " . number_format($cash,2)); ?>
-		<?php print("Shares:" . number_format($total_value,2)); ?>
-		<?php print("Total: ".number_format($cash+$total_value,2)); ?>
-		<?php print("Profit/Loss:" . number_format($total_profit,2)); ?>
-		</pre>
+<h1>Portfolio</h1>
+<p class="sm-sub">Everything held, at the latest stored close.</p>
+
+<?php /* These four were a <pre> block of unlabelled numbers - "Cash: 0.00
+         Shares:0.00" - which is a debug dump rather than a summary, and the
+         stray "6m" after it was the timespan variable printed by accident.
+         Rebuilt properly in part 4 of the redesign; formatted here so the
+         figures are at least in pounds and labelled. */ ?>
+<div class="card">
+	<div class="card-body">
+		<div class="sm-strip">
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">Shares</div>
+				<div class="sm-strip-value"><?= e(fmt_pounds($total_value)) ?></div>
+			</div>
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">Cash</div>
+				<div class="sm-strip-value"><?= e(fmt_pounds($cash)) ?></div>
+			</div>
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">Total</div>
+				<div class="sm-strip-value"><?= e(fmt_pounds($cash + $total_value)) ?></div>
+			</div>
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">Gain</div>
+				<div class="sm-strip-value"><?= move_pounds_html($total_profit) ?></div>
+			</div>
+		</div>
 	</div>
-	
-	<?php echo $timespan ?>
+</div>
 
 	<div class="container">
 		<div class="row">
@@ -90,16 +109,21 @@
 				<tr>
 					<td><a href="<?="quote.php?symbol=".$position["symbol"]."&page=portfolio.php"?>"><?= $position["symbol"] ?></a></td>
 					<td><?= $position["name"] ?></td>
-					<td><?= $position["qty_purchased"] ?></td>
-					<td><?= $position["price_paid"] ?></td>
-					<td><?= $position["commission"] ?></td>
-					<td><?= $position["price"] ?></td>
-					<td><?= $position["qty_sold"] ?></td>
-					<td><?= $position["price_sold"] ?></td>
-					<td><?= $position["dividends"] ?></td>
-					<td><?= $position["value"] ?></td>
-					<td><?= $position["profit"] ?></td>
-					<td><?= $position["profit_perc"] ?></td>
+					<?php /* Prices are pence as stored, cash and dividends are
+					         pounds, and quantities are whole shares. Every one of
+					         these was printing the column straight out of the
+					         database: "75.3700" for a price and "0.0000" for a
+					         dividend. */ ?>
+					<td class="sm-num"><?= e(fmt_quantity($position["qty_purchased"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pence($position["price_paid"], 2)) ?></td>
+					<td class="sm-num"><?= e(fmt_pounds($position["commission"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pence($position["price"], 2)) ?></td>
+					<td class="sm-num"><?= e(fmt_quantity($position["qty_sold"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pence($position["price_sold"], 2)) ?></td>
+					<td class="sm-num"><?= e(fmt_pounds($position["dividends"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pounds($position["value_raw"])) ?></td>
+					<td class="sm-num"><?= move_pounds_html($position["profit_raw"]) ?></td>
+					<td class="sm-num"><?= move_pct_html($position["profit_perc"]) ?></td>
 					<td><img src="<?php print($arrow)?>"></img></td>
 				</tr>
 
@@ -137,16 +161,21 @@
 				<tr>
 					<td><a href="<?="quote.php?symbol=".$position["symbol"]."&page=portfolio.php"?>"><?= $position["symbol"] ?></a></td>
 					<td><?= $position["name"] ?></td>
-					<td><?= $position["qty_purchased"] ?></td>
-					<td><?= $position["price_paid"] ?></td>
-					<td><?= $position["commission"] ?></td>
-					<td><?= $position["price"] ?></td>
-					<td><?= $position["qty_sold"] ?></td>
-					<td><?= $position["price_sold"] ?></td>
-					<td><?= $position["dividends"] ?></td>
-					<td><?= $position["value"] ?></td>
-					<td><?= $position["profit"] ?></td>
-					<td><?= $position["profit_perc"] ?></td>
+					<?php /* Prices are pence as stored, cash and dividends are
+					         pounds, and quantities are whole shares. Every one of
+					         these was printing the column straight out of the
+					         database: "75.3700" for a price and "0.0000" for a
+					         dividend. */ ?>
+					<td class="sm-num"><?= e(fmt_quantity($position["qty_purchased"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pence($position["price_paid"], 2)) ?></td>
+					<td class="sm-num"><?= e(fmt_pounds($position["commission"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pence($position["price"], 2)) ?></td>
+					<td class="sm-num"><?= e(fmt_quantity($position["qty_sold"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pence($position["price_sold"], 2)) ?></td>
+					<td class="sm-num"><?= e(fmt_pounds($position["dividends"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pounds($position["value_raw"])) ?></td>
+					<td class="sm-num"><?= move_pounds_html($position["profit_raw"]) ?></td>
+					<td class="sm-num"><?= move_pct_html($position["profit_perc"]) ?></td>
 					<td><img src="<?php print($arrow)?>"></img></td>
 				</tr>
 			<?php endforeach ?>

@@ -13,6 +13,7 @@
     require_once("constants.php");
     require_once("functions.php");
     require_once("share_functions.php");
+    require_once("view.php");
     //The AI outlook and the pieces under it. Loading these calls nothing and
     //reaches no network; only outlook_generate() does.
     require_once("llm.php");
@@ -7264,6 +7265,260 @@
     if ($rns_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $rns_saved_exchange; }
 
+    echo "\n--- one way to print a number ---\n";
+
+    /* Formatting used to live in each template, and the same figure was
+       printed three ways on three pages. These are the formatters every
+       template now goes through, so they are worth pinning: a change here
+       changes every page at once. */
+
+    check('a London price is pence, one place, with a p',
+          fmt_pence(1350.6) === '1,350.6p', fmt_pence(1350.6));
+    check('and pounds are pounds, two places',
+          fmt_pounds(6609.33) === "\xc2\xa36,609.33", fmt_pounds(6609.33));
+    /* The two are a factor of 100 apart and the names are the only thing
+       stopping a template confusing them, so the names have to differ in
+       what they print as well. */
+    check('the two never look the same',
+          fmt_pence(1350.6) !== fmt_pounds(1350.6));
+
+    check('large money shortens above ten thousand',
+          fmt_money_compact(4700000000) === "\xc2\xa34.7bn"
+          && fmt_money_compact(312400000) === "\xc2\xa3312.4m"
+          && fmt_money_compact(48100) === "\xc2\xa348.1k",
+          fmt_money_compact(4700000000) . ' ' . fmt_money_compact(312400000)
+          . ' ' . fmt_money_compact(48100));
+    check('and stays exact at or below it',
+          fmt_money_compact(9999.5) === "\xc2\xa39,999.50"
+          && fmt_money_compact(10000) === "\xc2\xa310,000.00",
+          fmt_money_compact(10000));
+
+    check('a change carries its sign',
+          fmt_change_pct(12.4) === '+12.4%' && fmt_change_pct(-2.2) === '-2.2%',
+          fmt_change_pct(12.4) . ' ' . fmt_change_pct(-2.2));
+    check('zero carries none',
+          fmt_change_pct(0) === '0.0%', fmt_change_pct(0));
+    /* A fraction and a percentage are also a factor of 100 apart. Same
+       treatment: two names, no flag. */
+    check('a fraction goes through its own formatter',
+          fmt_percent_of(0.124) === '+12.4%', fmt_percent_of(0.124));
+
+    check('ratios get one place, yields two',
+          fmt_ratio(17.6234) === '17.6' && fmt_yield(3.1134) === '3.11%',
+          fmt_ratio(17.6234) . ' ' . fmt_yield(3.1134));
+    check('a score is whole and a quantity has separators',
+          fmt_score(82.0) === '82' && fmt_quantity(11578.2) === '11,578',
+          fmt_score(82.0) . ' ' . fmt_quantity(11578.2));
+    check('sentiment is two places, signed, with the band word',
+          fmt_sentiment(0.7) === '+0.70 strong' && fmt_sentiment(-0.62) === '-0.62 bad',
+          fmt_sentiment(0.7) . ' / ' . fmt_sentiment(-0.62));
+
+    check('a date is 13 Nov 2026 in prose and 13 Nov in a table',
+          fmt_date('2026-11-13') === '13 Nov 2026'
+          && fmt_date_short('2026-11-13') === '13 Nov',
+          fmt_date('2026-11-13') . ' / ' . fmt_date_short('2026-11-13'));
+
+    /* Missing is its own thing. A zero says the value is nought and an empty
+       cell says there is no such column; neither is "the provider did not
+       send it". */
+    check('nothing to print prints an en dash, not a zero',
+          fmt_pence(null) === VIEW_DASH && fmt_pounds('') === VIEW_DASH
+          && fmt_ratio('n/a') === VIEW_DASH && fmt_score(null) === VIEW_DASH);
+    check('and the dash says why it is there',
+          strpos(view_missing_html('not supplied by FMP'), 'not supplied by FMP') !== false
+          && strpos(view_missing_html(), 'title=') !== false);
+
+    echo "\n--- one colour scale for every score ---\n";
+
+    /* The boundaries. 24 and 25 are different bands, and so are 49/50 and
+       74/75 - which is the whole content of the rule, so it is checked at
+       every edge rather than in the middle of each band. */
+    $bands = [0 => 'score-bad', 24 => 'score-bad', 25 => 'score-weak',
+              49 => 'score-weak', 50 => 'score-fair', 74 => 'score-fair',
+              75 => 'score-good', 100 => 'score-good'];
+    $band_wrong = [];
+    foreach ($bands as $score => $want) {
+        if (score_band($score) !== $want) { $band_wrong[] = "$score gave " . score_band($score); }
+    }
+    check('the score bands change at 25, 50 and 75',
+          count($band_wrong) === 0, implode(', ', $band_wrong));
+    check('and an unscored share gets its own band, not red',
+          score_band(null) === 'score-none' && score_band('') === 'score-none');
+
+    check('the badge says what is being scored and which way is better',
+          strpos(score_badge_html(82, 'Quality'), 'Quality 82/100') !== false
+          && strpos(score_badge_html(82, 'Quality'), 'higher is better') !== false,
+          score_badge_html(82, 'Quality'));
+    check('and a score it has not got is a dash, not a zero badge',
+          strpos(score_badge_html(null, 'Quality'), 'sm-missing') !== false,
+          score_badge_html(null, 'Quality'));
+
+    check('a move is green up, red down, grey flat',
+          move_class(1.2) === 'sm-up' && move_class(-1.2) === 'sm-down'
+          && move_class(0) === 'sm-flat');
+
+    /* WCAG AA for text on a badge is 4.5:1. Computed rather than eyeballed,
+       because the eye is generous about dark text on mid green and the
+       standard is not. */
+    $contrast = function ($a, $b) {
+        $lum = function ($hex) {
+            $hex = ltrim($hex, '#');
+            $parts = [];
+            foreach ([0, 2, 4] as $i) {
+                $c = hexdec(substr($hex, $i, 2)) / 255;
+                $parts[] = $c <= 0.03928 ? $c / 12.92 : pow(($c + 0.055) / 1.055, 2.4);
+            }
+            return 0.2126 * $parts[0] + 0.7152 * $parts[1] + 0.0722 * $parts[2];
+        };
+        $la = $lum($a); $lb = $lum($b);
+        return (max($la, $lb) + 0.05) / (min($la, $lb) + 0.05);
+    };
+    $low = [];
+    foreach (view_palette() as $name => [$background, $text]) {
+        $ratio = $contrast($background, $text);
+        if ($ratio < 4.5) { $low[] = sprintf('%s %.2f:1', $name, $ratio); }
+    }
+    check('every badge passes WCAG AA for its own text',
+          count($low) === 0, implode(', ', $low));
+
+    /* The same for the colours used as text rather than as a background.
+       These sit on the page, which app.css sets to #f8f9fa - the lighter the
+       background the easier this is, so it is checked against the darker of
+       the two the page can have. */
+    $text_low = [];
+    foreach (view_text_colours() as $name => $colour) {
+        $ratio = $contrast($colour, '#f8f9fa');
+        if ($ratio < 4.5) { $text_low[] = sprintf('%s %.2f:1', $name, $ratio); }
+    }
+    check('and every value colour passes AA as text on the page',
+          count($text_low) === 0, implode(', ', $text_low));
+
+    /* PHP cannot read a stylesheet and a stylesheet cannot call PHP, so the
+       palette exists twice. A colour changed in one and not the other gives
+       one page its own scheme, silently - this is what stops that. */
+    $app_css = (string) file_get_contents(dirname(__DIR__) . '/templates/app.css');
+    $missing_css = [];
+    foreach (view_palette() as $name => [$background, $text]) {
+        if (stripos($app_css, $background) === false) { $missing_css[] = "$name $background"; }
+    }
+    foreach (view_text_colours() as $name => $colour) {
+        /* The sentiment tones are printed inline from view_text_colours()
+           rather than through a class, so only the four that app.css owns
+           have to appear in it. */
+        if (!in_array($name, ['up', 'down', 'flat', 'muted'], true)) { continue; }
+        if (stripos($app_css, $colour) === false) { $missing_css[] = "$name $colour"; }
+    }
+    check('the stylesheet and the palette agree on every colour',
+          count($missing_css) === 0, implode(', ', $missing_css));
+
+    check('numbers are set in tabular figures, or the columns do not line up',
+          strpos($app_css, 'tabular-nums') !== false);
+
+    echo "\n--- how old are these figures ---\n";
+
+    /* A page showing Friday's prices on a Wednesday is not wrong, it is
+       stale, and a reader cannot tell a stale price from a falling one. The
+       indicator is on every page, so its thresholds are worth pinning.
+
+       On a throwaway exchange code, so the fixtures the rest of the suite
+       ranks are left alone. */
+    db()->exec("delete from historical_prices where exchange='XFRS'");
+    check('with no prices at all it says so, in red',
+          view_freshness('XFRS')['level'] === 'red'
+          && stripos(view_freshness('XFRS')['words'], 'no prices') !== false,
+          json_encode(view_freshness('XFRS')));
+
+    /* Weekends are not a late job, so the age is counted in weekdays. This
+       finds the date that is exactly n weekdays back from today, whatever
+       day today happens to be. */
+    $weekdays_back = function ($n) {
+        $day = strtotime(date('Y-m-d'));
+        $seen = 0;
+        while (true) {
+            $day = strtotime(date('Y-m-d', $day) . ' -1 day');
+            if ((int) date('N', $day) <= 5) { $seen++; }
+            if ($seen >= $n) { return date('Y-m-d', $day); }
+        }
+    };
+    $put_price = function ($date) {
+        db()->exec("delete from historical_prices where exchange='XFRS'");
+        $s = db()->prepare("insert into historical_prices (symbol, exchange, date, price)
+                            values ('FRSH', 'XFRS', ?, 100)");
+        $s->execute([$date]);
+    };
+
+    $put_price(date('Y-m-d'));
+    check("today's close is fresh",
+          view_freshness('XFRS')['level'] === 'fresh', json_encode(view_freshness('XFRS')));
+
+    $put_price($weekdays_back(1));
+    check('one trading day behind turns it amber',
+          view_freshness('XFRS')['level'] === 'amber', json_encode(view_freshness('XFRS')));
+
+    $put_price($weekdays_back(2));
+    check('two is still amber',
+          view_freshness('XFRS')['level'] === 'amber', json_encode(view_freshness('XFRS')));
+
+    $put_price($weekdays_back(3));
+    check('three turns it red, and says how far behind',
+          view_freshness('XFRS')['level'] === 'red'
+          && strpos(view_freshness('XFRS')['words'], 'behind') !== false,
+          json_encode(view_freshness('XFRS')));
+
+    $put_price($weekdays_back(10));
+    check('and a job that stopped a fortnight ago is still red, not alarming',
+          view_freshness('XFRS')['level'] === 'red');
+
+    db()->exec("delete from historical_prices where exchange='XFRS'");
+
+    echo "\n--- the page frame ---\n";
+
+    /* Comments stripped first - HTML and PHP both. Every check below asks
+       what the page LOADS, and the prose in these two files necessarily
+       names the stylesheets it no longer loads and the divs it no longer
+       closes. Reading the comments made four of these checks assert the
+       opposite of what they are for. */
+    $no_comments = function ($path) {
+        $text = (string) file_get_contents(dirname(__DIR__) . $path);
+        $text = preg_replace('/<!--.*?-->/s', '', $text);
+        return preg_replace('#/\*.*?\*/#s', '', $text);
+    };
+    $hdr = $no_comments('/templates/header.php');
+    $ftr = $no_comments('/templates/footer.php');
+    $fetcher = (string) file_get_contents(dirname(__DIR__) . '/tools/fetch_assets.sh');
+    $fetcher_code = preg_replace('/^\s*#.*$/m', '', $fetcher);
+
+    /* Three stylesheets for one framework, one of them a Bootstrap 3 theme,
+       is how two pages ended up with different button shapes. */
+    check('one Bootstrap stylesheet is loaded, not three',
+          preg_match_all('#<link[^>]+bootstrap[^>]*>#i', $hdr) === 1, $hdr);
+    check('and the Bootstrap 3 theme is gone from the page and from the fetcher',
+          stripos($hdr, 'bootstrap-theme') === false
+          && stripos($fetcher_code, 'bootstrap-theme') === false);
+    check('the application stylesheet is loaded last, so it decides',
+          preg_match('#app\.css#', $hdr) === 1
+          && strpos($hdr, 'app.css') > strpos($hdr, 'bootstrap.min.css')
+          && strpos($hdr, 'app.css') > strpos($hdr, 'styles1.css'));
+    check('and the fetcher puts it there',
+          strpos($fetcher_code, 'templates/app.css') !== false);
+
+    /* The footer used to close four divs against two opening tags, so the
+       extra ones closed whatever the page itself had open. */
+    check('the footer closes exactly what the header opens',
+          substr_count($hdr, '<main') === 1 && substr_count($ftr, '</main>') === 1
+          && substr_count($ftr, '</div>') === 0);
+
+    check('the active page is marked in the navbar',
+          strpos($hdr, 'aria-current="page"') !== false
+          && strpos($hdr, "nav-link<?= \$sm_section") !== false);
+    check('Log Out is under the user name, not beside the pages',
+          strpos($hdr, 'smUserMenu') !== false
+          && preg_match('#<li class="nav-item">\s*<a class="nav-link[^"]*"[^>]*href="logout\.php"#', $hdr) === 0);
+    check('the freshness indicator is in the navbar on every page',
+          strpos($hdr, 'sm_fresh') !== false);
+    check('and the share search offers company names',
+          stripos($hdr, 'placeholder="Symbol or company"') !== false);
+
     echo "\n--- pages render without a fatal ---\n";
 
     /* Drives the site over HTTP as a logged in user. Everything above tests the
@@ -7376,6 +7631,41 @@
         }
         check(count($pages) . ' pages render without a fatal', count($fatal) === 0,
               'fatal: ' . implode(', ', $fatal));
+
+        /* ---------------- no raw floats on any page ---------------- */
+
+        /* 82.000000, 96.525206, 1350.6000, 0.700. Every one of those was on
+           a page, and every one of them is a database column printed
+           straight out. Six decimal places is not precision to a reader, it
+           is a tell that nobody formatted the figure - and a column that
+           prints raw is a column whose units nobody has thought about, which
+           is how pence and pounds got mixed up in the first place.
+
+           Visible text only: tags and attributes are stripped first, because
+           a title attribute carrying the exact value is useful and a chart's
+           JSON payload is not prose.
+
+           The one exception is the model's cost in dollars, where the fourth
+           decimal place is the figure rather than noise - $0.0004 cannot be
+           written with fewer. It is marked with its own class and cut out
+           here by name. */
+        $visible = function ($html) {
+            $html = preg_replace('#<(script|style)\b[^>]*>.*?</\1>#is', ' ', (string) $html);
+            $html = preg_replace('#<[a-z]+[^>]*class="[^"]*sm-outlook-meta[^"]*"[^>]*>.*?</[a-z]+>#is',
+                                 ' ', $html);
+            $html = preg_replace('#<[^>]*>#', ' ', $html);
+            return html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        };
+
+        $raw = [];
+        foreach ($pages as $page) {
+            $text = $visible($curl("$base/$page"));
+            if (preg_match_all('/(?<![\d.])\d+\.\d{4,}/', $text, $hits)) {
+                $raw[] = $page . ': ' . implode(' ', array_slice(array_unique($hits[0]), 0, 5));
+            }
+        }
+        check('no page prints a number with four or more decimal places',
+              count($raw) === 0, implode("\n          ", $raw));
 
         /* ---------------- "In the news" ---------------- */
 
@@ -8764,8 +9054,14 @@ STUB
         /* The footer loaded the Bootstrap 4.1.3 CDN bundle on top of the
            Bootstrap 5 bundle header.php loads. It was already commented out,
            so this pins it rather than fixing it. */
-        $footer = preg_replace('/<!--.*?-->/s', '',
-                               (string)file_get_contents(dirname(__DIR__) . '/templates/footer.php'));
+        /* Comments stripped - the prose in footer.php has to name the
+           Bootstrap it no longer loads to explain why. HTML comments were
+           stripped here already; the note is a PHP comment now, so that is
+           stripped too. What the check asks is unchanged: no second
+           framework in the markup. */
+        $footer = preg_replace('#/\*.*?\*/#s', '',
+                  preg_replace('/<!--.*?-->/s', '',
+                               (string)file_get_contents(dirname(__DIR__) . '/templates/footer.php')));
         check('the footer loads no second Bootstrap',
               strpos($footer, 'stackpath') === false && strpos($footer, '4.1.3') === false);
 
