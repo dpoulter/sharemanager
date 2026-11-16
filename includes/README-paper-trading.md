@@ -7,19 +7,122 @@ talks to a broker and nothing supports `mode = 'LIVE'`.
 ## Running it
 
 ```sh
-mysql sharemanager < sql/paper_trading.sql
+mysql sharemanager < sql/paper_trading.sql      # the engine's tables
+mysql sharemanager < sql/strategy_rules.sql     # the strategies and the valuations
+mysql sharemanager < sql/strategy_backtest.sql  # the backtest index
 
-mysql sharemanager -e "insert into strategy_accounts
-  (strategy,cash,currency,mode,enabled,created_at)
-  values ('momentum_top10',100000,'GBP','PAPER','Y',now());"
-
-php includes/generate_targets.php momentum_top10            # signal -> targets
-php includes/run_paper_execution.php momentum_top10 --dry-run   # inspect
-php includes/run_paper_execution.php momentum_top10             # execute
+php includes/run_strategies.php --dry-run       # what tonight would do
+php includes/run_strategies.php                 # every enabled strategy
 ```
 
-With no date both default to the current `get_statistics_asof` marker, so
-targets line up with the data that produced them rather than with today.
+`run_strategies.php` is what `refresh_all.sh` calls, after
+`get_statistics.php` because a strategy selects on the statistics and screens
+that job writes. For one strategy at a time the two halves are still there:
+
+```sh
+php includes/generate_targets.php trending_value              # signal -> targets
+php includes/run_paper_execution.php trending_value --dry-run # inspect
+php includes/run_paper_execution.php trending_value           # execute
+```
+
+With no date all three default to the current `get_statistics_asof` marker or
+the last trading day, so targets line up with the data that produced them
+rather than with today.
+
+## What a strategy is
+
+A row in `strategy_rules`, not a script. `sql/strategy_rules.sql` defines the
+two that run:
+
+| strategy | selects | holdings | rebalance | exits between rebalances |
+| --- | --- | --- | --- | --- |
+| `trending_value` | the Trending Value screen | 15 | monthly | none |
+| `trend_following` | the Trend following (200-day) screen, ranked by `momentum_score` | 15 | weekly | `below_ma200_2d` |
+
+Both start with £100,000 of paper money. `momentum_top10`, which only ever
+existed to exercise the engine, is disabled and keeps its row.
+
+The fields: `selection` (`screen` with a `screen_id`, or `score` with an
+indicator), `rank_by` for when the selection gives more names than
+`holdings`, `holdings`, `rebalance` (`monthly`, `weekly` or `daily`, meaning
+the first *trading* date of that period), `exit_rules`, `exclude_funds` and
+`start_date`. Screens are matched by name in the migration, never by id: ids
+differ between databases.
+
+Equal weight is one over `holdings`, not one over the number of names found.
+A selection that gives twelve names for a fifteen holding strategy holds
+twelve positions and 20% cash - padding the weights would turn a thin signal
+into a concentrated bet.
+
+A holding within `STRATEGY_DRIFT_BAND` (two percentage points) of its target
+is left alone. Trimming fifteen holdings by a few shares every month is
+thirty orders to correct a drift the market will undo by Thursday.
+
+## Exits between rebalances
+
+Checked every night, on every holding. A triggered exit sells the whole
+position and the cash stays idle until the next rebalance: the exit says this
+holding is wrong, not that another one is right.
+
+- `below_ma200_2d` - closed below its 200 day average on the last two as of
+  dates. Two, not one: a single close through a long average is noise, and
+  selling on it pays dealing costs to be whipsawed.
+- A holding that has stopped trading - taken over, suspended, delisted - is
+  sold at the last price it really traded at, flagged in the log and on the
+  page. This one is not configurable: a book cannot carry a price nobody
+  will ever trade at again. `STRATEGY_STALE_SESSIONS` (five) is how many
+  sessions the rest of the market has to trade without it first, so one
+  missing day is a data gap rather than a delisting.
+
+## The page
+
+`public/strategies.php`: a card per strategy with its value, return,
+benchmark over the same period, worst fall, cash, holdings, rebalance dates
+and dealing costs paid, then its holdings, its trades with the reason for
+each, and any backtests. The chart draws every strategy and the benchmark
+rebased to 100 at its own start.
+
+"Dry run tonight" calls `strategy_run_night($strategy, $as_of, true)`, which
+computes a plan and writes nothing: no targets, no orders, no cash movement.
+
+The 2023 "Backing Winners" page is in `archive/public/strategies.php`.
+
+## The benchmark
+
+`strategy_values` under `_benchmark`: the FTSE 350 equal weighted, compounded
+one trading day at a time from the constituents' own prices and rebased to
+100. There is no index level anywhere in the data, so the alternative was
+having nothing to compare against. Two things it is not, both on the page: it
+is today's constituents, so it carries the same survivorship flattery a
+backtest does, and it is a price index rather than a total return one - the
+same treatment the strategies get, so the comparison is like for like.
+
+## Backtesting
+
+```sh
+php includes/backfill_trend_statistics.php 2015-01-02 2026-11-16   # once
+php includes/backtest_strategy.php trend_following 2016-01-04 2026-11-14
+```
+
+`backtest_strategy.php` replays a strategy's own rules through the same
+engine, under its own account named `bt_<strategy>_<run_id>`. That prefix is
+reserved: the nightly run skips it, the page skips it, and the script refuses
+to write to an account without it. The runs are indexed in
+`strategy_backtest_runs` and the nightly values are in `strategy_values`
+under the backtest's name, which is what the page draws.
+
+**Look-ahead** is refused rather than worked around. Each date uses only the
+statistics stored for that date, and a strategy whose indicators do not go
+back that far is refused with the indicator named - so Trending Value cannot
+be backtested before the November 2026 fundamentals, full stop. The close and
+its moving averages are the one exception that can be manufactured honestly,
+because they are computable from prices alone: that is what
+`backfill_trend_statistics.php` is for, and it writes each date from the
+prices up to that date, with a full window or no row.
+
+**Survivorship** cannot be fixed from this data and is stated with every
+result: the universe is today's FTSE 350, so the companies that left the
+index are not in it. Every backtest here is flattered by that.
 
 ## The split
 
@@ -98,10 +201,11 @@ are overstated for an AIM-heavy book. Erring expensive is the right direction.
   approximate and, on illiquid names, optimistic.
 - **Market impact is not modelled at all.** A fixed 25bps slippage is a poor
   proxy for a real spread on an AIM small cap.
-- **It does not tell you the strategy works.** `backing_winners.php` tests exit
-  rules, not the screen, so the scores have never been validated against
-  forward returns. A paper run measures the plumbing and the costs, not the
-  edge.
+- **It does not tell you the strategy works.** A paper run measures the
+  plumbing and the costs over the weeks it has been running, not the edge.
+  `backtest_strategy.php` measures the rules over history, and what it
+  measures is flattered by survivorship and limited by how far back the
+  indicators go. Neither is a forward test.
 - **Fundamentals in `stock_info` carry the load date, not the reporting date**,
   so any backtest using ratios has look-ahead bias. Fixing that is a
   prerequisite for believing any result involving value or quality scores.

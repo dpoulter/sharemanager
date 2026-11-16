@@ -115,6 +115,9 @@ header("Expires: 0"); // Proxies.
         <a class="nav-link" href="in_the_news.php">In the news<span class="visually-hidden">(current)</span></a>
       </li>
       <li class="nav-item active">
+        <a class="nav-link" href="strategies.php">Strategies<span class="visually-hidden">(current)</span></a>
+      </li>
+      <li class="nav-item active">
         <a class="nav-link" href="logout.php">Log Out<span class="visually-hidden">(current)</span></a>
       </li>
     </ul>

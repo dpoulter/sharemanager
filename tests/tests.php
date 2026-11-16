@@ -589,6 +589,946 @@
     db()->exec("delete from strategy_targets where strategy='$STRATEGY'");
     db()->exec("delete from strategy_accounts where strategy='$STRATEGY'");
 
+    echo "\n--- strategies: the rules are configuration ---\n";
+
+    /* The two strategies the migration defines. Matched to their screens by
+       name, never by id: "screen 4" is only screen 4 on the N100, and a
+       database where the screens were created in another order would quietly
+       point a strategy at somebody else's screen. */
+    $tv_rules = strategy_rules('trending_value');
+    $tf_rules = strategy_rules('trend_following');
+
+    check('the migration defines Trending Value as a monthly screen strategy',
+          $tv_rules !== null && $tv_rules['selection'] === 'screen'
+          && (int)$tv_rules['holdings'] === 15 && $tv_rules['rebalance'] === 'monthly'
+          && $tv_rules['exit_list'] === [],
+          json_encode($tv_rules));
+    check('and points it at the Trending Value screen by name',
+          $tv_rules !== null
+          && scalar("select name from screen where id=?", [$tv_rules['screen_id']]) === 'Trending Value',
+          var_export($tv_rules['screen_id'] ?? null, true));
+    check('Trend following is weekly, ranked by momentum, and has the 200-day exit',
+          $tf_rules !== null && $tf_rules['rebalance'] === 'weekly'
+          && $tf_rules['rank_by'] === 'momentum_score'
+          && $tf_rules['exit_list'] === ['below_ma200_2d'],
+          json_encode($tf_rules));
+    check('and at the 200-day trend screen, also by name',
+          $tf_rules !== null
+          && scalar("select name from screen where id=?", [$tf_rules['screen_id']])
+             === 'Trend following (200-day)');
+    check('both paper accounts start with 100,000 and are enabled',
+          (float)scalar("select cash from strategy_accounts where strategy='trending_value'") === 100000.0
+          && (float)scalar("select cash from strategy_accounts where strategy='trend_following'") === 100000.0
+          && (int)scalar("select count(*) from strategy_accounts
+                           where strategy in ('trending_value','trend_following')
+                             and mode='PAPER' and enabled='Y'") === 2,
+          json_encode(rows("select strategy, cash, mode, enabled from strategy_accounts
+                             where strategy in ('trending_value','trend_following')")));
+
+    /* PAPER is the whole point. A row saying anything else must not be
+       picked up by the nightly run, and nothing in the engine supports it. */
+    check('no account anywhere is in any mode but PAPER',
+          (int)scalar("select count(*) from strategy_accounts where mode<>'PAPER'") === 0);
+
+    /* The migration is re-runnable and converges: a strategy somebody has
+       experimented on goes back to what the file says. */
+    db()->exec("update strategy_rules set holdings=3, rebalance='daily', exit_rules='nonsense'
+                 where strategy='trend_following'");
+    apply_migration('strategy_rules.sql');
+    $tf_rules = strategy_rules('trend_following');
+    check('re-running the migration puts an edited strategy back',
+          (int)$tf_rules['holdings'] === 15 && $tf_rules['rebalance'] === 'weekly'
+          && $tf_rules['exit_rules'] === 'below_ma200_2d',
+          json_encode($tf_rules));
+
+    /* ------------------------------------------------------------------ */
+
+    /* The test strategies. Written by hand rather than by the migration so
+       the fixtures can say exactly what is being tested, and named so they
+       sort either side of each other where the order matters. */
+    function s_rules($strategy, $overrides = []) {
+        $r = array_merge(['selection'=>'score','screen_id'=>null,'score_indicator'=>'momentum_score',
+                          'rank_by'=>null,'holdings'=>5,'rebalance'=>'monthly','exit_rules'=>'',
+                          'exclude_funds'=>'Y','start_date'=>null], $overrides);
+        db()->prepare("insert into strategy_rules
+                         (strategy,selection,screen_id,score_indicator,rank_by,holdings,
+                          rebalance,exit_rules,exclude_funds,start_date,updated_at)
+                       values (?,?,?,?,?,?,?,?,?,?,now())
+                       on duplicate key update selection=values(selection), screen_id=values(screen_id),
+                         score_indicator=values(score_indicator), rank_by=values(rank_by),
+                         holdings=values(holdings), rebalance=values(rebalance),
+                         exit_rules=values(exit_rules), exclude_funds=values(exclude_funds),
+                         start_date=values(start_date), updated_at=now()")
+          ->execute([$strategy,$r['selection'],$r['screen_id'],$r['score_indicator'],$r['rank_by'],
+                     $r['holdings'],$r['rebalance'],$r['exit_rules'],$r['exclude_funds'],$r['start_date']]);
+    }
+    function s_account($strategy, $cash = 100000, $enabled = 'Y') {
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                       values (?,?,'GBP','PAPER',?,now())
+                       on duplicate key update cash=values(cash), enabled=values(enabled)")
+          ->execute([$strategy,$cash,$enabled]);
+    }
+    function s_reset($strategy, $cash = 100000, $enabled = 'Y') {
+        foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values'] as $table) {
+            db()->prepare("delete from $table where strategy=?")->execute([$strategy]);
+        }
+        s_account($strategy, $cash, $enabled);
+    }
+    function s_drop($strategy) {
+        foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values',
+                  'strategy_rules','strategy_accounts'] as $table) {
+            db()->prepare("delete from $table where strategy=?")->execute([$strategy]);
+        }
+    }
+    /* One indicator value for one symbol and date, written straight in. The
+       strategy layer reads statistics; which job wrote them is not what
+       these tests are about, and a fixture is both faster and exact. */
+    function s_stat($symbol, $indicator, $date, $value) {
+        db()->prepare("delete from statistics where symbol=? and indicator=? and date=? and exchange='XLON'")
+          ->execute([$symbol,$indicator,$date]);
+        db()->prepare("insert into statistics (symbol,indicator,date,value,exchange)
+                       values (?,?,?,?,'XLON')")->execute([$symbol,$indicator,$date,$value]);
+    }
+
+    $S = 'test_strategy';
+    /* A date with sessions after it, so fills have a next price to use, and
+       far enough from the end that a second night is available too. */
+    $SASOF = scalar("select distinct date from historical_prices where exchange='XLON'
+                     order by date desc limit 1 offset 5");
+    $SNEXT = scalar("select distinct date from historical_prices where exchange='XLON'
+                     and date>? order by date asc limit 1", [$SASOF]);
+
+    /* Twelve symbols, scored so the order is known: AAA best, LLL worst. */
+    $S_SYMBOLS = ['AAA','BBB','CCC','DDD','EEE','FFF','GGG','HHH','III','JJJ','KKK','LLL'];
+    foreach ($S_SYMBOLS as $i => $symbol) {
+        s_stat($symbol, 'momentum_score', $SASOF, 100 - $i);
+    }
+
+    echo "\n--- strategies: selection, weights and cash ---\n";
+
+    s_drop($S); s_rules($S); s_reset($S);
+
+    $selected = strategy_select_symbols(strategy_rules($S), $SASOF, 'XLON');
+    check('the best five by the score are selected, in that order',
+          $selected['symbols'] === ['AAA','BBB','CCC','DDD','EEE'],
+          json_encode($selected));
+
+    $written = strategy_write_targets($S, $SASOF);
+    check('each target is an equal fifth of the account',
+          count($written['targets']) === 5 && abs($written['weight'] - 0.2) < 1e-9,
+          json_encode([count($written['targets']), $written['weight']]));
+    check('the score the name was picked on is kept with the target',
+          (float)scalar("select score from strategy_targets where strategy=? and symbol='AAA'", [$S])
+            === 100.0);
+
+    /* Fewer names than holdings. The weight stays one over the number of
+       HOLDINGS, so the strategy holds three positions and 40% cash. Dividing
+       by the number of names found instead would turn a thin signal into a
+       concentrated bet, which is the opposite of what a thin signal says. */
+    s_drop($S); s_rules($S, ['holdings'=>5]); s_reset($S);
+    foreach ($S_SYMBOLS as $symbol) {
+        db()->prepare("delete from statistics where symbol=? and indicator='momentum_score' and date=?")
+          ->execute([$symbol,$SASOF]);
+    }
+    foreach (['AAA','BBB','CCC'] as $i => $symbol) { s_stat($symbol,'momentum_score',$SASOF,100-$i); }
+
+    $thin = strategy_write_targets($S, $SASOF);
+    check('three names for a five holding strategy is three targets, not three bigger ones',
+          count($thin['targets']) === 3 && abs($thin['weight'] - 0.2) < 1e-9,
+          json_encode([count($thin['targets']), $thin['weight']]));
+
+    run_script('run_paper_execution.php', [$S, $SASOF]);
+    $thin_cash = (float)scalar("select cash from strategy_accounts where strategy=?", [$S]);
+    $thin_value = (float)scalar("select ifnull(sum(consideration),0) from strategy_orders
+                                  where strategy=? and status='FILLED'", [$S]);
+    check('and the fifth that was not invested is still cash',
+          $thin_cash > 100000 * 0.35 && $thin_cash < 100000 * 0.45,
+          "cash=$thin_cash invested=$thin_value");
+    check('three positions were taken, not five',
+          (int)scalar("select count(*) from strategy_positions where strategy=? and quantity>0", [$S]) === 3);
+
+    /* Put the full set of scores back for the tests below. */
+    foreach ($S_SYMBOLS as $i => $symbol) { s_stat($symbol,'momentum_score',$SASOF,100-$i); }
+
+    echo "\n--- strategies: funds are not companies ---\n";
+
+    /* An investment trust passes a value screen for being a wrapper rather
+       than a business (sql/fund_sectors.sql), and buying one is the same
+       mistake as ranking one. Which is why this is a rule per strategy:
+       momentum does not care what owns the assets. */
+    db()->exec("update stock_symbols set is_fund='Y' where symbol='AAA' and exchange='XLON'");
+
+    s_drop($S); s_rules($S, ['exclude_funds'=>'Y']); s_reset($S);
+    $without = strategy_select_symbols(strategy_rules($S), $SASOF, 'XLON');
+    check('a fund is left out when the strategy excludes funds',
+          !in_array('AAA', $without['symbols'], true) && count($without['symbols']) === 5,
+          json_encode($without['symbols']));
+    check('and the next name down takes its place rather than the strategy holding four',
+          $without['symbols'] === ['BBB','CCC','DDD','EEE','FFF'],
+          json_encode($without['symbols']));
+
+    s_rules($S, ['exclude_funds'=>'N']);
+    $with = strategy_select_symbols(strategy_rules($S), $SASOF, 'XLON');
+    check('and it is kept when the strategy says to keep them',
+          $with['symbols'] === ['AAA','BBB','CCC','DDD','EEE'],
+          json_encode($with['symbols']));
+
+    db()->exec("update stock_symbols set is_fund=null where symbol='AAA' and exchange='XLON'");
+
+    echo "\n--- strategies: the rebalance calendar ---\n";
+
+    /* Trading dates, not calendar dates. The first as of date of the month
+       is whatever day the market first opened in it, and the same for a
+       week - which is the whole reason this comes out of historical_prices
+       rather than out of date arithmetic. */
+    $month_first = scalar("select min(date) from historical_prices
+                            where exchange='XLON' and date>=date_format(?, '%Y-%m-01') and date<=?",
+                          [$SASOF, $SASOF]);
+    $month_second = scalar("select min(date) from historical_prices
+                             where exchange='XLON' and date>?", [$month_first]);
+
+    check('the first trading date of the month is a monthly rebalance date',
+          strategy_period_first_date('monthly', $month_first, 'XLON') === $month_first,
+          "first=$month_first got=" . strategy_period_first_date('monthly', $month_first, 'XLON'));
+    check('and the day after it is not',
+          strategy_period_first_date('monthly', $month_second, 'XLON') === $month_first,
+          "second=$month_second got=" . strategy_period_first_date('monthly', $month_second, 'XLON'));
+
+    $monday = scalar("select max(date) from historical_prices
+                       where exchange='XLON' and dayofweek(date)=2 and date<?", [$SASOF]);
+    $tuesday = date('Y-m-d', strtotime($monday . ' +1 day'));
+    check('the Monday is the weekly rebalance date',
+          strategy_period_first_date('weekly', $tuesday, 'XLON') === $monday,
+          "monday=$monday got=" . strategy_period_first_date('weekly', $tuesday, 'XLON'));
+
+    /* A bank holiday Monday. The seeded feed is every weekday, so the
+       holiday has to be made: take that Monday's prices out and the week's
+       rebalance should move to the Tuesday on its own. Without this the
+       calendar could be date arithmetic and the suite would never know. */
+    $holiday_rows = rows("select symbol, exchange, date, price from historical_prices where date=?",
+                         [$monday]);
+    db()->prepare("delete from historical_prices where date=?")->execute([$monday]);
+    $after_holiday = strategy_period_first_date('weekly', $tuesday, 'XLON');
+    $restore = db()->prepare("insert into historical_prices (symbol,exchange,date,price) values (?,?,?,?)");
+    foreach ($holiday_rows as $row) {
+        $restore->execute([$row['symbol'],$row['exchange'],$row['date'],$row['price']]);
+    }
+    check('a bank holiday Monday moves the weekly rebalance to the Tuesday',
+          $after_holiday === $tuesday, "got=" . var_export($after_holiday, true));
+    check('and the prices the test removed are back',
+          (int)scalar("select count(*) from historical_prices where date=?", [$monday])
+            === count($holiday_rows));
+
+    check('a daily strategy rebalances on whatever date it is asked about',
+          strategy_period_first_date('daily', $SASOF, 'XLON') === $SASOF);
+
+    /* The first build does not wait for a month boundary: a strategy
+       deployed on the 12th should start on the 12th, which is what "start on
+       the first as of date after deploy" means. */
+    s_drop($S); s_rules($S, ['rebalance'=>'monthly']); s_reset($S);
+    check('an account that has never traded rebalances tonight, whatever the date',
+          strategy_rebalance_due(strategy_rules($S), $month_second, 'XLON') === true);
+
+    s_rules($S, ['rebalance'=>'monthly','start_date'=>date('Y-m-d', strtotime($SASOF . ' +30 day'))]);
+    check('but not before its start date',
+          strategy_rebalance_due(strategy_rules($S), $SASOF, 'XLON') === false);
+
+    /* With a position on the books it follows the calendar. */
+    s_rules($S, ['rebalance'=>'monthly']);
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',10,100,now())")->execute([$S]);
+    check('an account with holdings rebalances on the first of the month',
+          strategy_rebalance_due(strategy_rules($S), $month_first, 'XLON') === true);
+    check('and holds on through the rest of it',
+          strategy_rebalance_due(strategy_rules($S), $month_second, 'XLON') === false);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S]);
+
+    echo "\n--- strategies: a rules row cannot widen a limit ---\n";
+
+    /* The limits are constants in strategy_functions.php and the dealing
+       costs with them, so a row in a configuration table cannot loosen
+       either. A three holding strategy asks for 33% positions, which is
+       over the 20% ceiling, and the whole rebalance is refused rather than
+       trimmed to fit: a trimmed rebalance is a different portfolio from the
+       one the signal asked for. */
+    s_drop($S); s_rules($S, ['holdings'=>3]); s_reset($S);
+    strategy_write_targets($S, $SASOF);
+    $over = strategy_plan_orders($S, $SASOF);
+    $over_limit = false;
+    foreach ($over['errors'] as $error) {
+        if (strpos($error, 'exceeds the ' . STRATEGY_MAX_POSITION_WEIGHT) !== false) { $over_limit = true; }
+    }
+    check('a strategy configured for positions over the ceiling is refused, not trimmed',
+          $over_limit && count($over['orders']) === 0,
+          json_encode($over['errors']));
+    check('and nothing was placed',
+          (int)scalar("select count(*) from strategy_orders where strategy=?", [$S]) === 0);
+
+    echo "\n--- strategies: the drift band ---\n";
+
+    /* A holding bought at 20% that is now 21% is not a different portfolio
+       from the one the signal asked for. Trimming it pays commission, stamp
+       and spread for a decimal place, so anything inside two percentage
+       points is left alone - and anything outside it is not. */
+    s_drop($S); s_rules($S, ['holdings'=>5]); s_reset($S);
+    $drift_price = (float)scalar("select price from historical_prices
+                                   where symbol='AAA' and exchange='XLON' and date=?", [$SASOF]);
+    $drift_target = (int)floor((0.2 * 100000) / $drift_price);
+
+    /* Inside the band: hold 95% of the target quantity, which is a weight
+       about one point below 20%.
+
+       The cash has to come down by what the holding cost, or the account is
+       worth 120,000 and a 20% target is 24,000 - against which a 19,000
+       holding is five points light and the band would not be what the test
+       is measuring. */
+    $inside = (int)floor($drift_target * 0.95);
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',?,?,now())")->execute([$S,$inside,$drift_price]);
+    db()->prepare("update strategy_accounts set cash=? where strategy=?")
+      ->execute([100000 - $inside * $drift_price, $S]);
+    strategy_write_targets($S, $SASOF);
+    $plan = strategy_plan_orders($S, $SASOF);
+    $touched = [];
+    foreach ($plan['orders'] as $order) { $touched[] = $order['symbol']; }
+    check('a holding one point away from its target is left alone',
+          !in_array('AAA', $touched, true), json_encode($plan['orders']));
+
+    /* Outside it: hold 60% of the target, eight points light, with the cash
+       moved the same way so the account is still worth about 100,000. */
+    $outside = (int)floor($drift_target * 0.6);
+    db()->prepare("update strategy_positions set quantity=? where strategy=? and symbol='AAA'")
+      ->execute([$outside, $S]);
+    db()->prepare("update strategy_accounts set cash=? where strategy=?")
+      ->execute([100000 - $outside * $drift_price, $S]);
+    $plan = strategy_plan_orders($S, $SASOF);
+    $topped_up = false;
+    foreach ($plan['orders'] as $order) {
+        if ($order['symbol'] === 'AAA' && $order['side'] === 'BUY') { $topped_up = true; }
+    }
+    check('a holding eight points away is traded back towards it',
+          $topped_up, json_encode($plan['orders']));
+
+    echo "\n--- strategies: leaving before the next rebalance ---\n";
+
+    /* One close through a 200 day average is noise; a strategy that sells on
+       it pays dealing costs to be whipsawed. Two in a row is the rule, and
+       the exit reads the same statistics the trend screen does so the two
+       cannot disagree about where the average is. */
+    $s_dates = array_column(rows("select distinct date from historical_prices
+                                   where exchange='XLON' and date<=? order by date desc limit 2",
+                                 [$SASOF]), 'date');
+
+    s_drop($S); s_rules($S, ['exit_rules'=>'below_ma200_2d']); s_reset($S);
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',100,100,now())")->execute([$S]);
+
+    /* Below on the latest date, above on the one before it. */
+    s_stat('AAA','close_price',$s_dates[0], 90);
+    s_stat('AAA','ma200',     $s_dates[0], 100);
+    s_stat('AAA','close_price',$s_dates[1], 110);
+    s_stat('AAA','ma200',     $s_dates[1], 100);
+    check('one close below the 200-day average is not an exit',
+          strategy_below_ma200_2d('AAA', $SASOF) === false);
+    check('and nothing is sold',
+          count(strategy_exits_due($S, $SASOF, 'XLON')) === 0);
+
+    /* Below on both. */
+    s_stat('AAA','close_price',$s_dates[1], 95);
+    check('two consecutive closes below it is an exit',
+          strategy_below_ma200_2d('AAA', $SASOF) === true);
+
+    $exits = strategy_exits_due($S, $SASOF, 'XLON');
+    check('the whole position goes, not part of it',
+          count($exits) === 1 && $exits[0]['symbol'] === 'AAA' && $exits[0]['quantity'] === 100,
+          json_encode($exits));
+
+    $placed = strategy_place_exits($S, $SASOF, false, 'XLON');
+    check('the exit sold the position',
+          $placed['sold'] === 1
+          && (int)scalar("select quantity from strategy_positions where strategy=? and symbol='AAA'", [$S]) === 0,
+          json_encode($placed));
+    check('and the order says which rule sold it',
+          scalar("select note from strategy_orders where strategy=? and symbol='AAA'", [$S])
+            === 'exit: below_ma200_2d');
+    check('the cash it raised is idle, because an exit is not a selection',
+          (int)scalar("select count(*) from strategy_orders where strategy=? and side='BUY'", [$S]) === 0
+          && (float)scalar("select cash from strategy_accounts where strategy=?", [$S]) > 100000);
+
+    /* A strategy with no exit rules holds through the same signal. */
+    s_drop($S); s_rules($S, ['exit_rules'=>'']); s_reset($S);
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',100,100,now())")->execute([$S]);
+    check('a strategy with no exit rules holds through it',
+          count(strategy_exits_due($S, $SASOF, 'XLON')) === 0);
+
+    echo "\n--- strategies: a holding that stops trading ---\n";
+
+    /* Taken over, suspended or delisted. The share has no next price and
+       never will, so the ordinary rule - fill on the next session - would
+       refuse the sale for ever and the book would carry a holding it cannot
+       value or leave. The last price it actually traded at is the only
+       honest number there is, and it is a real traded close rather than an
+       estimate. */
+    s_drop($S); s_rules($S); s_reset($S);
+
+    /* Far enough back that the market has had STRATEGY_STALE_SESSIONS
+       sessions without it. One session short of that is a data gap, which
+       is the distinction the rule exists to make, so the fixture has to
+       clear the bar rather than sit on it. */
+    /* The offset is interpolated rather than bound: MariaDB will not take a
+       placeholder in LIMIT or OFFSET when prepares are not emulated. It is
+       an integer constant from the application's own code, not input. */
+    $gone_after = scalar("select distinct date from historical_prices where exchange='XLON'
+                           and date<=? order by date desc limit 1 offset "
+                         . (int)(STRATEGY_STALE_SESSIONS + 1), [$SASOF]);
+    $gone_rows = rows("select symbol, exchange, date, price from historical_prices
+                        where symbol='BBB' and exchange='XLON' and date>?", [$gone_after]);
+    $gone_price = (float)scalar("select price from historical_prices
+                                  where symbol='BBB' and exchange='XLON' and date<=?
+                                  order by date desc limit 1", [$gone_after]);
+    db()->prepare("delete from historical_prices where symbol='BBB' and exchange='XLON' and date>?")
+      ->execute([$gone_after]);
+
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'BBB','XLON',50,?,now())")->execute([$S,$gone_price]);
+
+    /* One missing session is a data gap, not a delisting. */
+    check('a share that stopped trading is noticed',
+          strategy_price_stale('BBB','XLON',$SASOF) === true);
+    check('and one that is still trading is not',
+          strategy_price_stale('AAA','XLON',$SASOF) === false);
+
+    $gone_exits = strategy_exits_due($S, $SASOF, 'XLON');
+    check('it is sold even though the strategy has no exit rules',
+          count($gone_exits) === 1 && $gone_exits[0]['reason'] === 'delisted',
+          json_encode($gone_exits));
+
+    strategy_place_exits($S, $SASOF, false, 'XLON');
+    $gone_order = rows("select status, fill_price, note from strategy_orders
+                         where strategy=? and symbol='BBB'", [$S])[0];
+    check('it filled at the last price it really traded at',
+          $gone_order['status'] === 'FILLED'
+          && abs((float)$gone_order['fill_price'] - $gone_price) < 0.01,
+          json_encode($gone_order) . " last=$gone_price");
+    check('and the order says why',
+          $gone_order['note'] === 'exit: delisted');
+    check('the position is gone',
+          (int)scalar("select quantity from strategy_positions where strategy=? and symbol='BBB'", [$S]) === 0);
+
+    /* Flagged on the page as well as in the log: a strategy holding a share
+       that has stopped trading is valued from stale data, and the note is
+       what the page reads. */
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'BBB','XLON',50,?,now())
+                   on duplicate key update quantity=50")->execute([$S,$gone_price]);
+    $stale_value = strategy_write_values($S, $SASOF, 'XLON');
+    check('the valuation flags a holding priced from stale data',
+          $stale_value['note'] !== null && strpos($stale_value['note'], 'BBB') !== false,
+          var_export($stale_value['note'] ?? null, true));
+
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S]);
+    $restore_gone = db()->prepare("insert into historical_prices (symbol,exchange,date,price) values (?,?,?,?)");
+    foreach ($gone_rows as $row) {
+        $restore_gone->execute([$row['symbol'],$row['exchange'],$row['date'],$row['price']]);
+    }
+    check('the prices the test removed are back',
+          (int)scalar("select count(*) from historical_prices
+                        where symbol='BBB' and exchange='XLON' and date>?", [$gone_after])
+            === count($gone_rows));
+
+    echo "\n--- strategies: the turnover cap and the first build ---\n";
+
+    /* Turnover is min(buys, sells), which is how much of the book is being
+       swapped rather than how much is being moved - so an all-cash build
+       scores zero and the cap was never going to stop it. The exemption says
+       that in code all the same, so a later change to the measure cannot
+       stop an account ever opening. What matters is the other half: the
+       second run is capped like every other. */
+    s_drop($S); s_rules($S, ['holdings'=>5]); s_reset($S);
+    check('an account with nothing in it is a first build',
+          strategy_first_build($S) === true);
+
+    strategy_write_targets($S, $SASOF);
+    run_script('run_paper_execution.php', [$S, $SASOF]);
+    check('the first build fills',
+          (int)scalar("select count(*) from strategy_orders where strategy=? and status='FILLED'", [$S]) === 5);
+    check('and the account is no longer a first build',
+          strategy_first_build($S) === false);
+
+    /* Now swap the whole book for five different names on a later date.
+       Selling 100% and buying 100% is 100% turnover, twice the cap, so the
+       rebalance is refused in one piece rather than half taken. */
+    db()->prepare("delete from strategy_targets where strategy=?")->execute([$S]);
+    $swap_weight = 0.2;
+    $swap = db()->prepare("insert into strategy_targets
+                             (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                           values (?,?,?,'XLON',?,now())");
+    foreach (['FFF','GGG','HHH','III','JJJ'] as $symbol) {
+        $swap->execute([$S,$SNEXT,$symbol,$swap_weight]);
+    }
+    $swap_plan = strategy_plan_orders($S, $SNEXT);
+    $capped = false;
+    foreach ($swap_plan['errors'] as $error) {
+        if (strpos($error, 'turnover') !== false) { $capped = true; }
+    }
+    check('a complete swap of the book on the second run is refused by the turnover cap',
+          $capped && count($swap_plan['orders']) === 0,
+          json_encode($swap_plan['errors']));
+
+    echo "\n--- strategies: what it was all worth ---\n";
+
+    s_drop($S); s_rules($S, ['holdings'=>5]); s_reset($S);
+    strategy_write_targets($S, $SASOF);
+    run_script('run_paper_execution.php', [$S, $SASOF]);
+    $value = strategy_write_values($S, $SASOF, 'XLON');
+    $value_row = rows("select * from strategy_values where strategy=? and date=?", [$S,$SASOF])[0];
+
+    check('a value row is written for the night',
+          $value !== null && (int)$value_row['holdings'] === 5);
+    check('and cash plus holdings is the total',
+          abs(((float)$value_row['cash'] + (float)$value_row['holdings_value'])
+              - (float)$value_row['total']) < 0.01,
+          json_encode($value_row));
+    check('which is about the hundred thousand it started with, less costs',
+          (float)$value_row['total'] > 95000 && (float)$value_row['total'] < 101000,
+          (string)$value_row['total']);
+
+    /* Re-running a night rewrites that night rather than adding a second
+       row: the page draws one line, and two totals for one date is not a
+       line. */
+    strategy_write_values($S, $SASOF, 'XLON');
+    check('writing the same night twice leaves one row',
+          (int)scalar("select count(*) from strategy_values where strategy=? and date=?", [$S,$SASOF]) === 1);
+
+    db()->exec("delete from strategy_values where strategy='" . STRATEGY_BENCHMARK . "'");
+    $base = strategy_benchmark_update($SASOF, 'XLON');
+    check('the benchmark starts at 100 on the first night it is asked for',
+          abs($base['level'] - 100.0) < 1e-9 && $base['return'] === null,
+          json_encode($base));
+
+    $second = strategy_benchmark_update($SNEXT, 'XLON');
+    $bench_rows = rows("select date, total, holdings, note from strategy_values
+                         where strategy=? order by date", [STRATEGY_BENCHMARK]);
+    check('and compounds the equal weighted return of the 350 after that',
+          count($bench_rows) === 2 && $second['return'] !== null
+          && abs((float)$bench_rows[1]['total'] - 100.0 * (1 + $second['return'])) < 0.01,
+          json_encode([$second, $bench_rows]));
+    check('the row says which benchmark it is, because equal weighted is a choice',
+          strpos((string)$bench_rows[0]['note'], 'equal weighted') !== false,
+          (string)$bench_rows[0]['note']);
+    check('and it counted the constituents it used',
+          (int)$bench_rows[1]['holdings'] > 0);
+
+    /* The benchmark is not a strategy. If it were picked up by the nightly
+       run it would be handed an account, targets and orders. */
+    check('the benchmark is never run as a strategy',
+          !in_array(STRATEGY_BENCHMARK, strategy_strategies(), true)
+          && strategy_reserved(STRATEGY_BENCHMARK) === true);
+    check('nor is a backtest account',
+          strategy_reserved(STRATEGY_BACKTEST_PREFIX . 'trend_following_7') === true);
+
+    echo "\n--- strategies: the nightly run ---\n";
+
+    /* One strategy failing must not stop the next, and none of them may stop
+       the rest of the nightly job. The broken one is first alphabetically on
+       purpose: if the loop stopped on it, the good one would never trade. */
+    $BROKEN = 'test_night_a_broken';
+    $GOOD   = 'test_night_b_good';
+
+    s_drop($S);
+    s_drop($BROKEN); s_drop($GOOD);
+    s_rules($BROKEN, ['score_indicator'=>'no_such_indicator']); s_reset($BROKEN);
+    s_rules($GOOD,   ['holdings'=>5]);                          s_reset($GOOD);
+    /* The two migration strategies would run as well and lengthen the test
+       for no gain; disable them for this part and put them back after. */
+    db()->exec("update strategy_accounts set enabled='N'
+                 where strategy in ('trending_value','trend_following')");
+
+    [$night_out, $night_rc] = run_script('run_strategies.php', [$SASOF]);
+
+    check('the nightly run reports a problem when a strategy cannot select',
+          $night_rc === 1 && strpos($night_out, $BROKEN) !== false,
+          substr($night_out, 0, 400));
+    check('and the strategy after it still traded',
+          (int)scalar("select count(*) from strategy_orders where strategy=? and status='FILLED'", [$GOOD]) === 5,
+          substr($night_out, -400));
+    check('the broken one placed nothing',
+          (int)scalar("select count(*) from strategy_orders where strategy=?", [$BROKEN]) === 0);
+    check('both were valued all the same, so the page has a point for the night',
+          (int)scalar("select count(*) from strategy_values where strategy in (?,?) and date=?",
+                      [$BROKEN,$GOOD,$SASOF]) === 2);
+    check('and the benchmark was written once, not once per strategy',
+          (int)scalar("select count(*) from strategy_values where strategy=? and date=?",
+                      [STRATEGY_BENCHMARK,$SASOF]) === 1);
+
+    /* A rebalance on the night it is due, and nothing on the nights it is
+       not: the run has to be safe to repeat. */
+    $repeat_orders = (int)scalar("select count(*) from strategy_orders where strategy=?", [$GOOD]);
+    $repeat_cash   = scalar("select cash from strategy_accounts where strategy=?", [$GOOD]);
+    run_script('run_strategies.php', [$SASOF]);
+    check('running the same night again places no new orders',
+          (int)scalar("select count(*) from strategy_orders where strategy=?", [$GOOD]) === $repeat_orders
+          && scalar("select cash from strategy_accounts where strategy=?", [$GOOD]) === $repeat_cash,
+          "orders $repeat_orders -> " . scalar("select count(*) from strategy_orders where strategy=?", [$GOOD]));
+
+    /* A genuine PHP failure inside one strategy is contained too. The screen
+       table is renamed out from under the selection, which is as close to a
+       broken database as a test can get without leaving one behind.
+
+       Note what this does NOT cover: query() in functions.php answers a bad
+       statement with trigger_error(E_USER_ERROR) and exit, so a SQL error
+       takes the whole process with it whatever this catches. That is the
+       project's behaviour everywhere, not something the strategies chose. */
+    s_rules($BROKEN, ['selection'=>'screen','screen_id'=>$tf_rules['screen_id']]);
+    db()->exec("rename table screen to screen_hidden");
+    $thrown = strategy_run_night($BROKEN, $SASOF, true, 'XLON');
+    db()->exec("rename table screen_hidden to screen");
+    check('a strategy that fails outright returns its failure rather than killing the run',
+          count($thrown['errors']) > 0,
+          json_encode($thrown['errors']));
+    check('and the screens are back, so the next test is not the one that found it',
+          (int)scalar("select count(*) from screen") > 0);
+
+    echo "\n--- strategies: the kill switch ---\n";
+
+    /* Fail closed. The kill switch stops the dry run too, so what it does is
+       never a question: if the file is there, nothing happens. */
+    $kill_file = sys_get_temp_dir() . '/sm_stop_trading_' . getmypid();
+    file_put_contents($kill_file, "stop\n");
+
+    s_drop($GOOD); s_rules($GOOD, ['holdings'=>5]); s_reset($GOOD);
+
+    [$kill_out, $kill_rc] = run_script('run_strategies.php', [$SASOF],
+                                       ['STRATEGY_KILL_SWITCH_FILE' => $kill_file]);
+    check('the kill switch stops the nightly run before anything is selected',
+          $kill_rc === 4 && stripos($kill_out, 'HALTED') !== false,
+          substr($kill_out, 0, 300));
+    check('and nothing was placed for any strategy',
+          (int)scalar("select count(*) from strategy_orders where strategy=?", [$GOOD]) === 0);
+
+    [$kill_dry_out, $kill_dry_rc] = run_script('run_strategies.php', [$SASOF, '--dry-run'],
+                                               ['STRATEGY_KILL_SWITCH_FILE' => $kill_file]);
+    check('the dry run is stopped by it as well',
+          $kill_dry_rc === 4 && stripos($kill_dry_out, 'HALTED') !== false,
+          substr($kill_dry_out, 0, 300));
+
+    @unlink($kill_file);
+
+    echo "\n--- strategies: a dry run writes nothing ---\n";
+
+    /* The page's button and the command line both go through this, so it has
+       to be true of a rebalance night as well: the plan has to be shown
+       without the targets it is planned from existing yet. */
+    /* The broken strategy has done its job; with it still enabled the
+       script's exit code would be reporting its failure rather than what
+       the dry run did. */
+    s_drop($BROKEN);
+    s_drop($GOOD); s_rules($GOOD, ['holdings'=>5]); s_reset($GOOD);
+
+    $dry = strategy_run_night($GOOD, $SASOF, true, 'XLON');
+    check('a dry run on a rebalance night plans the orders',
+          $dry['rebalance'] === true && count($dry['targets']) === 5
+          && count($dry['lines']) > 0,
+          json_encode($dry['lines']));
+    check('and writes no targets, no orders, no values and no cash movement',
+          (int)scalar("select count(*) from strategy_targets where strategy=?", [$GOOD]) === 0
+          && (int)scalar("select count(*) from strategy_orders where strategy=?", [$GOOD]) === 0
+          && (int)scalar("select count(*) from strategy_values where strategy=?", [$GOOD]) === 0
+          && (float)scalar("select cash from strategy_accounts where strategy=?", [$GOOD]) === 100000.0);
+
+    [$dry_out, $dry_rc] = run_script('run_strategies.php', [$SASOF, '--dry-run']);
+    check('the same is true of the script',
+          $dry_rc === 0
+          && (int)scalar("select count(*) from strategy_orders where strategy=?", [$GOOD]) === 0
+          && stripos($dry_out, 'dry run') !== false,
+          substr($dry_out, -300));
+
+    s_drop($BROKEN); s_drop($GOOD); s_drop($S);
+    db()->exec("update strategy_accounts set enabled='Y'
+                 where strategy in ('trending_value','trend_following')");
+    db()->exec("delete from strategy_values");
+
+    echo "\n--- strategies: tonight's orders fill at tomorrow's close ---\n";
+
+    /* The nightly run decides on tonight's close, and the price it fills at
+       is tomorrow's - which does not exist while tonight's job is running.
+       Rejecting the order there loses the rebalance for good, because the
+       order id is keyed on the as of date and the next run finds the
+       rejected row and places nothing. A monthly strategy would never trade
+       at all.
+
+       So an order placed on the last session the market has had stays
+       PENDING, and the next run resumes it. Found by reading the live path
+       rather than by a test: every test above picks an as of date with
+       sessions after it, so none of them could see this. */
+    $LATEST = scalar("select max(date) from historical_prices where exchange='XLON'");
+    $LAST   = 'test_last_session';
+
+    s_drop($LAST); s_rules($LAST, ['holdings'=>5]); s_reset($LAST);
+    foreach ($S_SYMBOLS as $i => $symbol) { s_stat($symbol, 'momentum_score', $LATEST, 100 - $i); }
+
+    [$last_out, $last_rc] = run_script('run_strategies.php', [$LATEST, '--strategy=' . $LAST]);
+
+    $pending = (int)scalar("select count(*) from strategy_orders where strategy=? and status='PENDING'", [$LAST]);
+    $rejected = (int)scalar("select count(*) from strategy_orders where strategy=? and status='REJECTED'", [$LAST]);
+
+    check('a rebalance on the latest session leaves its orders waiting, not rejected',
+          $pending === 5 && $rejected === 0,
+          "pending=$pending rejected=$rejected\n" . substr($last_out, -400));
+    check('and the run does not call that a failure',
+          $last_rc === 0, substr($last_out, -300));
+    check('no cash moved, because nothing filled',
+          (float)scalar("select cash from strategy_accounts where strategy=?", [$LAST]) === 100000.0);
+
+    /* Tomorrow. The next session's price arrives and the next run fills
+       what was waiting, at that price rather than at the close it was
+       decided on. */
+    $tomorrow = date('Y-m-d', strtotime($LATEST . ' +1 day'));
+    $tomorrow_rows = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                                    select symbol, exchange, ?, price * 1.01
+                                      from historical_prices
+                                     where exchange='XLON' and date=?");
+    $tomorrow_rows->execute([$tomorrow, $LATEST]);
+
+    [$next_out, $next_rc] = run_script('run_strategies.php', [$tomorrow, '--strategy=' . $LAST]);
+
+    $filled_rows = rows("select fill_date, fill_price, symbol from strategy_orders
+                          where strategy=? and status='FILLED' order by symbol", [$LAST]);
+    check('the next run fills what was left waiting',
+          count($filled_rows) === 5,
+          substr($next_out, -400));
+    check('at the next session\'s price, not the one it was decided on',
+          count($filled_rows) > 0
+          && substr((string)$filled_rows[0]['fill_date'], 0, 10) === $tomorrow,
+          json_encode($filled_rows[0] ?? null) . " expected $tomorrow");
+    check('and the cash went out',
+          (float)scalar("select cash from strategy_accounts where strategy=?", [$LAST]) < 100000.0);
+    check('with one order per symbol, not a second set for the second night',
+          (int)scalar("select count(*) from strategy_orders where strategy=?", [$LAST]) === 5);
+
+    /* The other half of the distinction: a symbol the market has traded
+       past but that has no price of its own is a real failure, and is still
+       rejected. That is what stops a dead symbol being filled at some
+       convenient number. */
+    $dead_rows = rows("select symbol, exchange, date, price from historical_prices
+                        where symbol='LLL' and exchange='XLON' and date>?", [$SASOF]);
+    db()->prepare("delete from historical_prices where symbol='LLL' and exchange='XLON' and date>?")
+      ->execute([$SASOF]);
+    db()->prepare("insert into strategy_orders
+                     (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,created_at)
+                   values (?,?,?,'LLL','XLON','BUY',10,'PENDING',now())")
+      ->execute([$LAST . '-dead', $LAST, $SASOF]);
+    strategy_fill_order($LAST . '-dead');
+    check('a symbol with no price while the market traded on is rejected, not left waiting',
+          scalar("select status from strategy_orders where client_order_id=?", [$LAST . '-dead'])
+            === 'REJECTED');
+
+    $dead_restore = db()->prepare("insert into historical_prices (symbol,exchange,date,price) values (?,?,?,?)");
+    foreach ($dead_rows as $row) {
+        $dead_restore->execute([$row['symbol'],$row['exchange'],$row['date'],$row['price']]);
+    }
+    db()->prepare("delete from historical_prices where date=?")->execute([$tomorrow]);
+    s_drop($LAST);
+    check('the fabricated session is gone again and LLL has its prices back',
+          (int)scalar("select count(*) from historical_prices where date=?", [$tomorrow]) === 0
+          && (int)scalar("select count(*) from historical_prices
+                           where symbol='LLL' and exchange='XLON' and date>?", [$SASOF])
+             === count($dead_rows));
+
+    echo "\n--- strategies: the close and its averages, over history ---\n";
+
+    /* A backtest replays the strategy's own screen, and that screen
+       compares the close with its 200 day average as they stood on each
+       date. The prices go back years; the statistics only go back to the
+       night the trend screens were deployed, so without a backfill a trend
+       strategy can only be backtested over the last few weeks. */
+    $bf_from = scalar("select distinct date from historical_prices where exchange='XLON'
+                        order by date desc limit 1 offset 20");
+    $bf_to   = scalar("select distinct date from historical_prices where exchange='XLON'
+                        order by date desc limit 1 offset 1");
+
+    db()->exec("delete from statistics where indicator in ('close_price','ma50','ma200')");
+    [$bf_out, $bf_rc] = run_script('backfill_trend_statistics.php', [$bf_from, $bf_to]);
+
+    check('the backfill runs', $bf_rc === 0, substr($bf_out, -300));
+    check('and writes the close and both averages across the range',
+          (int)scalar("select count(distinct date) from statistics where indicator='ma200'") > 10
+          && (int)scalar("select count(distinct indicator) from statistics
+                           where indicator in ('close_price','ma50','ma200')") === 3,
+          $bf_out);
+    check('nothing is written outside the range it was given',
+          (int)scalar("select count(*) from statistics
+                        where indicator in ('close_price','ma50','ma200')
+                          and (date < ? or date > ?)", [$bf_from, $bf_to]) === 0);
+
+    /* No look-ahead, which is the whole point: the close written for a date
+       is that date's close, not a later one. */
+    $bf_check_date = scalar("select distinct date from historical_prices where exchange='XLON'
+                              and date>=? and date<=? order by date limit 1 offset 2",
+                            [$bf_from, $bf_to]);
+    check('the close written for a date is that date\'s close',
+          abs((float)scalar("select value from statistics where symbol='AAA' and indicator='close_price'
+                              and date=?", [$bf_check_date])
+              - (float)scalar("select price from historical_prices where symbol='AAA'
+                                and exchange='XLON' and date=?", [$bf_check_date])) < 0.01);
+
+    /* And the average is the mean of the 200 closes up to that date, not of
+       the 200 around it. Worked out here from the prices rather than
+       trusting the job's own arithmetic. */
+    $bf_window = (float)scalar("select avg(price) from (
+                                  select price from historical_prices
+                                   where symbol='AAA' and exchange='XLON' and date<=?
+                                   order by date desc limit 200) w", [$bf_check_date]);
+    check('the 200 day average is the mean of the 200 closes up to that date',
+          abs((float)scalar("select value from statistics where symbol='AAA' and indicator='ma200'
+                              and date=?", [$bf_check_date]) - $bf_window) < 0.01,
+          "job=" . scalar("select value from statistics where symbol='AAA' and indicator='ma200' and date=?",
+                          [$bf_check_date]) . " prices=$bf_window");
+
+    /* A full window or no row: an average of forty closes is not a 200 day
+       average, and a strategy that read one as if it were would buy on a
+       signal that does not exist. */
+    $bf_early = scalar("select distinct date from historical_prices where exchange='XLON'
+                         order by date asc limit 1 offset 40");
+    run_script('backfill_trend_statistics.php', [$bf_early, $bf_early, 'ma200']);
+    check('a date without 200 closes behind it gets no 200 day average',
+          (int)scalar("select count(*) from statistics where indicator='ma200' and date=?",
+                      [$bf_early]) === 0);
+    run_script('backfill_trend_statistics.php', [$bf_early, $bf_early, 'ma50']);
+    check('and none for the 50 day one either, on the same grounds',
+          (int)scalar("select count(*) from statistics where indicator='ma50' and date=?",
+                      [$bf_early]) === 0);
+
+    /* Safe to re-run: the same range twice is the same rows, not twice as
+       many. */
+    $bf_rows = (int)scalar("select count(*) from statistics
+                             where indicator in ('close_price','ma50','ma200')");
+    run_script('backfill_trend_statistics.php', [$bf_from, $bf_to]);
+    check('running the backfill again changes nothing',
+          (int)scalar("select count(*) from statistics
+                        where indicator in ('close_price','ma50','ma200')") === $bf_rows,
+          "$bf_rows -> " . scalar("select count(*) from statistics
+                                    where indicator in ('close_price','ma50','ma200')"));
+
+    echo "\n--- strategies: the backtest uses the same engine ---\n";
+
+    /* A screen only trend strategy, which is what can be backtested once
+       the averages are in: no rank_by, so no indicator beyond the screen's
+       own. */
+    $BT = 'test_backtest';
+    s_drop($BT);
+    db()->exec("delete from strategy_backtest_runs where strategy='$BT'");
+    $bt_screen = (int)scalar("select id from screen where name='Trend following (200-day)'");
+    s_rules($BT, ['selection'=>'screen','screen_id'=>$bt_screen,'score_indicator'=>null,
+                  'rank_by'=>null,'holdings'=>5,'rebalance'=>'weekly',
+                  'exit_rules'=>'below_ma200_2d']);
+    s_reset($BT);
+
+    $bt_cash_before = scalar("select cash from strategy_accounts where strategy=?", [$BT]);
+
+    [$bt_out, $bt_rc] = run_script('backtest_strategy.php', [$BT, $bf_from, $bf_to]);
+    $bt_run = rows("select * from strategy_backtest_runs where strategy=? order by run_id desc limit 1", [$BT]);
+
+    check('the backtest runs and records what it did',
+          count($bt_run) === 1 && $bt_run[0]['status'] === 'DONE'
+          && (int)$bt_run[0]['trading_days'] > 10,
+          substr($bt_out, -400));
+    check('it traded its own account, not the strategy it was replaying',
+          strpos((string)$bt_run[0]['account'], STRATEGY_BACKTEST_PREFIX) === 0,
+          (string)$bt_run[0]['account']);
+    check('the live account did not move a penny',
+          scalar("select cash from strategy_accounts where strategy=?", [$BT]) === $bt_cash_before
+          && (int)scalar("select count(*) from strategy_orders where strategy=?", [$BT]) === 0
+          && (int)scalar("select count(*) from strategy_positions where strategy=?", [$BT]) === 0,
+          "cash $bt_cash_before -> " . scalar("select cash from strategy_accounts where strategy=?", [$BT]));
+    check('it rebalanced weekly rather than every night',
+          (int)$bt_run[0]['rebalances'] > 1
+          && (int)$bt_run[0]['rebalances'] < (int)$bt_run[0]['trading_days'],
+          json_encode([$bt_run[0]['rebalances'], $bt_run[0]['trading_days']]));
+    check('it paid the same dealing costs the paper account would',
+          (float)$bt_run[0]['costs_paid'] > 0 && (int)$bt_run[0]['fills'] > 0,
+          json_encode([$bt_run[0]['costs_paid'], $bt_run[0]['fills']]));
+    check('it measured itself against the benchmark over its own period',
+          $bt_run[0]['benchmark_return'] !== null);
+    check('and it says what to read the result with, both ways',
+          stripos((string)$bt_run[0]['note'], 'survivorship') !== false
+          && stripos((string)$bt_run[0]['note'], 'look-ahead') !== false,
+          (string)$bt_run[0]['note']);
+    check('the two caveats are in the output as well, where somebody running it will see them',
+          stripos($bt_out, 'survivorship') !== false && stripos($bt_out, 'look-ahead') !== false);
+    check('a value for every night is left for the page to draw',
+          (int)scalar("select count(*) from strategy_values where strategy=?",
+                      [(string)$bt_run[0]['account']]) > 10);
+    check('and the orders are cleared, because the result is the values',
+          (int)scalar("select count(*) from strategy_orders where strategy=?",
+                      [(string)$bt_run[0]['account']]) === 0);
+
+    /* The nightly run must never pick a backtest account up, whatever is in
+       strategy_accounts. */
+    check('the nightly run will not trade the backtest account',
+          !in_array((string)$bt_run[0]['account'], strategy_strategies(), true));
+
+    /* --keep leaves the mechanism behind for inspection. */
+    [$bt_keep_out, $bt_keep_rc] = run_script('backtest_strategy.php', [$BT, $bf_from, $bf_to, '--keep']);
+    $bt_keep = rows("select * from strategy_backtest_runs where strategy=? order by run_id desc limit 1", [$BT]);
+    check('--keep leaves the orders behind to look at',
+          (int)scalar("select count(*) from strategy_orders where strategy=?",
+                      [(string)$bt_keep[0]['account']]) > 0,
+          substr($bt_keep_out, -200));
+    check('and each run is its own account, so two runs can be compared',
+          (string)$bt_keep[0]['account'] !== (string)$bt_run[0]['account']);
+
+    echo "\n--- strategies: a backtest that would need hindsight is refused ---\n";
+
+    /* The look-ahead rule, and the reason it is data rather than a list of
+       strategies: an indicator can only be used on a date it was stored
+       for. The value measures arrive with the November 2026 fundamentals,
+       so Trending Value refuses anything earlier instead of ranking 2019 on
+       today's figures. */
+    [$tv_out, $tv_rc] = run_script('backtest_strategy.php', ['trending_value', '2019-01-02', '2019-06-28']);
+    $tv_run = rows("select * from strategy_backtest_runs where strategy='trending_value'
+                     order by run_id desc limit 1");
+
+    check('Trending Value is refused before its fundamentals existed',
+          $tv_rc === 3 && count($tv_run) === 1 && $tv_run[0]['status'] === 'REFUSED',
+          substr($tv_out, 0, 400));
+    check('and the refusal says which indicator and from when',
+          stripos($tv_out, 'value_score') !== false || stripos($tv_out, 'has no stored history') !== false,
+          substr($tv_out, 0, 400));
+    check('nothing was traded for it',
+          (int)scalar("select count(*) from strategy_orders
+                        where strategy like ?", [STRATEGY_BACKTEST_PREFIX . 'trending_value%']) === 0);
+    check('the refusal is on the record, not only in somebody\'s terminal',
+          stripos((string)$tv_run[0]['note'], 'cannot be backtested') !== false
+          || stripos((string)$tv_run[0]['note'], 'no stored history') !== false,
+          (string)$tv_run[0]['note']);
+
+    /* The same rule the other way round: the trend strategy's own window is
+       what the backfill wrote, and a date before it is refused too. */
+    [$early_out, $early_rc] = run_script('backtest_strategy.php',
+                                         [$BT, '2023-02-01', '2023-03-01']);
+    check('and so is a trend strategy before its averages were backfilled',
+          $early_rc === 3 && stripos($early_out, 'REFUSED') !== false,
+          substr($early_out, 0, 300));
+
+    /* A backtest of a reserved name is refused outright: backtesting a
+       backtest is a mistake, not a feature. */
+    [$res_out, $res_rc] = run_script('backtest_strategy.php',
+                                     [STRATEGY_BACKTEST_PREFIX . 'anything', $bf_from, $bf_to]);
+    check('a backtest account cannot itself be backtested',
+          $res_rc !== 0 && stripos($res_out, 'reserved') !== false,
+          substr($res_out, 0, 200));
+
+    db()->exec("delete from strategy_values where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
+    db()->exec("delete from strategy_orders where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
+    db()->exec("delete from strategy_positions where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
+    db()->exec("delete from strategy_targets where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
+    db()->exec("delete from strategy_rules where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
+    db()->exec("delete from strategy_accounts where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
+    db()->exec("delete from strategy_backtest_runs");
+    s_drop($BT);
+
     echo "\n--- every PHP file parses ---\n";
 
     /* A syntax sweep, because PHP only reports a parse error when something
@@ -762,7 +1702,12 @@
        price_momentum, the legacy table calc_momentum stopped writing to, and
        rendered templates/screen.php with variables that template does not use.
        Both are archived; anything in public/ is a URL somebody can reach. */
-    foreach (['get_share_prices.php', 'screening.php'] as $gone) {
+    foreach (['get_share_prices.php', 'screening.php',
+              /* The 2023 backtest: its own model, its own tables, nothing
+                 shared with the paper engine. Replaced by
+                 includes/backtest_strategy.php, which replays a strategy's
+                 own rules through the engine that trades it. */
+              'backtest.php', 'backtest_results.php'] as $gone) {
         check("public/$gone is not served",
               !file_exists(dirname(__DIR__) . "/public/$gone"));
         check("$gone is kept in the archive",
@@ -5597,11 +6542,16 @@
         $curl("$base/login.php");
         $curl("$base/login.php", 'username=tester&password=testpass');
 
+        /* backtest.php and backtest_results.php are gone from this list
+           because they are gone from the docroot: the 2023 backtest drove
+           its own model and shared nothing with the paper engine, and
+           includes/backtest_strategy.php replaces it. They are in
+           archive/public/, which the "dead pages" test checks. */
         $pages = ['index.php','performance.php','dividends.php','cash_history.php',
                   'edit.php','topup.php','screen_list.php','quote.php','criteria.php',
                   'criteria_list.php','screen_criteria.php','sector_companies.php',
-                  'strategies.php','sell.php','buy.php','backtest.php',
-                  'backtest_results.php','statistics.php','statistics_form.php','download_prices.php',
+                  'strategies.php','sell.php','buy.php',
+                  'statistics.php','statistics_form.php','download_prices.php',
                   'register.php','reset_passwd.php','in_the_news.php'];
         $fatal = [];
         foreach ($pages as $page) {
@@ -5945,6 +6895,175 @@ STUB
               strpos($q, 'id="news"') !== false
               && preg_match('/id="news".{0,600}(No regulatory announcements|<table|<a href=)/s', $q) === 1,
               substr($q, max(0, strpos($q, 'id="news"')), 300));
+
+        /* ---------------- The strategy page ---------------- */
+
+        /* A strategy with a night behind it, so the page has figures to
+           show rather than only its empty state. Written straight in: the
+           page is what is under test here, not the engine. */
+        $sp = 'test_page_strategy';
+        foreach (['strategy_orders','strategy_positions','strategy_targets',
+                  'strategy_values','strategy_rules','strategy_accounts'] as $sp_table) {
+            db()->prepare("delete from $sp_table where strategy=?")->execute([$sp]);
+        }
+        $sp_asof = asof_date();
+        $sp_prev = scalar("select distinct date from historical_prices where exchange='XLON'
+                            and date<? order by date desc limit 1", [$sp_asof]);
+        $sp_price = (float) scalar("select price from historical_prices
+                                     where symbol='AAA' and exchange='XLON' and date=?", [$sp_asof]);
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at,note)
+                       values (?,25000,'GBP','PAPER','Y',now(),?)")
+          ->execute([$sp, 'Paper. <script>alert(1)</script> note.']);
+        db()->prepare("insert into strategy_rules (strategy,selection,score_indicator,rank_by,holdings,
+                                                   rebalance,exit_rules,exclude_funds,updated_at)
+                       values (?,'score','momentum_score','momentum_score',5,'weekly','below_ma200_2d','Y',now())")
+          ->execute([$sp]);
+        db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                       values (?,'AAA','XLON',1000,?,now())")->execute([$sp, $sp_price]);
+        db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,
+                          fill_date,fill_price,consideration,commission,stamp_duty,slippage,total_cost,
+                          note,created_at,filled_at)
+                       values (?,?,?,'AAA','XLON','BUY',1000,'FILLED',?,?,?,5.95,?,?,?,'rebalance',now(),now())")
+          ->execute([$sp . '-page-1', $sp, $sp_prev, $sp_asof, $sp_price, $sp_price * 1000,
+                     $sp_price * 1000 * 0.005, $sp_price * 1000 * 0.0025,
+                     -($sp_price * 1000 * 1.0075 + 5.95)]);
+        db()->prepare("insert into strategy_targets (strategy,as_of_date,symbol,exchange,target_weight,created_at)
+                       values (?,?,'AAA','XLON',0.2,now())")->execute([$sp, $sp_prev]);
+        $sp_values = db()->prepare("insert into strategy_values
+                                      (strategy,date,cash,holdings_value,total,holdings)
+                                    values (?,?,?,?,?,?)");
+        $sp_values->execute([$sp, $sp_prev, 25000, 75000, 100000, 1]);
+        $sp_values->execute([$sp, $sp_asof, 25000, 80000, 105000, 1]);
+        db()->prepare("delete from strategy_values where strategy=?")->execute([STRATEGY_BENCHMARK]);
+        $sp_values->execute([STRATEGY_BENCHMARK, $sp_prev, 0, 0, 100, 12]);
+        $sp_values->execute([STRATEGY_BENCHMARK, $sp_asof, 0, 0, 102, 12]);
+
+        $sp_page = (string) $curl("$base/strategies.php");
+
+        check('the strategy page renders without a fatal',
+              stripos($sp_page, 'Fatal error') === false
+              && stripos($sp_page, 'Parse error') === false,
+              substr($sp_page, 0, 300));
+        check('it shows the strategy, its value and its return',
+              strpos($sp_page, $sp) !== false
+              && strpos($sp_page, '105,000') !== false
+              && strpos($sp_page, '+5.0%') !== false,
+              substr($sp_page, max(0, strpos($sp_page, $sp)), 400));
+        check('and the benchmark over the same period, not over all of history',
+              strpos($sp_page, '+2.0%') !== false);
+        check('the holding is listed with its weight and a link to the quote page',
+              preg_match('/quote\.php\?symbol=AAA/', $sp_page) === 1
+              && strpos($sp_page, '1,000') !== false);
+        check('the trade says why it happened',
+              strpos($sp_page, 'rebalance') !== false);
+        check('the dealing costs paid are on the page',
+              stripos($sp_page, 'Dealing costs paid') !== false);
+        check('it says in plain words that nothing real is traded',
+              stripos($sp_page, 'No real orders are ever placed') !== false);
+        check('and names the benchmark, because equal weighted is a choice',
+              stripos($sp_page, 'equal weighted') !== false
+              && stripos($sp_page, 'leaves out the companies that have left the index') !== false,
+              substr($sp_page, max(0, stripos($sp_page, 'benchmark')), 400));
+        check('markup in a strategy note is shown, not run',
+              strpos($sp_page, '<script>alert(1)</script>') === false
+              && strpos($sp_page, '&lt;script&gt;alert(1)&lt;/script&gt;') !== false);
+        check('the rebalance dates are shown',
+              stripos($sp_page, 'Last rebalance') !== false
+              && stripos($sp_page, 'Next on or after') !== false);
+
+        /* The chart's data is JSON in the page rather than generated
+           JavaScript, and the strategy names in it are escaped the same way
+           everything else is. */
+        check('the chart data is JSON, with the names escaped',
+              strpos($sp_page, 'id="strategy-chart-data"') !== false
+              && strpos($sp_page, 'lightweight-charts.standalone.production.js') !== false,
+              substr($sp_page, max(0, strpos($sp_page, 'strategy-chart')), 300));
+
+        /* A backtest of the same rules belongs on the page under the live
+           card, labelled so nobody reads a replay as a record of trading. */
+        db()->exec("delete from strategy_backtest_runs where strategy='$sp'");
+        db()->prepare("insert into strategy_backtest_runs
+                         (strategy,account,from_date,to_date,started_at,finished_at,status,
+                          trading_days,rebalances,exits,fills,start_value,final_value,
+                          total_return,benchmark_return,max_drawdown,costs_paid,note)
+                       values (?,?,?,?,now(),now(),'DONE',120,6,2,30,100000,112000,
+                               0.12,0.04,0.085,842.10,?)")
+          ->execute([$sp, STRATEGY_BACKTEST_PREFIX . $sp . '_1', '2026-01-02', $sp_prev,
+                     'Survivorship: the universe is today\'s FTSE 350. Look-ahead: each date'
+                     . ' used only the statistics stored for it.']);
+
+        $sp_with_bt = (string) $curl("$base/strategies.php");
+        check('a backtest appears under the live card, labelled a backtest',
+              stripos($sp_with_bt, 'Backtest') !== false
+              && strpos($sp_with_bt, '+12.0%') !== false
+              && stripos($sp_with_bt, 'Not a record of trading') !== false,
+              substr($sp_with_bt, max(0, stripos($sp_with_bt, 'Backtest')), 500));
+        check('with its own benchmark figure and its worst fall',
+              strpos($sp_with_bt, '+4.0%') !== false && strpos($sp_with_bt, '-8.5%') !== false);
+        check('and the survivorship caveat next to it, not buried in a log',
+              stripos($sp_with_bt, 'survivorship') !== false);
+        db()->exec("delete from strategy_backtest_runs where strategy='$sp'");
+
+        /* The dry run button. A POST, and it must write nothing at all:
+           that is the whole promise of the button. */
+        $sp_orders_before = (int) scalar("select count(*) from strategy_orders where strategy=?", [$sp]);
+        $sp_cash_before   = scalar("select cash from strategy_accounts where strategy=?", [$sp]);
+        $sp_dry = (string) $curl("$base/strategies.php", 'dry_run=' . urlencode($sp));
+
+        check('the dry run button answers with a plan',
+              stripos($sp_dry, 'Dry run') !== false
+              && stripos($sp_dry, 'Nothing was written') !== false,
+              substr($sp_dry, max(0, stripos($sp_dry, 'Dry run')), 400));
+        check('and writes nothing: no orders, no targets, no cash movement',
+              (int) scalar("select count(*) from strategy_orders where strategy=?", [$sp]) === $sp_orders_before
+              && scalar("select cash from strategy_accounts where strategy=?", [$sp]) === $sp_cash_before
+              && (int) scalar("select count(*) from strategy_targets where strategy=? and as_of_date=?",
+                              [$sp, $sp_asof]) === 0);
+
+        /* A strategy nobody asked about must not be run by naming it in the
+           form: the parameter is checked against the list the page built. */
+        $sp_other_before = (int) scalar("select count(*) from strategy_targets where strategy='trending_value'");
+        $sp_injected = (string) $curl("$base/strategies.php", 'dry_run=' . urlencode('../../etc/passwd'));
+        check('a strategy the page never listed cannot be dry run',
+              stripos($sp_injected, 'Dry run:') === false
+              && (int) scalar("select count(*) from strategy_targets where strategy='trending_value'")
+                 === $sp_other_before);
+
+        /* Behind the login like everything else. A paper book is still a
+           statement about what somebody is doing with their money. */
+        $sp_jar = tempnam(sys_get_temp_dir(), 'smanon2');
+        $sp_code = trim((string) shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 30 '
+                                            . escapeshellarg("$base/strategies.php") . ' 2>/dev/null'));
+        $sp_anon = (string) shell_exec('curl -s -m 30 -b ' . escapeshellarg($sp_jar)
+                                       . ' -c ' . escapeshellarg($sp_jar) . ' '
+                                       . escapeshellarg("$base/strategies.php") . ' 2>/dev/null');
+        check('an anonymous request for the strategy page is redirected to login',
+              $sp_code === '302', "status $sp_code");
+        check('and no holdings reach it',
+              strpos($sp_anon, $sp) === false && stripos($sp_anon, '105,000') === false,
+              substr($sp_anon, 0, 160));
+        @unlink($sp_jar);
+
+        /* The 2023 page is retired rather than deleted, and the new one is
+           at the URL the navigation points at. */
+        check('the 2023 Backing Winners page is in the archive',
+              file_exists(dirname(__DIR__) . '/archive/public/strategies.php')
+              && file_exists(dirname(__DIR__) . '/archive/templates/strategies.php'));
+        check('and public/strategies.php is the paper strategies page now',
+              strpos((string) file_get_contents(dirname(__DIR__) . '/public/strategies.php'),
+                     'strategy_functions.php') !== false);
+        check('the navigation links to it',
+              strpos((string) file_get_contents(dirname(__DIR__) . '/templates/header.php'),
+                     'strategies.php">Strategies') !== false);
+        check('and the chart script is copied into the docroot on deploy',
+              strpos((string) file_get_contents(dirname(__DIR__) . '/tools/fetch_assets.sh'),
+                     'strategy_chart.js') !== false);
+
+        foreach (['strategy_orders','strategy_positions','strategy_targets',
+                  'strategy_values','strategy_rules','strategy_accounts'] as $sp_table) {
+            db()->prepare("delete from $sp_table where strategy=?")->execute([$sp]);
+        }
 
         /* index.php also renders templates/quote.php when given a symbol, and
            passed six of the thirty variables the template reads: every panel it

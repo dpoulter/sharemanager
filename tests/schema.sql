@@ -19,6 +19,13 @@ drop table if exists historical_prices, stock_symbols, screen_indicators,
   health_indicators, variables, momentum_ratings, financial_statement_items,
   financial_statement_periods, financial_statement_values, password_resets;
 
+-- Tables that arrive with a migration rather than with this file. Dropped
+-- here all the same: a migration created table survives between suite runs
+-- otherwise, and a row left over from the last run has made a mutation look
+-- caught for the wrong reason before now. The migrations themselves are
+-- applied by tests/run_tests.sh after the seed.
+drop table if exists strategy_rules, strategy_values, strategy_backtest_runs;
+
 -- Daily prices, loaded by get_share_prices.php via share_functions.php:319.
 -- The exchange column is written from $_SESSION["exchange"] ('XLON').
 create table historical_prices (

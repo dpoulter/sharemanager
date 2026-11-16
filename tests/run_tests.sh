@@ -91,6 +91,15 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/trending_value.sql" > /dev/null || exit 1
 echo "applying sql/rns.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/rns.sql" > /dev/null || exit 1
 
+# After sql/trend_screens.sql and sql/trending_value.sql: the strategies it
+# defines are matched to those screens by name, so the screens have to exist
+# or the rules rows come out with a null screen_id.
+echo "applying sql/strategy_rules.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_rules.sql" > /dev/null || exit 1
+
+echo "applying sql/strategy_backtest.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_backtest.sql" > /dev/null || exit 1
+
 echo "running provider client tests (offline, no key needed)"
 python3 "$TESTS_DIR/test_eodhd.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp.py"        || PY_FAILED=1

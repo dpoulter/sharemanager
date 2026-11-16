@@ -38,6 +38,23 @@
 	// than the position adjustment is worth, so it is not placed at all.
 	define("STRATEGY_MIN_ORDER_VALUE",  250.00);
 
+	// A holding whose weight is within this of its target is left alone. Two
+	// percentage points on a 6.67% target is a third of the position, which
+	// sounds generous until you price the alternative: trimming fifteen
+	// holdings by a few shares every rebalance is thirty orders a month, at
+	// 5.95 plus stamp plus spread, to correct a drift the market will undo
+	// by Thursday.
+	define("STRATEGY_DRIFT_BAND", 0.02);
+
+	// How many sessions the rest of the market can trade without a holding
+	// before the holding is treated as having stopped trading. One missing
+	// day is a data gap; a week is a takeover, a suspension or a delisting.
+	define("STRATEGY_STALE_SESSIONS", 5);
+
+	// The benchmark's own row in strategy_values. Underscore first so it can
+	// never collide with a strategy name: strategy_strategies() skips it.
+	define("STRATEGY_BENCHMARK", "_benchmark");
+
 	/**
 	 * Trading is halted if the kill switch file exists. Checked before every
 	 * order, not once per run, so dropping the file stops a run in progress.
@@ -133,7 +150,7 @@
 	 * its own. Returns a list of intents; an empty list means do nothing,
 	 * which is a valid and common outcome.
 	 */
-	function strategy_plan_orders($strategy,$as_of_date) {
+	function strategy_plan_orders($strategy,$as_of_date,$targets=null) {
 
 		$plan=['orders'=>[],'errors'=>[],'account_value'=>null];
 
@@ -147,7 +164,14 @@
 		if ($account_value<=0){ $plan['errors'][]="account value is not positive"; return $plan; }
 		$plan['account_value']=$account_value;
 
-		$targets=query("select * from strategy_targets where strategy=? and as_of_date=?",$strategy,$as_of_date);
+		/* Targets come from the table unless the caller hands them over. The
+		   override is what makes a dry run on a rebalance date possible: the
+		   plan has to be shown without writing the targets it is planned
+		   from, and computing them twice - once for the dry run, once for
+		   the real one - would be two answers to one question. */
+		if ($targets===null){
+			$targets=query("select * from strategy_targets where strategy=? and as_of_date=?",$strategy,$as_of_date);
+		}
 		if (count($targets)===0){ $plan['errors'][]="no targets for ".$as_of_date; return $plan; }
 
 		$total_weight=0;
@@ -192,6 +216,22 @@
 			$target_quantity=(int)floor(($weight*$investable)/$price);
 			$held=isset($positions[$symbol]) ? (int)$positions[$symbol]['quantity'] : 0;
 			$delta=$target_quantity-$held;
+
+			/* Leave a holding alone while its weight is close enough. A
+			   share bought at 6.67% that is now 8% is not a different
+			   portfolio from the one the signal asked for; selling a few
+			   shares to make it 6.67% again pays commission, stamp and
+			   spread for a decimal place. Measured on the holding's actual
+			   weight rather than on the share count, because that is what
+			   the band is about.
+
+			   A name that is not held yet has a weight of zero, so a new
+			   holding is always outside the band, and so is a position being
+			   built from cash. */
+			if ($held>0){
+				$held_weight=($held*$price)/$account_value;
+				if (abs($held_weight-$weight)<=STRATEGY_DRIFT_BAND){ continue; }
+			}
 
 			//Skip adjustments too small to be worth the dealing costs. A
 			//one share correction on a 160 pound stock costs commission plus
@@ -240,7 +280,17 @@
 			if ($order['side']==='BUY'){ $buys += $value; } else { $sells += $value; }
 		}
 		$turnover=min($buys,$sells);
-		if ($account_value>0&&($turnover/$account_value)>STRATEGY_MAX_TURNOVER){
+
+		/* The first build of an account is exempt. Under the definition
+		   above it scores zero anyway - an all-cash build is all buys and no
+		   sells - so this is belt and braces rather than a fix: it says in
+		   code that filling an empty account from cash is not churn, so that
+		   a later change to how turnover is measured cannot stop an account
+		   ever opening. Nothing else is exempt, and the second run is
+		   capped like every other. */
+		$first_build=strategy_first_build($strategy);
+
+		if (!$first_build&&$account_value>0&&($turnover/$account_value)>STRATEGY_MAX_TURNOVER){
 			$plan['errors'][]="turnover ".round($turnover/$account_value,3)." exceeds the limit of ".STRATEGY_MAX_TURNOVER;
 			$plan['orders']=[];
 			return $plan;
@@ -278,7 +328,7 @@
 	 * that died after recording but before filling will find the row on
 	 * restart and resume it rather than placing a second order.
 	 */
-	function strategy_record_order($strategy,$as_of_date,$order) {
+	function strategy_record_order($strategy,$as_of_date,$order,$note=null) {
 
 		$client_order_id=strategy_order_id($strategy,$as_of_date,$order['symbol']);
 
@@ -288,11 +338,17 @@
 			return null;
 		}
 
+		/* The note is why, in the order's own row: 'rebalance' or the name
+		   of the exit rule that sold it. The strategy page reads it back as
+		   the reason column, so a trade can be accounted for a year later
+		   without re-deriving the signal. */
 		$written=query("insert into strategy_orders
-			(client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,created_at)
-			values (?,?,?,?,?,?,?,'PENDING',?)",
+			(client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,note,created_at)
+			values (?,?,?,?,?,?,?,'PENDING',?,?)",
 			$client_order_id,$strategy,$as_of_date,$order['symbol'],$order['exchange'],
-			$order['side'],$order['quantity'],date('Y-m-d H:i:s'));
+			$order['side'],$order['quantity'],
+			$note===null ? null : substr((string)$note,0,255),
+			date('Y-m-d H:i:s'));
 
 		//The unique key is the backstop: if two processes raced, the loser
 		//gets false here and must not proceed to fill.
@@ -311,7 +367,7 @@
 	 * positions, and it leaves the order row FILLED or REJECTED either way,
 	 * so nothing is ever left in an unknown state.
 	 */
-	function strategy_fill_order($client_order_id) {
+	function strategy_fill_order($client_order_id,$last_price_fallback=false) {
 
 		$rows=query("select * from strategy_orders where client_order_id=?",$client_order_id);
 		if (count($rows)===0){ return false; }
@@ -330,9 +386,52 @@
 		};
 
 		$fill=strategy_next_price($order['symbol'],$order['exchange'],$order['as_of_date']);
+
+		/* A share that has stopped trading has no next price and never will,
+		   so the ordinary guard would reject the sale for ever and the book
+		   would carry a holding it cannot value or leave. The last price it
+		   actually traded at is the only honest number available, and it is
+		   a real traded close rather than an estimate - which is the line:
+		   fill at the last price, say so on the order, and never invent one.
+		   Only ever reached for an exit that asked for it; a rebalance keeps
+		   the strict rule. */
+		if ($fill===null&&$last_price_fallback){
+			$last=strategy_price_asof($order['symbol'],$order['exchange'],$order['as_of_date']);
+			if ($last!==null&&$last>0){
+				$fill=['date'=>$order['as_of_date'],'price'=>$last];
+				write_log("strategy","filling ".$client_order_id." at the last known price "
+				          .$last." - no session after ".$order['as_of_date']);
+			}
+		}
+
 		if ($fill===null){
-			//No session after the as of date yet. This is the guard against
-			//filling a rebalance at the same close that produced it.
+
+			/* "Not yet" is not "never", and the difference is the whole
+			   nightly run. An order planned tonight cannot fill tonight:
+			   the price it fills at is tomorrow's close, which does not
+			   exist while tonight's job is running. Rejecting it there
+			   loses the rebalance for good - the order id is keyed on the
+			   as of date, so tomorrow's run finds the rejected row and
+			   places nothing - and a monthly strategy would never trade at
+			   all.
+
+			   So: if the market has not traded since the as of date, the
+			   order stays PENDING and the next run resumes and fills it,
+			   which is what strategy_resume_pending() is for. If the market
+			   HAS traded since and this symbol still has no price, that is
+			   a real failure and it is rejected as before; a holding whose
+			   price has stopped altogether is the delisting case, which the
+			   exit rules handle with the last traded price. */
+			$later=query("select count(*) n from historical_prices
+			               where exchange=? and date>?",
+			             $order['exchange'],$order['as_of_date']);
+
+			if (!count($later)||(int)$later[0]['n']===0){
+				write_log("strategy","leaving ".$client_order_id." pending: the market has"
+				          ." not traded since ".$order['as_of_date']);
+				return false;
+			}
+
 			return $reject("no price after ".$order['as_of_date']);
 		}
 
@@ -435,6 +534,1304 @@
 		elseif ((float)$account['cash']<0){ $problems[]="cash is negative (".$account['cash'].")"; }
 
 		return $problems;
+	}
+
+
+	/* =====================================================================
+	   Strategies as configuration.
+
+	   Everything above is the engine: it reconciles, plans, places and
+	   fills, and it has no opinion about what should be held. Everything
+	   below is what turns "the best N by overall_score" into a strategy
+	   anybody can describe - what to select, how many, when to rebalance,
+	   and when to leave before the next rebalance - read out of
+	   strategy_rules rather than written into a script.
+
+	   The engine's limits stay where they are. A rules row chooses from what
+	   the engine allows; it cannot widen it.
+
+	   See sql/strategy_rules.sql and includes/README-paper-trading.md.
+	   ===================================================================== */
+
+	// A backtest runs the same engine under its own account name. The
+	// nightly job must never trade one, so the prefix is reserved here
+	// rather than being a convention in the backtest script.
+	define("STRATEGY_BACKTEST_PREFIX", "bt_");
+
+	// What a backtest starts with. The same round number the paper accounts
+	// were opened with, so the two are read on the same scale.
+	define("STRATEGY_BACKTEST_CASH", 100000.00);
+
+	/**
+	 * True once sql/strategy_rules.sql has been applied.
+	 *
+	 * Same reason as fund_config_ready(): deploy/deploy.sh pulls code and
+	 * restarts PHP but does not run migrations, so there is a window where
+	 * this code is on the server and the tables are not. The nightly job
+	 * says so and does nothing rather than dying on an unknown table.
+	 */
+	function strategy_rules_ready() {
+
+		static $ready=null;
+		if ($ready!==null){ return $ready; }
+
+		$rules=query("select count(*) n from information_schema.tables
+		               where table_schema=database() and table_name='strategy_rules'");
+		$values=query("select count(*) n from information_schema.tables
+		                where table_schema=database() and table_name='strategy_values'");
+
+		$ready=(count($rules)&&(int)$rules[0]['n']===1)
+		     &&(count($values)&&(int)$values[0]['n']===1);
+
+		if (!$ready){
+			write_log("strategy","sql/strategy_rules.sql has not been applied: no strategy runs");
+		}
+
+		return $ready;
+	}
+
+	/**
+	 * A name the nightly run must not treat as a strategy: the benchmark's
+	 * row in strategy_values, and any backtest account.
+	 */
+	function strategy_reserved($strategy) {
+		$strategy=(string)$strategy;
+		return substr($strategy,0,1)==='_'
+		    || strpos($strategy,STRATEGY_BACKTEST_PREFIX)===0;
+	}
+
+	/**
+	 * The strategies tonight's run should drive, in a stable order.
+	 *
+	 * Enabled, PAPER, and with a rules row: an account with no rules has
+	 * nothing to select, and guessing on its behalf is how an account that
+	 * was only ever meant to exercise the engine starts trading.
+	 */
+	function strategy_strategies() {
+
+		if (!strategy_rules_ready()){ return []; }
+
+		$out=[];
+		foreach (query("select a.strategy from strategy_accounts a, strategy_rules r
+		                 where r.strategy=a.strategy and a.enabled='Y' and a.mode='PAPER'
+		                 order by a.strategy") as $row) {
+			if (strategy_reserved($row['strategy'])){ continue; }
+			$out[]=$row['strategy'];
+		}
+		return $out;
+	}
+
+	/**
+	 * One strategy's rules, or null. Defaults are applied here rather than
+	 * being assumed by each caller.
+	 */
+	function strategy_rules($strategy) {
+
+		if (!strategy_rules_ready()){ return null; }
+
+		$rows=query("select * from strategy_rules where strategy=?",$strategy);
+		if (!count($rows)){ return null; }
+
+		$rules=$rows[0];
+		$rules['selection']=strtolower(trim((string)$rules['selection']))==='screen' ? 'screen' : 'score';
+		$rules['holdings']=max(1,(int)$rules['holdings']);
+		$rebalance=strtolower(trim((string)$rules['rebalance']));
+		$rules['rebalance']=in_array($rebalance,['monthly','weekly','daily'],true) ? $rebalance : 'monthly';
+		$rules['exclude_funds']=strtoupper(trim((string)$rules['exclude_funds']))==='N' ? 'N' : 'Y';
+		$rules['exit_list']=array_values(array_filter(array_map('trim',
+		                      explode(',',strtolower((string)$rules['exit_rules'])))));
+		$rules['rank_by']=trim((string)$rules['rank_by'])===''  ? null : trim((string)$rules['rank_by']);
+		$rules['score_indicator']=trim((string)$rules['score_indicator'])===''
+		                        ? null : trim((string)$rules['score_indicator']);
+
+		return $rules;
+	}
+
+	/**
+	 * The first trading date of the period $as_of falls in.
+	 *
+	 * Trading dates, not calendar dates: "the first as of date of the month"
+	 * on a month that opens on a Sunday is the Monday, and a week that opens
+	 * on a bank holiday rebalances on the Tuesday. The dates come from
+	 * historical_prices, which is the only thing here that knows when the
+	 * market was actually open.
+	 */
+	function strategy_period_first_date($rebalance,$as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		if ($rebalance==='daily'){ return $as_of; }
+
+		if ($rebalance==='weekly'){
+			//ISO weeks: Monday starts the week, so a Sunday as of date
+			//belongs to the week that began six days earlier.
+			$start=date('Y-m-d',strtotime('monday this week',strtotime($as_of)));
+		}
+		else {
+			$start=date('Y-m-01',strtotime($as_of));
+		}
+
+		$rows=query("select min(date) d from historical_prices
+		              where exchange=? and date>=? and date<=?",$exchange,$start,$as_of);
+
+		return (count($rows)&&$rows[0]['d']!==null) ? substr((string)$rows[0]['d'],0,10) : null;
+	}
+
+	/**
+	 * Has this account never traded?
+	 *
+	 * No positions and no filled orders. Used for the turnover exemption and
+	 * to decide that the first rebalance is due now rather than at the next
+	 * month boundary.
+	 */
+	function strategy_first_build($strategy) {
+
+		$positions=query("select count(*) n from strategy_positions
+		                   where strategy=? and quantity<>0",$strategy);
+		if (count($positions)&&(int)$positions[0]['n']>0){ return false; }
+
+		$filled=query("select count(*) n from strategy_orders
+		                where strategy=? and status='FILLED'",$strategy);
+
+		return !(count($filled)&&(int)$filled[0]['n']>0);
+	}
+
+	/**
+	 * Is tonight a rebalance for this strategy?
+	 *
+	 * The first build is always due: a strategy deployed on the 12th should
+	 * not sit in cash until the 1st, and "start on the first as of date
+	 * after deploy" is what the brief asked for. After that it is the
+	 * calendar - the first trading date of the month, or of the week.
+	 */
+	function strategy_rebalance_due($rules,$as_of,$exchange=null) {
+
+		if ($rules===null){ return false; }
+
+		$as_of=substr((string)$as_of,0,10);
+
+		$start=trim((string)$rules['start_date']);
+		if ($start!==''&&substr($start,0,10)>$as_of){ return false; }
+
+		if (strategy_first_build($rules['strategy'])){ return true; }
+
+		$first=strategy_period_first_date($rules['rebalance'],$as_of,$exchange);
+
+		return $first!==null&&$first===$as_of;
+	}
+
+	/**
+	 * An indicator's rank_order out of screen_indicators, defaulting to
+	 * "value DESC". Checked by screen_rank_order() before it reaches an
+	 * order by, the same way build_screen() checks it.
+	 */
+	function strategy_rank_order($indicator) {
+
+		$rows=query("select rank_order from screen_indicators where name=?",$indicator);
+
+		return (count($rows)&&trim((string)$rows[0]['rank_order'])!=='')
+		     ? (string)$rows[0]['rank_order'] : 'value DESC';
+	}
+
+	/**
+	 * The symbols a strategy wants to hold on a date, in order, already cut
+	 * to the number of holdings.
+	 *
+	 *   selection 'screen'  the screen's own output, which for a screen
+	 *                       ending in a top_n is already ranked
+	 *   selection 'score'   every name with a value for one indicator
+	 *
+	 * Then, in this order: funds out if the rules say so, anything that
+	 * cannot be priced on the day out, and rank_by applied if there is one.
+	 *
+	 * rank_by goes through top_n_list(), which is the same function
+	 * build_screen() uses for a top_n criterion - so "the best 15 by
+	 * momentum_score" means exactly what it means on a screen, including
+	 * that a share with no momentum_score drops out rather than sorting to
+	 * one end. The best 15 cannot include a share whose momentum is unknown.
+	 */
+	function strategy_select_symbols($rules,$as_of,$exchange=null) {
+
+		$out=['symbols'=>[],'errors'=>[]];
+
+		if ($rules===null){ $out['errors'][]="no rules row"; return $out; }
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		//build_screen() and top_n_list() live in share_screen.php. Loaded
+		//here rather than at the top of this file so that the engine's
+		//existing callers keep the include list they always had.
+		if (!function_exists('build_screen')){ require_once("share_screen.php"); }
+
+		$candidates=[];
+
+		if ($rules['selection']==='screen'){
+
+			$screen_id=(int)$rules['screen_id'];
+			if ($screen_id<1){ $out['errors'][]="selection is 'screen' but no screen_id"; return $out; }
+
+			$screen=query("select name from screen where id=?",$screen_id);
+			if (!count($screen)){ $out['errors'][]="screen ".$screen_id." does not exist"; return $out; }
+
+			foreach (build_screen($screen_id,$as_of) as $row) {
+				if (isset($row['symbol'])){ $candidates[]=['symbol'=>$row['symbol']]; }
+			}
+		}
+		else {
+			$indicator=$rules['score_indicator'];
+			if ($indicator===null){ $out['errors'][]="selection is 'score' but no score_indicator"; return $out; }
+
+			$sql="select s.symbol from statistics s, stock_symbols ss
+			       where s.symbol=ss.symbol and ss.enabled='Y' and ss.exchange=?
+			         and s.indicator=? and s.date=? and s.value is not null
+			       order by ".screen_rank_order(strategy_rank_order($indicator),$indicator).", s.symbol asc";
+			foreach (query($sql,$exchange,$indicator,$as_of) as $row) {
+				$candidates[]=['symbol'=>$row['symbol']];
+			}
+		}
+
+		if (!count($candidates)){
+			$out['errors'][]="the selection returned nothing for ".$as_of;
+			return $out;
+		}
+
+		/* Funds. An investment trust passes a value screen for being a
+		   wrapper rather than a business (see sql/fund_sectors.sql), and
+		   the same argument applies to buying one: the strategy is about
+		   operating companies. Momentum is a different matter, which is why
+		   this is a rule per strategy rather than a rule here. */
+		$kept=[];
+		foreach ($candidates as $candidate) {
+
+			$symbol=$candidate['symbol'];
+
+			if ($rules['exclude_funds']==='Y'&&is_fund($symbol)){ continue; }
+
+			$enabled=query("select count(*) n from stock_symbols
+			                 where symbol=? and exchange=? and enabled='Y'",$symbol,$exchange);
+			if (!count($enabled)||(int)$enabled[0]['n']===0){ continue; }
+
+			/* Unpriceable on the day is not tradeable on the day. The
+			   executor would refuse it anyway; dropping it here means the
+			   strategy holds the next name down instead of one fewer. */
+			if (strategy_price_asof($symbol,$exchange,$as_of)===null){ continue; }
+
+			$kept[]=['symbol'=>$symbol];
+		}
+
+		if (!count($kept)){
+			$out['errors'][]="every name the selection returned was excluded or unpriceable";
+			return $out;
+		}
+
+		if ($rules['rank_by']!==null){
+			$ranked=top_n_list($kept,$rules['rank_by'],
+			                   strategy_rank_order($rules['rank_by']),
+			                   $rules['holdings'],$as_of);
+		}
+		else {
+			$ranked=array_slice($kept,0,$rules['holdings']);
+		}
+
+		foreach ($ranked as $row) { $out['symbols'][]=$row['symbol']; }
+
+		return $out;
+	}
+
+	/**
+	 * Write a strategy's targets for a date, or work out what they would be.
+	 *
+	 * Equal weight at one over the number of HOLDINGS, not one over the
+	 * number of names found. A selection that gives twelve names for a
+	 * fifteen holding strategy holds twelve positions and 20% cash; it does
+	 * not put a fifth more into each name. Padding the weights would turn a
+	 * thin signal into a concentrated bet, which is the opposite of what a
+	 * thin signal means.
+	 *
+	 * $dry_run computes and returns the targets without writing them, which
+	 * is what the strategy page's dry run and the executor's plan override
+	 * are built on.
+	 */
+	function strategy_write_targets($strategy,$as_of,$dry_run=false,$exchange=null) {
+
+		$result=['targets'=>[],'weight'=>0.0,'errors'=>[]];
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		$rules=strategy_rules($strategy);
+		if ($rules===null){ $result['errors'][]="no rules for ".$strategy; return $result; }
+
+		$selection=strategy_select_symbols($rules,$as_of,$exchange);
+		$result['errors']=$selection['errors'];
+		if (!count($selection['symbols'])){ return $result; }
+
+		$weight=round(1.0/$rules['holdings'],6);
+		$result['weight']=$weight;
+
+		//The score is kept for the audit trail: what the strategy thought of
+		//the name on the day it bought it.
+		$indicator=$rules['rank_by']!==null ? $rules['rank_by'] : $rules['score_indicator'];
+		$scores=[];
+		if ($indicator!==null){
+			foreach (query("select symbol, value from statistics where indicator=? and date=?",
+			               $indicator,$as_of) as $row) {
+				$scores[$row['symbol']]=$row['value'];
+			}
+		}
+
+		foreach ($selection['symbols'] as $symbol) {
+			$result['targets'][]=[
+				'strategy'=>$strategy,'as_of_date'=>$as_of,'symbol'=>$symbol,
+				'exchange'=>$exchange,'target_weight'=>$weight,
+				'score'=>isset($scores[$symbol]) ? $scores[$symbol] : null,
+			];
+		}
+
+		if ($dry_run){ return $result; }
+
+		query("delete from strategy_targets where strategy=? and as_of_date=?",$strategy,$as_of);
+		foreach ($result['targets'] as $target) {
+			query("insert into strategy_targets
+			         (strategy,as_of_date,symbol,exchange,target_weight,score,created_at)
+			       values (?,?,?,?,?,?,?)",
+			      $target['strategy'],$target['as_of_date'],$target['symbol'],$target['exchange'],
+			      $target['target_weight'],$target['score'],date('Y-m-d H:i:s'));
+		}
+
+		write_log("strategy",$strategy." targets for ".$as_of.": ".count($result['targets'])
+		          ." names at ".$weight." each (".$rules['holdings']." holdings)");
+
+		return $result;
+	}
+
+	/* ---------------------------------------------------------------------
+	   Exits between rebalances.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * Has this share closed below its 200 day average on the last two as of
+	 * dates?
+	 *
+	 * Two, not one: a single close through a long average is noise, and a
+	 * strategy that sells on it pays dealing costs to be whipsawed. Read out
+	 * of the statistics the trend screens already use, so the exit and the
+	 * screen cannot disagree about where the average is.
+	 *
+	 * Fewer than two dates carrying both figures is not a signal. A new
+	 * share, or a night the job did not run, is an absence of evidence.
+	 */
+	function strategy_below_ma200_2d($symbol,$as_of) {
+
+		$rows=query("select s.date,
+		                    max(case when s.indicator='close_price' then s.value end) close_value,
+		                    max(case when s.indicator='ma200'       then s.value end) ma200_value
+		               from statistics s
+		              where s.symbol=? and s.date<=? and s.indicator in ('close_price','ma200')
+		              group by s.date
+		             having close_value is not null and ma200_value is not null
+		              order by s.date desc
+		              limit 2",$symbol,substr((string)$as_of,0,10));
+
+		if (count($rows)<2){ return false; }
+
+		foreach ($rows as $row) {
+			if ((float)$row['close_value']>=(float)$row['ma200_value']){ return false; }
+		}
+
+		return true;
+	}
+
+	/**
+	 * Has this share stopped trading?
+	 *
+	 * Measured against the rest of the market: if the exchange has had
+	 * STRATEGY_STALE_SESSIONS sessions since this symbol's last price, the
+	 * share is not merely missing a day's data, it has gone - taken over,
+	 * suspended or delisted. Counting sessions rather than calendar days
+	 * means a Christmas week does not look like a delisting.
+	 */
+	function strategy_price_stale($symbol,$exchange,$as_of) {
+
+		$as_of=substr((string)$as_of,0,10);
+
+		$rows=query("select count(distinct date) n from historical_prices
+		              where exchange=? and date<=?
+		                and date > ifnull((select max(date) from historical_prices
+		                                    where symbol=? and exchange=?),'1900-01-01')",
+		            $exchange,$as_of,$symbol,$exchange);
+
+		return count($rows)&&(int)$rows[0]['n']>=STRATEGY_STALE_SESSIONS;
+	}
+
+	/**
+	 * Which holdings have to go tonight, and why.
+	 *
+	 * The named rules come from the strategy's own configuration. The
+	 * delisting check does not: a holding that has stopped trading must be
+	 * sold whatever the rules say, because the alternative is a book that
+	 * carries a price nobody will ever trade at again. It is the one exit no
+	 * strategy can turn off.
+	 */
+	function strategy_exits_due($strategy,$as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		$rules=strategy_rules($strategy);
+		$exit_list=($rules===null) ? [] : $rules['exit_list'];
+
+		$exits=[];
+
+		foreach (strategy_positions($strategy) as $symbol=>$position) {
+
+			if ((int)$position['quantity']<=0){ continue; }
+
+			$position_exchange=(string)$position['exchange'];
+
+			if (strategy_price_stale($symbol,$position_exchange,$as_of)){
+				$exits[]=['symbol'=>$symbol,'exchange'=>$position_exchange,
+				          'quantity'=>(int)$position['quantity'],
+				          'reason'=>'delisted','last_price'=>true];
+				continue;
+			}
+
+			if (in_array('below_ma200_2d',$exit_list,true)
+			    &&strategy_below_ma200_2d($symbol,$as_of)){
+				$exits[]=['symbol'=>$symbol,'exchange'=>$position_exchange,
+				          'quantity'=>(int)$position['quantity'],
+				          'reason'=>'below_ma200_2d','last_price'=>false];
+			}
+		}
+
+		return $exits;
+	}
+
+	/**
+	 * Sell the whole of each position an exit rule has triggered on.
+	 *
+	 * The cash is left idle until the next rebalance. That is deliberate:
+	 * the exit says this holding is wrong, not that another one is right,
+	 * and buying a replacement tonight would be a selection the strategy's
+	 * own rules never made.
+	 *
+	 * The reason goes on the order, so the page can say why a trade happened
+	 * without re-deriving the signal a year later.
+	 */
+	function strategy_place_exits($strategy,$as_of,$dry_run=false,$exchange=null) {
+
+		$report=['exits'=>[],'sold'=>0,'failed'=>0];
+
+		foreach (strategy_exits_due($strategy,$as_of,$exchange) as $exit) {
+
+			$report['exits'][]=$exit;
+
+			if ($dry_run){ continue; }
+
+			if (strategy_halted()){
+				write_log("strategy","kill switch stopped the exits for ".$strategy);
+				break;
+			}
+
+			$client_order_id=strategy_record_order($strategy,$as_of,
+				['symbol'=>$exit['symbol'],'exchange'=>$exit['exchange'],
+				 'side'=>'SELL','quantity'=>$exit['quantity']],
+				'exit: '.$exit['reason']);
+
+			if ($client_order_id===null){ continue; }
+
+			if (strategy_fill_order($client_order_id,$exit['last_price'])){ $report['sold']++; }
+			else { $report['failed']++; }
+
+			write_log("strategy",$strategy." exit ".$exit['reason']." ".$exit['symbol']
+			          ." ".$exit['quantity']." at ".$as_of);
+		}
+
+		return $report;
+	}
+
+	/* ---------------------------------------------------------------------
+	   Running one strategy for one night.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * Resume, reconcile, plan, place and fill - the body that
+	 * run_paper_execution.php used to be.
+	 *
+	 * Made a function so that three callers can share it: the command line
+	 * script, the nightly run over every strategy, and the strategy page's
+	 * dry run. A dry run writes nothing at all, and may be handed the
+	 * targets it should plan from so that a rebalance can be inspected
+	 * before its targets exist.
+	 */
+	function strategy_execute($strategy,$as_of,$dry_run=false,$targets=null) {
+
+		$report=['lines'=>[],'orders'=>[],'errors'=>[],
+		         'filled'=>0,'rejected'=>0,'skipped'=>0,'pending'=>0,
+		         'account_value'=>null,'halted'=>false];
+
+		$say=function($line) use (&$report) { $report['lines'][]=$line; };
+
+		if (strategy_halted()){
+			$report['halted']=true;
+			$report['errors'][]="halted by the kill switch at ".STRATEGY_KILL_SWITCH_FILE;
+			write_log("strategy","halted by kill switch at ".STRATEGY_KILL_SWITCH_FILE);
+			return $report;
+		}
+
+		if (!$dry_run){
+			$resume=strategy_resume_pending($strategy);
+			if ($resume['halted']){
+				$report['errors'][]="pending orders exist and the account is not in PAPER mode;"
+				                   ." a human must resolve them";
+				return $report;
+			}
+			if ($resume['resumed']>0||$resume['failed']>0){
+				$say("resumed ".$resume['resumed']." pending order(s), "
+				     .$resume['failed']." could not be filled");
+			}
+		}
+
+		$problems=strategy_reconcile($strategy);
+		if (count($problems)>0){
+			write_log("strategy","reconciliation failed: ".implode("; ",$problems));
+			foreach ($problems as $problem) { $report['errors'][]="reconciliation: ".$problem; }
+			return $report;
+		}
+
+		$plan=strategy_plan_orders($strategy,$as_of,$targets);
+		$report['account_value']=$plan['account_value'];
+		$report['orders']=$plan['orders'];
+		foreach ($plan['errors'] as $error) { $report['errors'][]=$error; }
+
+		if (count($plan['orders'])===0){
+			$say("no orders");
+			write_log("strategy",$strategy." ".$as_of.": no orders");
+			return $report;
+		}
+
+		foreach ($plan['orders'] as $order) {
+			$say(sprintf("%-4s %-8s %6d @ ~%s",$order['side'],$order['symbol'],$order['quantity'],
+			             $order['reference_price']===null ? '?' : round($order['reference_price'],2)));
+		}
+
+		if ($dry_run){
+			$say("dry run, nothing written");
+			return $report;
+		}
+
+		//Sells first, so the cash they raise is available to the buys.
+		usort($plan['orders'],function($a,$b){
+			if ($a['side']===$b['side']){ return 0; }
+			return $a['side']==='SELL' ? -1 : 1;
+		});
+
+		foreach ($plan['orders'] as $order) {
+
+			//Re-checked per order so dropping the kill switch stops a run midway.
+			if (strategy_halted()){
+				write_log("strategy","kill switch appeared mid-run, stopping");
+				$report['halted']=true;
+				$say("HALTED mid-run");
+				break;
+			}
+
+			$client_order_id=strategy_record_order($strategy,$as_of,$order,'rebalance');
+			if ($client_order_id===null){ $report['skipped']++; continue; }
+
+			if (strategy_fill_order($client_order_id)){ $report['filled']++; continue; }
+
+			/* Not filled. Left PENDING means the market has not traded
+			   since the as of date and the next run will fill it, which is
+			   the normal state of a rebalance decided tonight - and not a
+			   failure to report as one. */
+			$status=query("select status from strategy_orders where client_order_id=?",$client_order_id);
+			if (count($status)&&$status[0]['status']==='PENDING'){ $report['pending']++; }
+			else { $report['rejected']++; }
+		}
+
+		$account=strategy_account($strategy);
+		$summary=$strategy." ".$as_of.": ".$report['filled']." filled, "
+		        .$report['pending']." waiting for the next close, ".$report['rejected']
+		        ." rejected, ".$report['skipped']." already placed, cash "
+		        .round((float)$account['cash'],2);
+		write_log("strategy",$summary);
+		$say($summary);
+
+		return $report;
+	}
+
+	/**
+	 * One strategy, one night: exits, then a rebalance if it is due, then
+	 * the execution.
+	 *
+	 * That order matters. An exit is a decision about a holding the strategy
+	 * already has, and it has to be taken before the rebalance values the
+	 * account, or tonight's selection would be sized against a position the
+	 * strategy has already decided to leave.
+	 *
+	 * Nothing here throws: a strategy that cannot run tonight must not stop
+	 * the next one, let alone the rest of the nightly job. The report says
+	 * what happened and the caller prints it.
+	 */
+	function strategy_run_night($strategy,$as_of,$dry_run=false,$exchange=null) {
+
+		$night=['strategy'=>$strategy,'as_of'=>substr((string)$as_of,0,10),
+		        'dry_run'=>$dry_run,'rebalance'=>false,'exits'=>[],
+		        'targets'=>[],'lines'=>[],'errors'=>[],
+		        'filled'=>0,'rejected'=>0,'skipped'=>0,'pending'=>0,
+		        'account_value'=>null];
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=$night['as_of'];
+
+		$rules=strategy_rules($strategy);
+		if ($rules===null){
+			$night['errors'][]="no rules for ".$strategy.", nothing to run";
+			return $night;
+		}
+
+		$account=strategy_account($strategy);
+		if ($account===null){ $night['errors'][]="no account for ".$strategy; return $night; }
+		if ($account['mode']!=='PAPER'){ $night['errors'][]="only PAPER mode is supported"; return $night; }
+
+		try {
+
+			$exits=strategy_place_exits($strategy,$as_of,$dry_run,$exchange);
+			$night['exits']=$exits['exits'];
+			foreach ($exits['exits'] as $exit) {
+				$night['lines'][]="exit ".$exit['reason']." ".$exit['symbol']
+				                 ." ".$exit['quantity']." shares";
+			}
+
+			$night['rebalance']=strategy_rebalance_due($rules,$as_of,$exchange);
+
+			$targets=null;
+			if ($night['rebalance']){
+				$written=strategy_write_targets($strategy,$as_of,$dry_run,$exchange);
+				$night['targets']=$written['targets'];
+				foreach ($written['errors'] as $error) { $night['errors'][]=$error; }
+				//A dry run has not written them, so the plan has to be told.
+				if ($dry_run){ $targets=$written['targets']; }
+			}
+
+			$report=strategy_execute($strategy,$as_of,$dry_run,$targets);
+
+			foreach ($report['lines'] as $line) { $night['lines'][]=$line; }
+			foreach ($report['errors'] as $error) { $night['errors'][]=$error; }
+			$night['filled']=$report['filled'];
+			$night['rejected']=$report['rejected'];
+			$night['skipped']=$report['skipped'];
+			$night['pending']=$report['pending'];
+			$night['account_value']=$report['account_value'];
+			$night['halted']=!empty($report['halted']);
+		}
+		catch (Throwable $e) {
+			/* One strategy's failure is one strategy's failure. Caught here
+			   rather than in the script so that every caller - the nightly
+			   run, the page's dry run - gets the same containment. */
+			$night['errors'][]="failed: ".$e->getMessage();
+			write_log("strategy",$strategy." threw: ".$e->getMessage());
+		}
+
+		return $night;
+	}
+
+	/* ---------------------------------------------------------------------
+	   What it was all worth.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * Write one strategy's value for a date.
+	 *
+	 * Holdings are marked at the last price on or before the date, so a
+	 * holding that has stopped trading keeps its last traded price until the
+	 * exit sells it rather than vanishing from the total. The note says when
+	 * that is happening, because a flat line on the page should be
+	 * explainable.
+	 */
+	function strategy_write_values($strategy,$as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		$account=strategy_account($strategy);
+		if ($account===null){ return null; }
+
+		$cash=(float)$account['cash'];
+		$holdings_value=0.0;
+		$holdings=0;
+		$stale=[];
+
+		foreach (strategy_positions($strategy) as $symbol=>$position) {
+
+			if ((int)$position['quantity']<=0){ continue; }
+
+			$price=strategy_price_asof($symbol,(string)$position['exchange'],$as_of);
+			if ($price===null){
+				//No price ever, which is not the same as a stale one. Counted
+				//as a holding and valued at nothing, and named in the note.
+				$stale[]=$symbol.' (unpriced)';
+				$holdings++;
+				continue;
+			}
+
+			if (strategy_price_stale($symbol,(string)$position['exchange'],$as_of)){
+				$stale[]=$symbol.' (stale)';
+			}
+
+			$holdings_value += $price*(int)$position['quantity'];
+			$holdings++;
+		}
+
+		$total=$cash+$holdings_value;
+		$note=count($stale) ? substr('priced from stale data: '.implode(', ',$stale),0,255) : null;
+
+		query("insert into strategy_values (strategy,date,cash,holdings_value,total,holdings,note)
+		       values (?,?,?,?,?,?,?)
+		       on duplicate key update cash=values(cash), holdings_value=values(holdings_value),
+		                               total=values(total), holdings=values(holdings),
+		                               note=values(note)",
+		      $strategy,$as_of,round($cash,4),round($holdings_value,4),round($total,4),$holdings,$note);
+
+		return ['cash'=>$cash,'holdings_value'=>$holdings_value,'total'=>$total,
+		        'holdings'=>$holdings,'note'=>$note];
+	}
+
+	/**
+	 * The equal weighted return of the universe between two dates: the mean
+	 * of each constituent's own return, over the names that have a price on
+	 * both.
+	 *
+	 * A name that joined in between has no starting price and is left out of
+	 * that step rather than counted as a zero return. Returns null when
+	 * nothing could be compared, which is not the same as a flat market.
+	 */
+	function strategy_equal_weight_step($from,$to,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+
+		$rows=query("select avg(h1.price/h0.price-1) r, count(*) n
+		               from historical_prices h0, historical_prices h1, stock_symbols ss
+		              where h0.symbol=h1.symbol and h0.exchange=h1.exchange
+		                and ss.symbol=h0.symbol and ss.exchange=h0.exchange
+		                and ss.enabled='Y' and h0.exchange=?
+		                and h0.date=? and h1.date=? and h0.price>0 and h1.price>0",
+		            $exchange,substr((string)$from,0,10),substr((string)$to,0,10));
+
+		if (!count($rows)||$rows[0]['r']===null||(int)$rows[0]['n']===0){
+			return ['return'=>null,'constituents'=>0];
+		}
+
+		return ['return'=>(float)$rows[0]['r'],'constituents'=>(int)$rows[0]['n']];
+	}
+
+	/**
+	 * The benchmark's return over a period, compounded one trading day at a
+	 * time.
+	 *
+	 * Day by day rather than first close to last: an equal weighted index is
+	 * rebalanced to equal weights every day, and the mean of the start-to-end
+	 * returns is a different thing - a buy and hold basket. Compounding the
+	 * daily cross-sectional mean is what the nightly benchmark does, so this
+	 * and that agree.
+	 */
+	function strategy_benchmark_return($from,$to,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+
+		$dates=query("select distinct date from historical_prices
+		               where exchange=? and date>=? and date<=? order by date",
+		             $exchange,substr((string)$from,0,10),substr((string)$to,0,10));
+
+		if (count($dates)<2){ return null; }
+
+		$level=1.0;
+		$previous=substr((string)$dates[0]['date'],0,10);
+
+		for ($i=1;$i<count($dates);$i++) {
+			$date=substr((string)$dates[$i]['date'],0,10);
+			$step=strategy_equal_weight_step($previous,$date,$exchange);
+			if ($step['return']!==null){ $level=$level*(1+$step['return']); }
+			$previous=$date;
+		}
+
+		return $level-1;
+	}
+
+	/**
+	 * The benchmark: the FTSE 350 as an equal weighted index, written into
+	 * strategy_values under STRATEGY_BENCHMARK.
+	 *
+	 * Equal weighted because that is what the data supports. No index level
+	 * is loaded anywhere, so the alternative to building one from the 350
+	 * constituents' own prices is having nothing to compare against. It is
+	 * the honest comparison for an equal weighted strategy in any case: a
+	 * capitalisation weighted index would be measuring stock picking against
+	 * a bet on the largest companies.
+	 *
+	 * Two things it is not, both of which belong on the page:
+	 *
+	 *   it is today's constituents, so it carries the same survivorship
+	 *   flattery a backtest does - the companies that left the index are not
+	 *   in it;
+	 *
+	 *   it is a price index, not a total return one. Dividends are in
+	 *   historical_prices only to the extent the adjusted close carries
+	 *   them, which is the same treatment the strategies get, so the
+	 *   comparison is at least like for like.
+	 *
+	 * The level starts at 100 on the first date it is asked for and
+	 * compounds the equal weighted return between consecutive stored dates
+	 * thereafter, so a night that is missed is covered by the next one
+	 * rather than leaving a gap.
+	 */
+	function strategy_benchmark_update($as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		$previous=query("select date, total from strategy_values
+		                  where strategy=? and date<=? order by date desc limit 1",
+		                STRATEGY_BENCHMARK,$as_of);
+
+		if (!count($previous)){
+			//The base. 100 on the first date anybody asked about.
+			query("insert into strategy_values (strategy,date,cash,holdings_value,total,holdings,note)
+			       values (?,?,0,0,100,?,?)
+			       on duplicate key update total=values(total), holdings=values(holdings),
+			                               note=values(note)",
+			      STRATEGY_BENCHMARK,$as_of,
+			      (int)count_benchmark_constituents($exchange,$as_of),
+			      'FTSE 350, equal weighted, rebased to 100');
+			return ['date'=>$as_of,'level'=>100.0,'return'=>null];
+		}
+
+		$from=substr((string)$previous[0]['date'],0,10);
+		$level=(float)$previous[0]['total'];
+
+		if ($from>=$as_of){ return ['date'=>$from,'level'=>$level,'return'=>null]; }
+
+		$step=strategy_equal_weight_step($from,$as_of,$exchange);
+
+		if ($step['return']===null){
+			write_log("strategy","no benchmark return between ".$from." and ".$as_of
+			          ."; the level is carried forward");
+			$return=0.0;
+		}
+		else {
+			$return=$step['return'];
+		}
+
+		$level=$level*(1+$return);
+		$rows=[['n'=>$step['constituents']]];
+
+		query("insert into strategy_values (strategy,date,cash,holdings_value,total,holdings,note)
+		       values (?,?,0,0,?,?,?)
+		       on duplicate key update total=values(total), holdings=values(holdings),
+		                               note=values(note)",
+		      STRATEGY_BENCHMARK,$as_of,round($level,4),
+		      (int)(count($rows) ? (int)$rows[0]['n'] : 0),
+		      'FTSE 350, equal weighted, rebased to 100');
+
+		return ['date'=>$as_of,'level'=>$level,'return'=>$return];
+	}
+
+	/** How many constituents the benchmark had on a date, for its row. */
+	function count_benchmark_constituents($exchange,$as_of) {
+
+		$rows=query("select count(distinct h.symbol) n
+		               from historical_prices h, stock_symbols ss
+		              where ss.symbol=h.symbol and ss.exchange=h.exchange
+		                and ss.enabled='Y' and h.exchange=? and h.date=?",
+		            $exchange,substr((string)$as_of,0,10));
+
+		return count($rows) ? (int)$rows[0]['n'] : 0;
+	}
+
+
+	/* ---------------------------------------------------------------------
+	   Readers for the strategy page.
+
+	   Queries only: nothing below this line writes anything, so the page
+	   cannot move cash however it is called. The dry run on that page is
+	   strategy_run_night($strategy,$as_of,true), which writes nothing
+	   either.
+	   --------------------------------------------------------------------- */
+
+	/** One strategy's value history, oldest first. */
+	function strategy_series($strategy) {
+
+		$out=[];
+		foreach (query("select date, total, cash, holdings_value, holdings, note
+		                 from strategy_values where strategy=? order by date",$strategy) as $row) {
+			$out[]=['date'=>substr((string)$row['date'],0,10),
+			        'total'=>(float)$row['total'],
+			        'cash'=>(float)$row['cash'],
+			        'holdings_value'=>(float)$row['holdings_value'],
+			        'holdings'=>(int)$row['holdings'],
+			        'note'=>$row['note']];
+		}
+		return $out;
+	}
+
+	/**
+	 * The worst fall from a high, as a fraction.
+	 *
+	 * Measured on the stored nightly totals, so it is the worst drawdown
+	 * between two nights rather than intraday - which is the honest figure
+	 * for a strategy that only ever trades on a close.
+	 */
+	function strategy_drawdown($series) {
+
+		$peak=null;
+		$worst=0.0;
+
+		foreach ($series as $point) {
+			$total=(float)$point['total'];
+			if ($peak===null||$total>$peak){ $peak=$total; }
+			if ($peak>0){
+				$fall=($peak-$total)/$peak;
+				if ($fall>$worst){ $worst=$fall; }
+			}
+		}
+
+		return $worst;
+	}
+
+	/**
+	 * When the next rebalance can happen at the earliest.
+	 *
+	 * "At the earliest", and the page says so: the first trading date of
+	 * next month is not knowable tonight, because the prices that decide
+	 * which day the market opens have not been loaded yet. So this is the
+	 * calendar boundary, and the run takes the first session on or after it.
+	 */
+	function strategy_next_rebalance($rules,$as_of) {
+
+		if ($rules===null){ return null; }
+
+		$as_of=substr((string)$as_of,0,10);
+
+		if ($rules['rebalance']==='daily'){
+			return date('Y-m-d',strtotime($as_of.' +1 day'));
+		}
+
+		if ($rules['rebalance']==='weekly'){
+			return date('Y-m-d',strtotime('monday next week',strtotime($as_of)));
+		}
+
+		return date('Y-m-01',strtotime($as_of.' first day of next month'));
+	}
+
+	/** The last date this strategy actually rebalanced, or null. */
+	function strategy_last_rebalance($strategy) {
+
+		$rows=query("select max(as_of_date) d from strategy_targets where strategy=?",$strategy);
+
+		return (count($rows)&&$rows[0]['d']!==null) ? substr((string)$rows[0]['d'],0,10) : null;
+	}
+
+	/**
+	 * Everything the page shows at the top of a strategy's card.
+	 *
+	 * The benchmark is read over the strategy's own period rather than over
+	 * all of history: a strategy that started in March must not be compared
+	 * against an index that started in January, which is the easiest way to
+	 * make a comparison flatter or damn a strategy for a month it was not
+	 * invested in.
+	 */
+	function strategy_card($strategy,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+
+		$rules=strategy_rules($strategy);
+		$account=strategy_account($strategy);
+		$series=strategy_series($strategy);
+
+		$card=['strategy'=>$strategy,
+		       'rules'=>$rules,
+		       'note'=>$account===null ? null : $account['note'],
+		       'enabled'=>$account===null ? 'N' : $account['enabled'],
+		       'mode'=>$account===null ? null : $account['mode'],
+		       'cash'=>$account===null ? 0.0 : (float)$account['cash'],
+		       'screen'=>null,
+		       'start'=>null,'as_of'=>null,
+		       'total'=>null,'holdings'=>0,
+		       'return'=>null,'benchmark_return'=>null,'drawdown'=>null,
+		       'last_rebalance'=>strategy_last_rebalance($strategy),
+		       'next_rebalance'=>null,
+		       'stale'=>null,
+		       'points'=>count($series)];
+
+		if ($rules!==null&&$rules['selection']==='screen'&&(int)$rules['screen_id']>0){
+			$screen=query("select name from screen where id=?",(int)$rules['screen_id']);
+			$card['screen']=count($screen) ? $screen[0]['name'] : null;
+		}
+
+		if (!count($series)){ return $card; }
+
+		$first=$series[0];
+		$last=$series[count($series)-1];
+
+		$card['start']=$first['date'];
+		$card['as_of']=$last['date'];
+		$card['total']=$last['total'];
+		$card['holdings']=$last['holdings'];
+		$card['cash']=$last['cash'];
+		$card['stale']=$last['note'];
+		$card['drawdown']=strategy_drawdown($series);
+		$card['next_rebalance']=strategy_next_rebalance($rules,$last['date']);
+
+		if ($first['total']>0){
+			$card['return']=($last['total']/$first['total'])-1;
+		}
+
+		/* The benchmark over the same two dates. The first row on or after
+		   the strategy's start, so a strategy that began before the
+		   benchmark did is compared from the first night both existed
+		   rather than against nothing. */
+		$from=query("select total from strategy_values where strategy=? and date>=? order by date asc limit 1",
+		            STRATEGY_BENCHMARK,$first['date']);
+		$to=query("select total from strategy_values where strategy=? and date<=? order by date desc limit 1",
+		          STRATEGY_BENCHMARK,$last['date']);
+
+		if (count($from)&&count($to)&&(float)$from[0]['total']>0){
+			$card['benchmark_return']=((float)$to[0]['total']/(float)$from[0]['total'])-1;
+		}
+
+		return $card;
+	}
+
+	/**
+	 * What a strategy holds now, priced at a date.
+	 *
+	 * Days held is measured from the first buy after the last time the
+	 * position was closed, which is what "how long has this been in the
+	 * book" means for a strategy that can sell a name and buy it back two
+	 * months later.
+	 */
+	function strategy_holdings($strategy,$as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		$rows=[];
+		$total=0.0;
+
+		foreach (query("select p.symbol, p.exchange, p.quantity, p.avg_price, ss.name
+		                 from strategy_positions p
+		                 left join stock_symbols ss on ss.symbol=p.symbol and ss.exchange=p.exchange
+		                where p.strategy=? and p.quantity>0
+		                order by p.symbol",$strategy) as $row) {
+
+			$price=strategy_price_asof($row['symbol'],(string)$row['exchange'],$as_of);
+			$quantity=(int)$row['quantity'];
+			$value=($price===null) ? null : $price*$quantity;
+			$cost=(float)$row['avg_price']*$quantity;
+
+			$last_sell=query("select max(fill_date) d from strategy_orders
+			                   where strategy=? and symbol=? and side='SELL' and status='FILLED'",
+			                 $strategy,$row['symbol']);
+			$since=(count($last_sell)&&$last_sell[0]['d']!==null) ? $last_sell[0]['d'] : '1900-01-01';
+
+			$opened=query("select min(fill_date) d from strategy_orders
+			                where strategy=? and symbol=? and side='BUY' and status='FILLED'
+			                  and fill_date>?",$strategy,$row['symbol'],$since);
+
+			$held_since=(count($opened)&&$opened[0]['d']!==null) ? substr((string)$opened[0]['d'],0,10) : null;
+
+			$rows[]=['symbol'=>$row['symbol'],
+			         'name'=>$row['name'],
+			         'quantity'=>$quantity,
+			         'avg_price'=>(float)$row['avg_price'],
+			         'price'=>$price,
+			         'value'=>$value,
+			         'cost'=>$cost,
+			         'gain'=>($value===null) ? null : $value-$cost,
+			         'gain_percent'=>($value===null||$cost<=0) ? null : (($value/$cost)-1),
+			         'held_since'=>$held_since,
+			         'days_held'=>$held_since===null ? null
+			                     : (int)floor((strtotime($as_of)-strtotime($held_since))/86400),
+			         'stale'=>strategy_price_stale($row['symbol'],(string)$row['exchange'],$as_of)];
+
+			if ($value!==null){ $total += $value; }
+		}
+
+		//Weights once the total is known, so they add up to what is held.
+		foreach ($rows as $i => $row) {
+			$rows[$i]['weight']=($total>0&&$row['value']!==null) ? $row['value']/$total : null;
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * A value history rebased to 100 at its first point, which is how the
+	 * chart puts a 100,000 pound account and an index on one axis.
+	 *
+	 * Each line is rebased to its own start rather than to a common date, so
+	 * a strategy that began in March starts at 100 in March. Comparing the
+	 * numbers at the right hand end is then only meaningful between lines
+	 * that started together, which is why the card carries the benchmark
+	 * return over the strategy's own period as well.
+	 */
+	function strategy_rebased($series) {
+
+		$out=[];
+		$base=null;
+
+		foreach ($series as $point) {
+			$total=(float)$point['total'];
+			if ($base===null){
+				if ($total<=0){ continue; }
+				$base=$total;
+			}
+			$out[]=['time'=>$point['date'],'value'=>round(100.0*$total/$base,4)];
+		}
+
+		return $out;
+	}
+
+	/** The trades, newest first. */
+	function strategy_trades($strategy,$limit=50) {
+
+		$limit=max(1,min(500,(int)$limit));
+
+		$out=[];
+		foreach (query("select as_of_date, fill_date, symbol, side, quantity, fill_price,
+		                       consideration, commission, stamp_duty, slippage, total_cost,
+		                       status, note
+		                  from strategy_orders where strategy=?
+		                 order by ifnull(fill_date,as_of_date) desc, symbol asc
+		                 limit ".$limit,$strategy) as $row) {
+			$out[]=$row;
+		}
+		return $out;
+	}
+
+	/** Everything the strategy has paid to deal, ever. */
+	function strategy_costs_paid($strategy) {
+
+		$rows=query("select ifnull(sum(commission),0) commission,
+		                    ifnull(sum(stamp_duty),0) stamp_duty,
+		                    ifnull(sum(slippage),0) slippage,
+		                    count(*) fills
+		               from strategy_orders where strategy=? and status='FILLED'",$strategy);
+
+		if (!count($rows)){ return ['commission'=>0.0,'stamp_duty'=>0.0,'slippage'=>0.0,
+		                            'total'=>0.0,'fills'=>0]; }
+
+		$row=$rows[0];
+
+		return ['commission'=>(float)$row['commission'],
+		        'stamp_duty'=>(float)$row['stamp_duty'],
+		        'slippage'=>(float)$row['slippage'],
+		        'total'=>(float)$row['commission']+(float)$row['stamp_duty']+(float)$row['slippage'],
+		        'fills'=>(int)$row['fills']];
+	}
+
+
+	/* ---------------------------------------------------------------------
+	   Backtesting, through the same engine.
+	   --------------------------------------------------------------------- */
+
+	/** True once sql/strategy_backtest.sql has been applied. */
+	function strategy_backtest_ready() {
+
+		static $ready=null;
+		if ($ready!==null){ return $ready; }
+
+		$rows=query("select count(*) n from information_schema.tables
+		              where table_schema=database() and table_name='strategy_backtest_runs'");
+
+		$ready=count($rows)&&(int)$rows[0]['n']===1;
+
+		if (!$ready){
+			write_log("strategy","sql/strategy_backtest.sql has not been applied: no backtests");
+		}
+
+		return $ready;
+	}
+
+	/**
+	 * Every indicator a strategy's selection depends on.
+	 *
+	 * For a screen that is the indicator behind each of its criteria, read
+	 * out of the screen rather than named here, so a criterion added to a
+	 * screen is one the backtest knows it needs. Plus rank_by, which is how
+	 * the names are ordered, and the score indicator for a score strategy.
+	 */
+	function strategy_required_indicators($rules) {
+
+		if ($rules===null){ return []; }
+
+		$needed=[];
+
+		if ($rules['selection']==='screen'&&(int)$rules['screen_id']>0){
+			foreach (query("select distinct si.name
+			                  from screen_build sb, screen_criteria sc, screen_indicators si
+			                 where si.indicator_id=sc.indicator_id and sb.criteria_id=sc.id
+			                   and sb.screen_id=?",(int)$rules['screen_id']) as $row) {
+				$needed[$row['name']]=true;
+			}
+		}
+
+		if ($rules['score_indicator']!==null){ $needed[$rules['score_indicator']]=true; }
+		if ($rules['rank_by']!==null){ $needed[$rules['rank_by']]=true; }
+
+		/* An exit rule reads indicators too, and a backtest that could not
+		   see them would hold through every exit and flatter the strategy. */
+		if (in_array('below_ma200_2d',$rules['exit_list'],true)){
+			$needed['close_price']=true;
+			$needed['ma200']=true;
+		}
+
+		return array_keys($needed);
+	}
+
+	/**
+	 * The earliest date a strategy can honestly be backtested from, and why.
+	 *
+	 * This is the look-ahead rule, and it is data rather than a list of
+	 * strategies: an indicator can only be used on a date it was actually
+	 * stored for. Fundamentals and the scores built from them start in
+	 * November 2026, so a value strategy refuses anything earlier instead of
+	 * ranking 2019 on today's figures - which would be a backtest of
+	 * hindsight. Prices, and the close and moving averages built from them,
+	 * can go back as far as the price history once
+	 * backfill_trend_statistics.php has written them.
+	 */
+	function strategy_backtest_earliest($rules) {
+
+		$out=['date'=>null,'indicators'=>[],'missing'=>[]];
+
+		foreach (strategy_required_indicators($rules) as $indicator) {
+
+			$rows=query("select min(date) d, count(*) n from statistics where indicator=?",$indicator);
+
+			$first=(count($rows)&&$rows[0]['d']!==null) ? substr((string)$rows[0]['d'],0,10) : null;
+
+			$out['indicators'][$indicator]=$first;
+
+			if ($first===null){ $out['missing'][]=$indicator; continue; }
+			if ($out['date']===null||$first>$out['date']){ $out['date']=$first; }
+		}
+
+		return $out;
+	}
+
+	/** The backtest runs for a strategy, newest first. */
+	function strategy_backtests($strategy,$limit=3) {
+
+		if (!strategy_backtest_ready()){ return []; }
+
+		$limit=max(1,min(50,(int)$limit));
+
+		return query("select * from strategy_backtest_runs where strategy=?
+		               order by started_at desc, run_id desc limit ".$limit,$strategy);
 	}
 
 ?>

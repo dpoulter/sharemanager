@@ -107,4 +107,21 @@ fi
 "$PHP" "$APP_DIR/includes/get_statistics.php"
 "$PHP" "$APP_DIR/includes/performance_function.php"
 
+# The paper strategies: exit checks, a rebalance if one is due tonight, the
+# execution, and then what each one is worth. After get_statistics.php,
+# because a strategy selects on the statistics and the screens that job
+# writes - run before it, every strategy would be trading on yesterday's
+# scores.
+#
+# PAPER ONLY. Nothing in this path can place a real order: every account is
+# mode='PAPER' and no code supports anything else. The kill switch
+# (STRATEGY_KILL_SWITCH_FILE, /var/www/shares/STOP_TRADING by default) stops
+# it with a file.
+#
+# Allowed to fail without taking the run with it. A strategy that cannot
+# decide what to hold tonight is a strategy that does nothing tonight, which
+# is a worse page rather than a broken database - and the one job after this
+# has nothing to do with strategies.
+"$PHP" "$APP_DIR/includes/run_strategies.php" || echo "refresh_all: strategies failed" >&2
+
 echo "refresh_all: $(date '+%Y-%m-%d %H:%M:%S') done"
