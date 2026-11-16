@@ -40,11 +40,9 @@ $sm_user = function_exists("view_username") ? view_username() : "";
              too. The theme is Bootstrap 3 and does not exist for 5, and the
              unminified copy was the same framework a second time. -->
         <link rel="stylesheet" href="/css/bootstrap.min.css">
-        <!-- The older application stylesheet. Not in the repository; it lives
-             on the server and is fetched with tools/fetch_assets.sh --from.
-             Kept ahead of app.css so that app.css wins wherever the two say
-             something different about the same element. -->
-        <link href="/css/styles1.css" rel="stylesheet"/>
+        <!-- styles1.css was loaded here. On the server it is the placeholder
+             comment tools/fetch_assets.sh writes, not a stylesheet: there is
+             no real one anywhere, so every page was fetching an empty file. -->
         <link rel="stylesheet" href="/css/fontawesome.min.css">
         <!-- typeahead.js ships no stylesheet, so the navbar suggestion list has
              none unless this is loaded. See templates/typeahead.css. -->

@@ -34,8 +34,12 @@
 		</div>
 		<div class="col-auto">
 			<label class="form-label mb-0" for="year">Year</label>
+			<?php /* From the data: the first year there is a transaction in to
+			         this one. The list was a fixed 2014 to 2019, so a page that
+			         defaults to the current month could not be pointed at any
+			         month in it. */ ?>
 			<select class="form-select form-select-sm" id="year" name="year">
-			<?php foreach ([2014, 2015, 2016, 2017, 2018, 2019] as $y): ?>
+			<?php foreach ($years as $y): ?>
 				<option value="<?= (int) $y ?>"
 					<?= (int) ($year ?? 0) === $y ? 'selected' : '' ?>><?= (int) $y ?></option>
 			<?php endforeach ?>

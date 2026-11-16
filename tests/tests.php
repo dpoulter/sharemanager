@@ -8559,6 +8559,138 @@
     if ($rv_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $rv_saved_exchange; }
 
+    echo "\n--- the as of date, everywhere ---\n";
+
+    /* Six functions on the quote page used "yesterday". Three overwrote it
+       with the job date and left the calculation as dead code; the other
+       three meant it, so on a Monday they asked for Sunday and found
+       nothing, and on any day after the nightly job they showed the day
+       before's figures - beside a header that was already reading the
+       latest close. */
+    $ad_asof = statistics_asof_date('XLON');
+    check('there is one as of date, and it is the one the statistics are keyed on',
+          $ad_asof === (string) scalar("select date(max(job_date)) from jobs
+                                         where job_name='get_statistics_asof'"),
+          $ad_asof);
+
+    /* With no job row - a database the job has never run against - the
+       newest statistics date is the same answer by another route. */
+    $ad_jobs = rows("select id, job_name, job_date from jobs where job_name='get_statistics_asof'");
+    db()->exec("delete from jobs where job_name='get_statistics_asof'");
+    check('and with no job row it falls back to the statistics themselves',
+          statistics_asof_date('XLON')
+          === (string) scalar("select max(date) from statistics where exchange='XLON'"),
+          statistics_asof_date('XLON'));
+    $ad_put = db()->prepare("insert into jobs (id, job_name, job_date) values (?,?,?)");
+    foreach ($ad_jobs as $ad_row) {
+        $ad_put->execute([$ad_row['id'], $ad_row['job_name'], $ad_row['job_date']]);
+    }
+
+    $ad_src = (string) file_get_contents($INCLUDES . '/share_functions.php');
+    check('no quote page function works out yesterday any more',
+          preg_match_all("/sub\(new DateInterval\('P1D'\)\)/", $ad_src) === 7,
+          preg_match_all("/sub\(new DateInterval\('P1D'\)\)/", $ad_src) . ' left');
+    check('the scores, the ranks and the two valuations all read it',
+          substr_count($ad_src, 'statistics_asof_date()') === 6,
+          substr_count($ad_src, 'statistics_asof_date()') . ' call sites');
+
+    /* The thing this was breaking: the implied price and the price it is
+       measured against were two different days apart. */
+    $ad_val = get_valuation('AAA');
+    check('a valuation is read at the same date the statistics are written at',
+          $ad_val['price'] === null
+          || abs((float) $ad_val['price']
+                 - (float) scalar("select value from statistics where symbol='AAA'
+                                    and indicator='close_price' and exchange='XLON' and date=?",
+                                  [$ad_asof])) < 0.0001,
+          json_encode($ad_val));
+
+    /* The division this was hiding. get_valuation() guards against a missing
+       price; get_industry_valuation() beside it never did, so a share with
+       no price for the date - one that did not trade, or any share at all on
+       a database where the statistics job has not run yet - divided by
+       nought and took the whole quote page down with it.
+
+       It was reachable the moment the as-of date stopped being "yesterday",
+       because yesterday always found a price in historical_prices whether it
+       was the right one or not. */
+    check('a share with no price for the date gets no valuation, not a fatal',
+          is_array(get_industry_valuation('NOSUCHSYMBOL'))
+          && get_industry_valuation('NOSUCHSYMBOL')['value'] === null,
+          json_encode(get_industry_valuation('NOSUCHSYMBOL')));
+    check('and the sector figure beside it behaves the same way',
+          is_array(get_valuation('NOSUCHSYMBOL'))
+          && get_valuation('NOSUCHSYMBOL')['value'] === null);
+
+    echo "\n--- the quote page stops paying for what nobody can open ---\n";
+
+    $dp_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/quote.php');
+    $dp_ctl = (string) file_get_contents(dirname(__DIR__) . '/public/quote.php');
+
+    check('the two panes with nothing to open them are gone',
+          strpos($dp_tpl, 'id="financials"') === false
+          && strpos($dp_tpl, 'id="ratings"') === false
+          && strpos($dp_tpl, 'incomestatement') === false);
+    /* Comments stripped: the note left behind names the functions it no
+       longer calls, so that it is clear they are still there to come back
+       to - and searching the raw file finds the note. Sixth time. */
+    $dp_ctl = preg_replace('#/\*.*?\*/#s', '', preg_replace('#//.*$#m', '', $dp_ctl));
+    check('and the seven queries behind them with it',
+          strpos($dp_ctl, 'income_statement(') === false
+          && strpos($dp_ctl, 'balance_sheet(') === false
+          && strpos($dp_ctl, 'cash_flow_statement(') === false
+          && strpos($dp_ctl, 'ratings(') === false
+          && strpos($dp_ctl, 'get_momentum_statistics(') === false
+          && strpos($dp_ctl, 'get_growth_statistics(') === false
+          && strpos($dp_ctl, 'get_value_statistics(') === false
+          && strpos($dp_ctl, 'get_quality_statistics(') === false);
+    /* Kept, so a tab can be given back to them in a line. */
+    check('the functions behind them are still there to come back to',
+          function_exists('income_statement') && function_exists('ratings')
+          && function_exists('get_value_statistics'));
+    check('the three tabs that do open are untouched',
+          substr_count($dp_tpl, 'data-bs-toggle="tab"') === 3);
+
+    echo "\n--- the transactions page can be pointed at this year ---\n";
+
+    /* A fixed 2014 to 2019, on a page whose default view is the current
+       month. */
+    $ey_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/edit_portfolio.php');
+    check('the year list comes from the data rather than from a literal',
+          strpos($ey_tpl, 'foreach ($years as $y)') !== false
+          && strpos($ey_tpl, '2019') === false);
+    check('and every render of the page supplies it',
+          substr_count((string) file_get_contents(dirname(__DIR__) . '/public/edit.php'),
+                       'edit_years($_SESSION["id"])') === 5);
+
+    /* "positions" with "trx_type" typed into the middle of it, so the
+       editable view rendered with no rows at all. */
+    check('the editable view is given its rows under the name it reads them by',
+          strpos((string) file_get_contents(dirname(__DIR__) . '/public/edit.php'),
+                 'ptrx_typeositions') === false);
+
+    echo "\n--- the stylesheet that was never there, and the stray files ---\n";
+
+    /* On the server styles1.css is the placeholder comment fetch_assets.sh
+       writes, not a stylesheet. Every page was fetching an empty file. */
+    check('styles1.css is no longer loaded',
+          stripos((string) file_get_contents(dirname(__DIR__) . '/templates/header.php'),
+                  '<link href="/css/styles1.css"') === false);
+    check('and app.css is still last, so it still decides',
+          strpos(preg_replace('/<!--.*?-->/s', '',
+                 (string) file_get_contents(dirname(__DIR__) . '/templates/header.php')), 'app.css')
+          > strpos(preg_replace('/<!--.*?-->/s', '',
+                 (string) file_get_contents(dirname(__DIR__) . '/templates/header.php')), 'bootstrap.min.css'));
+
+    $sf_stray = [];
+    foreach (glob(dirname(__DIR__) . '/{includes,public,templates}/*~', GLOB_BRACE) as $sf_file) {
+        $sf_stray[] = basename($sf_file);
+    }
+    check('no editor backup files are left in the tree',
+          count($sf_stray) === 0, implode(', ', $sf_stray));
+    check('and the orphan controller in templates is gone',
+          !file_exists(dirname(__DIR__) . '/templates/index.php'));
+
     echo "\n--- one way to print a number ---\n";
 
     /* Formatting used to live in each template, and the same figure was
@@ -9136,14 +9268,19 @@
               'dump on: ' . implode(', ', $quote_dump));
 
         /* The quote page is the deepest read path in the application: profile,
-           valuation, ratings, health scores and three financial statements. It
-           reached none of that while every symbol looked invalid, so assert it
-           renders the content rather than only that it does not crash. */
+           valuation, health scores, scores, announcements and the ratios. It
+           reached none of that while every symbol looked invalid, so assert
+           it renders the content rather than only that it does not crash.
+
+           The three financial statements used to be checked here. They are
+           not on the page any more: their pane had nothing to open it, so
+           seven queries a page were paying for markup nobody could see. */
         $q = (string)$curl("$base/quote.php?symbol=AAA&page=quote_form.php");
-        foreach (['Revenue' => 'income statement',
-                  'Total Assets' => 'balance sheet',
-                  'Operating Cash Flow' => 'cash flow statement'] as $needle => $what) {
-            check("the quote page renders the $what", strpos($q, $needle) !== false);
+        foreach (['Business summary' => 'profile',
+                  'Price valuation' => 'valuation',
+                  'Financial health' => 'health scores',
+                  'Recent announcements' => 'announcements'] as $needle => $what) {
+            check("the quote page renders the $what", stripos($q, $needle) !== false);
         }
         check('the quote page is substantial, not a stub', strlen($q) > 20000,
               strlen($q) . ' bytes');

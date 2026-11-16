@@ -99,21 +99,13 @@
 			write_log("quote.php","4");
 			
 			
-			/* The Financial Statements and Ratings panes read these. Neither
-			   is reachable - the tab list offers Profile, News and Ratios -
-			   so between them they are seven queries a page for markup
-			   nobody can open. Left alone rather than removed: that is a
-			   decision about what the page should offer, not about how it
-			   should look, and it is in the redesign notes to be made. */
-			$income_statement=income_statement($symbol);
-			$balance_sheet=balance_sheet($symbol);
-			$cash_flow_statement=cash_flow_statement($symbol);
-			$ratings=ratings($symbol);
-			$momentum_statistics=get_momentum_statistics($symbol);
-			$growth_statistics=get_growth_statistics($symbol);
-			$value_statistics=get_value_statistics($symbol);
-			$quality_statistics=get_quality_statistics($symbol);
-
+			/* The Financial Statements and Ratings panes are gone, and with
+			   them seven queries a page. Neither was reachable: the tab list
+			   offers Profile, News and Ratios, and those two panes sat in
+			   the markup with nothing to open them. The functions behind
+			   them - income_statement(), ratings(), get_value_statistics()
+			   and the rest - are still in share_functions.php, so a tab can
+			   be given back to them in a line. */
 			$valuation=get_valuation($symbol);
 			$industry_valuation=get_industry_valuation($symbol);
 			write_log("quote.php","8");
@@ -179,10 +171,6 @@
 			         "relative_industry_valuations"=>$relative_industry_valuations,
 			         "share_info"=> $share_info, "quote" => $quote, "chart"=>$chart,
 			         "timespan"=>$timespan, "type"=>$type,
-			         "incomestatement"=>$income_statement, "balancesheet"=>$balance_sheet,
-			         "cashflowstatement"=>$cash_flow_statement, "ratings"=>$ratings,
-			         "momentum_statistics"=>$momentum_statistics, "growth_statistics"=>$growth_statistics,
-			         "value_statistics"=>$value_statistics, "quality_statistics"=>$quality_statistics,
 			         "scores"=>$scores, "valueranks"=>$valueranks, "momentumranks"=>$momentumranks,
 			         "qualityranks"=>$qualityranks, "announcements"=>$announcements,
 			         "health_scores"=>$health_scores, "currency_note"=>$currency_note];

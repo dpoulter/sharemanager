@@ -289,6 +289,33 @@ function report_currency_note($symbol, $date = null) {
    --------------------------------------------------------------------------- */
 
 /**
+ * The date the statistics describe.
+ *
+ * get_statistics.php stamps a get_statistics_asof row when it runs, and that
+ * is the date every statistic it wrote is keyed on. Where that row is missing
+ * - a database the job has never run against - the newest date in statistics
+ * is the same answer by another route.
+ *
+ * Six functions on the quote page used "yesterday" instead. Three of them
+ * then overwrote it with the job date and left the calculation above as dead
+ * code; the other three meant it, so on a Monday they asked for Sunday and
+ * found nothing, and on any day after the nightly job they showed the day
+ * before's figures. The page beside them was already reading the job date,
+ * so a share's score and the components of that score could be two different
+ * days apart.
+ */
+function statistics_asof_date($exchange = null) {
+
+	$rows = query("select date(max(job_date)) job_date from jobs
+	                where job_name='get_statistics_asof'");
+	if (count($rows) && $rows[0]['job_date'] !== null) { return $rows[0]['job_date']; }
+
+	$rows = query("select max(date) d from statistics where exchange=?",
+	              $exchange === null ? session_exchange() : $exchange);
+	return (count($rows) && $rows[0]['d'] !== null) ? substr((string) $rows[0]['d'], 0, 10) : null;
+}
+
+/**
  * The last date prices were loaded for, or null if there are none.
  */
 function last_trading_date($exchange = null) {
@@ -2330,13 +2357,9 @@ return $rows;
 
 //Get Momentum and Value Score
 function get_scores($symbol){
-	
-//Get As of Date as yesterdays date
-$asOfDate=new DateTime();
-$asOfDate->sub(new DateInterval('P1D'));
-$asOfDate=date_format($asOfDate,'Y-m-d');
 
-//write_log("get_scores.php","asOfDate=$asOfDate");
+//The date the statistics describe, not yesterday.
+$asOfDate=statistics_asof_date();
 
 	///init score
 	$score ['momentum']=50;
@@ -2370,14 +2393,9 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 //Get Value Score Components
 function get_value_rank($symbol){
 	
-//Get As of Date as yesterdays date
-$asOfDate=new DateTime();
-$asOfDate->sub(new DateInterval('P1D'));
-$asOfDate=date_format($asOfDate,'Y-m-d');
-
-//Get latest statistics job date
-			$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
-			$asOfDate=$rows[0]['job_date'];
+//The date the statistics describe. A "yesterday" calculation used to sit
+//here and was then thrown away by the line below it.
+$asOfDate=statistics_asof_date();
 
 //write_log("get_scores.php","asOfDate=$asOfDate");
 
@@ -2399,15 +2417,9 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 //Get Momentum Score Components
 function get_momentum_rank($symbol){
 	
-//Get As of Date as yesterdays date
-$asOfDate=new DateTime();
-$asOfDate->sub(new DateInterval('P1D'));
-$asOfDate=date_format($asOfDate,'Y-m-d');
-
-//write_log("get_scores.php","asOfDate=$asOfDate");
-//Get latest statistics job date
-	$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
-	$asOfDate=$rows[0]['job_date'];
+//The date the statistics describe. A "yesterday" calculation used to sit
+//here and was then thrown away by the line below it.
+$asOfDate=statistics_asof_date();
 
 
 	
@@ -2423,15 +2435,9 @@ $asOfDate=date_format($asOfDate,'Y-m-d');
 //Get Quality Score Components
 function get_quality_rank($symbol){
 	
-//Get As of Date as yesterdays date
-$asOfDate=new DateTime();
-$asOfDate->sub(new DateInterval('P1D'));
-$asOfDate=date_format($asOfDate,'Y-m-d');
-
-//write_log("get_scores.php","asOfDate=$asOfDate");
-//Get latest statistics job date
-$rows=query("select date(max(job_date)) job_date from jobs where job_name='get_statistics_asof'");
-$asOfDate=$rows[0]['job_date'];
+//The date the statistics describe. A "yesterday" calculation used to sit
+//here and was then thrown away by the line below it.
+$asOfDate=statistics_asof_date();
 
 
 	
@@ -2514,13 +2520,12 @@ function get_health_scores($symbol) {
 
 //Get Relative Sector Valuation
 function get_valuation($symbol){
-	
-	//Get As of Date as yesterdays date
-	$asOfDate=new DateTime();
-	$asOfDate->sub(new DateInterval('P1D'));
-	$asOfDate=date_format($asOfDate,'Y-m-d');
-	
-//	write_log("get_scores.php","asOfDate=$asOfDate");
+
+	/* The date the statistics describe. It was yesterday, whatever day that
+	   is: on a Monday it asked for Sunday and found nothing, and the quote
+	   page's own header was already reading the latest close - so the page
+	   showed an implied price against a price from a different day. */
+	$asOfDate=statistics_asof_date();
 	
 	$value=get_indicator_value($symbol, 'relative_valuation',$asOfDate);
 	
@@ -2556,30 +2561,29 @@ function get_valuation($symbol){
 //Get Relative Industry Valuation
 function get_industry_valuation($symbol){
 	
-	//Get As of Date as yesterdays date
-	$asOfDate=new DateTime();
-	$asOfDate->sub(new DateInterval('P1D'));
-	$asOfDate=date_format($asOfDate,'Y-m-d');
-	
-	//write_log("get_scores.php","asOfDate=$asOfDate");
+	//The date the statistics describe, not yesterday.
+	$asOfDate=statistics_asof_date();
+
 	$value=get_indicator_value($symbol, 'relative_industry_valuation',$asOfDate);
-	if (is_null($value)){
-		$value=0;
-	}
-	
-	//write_log("get_valuation","value =".$value);
-	
+
 	//get share price
 	$price=get_share_price($symbol,$asOfDate);
-	
-	//write_log("get_valuation","price =".$price);
-	
-	//calculate ratio value to price
-	$ratio=round($value/$price*100);
-	
-	//write_log("get_valuation","ratio =".$ratio);
-	
-	$valuation['value']=round($value);
+
+	/* The same guard get_valuation() has, which this never had: with no
+	   price for the date - a share that did not trade, or a database the
+	   statistics job has not run against - this divided by nought and took
+	   the whole quote page down with it. */
+	if ($price && $price!=0){
+		$ratio=round($value/$price*100);
+	}
+	else {
+		$ratio=0;
+	}
+
+	/* Null means the valuation could not be worked out, not that it is
+	   nought. Kept null so the page can say so, as it does for the sector
+	   figure beside it. */
+	$valuation['value']=($value===null) ? null : round($value);
 	$valuation['price']=$price;
 	$valuation['ratio']=$ratio;
 	
