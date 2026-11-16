@@ -110,6 +110,17 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/screen_last_run.sql" > /dev/null || exit 1
 echo "applying sql/strategy_prices.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_prices.sql" > /dev/null || exit 1
 
+# Every page at 390px. A check on the layout rather than on the queries, so a
+# host with no browser skips it rather than failing: the application is used on
+# a phone, and the fault it catches - a table that makes the page itself scroll
+# sideways, taking the fixed navbar with it - is invisible from a desktop.
+if command -v node >/dev/null 2>&1; then
+  echo "running phone width checks (390px)"
+  node "$TESTS_DIR/phone_widths.js" || PHONE_FAILED=1
+else
+  echo "  SKIP  phone widths: node is not installed"
+fi
+
 echo "running provider client tests (offline, no key needed)"
 python3 "$TESTS_DIR/test_eodhd.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp.py"        || PY_FAILED=1
@@ -120,5 +131,8 @@ python3 "$TESTS_DIR/test_db_functions.py" || PY_FAILED=1
 echo "running tests"
 php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/tests.php" || PHP_FAILED=1
 
-[ "${PY_FAILED:-0}" = 1 ] || [ "${PHP_FAILED:-0}" = 1 ] && exit 1
+if [ "${PY_FAILED:-0}" = 1 ] || [ "${PHP_FAILED:-0}" = 1 ] \
+   || [ "${PHONE_FAILED:-0}" = 1 ]; then
+  exit 1
+fi
 exit 0
