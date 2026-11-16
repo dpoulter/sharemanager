@@ -287,3 +287,90 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('[data-bs-toggle="popover"]')
             .forEach(function (el) { new bootstrap.Popover(el); });
 });
+
+/* Sortable tables.
+ *
+ * Any table with class sm-table-sort: a click on a header cell carrying
+ * data-sort ("number" or "text") sorts the body by that column, and a second
+ * click reverses it. The sort key is the cell's data-value attribute when it
+ * has one, so a column showing "1,350.6p" or a coloured badge sorts on the
+ * number behind it rather than on the string.
+ *
+ * In the browser rather than by reloading with an order in the query string:
+ * these are tables of a few hundred rows that somebody flicks between
+ * columns on, and a round trip per click buys nothing.
+ *
+ * Rows with no value sort to the bottom whichever way the column is pointing.
+ * A share with no six month figure is not the worst performer, it is a share
+ * with no six month figure, and putting it at the top of the losers would be
+ * the page telling the reader something untrue.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+
+    document.querySelectorAll('table.sm-table-sort').forEach(function (table) {
+
+        var headers = table.querySelectorAll('thead th[data-sort]');
+
+        headers.forEach(function (header, column) {
+
+            header.setAttribute('role', 'button');
+            header.setAttribute('tabindex', '0');
+
+            function sort() {
+
+                var body = table.tBodies[0];
+                if (!body) { return; }
+
+                var kind = header.getAttribute('data-sort');
+                var descending = header.classList.contains('sm-sorted-asc');
+
+                headers.forEach(function (other) {
+                    other.classList.remove('sm-sorted-asc', 'sm-sorted-desc');
+                });
+                header.classList.add(descending ? 'sm-sorted-desc' : 'sm-sorted-asc');
+                header.setAttribute('aria-sort', descending ? 'descending' : 'ascending');
+
+                function key(row) {
+                    var cell = row.cells[column];
+                    if (!cell) { return null; }
+                    var raw = cell.hasAttribute('data-value')
+                        ? cell.getAttribute('data-value')
+                        : cell.textContent;
+                    raw = String(raw === null ? '' : raw).trim();
+                    if (raw === '' || raw === '–') { return null; }
+                    if (kind !== 'number') { return raw.toLowerCase(); }
+                    //Strip anything that is not part of a number: p, %, commas,
+                    //the pound sign. A leading minus and a decimal point stay.
+                    var number = parseFloat(raw.replace(/[^0-9.\-]/g, ''));
+                    return isNaN(number) ? null : number;
+                }
+
+                var rows = Array.prototype.slice.call(body.rows);
+                rows.sort(function (a, b) {
+                    var ka = key(a), kb = key(b);
+                    if (ka === null && kb === null) { return 0; }
+                    if (ka === null) { return 1; }
+                    if (kb === null) { return -1; }
+                    if (ka < kb) { return descending ? 1 : -1; }
+                    if (ka > kb) { return descending ? -1 : 1; }
+                    return 0;
+                });
+
+                //Rows that are not data - an empty-state message spanning the
+                //table, a totals row - stay where they are.
+                rows.forEach(function (row) {
+                    if (row.classList.contains('sm-total-row')) { return; }
+                    body.appendChild(row);
+                });
+                rows.forEach(function (row) {
+                    if (row.classList.contains('sm-total-row')) { body.appendChild(row); }
+                });
+            }
+
+            header.addEventListener('click', sort);
+            header.addEventListener('keydown', function (ev) {
+                if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); sort(); }
+            });
+        });
+    });
+});

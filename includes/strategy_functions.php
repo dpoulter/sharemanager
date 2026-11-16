@@ -828,6 +828,36 @@
 	}
 
 	/**
+	 * What to call a strategy on a page.
+	 *
+	 * The code name is what the tables are keyed on and what the scripts
+	 * take on the command line, and it is not what a reader should be shown:
+	 * "trend_following" is a column name. A display_name column on
+	 * strategy_accounts carries the proper one; until the migration that
+	 * adds it has been applied the code name is tidied up instead, so a page
+	 * reads sensibly on a host that is one deploy behind.
+	 */
+	function strategy_display_name($strategy) {
+
+		static $has_column = null;
+		if ($has_column === null) {
+			$found = query("select count(*) n from information_schema.columns
+			                 where table_schema=database() and table_name='strategy_accounts'
+			                   and column_name='display_name'");
+			$has_column = count($found) && (int) $found[0]['n'] > 0;
+		}
+
+		if ($has_column) {
+			$rows = query("select display_name from strategy_accounts where strategy=?", $strategy);
+			if (count($rows) && trim((string) $rows[0]['display_name']) !== '') {
+				return (string) $rows[0]['display_name'];
+			}
+		}
+
+		return ucfirst(str_replace('_', ' ', (string) $strategy));
+	}
+
+	/**
 	 * A name the nightly run must not treat as a strategy: the benchmark's
 	 * row in strategy_values, and any backtest account.
 	 */

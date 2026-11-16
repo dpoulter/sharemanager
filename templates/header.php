@@ -121,7 +121,8 @@ $sm_user = function_exists("view_username") ? view_username() : "";
   <!-- How old the prices are, on every page. Amber once the latest close is a
        trading day behind, red at three. -->
   <?php if ($sm_fresh !== null): ?>
-  <span class="<?= $sm_fresh_class ?> me-3 my-1" title="The date of the latest stored close">
+  <span class="<?= $sm_fresh_class ?> me-3 my-1" data-bs-toggle="tooltip"
+        title="<?= htmlspecialchars($sm_fresh['title']) ?>">
     <?= htmlspecialchars($sm_fresh['words']) ?>
   </span>
   <?php endif ?>

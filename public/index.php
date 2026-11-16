@@ -1,90 +1,68 @@
 <?php
 
-    // configuration
-    require("../includes/config.php"); 
+    /**
+     * The dashboard.
+     *
+     * Reads: the portfolio strip, the market breadth, the week's
+     * announcements, the strategies and the four ranked lists. Writes
+     * nothing and calls no model - the outlook on the page is whatever was
+     * last generated, and generating a new one is a button on it.
+     *
+     * A symbol arriving here (the old search form posted to this page)
+     * is handed to quote.php rather than looked up here: quote.php builds
+     * the thirty variables its template needs and this page built six, so
+     * every panel it did not know about rendered undefined.
+     */
 
-	//redirect("https://sharemanager.eu/performance.php");
-	
-	// if form was submitted
-    if ($_SERVER["REQUEST_METHOD"] == "POST")
-    {
-        // validate submission
-        if (empty($_POST["symbol"]))
-        {
-            apologize("You must enter a symbol.");
-        }
-		else
-			//symbol
-			$symbol=$_POST["symbol"];
-			//timespan
-			if (isset($_POST["timespan"]))
-				$timespan=$_POST["timespan"];
-			else
-				$timespan="1d";
-				
-			if (isset($_POST["type"]))
-				$type=$_POST["type"];
-			else
-				$type="l";
-	}
-	
-	//Check if symbol was passed to form
-	else
-		
-	{
-	
-		if (isset($_GET["symbol"]))
-			$symbol=$_GET["symbol"];
-			
-		if (isset($_GET["screen_id"]))
-			$screen_id=$_GET["screen_id"];
-			
-		if (isset($_GET["timespan"]))
-			$timespan=$_GET["timespan"];
-		else
-			$timespan="6m";
-			
-		if (isset($_GET["type"]))
-			$type=$_GET["type"];
-		else
-			$type="l";
-	}		
-	
-	if (isset($symbol)){
-        //Get Stock Quote
-        
-        write_log("index","symbol=$symbol");
-		
-		//templates/quote.php needs around thirty variables and this passed six,
-		//so every panel it did not know about rendered undefined - 74 warnings
-		//for one symbol. quote.php is the page that builds them all, so hand
-		//the symbol to it rather than keeping a second, half wired copy.
-		$query = ["symbol" => $symbol, "timespan" => $timespan, "type" => $type];
-		if (isset($screen_id)) { $query["screen_id"] = $screen_id; }
-		redirect("quote.php?" . http_build_query($query));
-        
-        
-        
+    require("../includes/config.php");
+    require("../includes/home_functions.php");
+    require_once("../includes/rns.php");
+    require_once("../includes/ai_outlook.php");
+    require_once("../includes/strategy_functions.php");
 
-       
+    $symbol = null;
+    if ($_SERVER["REQUEST_METHOD"] === "POST") {
+        if (empty($_POST["symbol"])) { apologize("You must enter a symbol."); }
+        $symbol = $_POST["symbol"];
+    }
+    else if (isset($_GET["symbol"])) { $symbol = $_GET["symbol"]; }
+
+    if ($symbol !== null) {
+        write_log("index", "symbol=$symbol");
+        $query = ["symbol" => $symbol];
+        if (isset($_GET["screen_id"])) { $query["screen_id"] = $_GET["screen_id"]; }
+        redirect("quote.php?" . http_build_query($query));
     }
 
-	else
-    {   //get stock symbols
-       // $stock_symbols = query("SELECT symbol, description FROM stock_symbols where enabled='Y'");
-        // else render form
-//        render("quote_form.php", ["title" => "Stock Quote","symbols" => $stock_symbols]);
+    $exchange = session_exchange();
 
-		//Get top Ten Momentum stocks
-		$momentum_topten = get_momentum_topten(); 
-		$value_topten = get_value_topten(); 
-		$quality_topten = get_quality_topten(); 
-		$overall_topten = get_overall_topten(); 
-		//Two separate facts: the trading day the statistics describe, and when
-		//the job that produced them ran.
-		$last_update = get_last_update();
-		$last_run    = get_last_run();
-        render("quote_form.php", ["title" => "Stock Quote","momentum_topten"=> $momentum_topten,"value_topten"=> $value_topten,"quality_topten"=> $quality_topten,"overall_topten"=> $overall_topten,"last_update"=> $last_update,"last_run"=> $last_run]);
+    /* The date every figure on the page is read at: the last close that was
+       loaded. Not today - on a Sunday there is no close, and the page would
+       report an empty market. */
+    $as_of = last_trading_date($exchange);
+    if ($as_of === null) { $as_of = date('Y-m-d'); }
+
+    $market = outlook_market_inputs($as_of);
+
+    /* Seven trading days back, counted off the stored closes. */
+    $news_from = home_news_window($as_of, 7, $exchange);
+
+    $ranked = [];
+    foreach (array_keys(home_scores()) as $score) {
+        $ranked[$score] = home_ranked($score, 10, $exchange);
     }
+
+    render("home.php", [
+        "title"            => "Dashboard",
+        "as_of"            => $as_of,
+        "portfolio"        => home_portfolio_strip($_SESSION["id"], $exchange),
+        "breadth"          => $market["breadth"],
+        "breadth_history"  => home_breadth_history($as_of, 6, $exchange),
+        "news"             => home_news_week($news_from, $as_of, 5, $exchange),
+        "news_from"        => $news_from,
+        "strategies"       => home_strategy_rows($exchange),
+        "scores"           => home_scores(),
+        "ranked"           => $ranked,
+    ]);
 
 ?>

@@ -366,7 +366,9 @@
 		$exchange = $exchange === null ? default_exchange() : $exchange;
 		$latest   = last_trading_date($exchange);
 		if ($latest === null) {
-			return ['date' => null, 'level' => 'red', 'words' => 'No prices loaded'];
+			return ['date' => null, 'level' => 'red', 'words' => 'No prices loaded',
+			        'title' => 'No prices have been loaded for this exchange.',
+			        'last_run' => null, 'behind' => null];
 		}
 
 		/* How many stored trading days sit between the latest close and
@@ -401,8 +403,21 @@
 		if ($level === 'amber') { $words .= ' (a day behind)'; }
 		if ($level === 'red')   { $words .= ' (' . $behind . ' trading days behind)'; }
 
+		/* The date the prices describe and the time the job that loaded them
+		   ran are two different facts. The home page used to print them as
+		   one - "Statistics Refreshed: 2026-11-14 09:12:03", where the date
+		   was the market's and the time was the server's - and the box that
+		   did it was the only thing in "System Messages". The box is gone;
+		   the two facts are here, still named separately: the as-of date on
+		   the badge, the run time in what it says when you point at it. */
+		$ran = function_exists('get_last_run') ? get_last_run() : null;
+		$title = 'Prices as of the ' . fmt_date($latest) . ' close';
+		$title .= $ran === null
+		        ? '. No run of the statistics job is recorded.'
+		        : ', updated ' . $ran . '.';
+
 		return ['date' => $latest, 'level' => $level, 'words' => $words,
-		        'behind' => $behind];
+		        'title' => $title, 'last_run' => $ran, 'behind' => $behind];
 	}
 
 	/* ---------------------------------------------------------------------

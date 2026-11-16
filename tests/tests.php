@@ -3544,19 +3544,30 @@
     check('the as of date is the date the statistics carry',
           (string)get_last_update() === (string)scalar("select max(date) from statistics
                                                          where indicator='momentum_score'"));
-    /* Comments stripped first. The template explains what the old label got
-       wrong, so it contains the old label - and searching the raw file finds
-       the explanation and reports that nothing changed. This is the fifth time
-       that trap has bitten in this codebase; it is always the comment. */
-    $mn_dash = php_strip_whitespace(dirname(__DIR__) . '/templates/quote_form.php');
-    check('the dashboard names the two facts rather than running them together',
-          strpos($mn_dash, 'Prices as of') !== false
-          && strpos($mn_dash, 'updated') !== false
-          && strpos($mn_dash, 'Statistics Refreshed') === false,
-          strpos($mn_dash, 'Statistics Refreshed') !== false
-              ? 'the old label is still there' : 'the new wording is missing');
-    check('index.php supplies both to the template',
-          preg_match('/"last_run"\s*=>/', (string)file_get_contents(dirname(__DIR__) . '/public/index.php')) === 1);
+    /* The two facts have moved. They were a "System Messages" card on the
+       home page whose entire content was this one line, and the redesign
+       removed the card - the as-of date belongs in the navbar, where it is
+       on every page rather than only on one. They are still two facts and
+       still named apart: the date on the badge, the run time in its tooltip.
+       Checked on view_freshness() rather than on a template, because that is
+       where they are now built. */
+    $mn_fresh = view_freshness('XLON');
+    check('the as of date and the run time are named apart, not run together',
+          strpos($mn_fresh['words'], 'Prices ') === 0
+          && strpos($mn_fresh['title'], 'Prices as of') !== false
+          && (strpos($mn_fresh['title'], 'updated') !== false
+              || strpos($mn_fresh['title'], 'No run') !== false)
+          && strpos($mn_fresh['title'], 'Statistics Refreshed') === false,
+          json_encode($mn_fresh));
+    check('the navbar shows both, so every page carries them',
+          preg_match('/\$sm_fresh\[.title.\]/',
+                     (string)file_get_contents(dirname(__DIR__) . '/templates/header.php')) === 1
+          && strpos((string)file_get_contents(dirname(__DIR__) . '/templates/header.php'),
+                    "\$sm_fresh['words']") !== false);
+    check('and the box whose only content it was is gone from the home page',
+          !file_exists(dirname(__DIR__) . '/templates/quote_form.php')
+          && stripos((string)file_get_contents(dirname(__DIR__) . '/templates/home.php'),
+                     'System Messages') === false);
 
     echo "\n--- the outlook knows which index the share is in ---\n";
 
@@ -7265,6 +7276,189 @@
     if ($rns_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $rns_saved_exchange; }
 
+    echo "\n--- the dashboard: what the portfolio is worth ---\n";
+
+    require_once($INCLUDES . '/home_functions.php');
+
+    /* A portfolio the test owns outright, so the figures can be checked by
+       hand. Session 99 is used nowhere else in the suite. */
+    $hp_user = 99;
+    db()->exec("delete from purchases where session_id=$hp_user");
+    db()->exec("delete from cash_history where user_id=$hp_user");
+    db()->exec("delete from dividends where session_id=$hp_user");
+    db()->exec("delete from portfolio_performance where session_id=$hp_user");
+
+    $hp_asof = asof_date();
+    $hp_prev = (string) scalar("select max(date) from historical_prices
+                                 where exchange='XLON' and date<?", [$hp_asof]);
+
+    /* Two holdings with known closes on both days, so the day's change is
+       arithmetic rather than whatever the fixtures happen to hold. */
+    db()->exec("delete from historical_prices where symbol in ('PFA','PFB') and exchange='XLON'");
+    $hp_price = db()->prepare("insert into historical_prices (symbol, exchange, date, price)
+                               values (?, 'XLON', ?, ?)");
+    $hp_price->execute(['PFA', $hp_prev, 100.0]);   // 100p -> 110p, 1,000 shares
+    $hp_price->execute(['PFA', $hp_asof, 110.0]);
+    $hp_price->execute(['PFB', $hp_prev, 200.0]);   // 200p -> 190p,   500 shares
+    $hp_price->execute(['PFB', $hp_asof, 190.0]);
+    db()->exec("delete from stock_symbols where symbol in ('PFA','PFB')");
+    foreach (['PFA', 'PFB'] as $hp_sym) {
+        db()->prepare("insert into stock_symbols (symbol, name, exchange, enabled)
+                       values (?, ?, 'XLON', 'Y')")
+            ->execute([$hp_sym, $hp_sym . ' Holdings PLC']);
+    }
+
+    db()->prepare("insert into purchases (session_id, symbol, trx_type, shares, price_paid,
+                                          commission, purchase_date)
+                   values (?, 'PFA', 'BUY', 1000, 90, 10, ?)")->execute([$hp_user, $hp_prev]);
+    db()->prepare("insert into purchases (session_id, symbol, trx_type, shares, price_paid,
+                                          commission, purchase_date)
+                   values (?, 'PFB', 'BUY', 500, 210, 10, ?)")->execute([$hp_user, $hp_prev]);
+    db()->prepare("insert into cash_history (user_id, transaction_date, trx_type, amount)
+                   values (?, ?, 'DEPOSIT', 5000)")->execute([$hp_user, $hp_prev]);
+
+    /* The strip reads portfolio_performance, which the nightly valuation job
+       writes. Written here the way that job writes it. */
+    $hp_pp = db()->prepare("insert into portfolio_performance
+        (session_id, as_of_date, symbol, active, exchange, qty_purchased, qty_sold,
+         price, price_paid, price_sold, commission, dividends, value, value_raw,
+         profit, profit_raw, profit_perc)
+        values (?, ?, ?, 'Y', 'XLON', ?, 0, ?, ?, 0, 10, 0, ?, ?, ?, ?, ?)");
+    //PFA: 1,000 at 110p = GBP1,100; cost 90p = GBP900; less GBP10 commission.
+    $hp_pp->execute([$hp_user, $hp_asof, 'PFA', 1000, 110, 90, '1,100.00', 1100.0,
+                     '190.00', 190.0, 21.1]);
+    //PFB: 500 at 190p = GBP950; cost 210p = GBP1,050; less GBP10 commission.
+    $hp_pp->execute([$hp_user, $hp_asof, 'PFB', 500, 190, 210, '950.00', 950.0,
+                     '-110.00', -110.0, -10.5]);
+
+    $hp_saved_exchange = $_SESSION["exchange"] ?? null;
+    $_SESSION["exchange"] = 'XLON';
+
+    $strip = home_portfolio_strip($hp_user, 'XLON');
+
+    check('the strip values the holdings at the latest close',
+          abs($strip['value'] - 2050.0) < 0.005, json_encode($strip));
+    check('and carries the cash and the holding count',
+          abs($strip['cash'] - 5000.0) < 0.005 && $strip['holdings'] === 2,
+          json_encode($strip));
+    check('the total is the holdings plus the cash',
+          abs($strip['total'] - 7050.0) < 0.005, json_encode($strip));
+    check('the gain is what the positions made, commission and all',
+          abs($strip['gain'] - 80.0) < 0.005, json_encode($strip));
+
+    /* PFA made GBP100 on the day, PFB lost GBP50: GBP50, on GBP2,000 of
+       yesterday's value, is +2.5%. */
+    check("today's change is the move between the last two closes",
+          abs($strip['day_change'] - 50.0) < 0.005, json_encode($strip));
+    check('and the percentage is against what it was worth yesterday',
+          abs($strip['day_change_pct'] - 2.5) < 0.005, json_encode($strip));
+
+    /* The honest answer when the second close is not there. A day's change
+       computed against a close from a week ago would be a week's change
+       wearing today's label. */
+    db()->exec("delete from historical_prices where symbol in ('PFA','PFB')
+                 and exchange='XLON' and date='$hp_prev'");
+    $strip_one = home_portfolio_strip($hp_user, 'XLON');
+    check('with only one close, no day change is claimed',
+          $strip_one['day_change'] === null && $strip_one['day_change_pct'] === null,
+          json_encode($strip_one));
+    check('but the value is still there',
+          abs($strip_one['value'] - 2050.0) < 0.005, json_encode($strip_one));
+
+    db()->exec("delete from portfolio_performance where session_id=$hp_user");
+    $strip_empty = home_portfolio_strip($hp_user, 'XLON');
+    check('an account with no holdings reports none, and its cash',
+          $strip_empty['holdings'] === 0 && abs($strip_empty['total'] - 5000.0) < 0.005,
+          json_encode($strip_empty));
+
+    db()->exec("delete from historical_prices where symbol in ('PFA','PFB')");
+    db()->exec("delete from stock_symbols where symbol in ('PFA','PFB')");
+    db()->exec("delete from purchases where session_id=$hp_user");
+    db()->exec("delete from cash_history where user_id=$hp_user");
+
+    echo "\n--- the dashboard: the ranked lists ---\n";
+
+    $hr = home_ranked('momentum', 10, 'XLON');
+    check('a ranked list carries the score, the price and the six month move',
+          count($hr) > 0 && array_key_exists('score', $hr[0])
+          && array_key_exists('price', $hr[0]) && array_key_exists('change_6m', $hr[0]),
+          json_encode(count($hr) ? $hr[0] : null));
+    /* Four lists that showed a ticker and a name, and no rank. */
+    check('and it is in rank order, best first',
+          count($hr) < 2 || (float) $hr[0]['score'] >= (float) $hr[1]['score'],
+          json_encode(array_column($hr, 'score')));
+    check('ten means ten',
+          count($hr) <= 10, count($hr));
+    check('and the whole list is longer than the top ten',
+          count(home_ranked('momentum', null, 'XLON')) >= count($hr));
+
+    check('an unknown score is refused rather than turned into a column name',
+          home_ranked('; drop table statistics', 10, 'XLON') === []);
+
+    /* Funds are not scored, and the list is read off whatever statistics
+       date is newest - which between a deploy and the next nightly run is
+       still the date the old code wrote. */
+    $hr_funds = array_column(home_ranked('value', null, 'XLON'), 'symbol');
+    $hr_is_fund = rows("select symbol from stock_symbols where exchange='XLON' and is_fund='Y'");
+    $hr_leak = array_intersect($hr_funds, array_column($hr_is_fund, 'symbol'));
+    check('no fund is in a ranked list', count($hr_leak) === 0, implode(',', $hr_leak));
+
+    echo "\n--- the dashboard: how much of the market is in an uptrend ---\n";
+
+    $bh = home_breadth_history($hp_asof, 6, 'XLON');
+    check('the breadth history is a proportion per date',
+          count($bh) > 0 && array_key_exists('date', $bh[0]) && array_key_exists('pct', $bh[0]),
+          json_encode(count($bh) ? $bh[0] : null));
+    check('and the latest point agrees with the figure on the card',
+          count($bh) === 0
+          || abs((float) end($bh)['pct']
+                 - (float) outlook_market_inputs($hp_asof)['breadth']['pct_above_ma200']) < 0.11,
+          json_encode([end($bh), outlook_market_inputs($hp_asof)['breadth']['pct_above_ma200']]));
+
+    echo "\n--- the dashboard: the week's news ---\n";
+
+    $hn_from = home_news_window($hp_asof, 7, 'XLON');
+    check('the week is counted in trading days, not calendar days',
+          $hn_from <= $hp_asof
+          && (int) scalar("select count(distinct date) from historical_prices
+                            where exchange='XLON' and date between ? and ?",
+                          [$hn_from, $hp_asof]) <= 8,
+          $hn_from . ' .. ' . $hp_asof);
+
+    db()->exec("truncate rns_announcements");
+    $hn_ins = db()->prepare("insert into rns_announcements
+        (announcement_id, symbol, source, title, published_at, url, body, skipped,
+         sentiment, ann_type, summary, key_figures, scored_model, scored_at, first_seen,
+         price_move, price_move_date)
+        values (?, ?, 'RNS', ?, ?, ?, 'text', 'N', ?, 'trading update', 'x', '[]',
+                'stub', now(), now(), ?, ?)");
+    $hn_ins->execute(['9001', 'AAA', 'Good news',  $hp_asof . ' 07:00:00',
+                      'https://example.invalid/a', 0.8, 4.5, $hp_asof]);
+    $hn_ins->execute(['9002', 'AAA', 'Also good',  $hp_asof . ' 08:00:00',
+                      'https://example.invalid/b', 0.2, 1.0, $hp_asof]);
+    $hn_ins->execute(['9003', 'BBB', 'Bad news',   $hp_asof . ' 07:00:00',
+                      'https://example.invalid/c', -0.9, -6.25, $hp_asof]);
+
+    $hn = home_news_week($hn_from, $hp_asof, 5, 'XLON');
+    check('the best and the worst of the week are both there',
+          count($hn['best']) > 0 && count($hn['worst']) > 0
+          && $hn['best'][0]['symbol'] === 'AAA' && $hn['worst'][0]['symbol'] === 'BBB',
+          json_encode([array_column($hn['best'], 'symbol'), array_column($hn['worst'], 'symbol')]));
+    check('each carries what the share has done since it announced',
+          abs((float) $hn['best'][0]['price_move'] - 4.5) < 0.005
+          && abs((float) $hn['worst'][0]['price_move'] + 6.25) < 0.005,
+          json_encode([$hn['best'][0]['price_move'], $hn['worst'][0]['price_move']]));
+    /* Two announcements from one company is one row, and the move shown is
+       the one since the announcement that put it on the list - the move
+       since the weakest of three would be describing a different event. */
+    check('a company that announced twice appears once, against its strongest',
+          count(array_filter($hn['best'], function ($r) { return $r['symbol'] === 'AAA'; })) === 1
+          && abs((float) $hn['best'][0]['price_move'] - 4.5) < 0.005);
+
+    db()->exec("truncate rns_announcements");
+    if ($hp_saved_exchange === null) { unset($_SESSION["exchange"]); }
+    else { $_SESSION["exchange"] = $hp_saved_exchange; }
+
     echo "\n--- one way to print a number ---\n";
 
     /* Formatting used to live in each template, and the same figure was
@@ -7621,7 +7815,7 @@
         $pages = ['index.php','performance.php','dividends.php','cash_history.php',
                   'edit.php','topup.php','screen_list.php','quote.php','criteria.php',
                   'criteria_list.php','screen_criteria.php','sector_companies.php',
-                  'strategies.php','sell.php','buy.php',
+                  'strategies.php','sell.php','buy.php','rankings.php',
                   'statistics.php','statistics_form.php','download_prices.php',
                   'register.php','reset_passwd.php','in_the_news.php'];
         $fatal = [];
