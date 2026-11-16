@@ -2189,15 +2189,28 @@
 		     use (&$report,$companies) {
 
 			$quantity=(int)$quantity;
-			$costs=($price===null) ? null : strategy_costs($side,$quantity,(float)$price);
+
+			/* The price is rounded to the four places the table shows, and
+			   the value and the costs are worked out FROM that rounded
+			   price rather than from the one behind it. Otherwise the row
+			   does not add up: a thousand shares at 0.647264 is 647.26,
+			   while a reader multiplying the 0.6473 in front of them gets
+			   647.30 and wonders which number is wrong.
+			
+			   The few pence this costs against the engine's own arithmetic
+			   do not matter here, and saying so is the footnote's job: the
+			   fill happens at the next close, so every figure in this table
+			   is an estimate of a different number anyway. */
+			$price=($price===null) ? null : round((float)$price,4);
+			$costs=($price===null) ? null : strategy_costs($side,$quantity,$price);
 
 			$report['trades'][]=[
 				'side'=>$side,
 				'symbol'=>$symbol,
 				'company'=>isset($companies[$symbol]) ? $companies[$symbol] : null,
 				'quantity'=>$quantity,
-				'price'=>($price===null) ? null : round((float)$price,4),
-				'value'=>($price===null) ? null : round($quantity*(float)$price,2),
+				'price'=>$price,
+				'value'=>($price===null) ? null : round($quantity*$price,2),
 				'costs'=>($costs===null) ? null : [
 					'commission'=>round($costs['commission'],2),
 					'stamp_duty'=>round($costs['stamp_duty'],2),
