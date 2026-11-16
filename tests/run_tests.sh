@@ -139,6 +139,20 @@ php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/tests.php" || PHP_FAILED=1
 echo "running empty database checks"
 php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/empty_db.php" || EMPTY_FAILED=1
 
+# And put it back. The check above leaves the database empty, which is fine for
+# the next run - the schema is reloaded at the top - but not for anybody who
+# wants to look at the application afterwards. Everything above has finished,
+# so this cannot affect a result.
+echo "restoring the seeded database"
+db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
+  && php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/seed.php" > /dev/null \
+  && for migration in trend_screens ai_outlook fund_sectors report_currency \
+                      shareholder_yield fmp_scores news trending_value rns \
+                      strategy_rules screen_last_run strategy_display_name \
+                      strategy_backtest strategy_prices; do
+       db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
+     done
+
 if [ "${PY_FAILED:-0}" = 1 ] || [ "${PHP_FAILED:-0}" = 1 ] \
    || [ "${PHONE_FAILED:-0}" = 1 ] || [ "${EMPTY_FAILED:-0}" = 1 ]; then
   exit 1
