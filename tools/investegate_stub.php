@@ -170,7 +170,24 @@ function stub_default_announcement() {
                   . 'year and expects the second half to be weighted towards the final '
                   . 'quarter in line with previous years.</p>', 6)
                   . '<p>The share buyback programme announced in February will end on '
-                  . '25 February 2027.</p>';
+                  . '25 February 2027.</p>'
+                  /* The way every announcement on the wire ends: the same
+                     several hundred words of disclaimer on all of them,
+                     which is tokens and page space paid for twice. */
+                  . '<p>This information is provided by RNS, the news service of the London '
+                  . 'Stock Exchange. RNS is approved by the Financial Conduct Authority to '
+                  . 'act as a Primary Information Provider in the United Kingdom. Terms and '
+                  . 'conditions relating to the use and distribution of this information may '
+                  . 'apply. For further information, please contact rns@lseg.com or visit '
+                  . 'www.rns.com.</p>'
+                  . '<p>RNS may use your IP address to confirm compliance with the terms and '
+                  . 'conditions, to analyse how you engage with the information contained in '
+                  . 'this communication, and to share such analysis on an anonymised basis '
+                  . 'with others as part of our commercial services.</p>'
+                  . '<p>London Stock Exchange plc is not responsible for and does not check '
+                  . 'content on this Website. Website users are responsible for checking '
+                  . 'content.</p>'
+                  . '<p>END</p>';
 
     /* The furniture is in plain divs, not in <nav>, <header>, <aside> and
        <footer>. That is not a detail: the first parser removed those four

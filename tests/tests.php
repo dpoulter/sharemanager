@@ -6319,6 +6319,62 @@
           strpos(rns_body('Example Company plc announces a trading update.'),
                  'announces a trading update') !== false);
 
+    echo "\n--- the wire's boilerplate is not the announcement ---\n";
+
+    /* Every announcement on the wire ends the same way: "This information is
+       provided by RNS", the exchange's disclaimer, its privacy policy, and
+       the word END. Several hundred identical words on every one of them,
+       paid for twice - once in the tokens sent to the scorer and once in the
+       space it takes on the page. */
+    $rns_footer = 'Example Company plc announces a trading update. Revenue grew 7% to '
+                . "\xc2\xa31.2bn and trading has been ahead of expectations.\n\n"
+                . "This information is provided by RNS, the news service of the London Stock "
+                . "Exchange. RNS is approved by the Financial Conduct Authority to act as a "
+                . "Primary Information Provider in the United Kingdom.\n\n"
+                . "RNS may use your IP address to confirm compliance with the terms and "
+                . "conditions.\n\n"
+                . "London Stock Exchange plc is not responsible for and does not check content "
+                . "on this Website.\n\nEND";
+
+    $rns_trimmed = rns_strip_rns_footer($rns_footer);
+
+    check('the wire boilerplate is cut off the end',
+          stripos($rns_trimmed, 'provided by RNS') === false
+          && stripos($rns_trimmed, 'IP address') === false
+          && stripos($rns_trimmed, 'not responsible') === false,
+          substr($rns_trimmed, -200));
+    check('and the announcement in front of it is untouched',
+          strpos($rns_trimmed, 'Revenue grew 7%') !== false
+          && strpos($rns_trimmed, "\xc2\xa31.2bn") !== false,
+          $rns_trimmed);
+    check('the sign-off goes with it',
+          substr(rtrim($rns_trimmed), -3) !== 'END');
+    check('and it is shorter by the boilerplate, not by a guess',
+          mb_strlen($rns_trimmed) < mb_strlen($rns_footer) * 0.5,
+          mb_strlen($rns_trimmed) . ' of ' . mb_strlen($rns_footer));
+
+    /* An announcement that never carried any is returned as it is. */
+    $rns_no_footer = "Example Company plc announces a trading update.\n\nRevenue grew 7%.";
+    check('an announcement with no boilerplate is left alone',
+          rns_strip_rns_footer($rns_no_footer) === trim($rns_no_footer));
+
+    /* A page that is nothing but boilerplate is NOT emptied here. It is not
+       an announcement, and emptying it would hide that from the length check
+       whose job is to refuse it - the fetcher would store a blank body
+       instead of leaving the id for another night. */
+    $rns_only_footer = 'This information is provided by RNS, the news service of the London '
+                     . 'Stock Exchange. END';
+    check('a page that is only boilerplate is left for the length check to refuse',
+          mb_strlen(rns_strip_rns_footer($rns_only_footer)) > 50,
+          rns_strip_rns_footer($rns_only_footer));
+
+    /* A lone END with no disclaimer in front of it still goes: some wires
+       word the sign-off differently and the markers would miss it. */
+    check('a lone sign-off is removed even when the disclaimer was worded differently',
+          rns_strip_rns_footer("The company announces a trading update.\n\nEND")
+            === 'The company announces a trading update.',
+          rns_strip_rns_footer("The company announces a trading update.\n\nEND"));
+
     echo "\n--- the limit page is a stop signal, not an obstacle ---\n";
 
     /* Investegate shows signed-out readers a limit. The only correct
@@ -6683,6 +6739,12 @@
           ($rns_time_by_id['9002'] ?? '') === '16:35'
           && ($rns_time_by_id['9003'] ?? '') === '17:30',
           json_encode($rns_time_by_id));
+    check('the stored body carries none of the wire\'s boilerplate',
+          stripos((string) scalar("select body from rns_announcements where announcement_id='9001'"),
+                  'provided by RNS') === false
+          && stripos((string) scalar("select body from rns_announcements where announcement_id='9001'"),
+                     'not responsible') === false,
+          substr((string) scalar("select body from rns_announcements where announcement_id='9001'"), -200));
     check('and the text that was scored is the announcement, not the page round it',
           (int) ($rns_by_id['9001']['body_length'] ?? 0) > 400
           && (string) scalar("select body from rns_announcements where announcement_id='9001'")

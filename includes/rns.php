@@ -581,6 +581,62 @@
 	 * If that block were left in, every score would be partly a score of
 	 * somebody else's model's reading.
 	 */
+	/**
+	 * The RNS boilerplate at the foot of every announcement, removed.
+	 *
+	 * Every announcement on the wire ends the same way: "This information is
+	 * provided by RNS", the London Stock Exchange's disclaimer, its privacy
+	 * policy, and the word END. It is identical on all of them, it says
+	 * nothing about the company, and it is several hundred words that get
+	 * paid for twice - once in the tokens sent to the scorer and once in the
+	 * space it takes on the page.
+	 *
+	 * Cut from the earliest marker to the end of the text, because the
+	 * boilerplate IS the end of the text. Markers rather than a single
+	 * pattern: the wires word the opening line differently and a document
+	 * that carries only the disclaimer should still lose it.
+	 *
+	 * Left alone when there is almost nothing in front of the marker. A
+	 * document that is all boilerplate is not an announcement, and emptying
+	 * it here would hide that from the length check that is supposed to
+	 * refuse it.
+	 */
+	function rns_strip_rns_footer($text) {
+
+		$text = (string) $text;
+
+		$markers = ['This information is provided by RNS',
+		            'This announcement is distributed by RNS',
+		            'London Stock Exchange plc is not responsible',
+		            'RNS may use your IP address',
+		            'www.rns.com'];
+
+		$cut = null;
+
+		foreach ($markers as $marker) {
+			$at = stripos($text, $marker);
+			if ($at !== false && ($cut === null || $at < $cut)) { $cut = $at; }
+		}
+
+		/* Forty characters, which is about a sentence. The guard is only
+		   there to stop a document that is ALL boilerplate being emptied -
+		   that is not an announcement, and emptying it would hide it from
+		   the length check whose job is to refuse it. A hundred was the
+		   first number here and it was wrong: plenty of real announcements
+		   are one short paragraph, and theirs was being kept. */
+		if ($cut !== null && $cut >= 40) {
+			$text = substr($text, 0, $cut);
+		}
+
+		/* The lone END the wire signs off with, which survives on its own
+		   when the disclaimer was worded in a way none of the markers
+		   caught. Only at the very end, and only on its own line: "END" is
+		   also a word. */
+		$text = preg_replace('~\n\s*END\s*$~', '', rtrim($text));
+
+		return trim($text);
+	}
+
 	function rns_strip_ai_summary($text) {
 
 		$text = (string) $text;

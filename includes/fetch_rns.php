@@ -302,7 +302,11 @@
 				$answer = $fetch($link['url']);
 				if ($answer === null) { continue; }
 
-				$body = rns_strip_ai_summary(rns_body($answer[1]));
+				/* The announcement, then the site's own AI summary out of it,
+				   then the wire's boilerplate off the end. The last of those
+				   is the same several hundred words on every announcement
+				   and is paid for in tokens as well as in space. */
+				$body = rns_strip_rns_footer(rns_strip_ai_summary(rns_body($answer[1])));
 
 				if (mb_strlen($body) < RNS_MIN_BODY_CHARS) {
 					/* Not an announcement. Not stored, so a later run tries
