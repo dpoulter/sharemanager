@@ -228,11 +228,19 @@
 				$answer = $fetch(rns_company_url($candidate), 'listing');
 				if ($answer === null) { break; }
 
-				$found = rns_announcement_links($answer[1]);
+				/* The candidate is what the links have to belong to. A
+				   candidate "answers" only when at least one link on the
+				   page is that company's own: Investegate serves a page of
+				   other companies' announcements for a two letter code
+				   without a dot, and a 200 is not an answer to the question
+				   that was asked. Nothing is remembered unless a candidate
+				   answers, so tomorrow asks again rather than asking the
+				   wrong thing twice. */
+				$found = rns_announcement_links($answer[1], $candidate);
 				if (count($found)) { $links = $found; $tidm = $candidate; break; }
 
 				write_log("fetch_rns", $symbol." as '".$candidate
-				                      ."' listed no announcements");
+				                      ."' listed none of its own announcements");
 			}
 
 			if ($stop !== null) { break; }

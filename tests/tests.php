@@ -6846,6 +6846,99 @@
     check('and stores nothing',
           (int) scalar("select count(*) from rns_announcements") === 0);
 
+    echo "\n--- a 200 is not an answer to the question that was asked ---\n";
+
+    /* The data fault from the first full run. Investegate answers
+       /company/JD with HTTP 200 and a page of OTHER companies'
+       announcements - a two letter code without a dot is not the company
+       anybody meant - so 133 releases from RWE, Daimler Truck, 3i and AIB
+       were stored and partly scored as JD Sports, National Grid, AO and six
+       others. JD Sports showed RWE releases on its quote page.
+
+       Six more (AV, BA, BP, BT-A, SN, UU) kept the dotless code because the
+       page "answered", and collected nothing of their own at all for a
+       week.
+
+       The URL carries each company's own TIDM after the "--", so every link
+       says whose it is. */
+    $rns_foreign = '<html><body><table><tbody>'
+                 . '<tr><td><a href="/announcement/rns/rwe-ag--RWE./quarterly-statement/7101">'
+                 . 'Quarterly Statement</a></td><td>12 Nov 2026 07:00 AM</td></tr>'
+                 . '<tr><td><a href="/announcement/rns/daimler-truck--DTG./capital-markets-day/7102">'
+                 . 'Capital Markets Day</a></td><td>11 Nov 2026 07:00 AM</td></tr>'
+                 . '</tbody></table></body></html>';
+
+    check('a page of other companies\' announcements yields none of ours',
+          rns_announcement_links($rns_foreign, 'JD.') === [],
+          json_encode(array_column(rns_announcement_links($rns_foreign, 'JD.'), 'tidm')));
+    check('and the filter is what does it, not an empty page',
+          count(rns_announcement_links($rns_foreign)) === 2,
+          json_encode(array_column(rns_announcement_links($rns_foreign), 'tidm')));
+
+    /* The company's own links are kept, and only those, when the page holds
+       a mixture - which is what a search result or a sector page looks
+       like. */
+    $rns_mixed = '<html><body><table><tbody>'
+               . '<tr><td><a href="/announcement/rns/rwe-ag--RWE./quarterly-statement/7103">'
+               . 'Quarterly Statement</a></td><td>12 Nov 2026 07:00 AM</td></tr>'
+               . '<tr><td><a href="/announcement/rns/jd-sports--JD./trading-statement/7104">'
+               . 'Trading Statement</a></td><td>12 Nov 2026 07:05 AM</td></tr>'
+               . '</tbody></table></body></html>';
+    $rns_ours = rns_announcement_links($rns_mixed, 'JD.');
+    check('a mixed page keeps ours and drops theirs',
+          count($rns_ours) === 1 && $rns_ours[0]['announcement_id'] === '7104'
+          && $rns_ours[0]['tidm'] === 'JD.',
+          json_encode($rns_ours));
+    check('the match ignores case, because a URL is not careful about it',
+          count(rns_announcement_links($rns_mixed, 'jd.')) === 1);
+
+    /* The share class. This application writes BT's A shares BT-A;
+       Investegate writes them BT.A, so asking for BT-A got a page with none
+       of BT's own announcements and BT collected nothing for a week. */
+    db()->exec("update stock_symbols set tidm=null where symbol in ('RNX','BT-A')");
+    check('a share class is tried in the spelling Investegate uses',
+          in_array('BT.A', rns_tidm_candidates('BT-A'), true),
+          json_encode(rns_tidm_candidates('BT-A')));
+    check('and the trailing dot is not tried on one, because BT-A. is nobody\'s ticker',
+          !in_array('BT-A.', rns_tidm_candidates('BT-A'), true),
+          json_encode(rns_tidm_candidates('BT-A')));
+    check('a short ticker still gets the trailing dot London writes',
+          rns_tidm_candidates('RR') === ['RR', 'RR.'],
+          json_encode(rns_tidm_candidates('RR')));
+
+    /* End to end: a company whose page serves only other companies' links
+       stores nothing and remembers no ticker, so tomorrow asks again rather
+       than asking the wrong thing twice. */
+    db()->exec("truncate rns_announcements");
+    db()->exec("update stock_symbols set tidm=null where symbol='RNX'");
+    db()->exec("update stock_symbols set enabled='N' where exchange='XLON' and symbol<>'RNX'");
+    db()->exec("update stock_symbols set enabled='Y' where symbol='RNX'");
+    file_put_contents("$rns_dir/site_mode", 'foreign');
+    file_put_contents("$rns_dir/requests", '');
+
+    [$rns_fo_out, $rns_fo_rc] = run_script('fetch_rns.php', [], $rns_env);
+
+    check('the job completes when every page is somebody else\'s', $rns_fo_rc === 0,
+          substr($rns_fo_out, -300));
+    check('and stores none of it',
+          (int) scalar("select count(*) from rns_announcements") === 0,
+          json_encode(array_column(rows("select announcement_id, symbol from rns_announcements"),
+                                   'announcement_id')));
+    check('no ticker is remembered, so tomorrow asks again rather than asking wrongly twice',
+          scalar("select tidm from stock_symbols where symbol='RNX'") === null
+          || (string) scalar("select tidm from stock_symbols where symbol='RNX'") === '',
+          var_export(scalar("select tidm from stock_symbols where symbol='RNX'"), true));
+    check('every candidate was tried before giving up on the company',
+          count(array_filter(explode("\n", (string) @file_get_contents("$rns_dir/requests")),
+                fn($l) => strpos($l, '/company/') !== false)) >= 2,
+          (string) @file_get_contents("$rns_dir/requests"));
+    check('and the log says it listed none of its own',
+          (int) scalar("select count(*) from message_log
+                         where message_text like '%none of its own%'") > 0);
+
+    file_put_contents("$rns_dir/site_mode", 'ok');
+    db()->exec("truncate rns_announcements");
+
     echo "\n--- an interrupted backfill finishes ---\n";
 
     /* The window used to be one date for the whole run: a day before the

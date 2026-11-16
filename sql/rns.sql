@@ -245,6 +245,50 @@ select 'Director Declaration', null,
  where not exists (select 1 from rns_skip_rules where pattern = 'Director Declaration');
 
 -- ---------------------------------------------------------------------------
+-- Announcements filed under the wrong company.
+-- ---------------------------------------------------------------------------
+--
+-- Investegate answers /company/JD with HTTP 200 and a page of OTHER
+-- companies' announcements - a two letter code without a dot is not the
+-- company anybody meant - so 133 releases from RWE, Daimler Truck, 3i and
+-- AIB were stored and partly scored as JD Sports, National Grid, AO and six
+-- others. JD Sports showed RWE releases on its quote page.
+--
+-- The code fix is in rns_announcement_links(): a link is kept only when the
+-- TIDM in its URL is the company that was asked for, and a candidate ticker
+-- "answers" only when at least one link is that company's own. Nothing new
+-- can arrive this way.
+--
+-- This query finds rows that arrived before the fix. It REPORTS rather than
+-- repairs, deliberately: the test is "the URL's TIDM differs from the one
+-- stored against the symbol", which is only right while the stored TIDM is
+-- right. Before the fix a wrong ticker could be remembered, and an update
+-- run against one of those would mark the company's own announcements as
+-- foreign and leave the foreign ones alone - exactly backwards. A human
+-- looks, then runs the repair below.
+--
+--   update rns_announcements a, stock_symbols ss
+--      set a.skipped = 'Y',
+--          a.skip_rule = 'wrong company (link from another TIDM)'
+--    where ss.symbol = a.symbol and ss.tidm is not null and ss.tidm <> ''
+--      and upper(substring_index(substring_index(a.url,'--',-1),'/',1)) <> upper(ss.tidm)
+--      and a.skipped = 'N';
+--
+-- Skipped rather than deleted: the brief says keep the data, and a skipped
+-- row is one the page never shows and the scorer never reads.
+
+select a.symbol,
+       upper(ss.tidm) as expected_tidm,
+       upper(substring_index(substring_index(a.url,'--',-1),'/',1)) as url_tidm,
+       count(*) as announcements,
+       sum(a.scored_at is not null) as already_scored
+  from rns_announcements a, stock_symbols ss
+ where ss.symbol = a.symbol and ss.tidm is not null and ss.tidm <> ''
+   and upper(substring_index(substring_index(a.url,'--',-1),'/',1)) <> upper(ss.tidm)
+ group by a.symbol, expected_tidm, url_tidm
+ order by announcements desc;
+
+-- ---------------------------------------------------------------------------
 -- What the run did.
 -- ---------------------------------------------------------------------------
 

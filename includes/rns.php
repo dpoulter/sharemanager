@@ -122,11 +122,33 @@
 	 * Returns one entry per distinct id, in page order - newest first on a
 	 * company page.
 	 */
-	function rns_announcement_links($html) {
+	function rns_announcement_links($html, $tidm = null) {
 
 		$html  = (string) $html;
 		$found = [];
 		$seen  = [];
+
+		/* Which company's announcements these are supposed to be.
+		
+		   Investegate answers /company/JD with HTTP 200 and a page of OTHER
+		   companies' announcements - two letter codes without a dot are not
+		   the company anybody meant - so 133 releases from RWE, Daimler
+		   Truck, 3i and AIB were stored and partly scored as JD Sports,
+		   National Grid, AO and six others. A 200 is not an answer to the
+		   question that was asked.
+		
+		   The URL carries the company's own TIDM after the "--", so every
+		   link says whose it is. Given a TIDM, anything else is dropped.
+		   Null keeps every link, which is what rns_limit_page() wants: there
+		   any announcement link at all means the page served content rather
+		   than a sign-in wall, whoever it belongs to. */
+		$want = ($tidm === null) ? null : strtoupper(trim((string) $tidm));
+		if ($want === '') { $want = null; }
+
+		$belongs = function ($link) use ($want) {
+			if ($want === null) { return true; }
+			return strtoupper((string) $link['tidm']) === $want;
+		};
 
 		/* Table rows first. Non-greedy to the next </tr>, so a nested table
 		   inside a cell ends the row early rather than swallowing the rest
@@ -150,6 +172,7 @@
 					if (isset($seen[$id])) { continue; }
 					$seen[$id] = true;
 					$link = rns_link_from_match($m);
+					if (!$belongs($link)) { continue; }
 					$link['published_at'] = $published;
 					$found[] = $link;
 				}
@@ -192,6 +215,7 @@
 			foreach ($m as $i => $capture) { $flat[$i] = $capture[0]; }
 
 			$link = rns_link_from_match($flat);
+			if (!$belongs($link)) { continue; }
 			$link['published_at'] = rns_date_near($html, (int) $m[0][1]);
 			$found[] = $link;
 		}
@@ -1666,7 +1690,29 @@
 		/* An FMP-suffixed spelling, if one ever reaches here. */
 		if (substr($symbol, -2) === '.L') { $symbol = substr($symbol, 0, -2); }
 
-		return $symbol === '' ? [] : [$symbol, $symbol . '.'];
+		if ($symbol === '') { return []; }
+
+		$candidates = [$symbol];
+
+		/* A share class. This application writes BT's A shares as BT-A;
+		   Investegate writes them BT.A, and asking for BT-A got a page with
+		   none of BT's own announcements on it, so BT collected nothing at
+		   all for a week. One trailing letter after the dash, which is what
+		   a class is - anything longer is a company whose ticker has a dash
+		   in it, and those are not classes. */
+		if (preg_match('~^(.+)-([A-Z])$~', $symbol, $class)) {
+			$candidates[] = $class[1] . '.' . $class[2];
+		}
+
+		/* The trailing dot London uses for a short ticker: RR becomes RR.
+		   Asking for RR without it returns somebody else's page. Not for a
+		   share class - "BT-A." is nobody's ticker, and a candidate that
+		   cannot be right is a request not worth making. */
+		if (strpos($symbol, '.') === false && strpos($symbol, '-') === false) {
+			$candidates[] = $symbol . '.';
+		}
+
+		return array_values(array_unique($candidates));
 	}
 
 	/** Remember the ticker that answered, so tomorrow asks once. */

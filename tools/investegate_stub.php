@@ -12,7 +12,7 @@
  *
  * The control directory decides what it answers:
  *
- *   site_mode       ok | empty | limit | 429 | 500 | login   (default ok)
+ *   site_mode       ok | empty | limit | 429 | 500 | login | foreign  (default ok)
  *   listing.html    the body served for /company/<TIDM>
  *   announcement.html   the body served for /announcement/...
  *   robots.txt      the body served for /robots.txt
@@ -68,6 +68,15 @@ if ($mode === 'login') {
 }
 
 header('Content-Type: text/html');
+
+/* A page of somebody else's announcements, which is what Investegate serves
+   for a two letter code without a dot: /company/JD answers 200 with RWE and
+   Daimler Truck releases on it. The fetcher has to recognise that as "none of
+   this company's own" rather than as an answer. */
+if ($mode === 'foreign' && strpos($path, '/company/') === 0) {
+    print(stub_default_listing('/company/OTHER.'));
+    exit;
+}
 
 if (strpos($path, '/company/') === 0) {
     /* A company page that lists nothing. Not an error: a company can go a
