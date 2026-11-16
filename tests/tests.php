@@ -8985,6 +8985,65 @@ STUB
               && preg_match('/id="news".{0,600}(No regulatory announcements|<table|<a href=)/s', $q) === 1,
               substr($q, max(0, strpos($q, 'id="news"')), 300));
 
+        /* ---------------- a screen's results and its CSV ---------------- */
+
+        /* The file is what somebody keeps. If it says something different
+           from the page it was downloaded from, the page is what they will
+           remember checking and the file is what they will act on. Both are
+           built from the same two functions; this is what holds them there. */
+        $sc_id = (int) scalar("select id from screen where name='Trend following (200-day)'");
+        $sc_page = (string) $curl("$base/screen_list.php?screen=$sc_id&run=1");
+        $sc_csv  = (string) $curl("$base/screen_csv.php?screen=$sc_id");
+
+        $sc_lines = array_values(array_filter(array_map('trim', explode("\n", $sc_csv))));
+        $sc_rows  = [];
+        foreach (array_slice($sc_lines, 1) as $sc_line) {
+            $sc_rows[] = str_getcsv($sc_line);
+        }
+
+        $sc_expected = screen_result_rows(build_screen($sc_id, null),
+                                          screen_indicator_columns($sc_id), screen_asof());
+
+        check('the CSV has a heading row and one row per match',
+              count($sc_lines) === count($sc_expected) + 1,
+              count($sc_lines) . ' lines for ' . count($sc_expected) . ' matches');
+
+        $sc_wrong = [];
+        foreach ($sc_expected as $sc_i => $sc_want) {
+            if (!isset($sc_rows[$sc_i])) { $sc_wrong[] = 'missing row ' . ($sc_i + 1); continue; }
+            $sc_got = $sc_rows[$sc_i];
+            if ((int) $sc_got[0] !== $sc_i + 1)        { $sc_wrong[] = 'rank ' . $sc_got[0]; }
+            if ($sc_got[1] !== $sc_want['symbol'])     { $sc_wrong[] = 'symbol ' . $sc_got[1]; }
+            if ($sc_got[2] !== (string) $sc_want['name']) { $sc_wrong[] = 'name ' . $sc_got[2]; }
+        }
+        check('and the rows are the same shares in the same order as the table',
+              count($sc_wrong) === 0, implode(', ', array_slice($sc_wrong, 0, 5)));
+
+        /* Every symbol the page shows is in the file and the other way
+           round: a filter applied to one and not the other is the failure
+           this is for. */
+        $sc_in_page = [];
+        foreach ($sc_expected as $sc_want) {
+            if (strpos($sc_page, '>' . $sc_want['symbol'] . '<') !== false) {
+                $sc_in_page[] = $sc_want['symbol'];
+            }
+        }
+        check('every share in the file is on the page too',
+              count($sc_in_page) === count($sc_expected),
+              count($sc_in_page) . ' of ' . count($sc_expected));
+
+        /* The file is read by something else, so its numbers are
+           unformatted: no separators, no "p", no percentage sign. */
+        check('the file carries numbers rather than dressed-up ones',
+              strpos($sc_csv, 'p,') === false && strpos($sc_csv, '%,') === false
+              && strpos($sc_csv, "\xc2\xa3") === false,
+              substr($sc_csv, 0, 200));
+        check('and it is sent as a file rather than drawn as a page',
+              stripos((string) shell_exec('curl -s -D - -o /dev/null -m 30 -b '
+                      . escapeshellarg($jar) . ' '
+                      . escapeshellarg("$base/screen_csv.php?screen=$sc_id") . ' 2>/dev/null'),
+                      'Content-Disposition: attachment') !== false);
+
         /* ---------------- The strategy page ---------------- */
 
         /* A strategy with a night behind it, so the page has figures to
