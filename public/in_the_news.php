@@ -23,6 +23,8 @@
 
     require("../includes/config.php");
     require_once("../includes/rns.php");
+    require_once("../includes/news_view.php");
+    require_once("../includes/home_functions.php");
 
     /* Seven trading days, or thirty. Not a free number: a range somebody can
        type is a range somebody can type 100000 into, and this page reads
@@ -44,6 +46,12 @@
 
     $sort   = in_array($_GET['sort'] ?? '', ['date','sentiment','symbol','move'], true)
             ? $_GET['sort'] : 'date';
+
+    /* Routine filings - type "other" and neutral in tone - are the long tail
+       of this page and they were mixed in with the results and the
+       warnings. Hidden unless asked for, with a count, so it is clear what
+       has been left out rather than silently dropped. */
+    $routine = ($_GET['routine'] ?? '') === '1';
     $tone   = in_array($_GET['tone'] ?? '', ['positive','negative'], true)
             ? $_GET['tone'] : '';
     $type   = isset($_GET['type'])   && is_string($_GET['type'])   ? trim($_GET['type'])   : '';
@@ -73,10 +81,25 @@
         $rows[$i]['figures']    = rns_key_figures($row['key_figures']);
     }
 
+    $routine_count = news_routine_count($rows);
+    if (!$routine) { $rows = news_without_routine($rows); }
+
+    /* One entry per company per day. A company that files three times in a
+       morning was three rows of the same company. */
+    $groups = news_group_by_day($rows);
+
+    /* The best and worst boxes carry what the share has done since, as well
+       as the score. The same function the dashboard uses, so the two pages
+       cannot rank the week differently. */
+    $movers = home_news_week($from, $as_of, 5);
+
     render("in_the_news.php", [
         "title"       => "In the news",
-        "rows"        => $rows,
-        "movers"      => rns_movers($from, $as_of),
+        "rows"          => $rows,
+        "groups"        => $groups,
+        "routine"       => $routine,
+        "routine_count" => $routine_count,
+        "movers"      => $movers,
         "types"       => rns_types_present($from, $as_of),
         "markets"     => rns_markets(),
         "days"        => $days,

@@ -8049,6 +8049,85 @@
     if ($sv_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $sv_saved_exchange; }
 
+    echo "\n--- in the news: routine filings and the days they land on ---\n";
+
+    require_once($INCLUDES . '/news_view.php');
+
+    /* Routine is both: type "other" and neutral in tone. A profit warning
+       typed "other" is the most important thing on the page, and a neutral
+       set of results is a scheduled event somebody is waiting for. */
+    check('a neutral "other" is routine',
+          news_is_routine(['ann_type' => 'other', 'sentiment' => 0.05]) === true
+          && news_is_routine(['ann_type' => 'other', 'sentiment' => -0.14]) === true);
+    check('but a strong one is not, whatever it is typed as',
+          news_is_routine(['ann_type' => 'other', 'sentiment' => -0.8]) === false
+          && news_is_routine(['ann_type' => 'other', 'sentiment' => 0.6]) === false);
+    check('and neither is a neutral announcement of any other type',
+          news_is_routine(['ann_type' => 'results', 'sentiment' => 0.0]) === false
+          && news_is_routine(['ann_type' => 'trading update', 'sentiment' => 0.01]) === false);
+    check('the boundary is the neutral band, not exactly nought',
+          news_is_routine(['ann_type' => 'other', 'sentiment' => 0.1499]) === true
+          && news_is_routine(['ann_type' => 'other', 'sentiment' => 0.15]) === false);
+    check('an unscored "other" counts as routine rather than as unknown',
+          news_is_routine(['ann_type' => 'other', 'sentiment' => null]) === true);
+
+    $nv_rows = [
+        ['symbol' => 'AAA', 'company' => 'A PLC', 'published' => '2026-11-13',
+         'ann_type' => 'results',  'sentiment' => 0.2],
+        ['symbol' => 'AAA', 'company' => 'A PLC', 'published' => '2026-11-13',
+         'ann_type' => 'other',    'sentiment' => 0.0],
+        ['symbol' => 'AAA', 'company' => 'A PLC', 'published' => '2026-11-13',
+         'ann_type' => 'warning',  'sentiment' => -0.9],
+        ['symbol' => 'AAA', 'company' => 'A PLC', 'published' => '2026-11-12',
+         'ann_type' => 'results',  'sentiment' => 0.4],
+        ['symbol' => 'BBB', 'company' => 'B PLC', 'published' => '2026-11-13',
+         'ann_type' => 'other',    'sentiment' => 0.01],
+    ];
+
+    check('the routine ones are counted, not silently dropped',
+          news_routine_count($nv_rows) === 2, news_routine_count($nv_rows));
+    check('and taken out leaves the rest alone',
+          count(news_without_routine($nv_rows)) === 3,
+          count(news_without_routine($nv_rows)));
+
+    /* OSB filed three times on 13 November and got three rows of the same
+       company. */
+    $nv_groups = news_group_by_day($nv_rows);
+    check('a company that announced three times on one day is one row',
+          count($nv_groups) === 3, json_encode(array_map(function ($g) {
+              return $g['symbol'] . ' ' . $g['published'] . ' x' . $g['count']; }, $nv_groups)));
+    check('the row says how many there were',
+          $nv_groups[0]['count'] === 3 && $nv_groups[0]['symbol'] === 'AAA');
+    /* Three neutral filings and a profit warning is a profit warning. */
+    check('and shows the strongest of them, not the first',
+          abs((float) $nv_groups[0]['strongest']['sentiment'] + 0.9) < 0.0001,
+          json_encode($nv_groups[0]['strongest']['sentiment']));
+    check('the same company on another day is a separate row',
+          $nv_groups[1]['symbol'] === 'AAA' && $nv_groups[1]['published'] === '2026-11-12'
+          && $nv_groups[1]['count'] === 1);
+    check('and every announcement is still there to open',
+          array_sum(array_column($nv_groups, 'count')) === count($nv_rows));
+
+    /* The order of the rows decides the order of the groups, so a page
+       sorted by sentiment still shows the strongest first. */
+    $nv_sorted = news_group_by_day([$nv_rows[4], $nv_rows[0]]);
+    check('the order the rows arrived in is kept',
+          $nv_sorted[0]['symbol'] === 'BBB' && $nv_sorted[1]['symbol'] === 'AAA');
+
+    $nv_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/in_the_news.php');
+    check('the page offers the routine items rather than hiding that it hid them',
+          strpos($nv_tpl, 'Show routine items') !== false
+          && strpos($nv_tpl, 'Hide routine items') !== false);
+    check('sentiment is the number, the word and the swatch',
+          substr_count($nv_tpl, 'sentiment_html') >= 2
+          && strpos($nv_tpl, 'rns_band(') === false);
+    check('and the best and worst boxes carry the move since as well as the score',
+          strpos($nv_tpl, "price_move") !== false
+          && strpos($nv_tpl, 'Best received') !== false);
+    check('dates are written out rather than printed as stored',
+          strpos($nv_tpl, 'fmt_date_short($group') !== false
+          && strpos($nv_tpl, 'fmt_date($from)') !== false);
+
     echo "\n--- one way to print a number ---\n";
 
     /* Formatting used to live in each template, and the same figure was
@@ -8520,10 +8599,21 @@
         check('whose terms the text is under is on the page',
               stripos($itn, 'Investegate') !== false
               && stripos($itn, 'personal reference') !== false);
+        /* "Best received" rather than "Best news", which is the wording on
+           the dashboard's box of the same five shares. */
         check('the week is summarised both ways',
-              stripos($itn, 'Worst news') !== false && stripos($itn, 'Best news') !== false);
+              stripos($itn, 'Worst received') !== false && stripos($itn, 'Best received') !== false);
+        /* The swatch keeps rns_band()'s colours; its shape moved out of an
+           inline style and into app.css with everything else. */
         check('a sentiment band is drawn rather than a bare number',
-              strpos($itn, 'border-radius:3px;background:#') !== false);
+              strpos($itn, 'sm-swatch') !== false
+              && preg_match('/sm-swatch[^>]*background:#[0-9a-f]{6}/i', $itn) === 1,
+              substr($itn, max(0, strpos($itn, 'sm-swatch') - 40), 200));
+        /* And the number and the band word beside it, which the swatch
+           alone never said. */
+        check('with the score and the word it stands for',
+              preg_match('/[+-]\d\.\d\d (bad|poor|neutral|good|strong)/', $itn) === 1,
+              substr($itn, max(0, strpos($itn, 'sm-swatch') - 40), 300));
 
         /* The filters. Each one is a value the page offered, and the type
            filter is the one that proves the query is parameterised rather
