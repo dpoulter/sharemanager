@@ -1624,6 +1624,22 @@
           $dry['rebalance'] === true && count($dry['targets']) === 5
           && count($dry['lines']) > 0,
           json_encode($dry['lines']));
+
+    /* The plan has to come from the targets held in memory, because a dry
+       run has not written them. Reading strategy_targets instead would find
+       nothing there and plan nothing, and the popup would show an empty
+       table on the one night of the month that matters - so this asks for a
+       buy per target, by symbol, with the table empty behind it. */
+    $dry_targets = array_column($dry['targets'], 'symbol');
+    $dry_buys = [];
+    foreach ($dry['orders'] as $order) {
+        if ($order['side'] === 'BUY') { $dry_buys[] = $order['symbol']; }
+    }
+    sort($dry_targets); sort($dry_buys);
+    check('and the plan is built from those targets, not from the empty table',
+          $dry_buys === $dry_targets
+          && (int)scalar("select count(*) from strategy_targets where strategy=?", [$GOOD]) === 0,
+          json_encode(['targets' => $dry_targets, 'buys' => $dry_buys]));
     check('and writes no targets, no orders, no values and no cash movement',
           (int)scalar("select count(*) from strategy_targets where strategy=?", [$GOOD]) === 0
           && (int)scalar("select count(*) from strategy_orders where strategy=?", [$GOOD]) === 0
