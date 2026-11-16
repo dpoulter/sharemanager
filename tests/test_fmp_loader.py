@@ -143,6 +143,11 @@ def load_loader(query_result):
     fmp.fetch_fx_pair = lambda pair, session=None: None
     fmp.resolve_fx_rate = lambda ccy, get_pair, base="GBP": (None, "stubbed")
     fmp.is_fund_flag = lambda profile: None
+    # The quote currency, which the paper engine needs to size a trade in
+    # pounds. None here: this stub is about what the loader does with the
+    # rows query() returns, and the currency itself is tested in
+    # test_fmp.py against the real helper.
+    fmp.quote_currency = lambda profile: None
 
     def fetch_sections(symbol, session=None):
         calls["sections"] += 1
