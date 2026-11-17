@@ -10,6 +10,10 @@
 	 * which reads.
 	 */
 	function b_money($value, $dp = 2) { return e(fmt_pounds($value, $dp)); }
+	/* The ones that can come out negative - realised profit, and the cash a
+	   fill moved, which is negative on a buy - so the minus sign sits in
+	   front of the figure rather than inside it. */
+	function b_money_signed($value, $dp = 2) { return e(fmt_pounds_signed($value, $dp)); }
 	function b_date($value)  { return e(fmt_date($value)); }
 	function b_when($value) {
 		return $value === null ? e(VIEW_DASH)
@@ -211,7 +215,7 @@
 		Reserved for orders <?= b_money($values['reserved']) ?>,
 		in pies <?= b_money($values['in_pies']) ?>,
 		cost of what is held <?= b_money($values['invested_cost']) ?>,
-		realised <?= b_money($values['realised']) ?>.
+		realised <?= b_money_signed($values['realised']) ?>.
 	</small></p>
 	<?php endif ?>
 
@@ -304,7 +308,7 @@
 					<td class="sm-num"><?= array_key_exists('taxes', $order)
 						? b_money($order['taxes']) : e(VIEW_DASH) ?></td>
 					<td class="sm-num"><?= array_key_exists('net_value', $order)
-						? b_money($order['net_value']) : e(VIEW_DASH) ?></td>
+						? b_money_signed($order['net_value']) : e(VIEW_DASH) ?></td>
 					<td><small><?= e((string) $order['status']) ?></small></td>
 				</tr>
 			<?php endforeach ?>

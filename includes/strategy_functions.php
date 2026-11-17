@@ -2150,6 +2150,111 @@
 	}
 
 	/**
+	 * What the account is worth right now: cash, positions, both priced.
+	 *
+	 * The nightly job writes a valuation into strategy_values and that
+	 * series is the history and the chart. It is not the headline. A
+	 * practice account that bought fifteen shares this morning has a row
+	 * from last night saying GBP5,000 and nothing held, and printing that
+	 * over a table of fifteen holdings is a page arguing with itself.
+	 *
+	 * A position whose price cannot be found is counted at what it cost,
+	 * and said so in "unpriced", rather than dropped: a share suspended
+	 * this morning is still money in the account.
+	 */
+	function strategy_value_now($strategy,$as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		$account=strategy_account($strategy);
+
+		$out=['cash'=>$account===null ? 0.0 : (float)$account['cash'],
+		      'holdings'=>0,'value'=>0.0,'total'=>0.0,'unpriced'=>0,
+		      'prices_as_of'=>$as_of,'last_fill'=>null,'prices_behind'=>false];
+
+		foreach (query("select symbol, exchange, quantity, avg_price
+		                  from strategy_positions
+		                 where strategy=? and quantity>0",$strategy) as $row) {
+
+			$quantity=(float)$row['quantity'];
+			$price=strategy_price_asof($row['symbol'],(string)$row['exchange'],$as_of);
+
+			$out['holdings']++;
+			if ($price===null){
+				$out['unpriced']++;
+				$out['value'] += (float)$row['avg_price']*$quantity;
+				continue;
+			}
+			$out['value'] += $price*$quantity;
+		}
+
+		$out['total']=$out['cash']+$out['value'];
+
+		/* Whether the prices are behind the trading. An order that filled
+		   at eleven this morning is in the positions above, but the last
+		   close in historical_prices is yesterday's, so the value is
+		   yesterday's prices on today's book and the page should say which
+		   day it is quoting. */
+		$fills=query("select max(fill_date) d from strategy_orders
+		               where strategy=? and status='FILLED'",$strategy);
+
+		if (count($fills)&&$fills[0]['d']!==null){
+			$out['last_fill']=substr((string)$fills[0]['d'],0,10);
+			$out['prices_behind']=($out['last_fill']>$as_of);
+		}
+
+		return $out;
+	}
+
+	/**
+	 * The orders that have not finished: planned, waiting to be sent, sent.
+	 *
+	 * A paper account plans tonight and fills at tomorrow's close, so
+	 * between the two the page showed "nothing held" over an account that
+	 * had just decided to buy fifteen shares. These are those orders.
+	 */
+	function strategy_pending_orders($strategy,$limit=200) {
+
+		$limit=max(1,min(500,(int)$limit));
+
+		$out=[];
+		foreach (query("select o.client_order_id, o.as_of_date, o.symbol, o.exchange, o.side,
+		                       o.quantity, o.status, o.note, o.broker, o.broker_order_id,
+		                       o.sent_at, ss.name
+		                  from strategy_orders o
+		                  left join stock_symbols ss on ss.symbol=o.symbol
+		                                            and ss.exchange=o.exchange
+		                 where o.strategy=? and o.status in ('PENDING','SENT','UNKNOWN')
+		                 order by o.side desc, o.symbol asc
+		                 limit ".$limit,$strategy) as $row) {
+			$out[]=$row;
+		}
+		return $out;
+	}
+
+	/**
+	 * What an outstanding order is waiting for, in words.
+	 *
+	 * The status column holds PENDING for two different waits: a paper
+	 * order waits for tomorrow's close, and a broker order waits for the
+	 * sending job. A reader cannot tell those apart from the word PENDING.
+	 */
+	function strategy_order_wait($status,$broker=null) {
+
+		$status=strtoupper(trim((string)$status));
+
+		if ($status==='SENT'){ return 'Sent, waiting to fill'; }
+		if ($status==='UNKNOWN'){ return 'Sent, no answer seen yet'; }
+		if ($status==='PENDING'){
+			return (trim((string)$broker)!=='')
+			     ? 'Waiting to be sent to the broker'
+			     : "Waiting to fill at tonight's close";
+		}
+		return $status;
+	}
+
+	/**
 	 * Everything the page shows at the top of a strategy's card.
 	 *
 	 * The benchmark is read over the strategy's own period rather than over
@@ -2158,13 +2263,23 @@
 	 * make a comparison flatter or damn a strategy for a month it was not
 	 * invested in.
 	 */
-	function strategy_card($strategy,$exchange=null) {
+	function strategy_card($strategy,$exchange=null,$as_of=null) {
 
 		$exchange=($exchange===null) ? session_exchange() : $exchange;
+
+		/* The date the live figures are priced at: the last close in the
+		   data. Not today - on a Sunday there is no close - and not the
+		   last night the valuation job ran, which is the thing this card
+		   stopped trusting. */
+		if ($as_of===null){
+			$as_of=last_trading_date($exchange);
+			if ($as_of===null){ $as_of=date('Y-m-d'); }
+		}
 
 		$rules=strategy_rules($strategy);
 		$account=strategy_account($strategy);
 		$series=strategy_series($strategy);
+		$now=strategy_value_now($strategy,$as_of,$exchange);
 
 		$card=['strategy'=>$strategy,
 		       'rules'=>$rules,
@@ -2177,10 +2292,21 @@
 		               : strategy_mode_rules($account['mode'])['broker'],
 		       'halted'=>$account===null ? 'N' : $account['halted'],
 		       'halt_reason'=>$account===null ? null : $account['halt_reason'],
-		       'cash'=>$account===null ? 0.0 : (float)$account['cash'],
+		       /* Live, not last night's. The nightly valuation is history
+		          and the chart; what the account holds and what is in it is
+		          read from strategy_accounts and strategy_positions every
+		          time this card is built. The practice account showed
+		          GBP5,000 and nought holdings over a table of fifteen
+		          because these three lines came out of strategy_values. */
+		       'cash'=>$now['cash'],
 		       'screen'=>null,
 		       'start'=>null,'as_of'=>null,
-		       'total'=>null,'holdings'=>0,
+		       'total'=>$now['total'],'holdings'=>$now['holdings'],
+		       'held_value'=>$now['value'],
+		       'unpriced'=>$now['unpriced'],
+		       'prices_as_of'=>$now['prices_as_of'],
+		       'prices_behind'=>$now['prices_behind'],
+		       'last_fill'=>$now['last_fill'],
 		       'return'=>null,'benchmark_return'=>null,'drawdown'=>null,
 		       'last_rebalance'=>strategy_last_rebalance($strategy),
 		       'next_rebalance'=>null,
@@ -2199,15 +2325,14 @@
 
 		$card['start']=$first['date'];
 		$card['as_of']=$last['date'];
-		$card['total']=$last['total'];
-		$card['holdings']=$last['holdings'];
-		$card['cash']=$last['cash'];
 		$card['stale']=$last['note'];
 		$card['drawdown']=strategy_drawdown($series);
 		$card['next_rebalance']=strategy_next_rebalance($rules,$last['date']);
 
-		if ($first['total']>0){
-			$card['return']=($last['total']/$first['total'])-1;
+		/* The return is measured to the live total as well, so the
+		   headline value and the return beside it are the same money. */
+		if ($first['total']>0&&$card['total']!==null){
+			$card['return']=($card['total']/$first['total'])-1;
 		}
 
 		/* The benchmark over the same two dates. The first row on or after
@@ -2277,8 +2402,11 @@
 			         'gain'=>($value===null) ? null : $value-$cost,
 			         'gain_percent'=>($value===null||$cost<=0) ? null : (($value/$cost)-1),
 			         'held_since'=>$held_since,
+			         /* To today, and never below nought. Measured to the as of
+			            date it read -1 on the morning of a fill: the shares were
+			            bought today and the last close in the data was yesterday. */
 			         'days_held'=>$held_since===null ? null
-			                     : (int)floor((strtotime($as_of)-strtotime($held_since))/86400),
+			                     : max(0,(int)floor((strtotime(date('Y-m-d'))-strtotime($held_since))/86400)),
 			         'stale'=>strategy_price_stale($row['symbol'],(string)$row['exchange'],$as_of)];
 
 			if ($value!==null){ $total += $value; }

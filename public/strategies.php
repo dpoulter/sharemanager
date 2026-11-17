@@ -73,8 +73,12 @@
 
     $cards = [];
     foreach ($strategies as $strategy) {
-        $card = strategy_card($strategy, $exchange);
+        $card = strategy_card($strategy, $exchange, $as_of);
         $card['holdings_rows'] = strategy_holdings($strategy, $as_of, $exchange);
+        /* The orders that have not finished. Between the night a rebalance
+           is planned and the close it fills at, the card had nothing to
+           show and said "nothing held", which is true and useless. */
+        $card['pending']       = strategy_pending_orders($strategy);
         $card['trades']        = strategy_trades($strategy, 50);
         $card['costs']         = strategy_costs_paid($strategy);
         /* The backtests of the same rules, newest first, shown under the

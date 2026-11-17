@@ -3813,6 +3813,172 @@
                  'shares(trade.quantity)') !== false);
     s_drop($S2H);
 
+    /* ------------------------------------------------------------------ */
+    echo "\n--- the strategies page: the figures at the top of a card ---\n";
+
+    /* The practice card said Value GBP5,000, Cash GBP5,000, Holdings 0 over
+       a table of fifteen holdings. Both halves were reading real data: the
+       table from strategy_positions, the headline from last night's row in
+       strategy_values, written before the account bought anything. The
+       stored series is the history and the chart; the headline is now. */
+    $SP = 'test_card_live';
+    s_drop($SP);
+    s_rules($SP, ['holdings' => 15]);
+    s_reset($SP, 71.31, 'Y', 'T212_DEMO');
+
+    $sp_asof = asof_date();
+    $sp_prev = (string) scalar("select distinct date from historical_prices
+                                 where exchange='XLON' and date<? order by date desc limit 1",
+                               [$sp_asof]);
+
+    /* Last night's valuation, from before the build: all cash, nothing held. */
+    db()->prepare("insert into strategy_values (strategy,date,cash,holdings_value,total,holdings)
+                   values (?,?,5000,0,5000,0)")->execute([$SP, $sp_prev]);
+
+    /* And what it holds this morning: fifteen positions and GBP71.31 left. */
+    $sp_symbols = ['AAA','BBB','CCC','DDD','EEE','FFF','GGG','HHH','III','JJJ','KKK','LLL'];
+    foreach ($sp_symbols as $sp_symbol) {
+        db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                       values (?,?,'XLON',10.5,3.0000,now())")->execute([$SP, $sp_symbol]);
+    }
+
+    $sp_card = strategy_card($SP, 'XLON', $sp_asof);
+
+    $sp_value = 0.0;
+    foreach ($sp_symbols as $sp_symbol) {
+        $sp_value += 10.5 * (float) strategy_price_asof($sp_symbol, 'XLON', $sp_asof);
+    }
+
+    check('the card counts what the account holds now, not what it held last night',
+          (int) $sp_card['holdings'] === count($sp_symbols),
+          json_encode([$sp_card['holdings'], count($sp_symbols)]));
+    check('and the cash is the account\'s cash, not the stored valuation\'s',
+          abs((float) $sp_card['cash'] - 71.31) < 0.005,
+          json_encode($sp_card['cash']));
+    check('and the value is that cash plus the holdings at the last close',
+          abs((float) $sp_card['total'] - (71.31 + $sp_value)) < 0.05,
+          json_encode([$sp_card['total'], 71.31 + $sp_value]));
+    check('while the stored series is still there for the chart',
+          (int) $sp_card['points'] === 1 && $sp_card['start'] === $sp_prev,
+          json_encode([$sp_card['points'], $sp_card['start'], $sp_prev]));
+
+    /* The prices the value was struck at. A fill this morning is in the
+       book before this evening's close exists, so the page has to say
+       which day it is quoting rather than imply the value is live. */
+    check('prices older than the latest fill are not flagged when there is no fill',
+          $sp_card['prices_behind'] === false, json_encode($sp_card['prices_behind']));
+
+    db()->prepare("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,exchange,
+                                                side,quantity,status,fill_date,fill_price,
+                                                consideration,total_cost,created_at,filled_at,note)
+                   values (?,?,?,'AAA','XLON','BUY',10.5,'FILLED',?,3.0,31.5,-31.5,now(),now(),'build')")
+        ->execute([$SP . '-f1', $SP, $sp_asof, date('Y-m-d')]);
+
+    $sp_card2 = strategy_card($SP, 'XLON', $sp_prev);
+    check('but a fill newer than the last close is',
+          $sp_card2['prices_behind'] === true && $sp_card2['prices_as_of'] === $sp_prev,
+          json_encode([$sp_card2['prices_behind'], $sp_card2['prices_as_of'],
+                       $sp_card2['last_fill']]));
+
+    /* Days held. It read -1 on every row of the practice card: the shares
+       were bought this morning and the page values at the last close, which
+       was yesterday, so the subtraction ran backwards. */
+    $sp_held = strategy_holdings($SP, $sp_prev, 'XLON');
+    $sp_aaa = null;
+    foreach ($sp_held as $sp_row) { if ($sp_row['symbol'] === 'AAA') { $sp_aaa = $sp_row; } }
+    check('a share bought today has been held nought days, not minus one',
+          $sp_aaa !== null && (int) $sp_aaa['days_held'] === 0,
+          json_encode($sp_aaa === null ? null : $sp_aaa['days_held']));
+
+    $sp_negative = [];
+    foreach ($sp_held as $sp_row) {
+        if ($sp_row['days_held'] !== null && (int) $sp_row['days_held'] < 0) {
+            $sp_negative[] = $sp_row['symbol'];
+        }
+    }
+    check('and no row anywhere counts a negative number of days',
+          count($sp_negative) === 0, implode(', ', $sp_negative));
+
+    /* The orders that have not filled. A paper card with an empty book and
+       fifteen orders planned for tonight said "Nothing held", full stop. */
+    $SPP = 'test_card_pending';
+    s_drop($SPP);
+    s_rules($SPP, ['holdings' => 15]);
+    s_reset($SPP, 100000, 'Y', 'PAPER');
+    foreach ($sp_symbols as $sp_i => $sp_symbol) {
+        db()->prepare("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,
+                                                    exchange,side,quantity,status,created_at,note)
+                       values (?,?,?,?,'XLON','BUY',100,'PENDING',now(),'build')")
+            ->execute([$SPP . '-' . $sp_i, $SPP, $sp_asof, $sp_symbol]);
+    }
+    /* One that is finished, and one that was refused: neither is waiting. */
+    db()->prepare("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,exchange,
+                                                side,quantity,status,fill_date,fill_price,created_at)
+                   values (?,?,?,'AAA','XLON','SELL',5,'FILLED',?,3.0,now())")
+        ->execute([$SPP . '-done', $SPP, $sp_asof, $sp_asof]);
+    db()->prepare("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,exchange,
+                                                side,quantity,status,created_at)
+                   values (?,?,?,'BBB','XLON','BUY',5,'REJECTED',now())")
+        ->execute([$SPP . '-no', $SPP, $sp_asof]);
+
+    $sp_pending = strategy_pending_orders($SPP);
+    check('the orders waiting to fill are the ones that have not finished',
+          count($sp_pending) === count($sp_symbols),
+          count($sp_pending) . ' of ' . count($sp_symbols));
+    check('and a paper order says it is waiting for tonight\'s close',
+          strategy_order_wait('PENDING', null) === "Waiting to fill at tonight's close",
+          strategy_order_wait('PENDING', null));
+    check('while a broker order says what it is really waiting for',
+          strategy_order_wait('PENDING', BROKER_T212) === 'Waiting to be sent to the broker'
+          && strategy_order_wait('SENT', BROKER_T212) === 'Sent, waiting to fill'
+          && strategy_order_wait('UNKNOWN', BROKER_T212) === 'Sent, no answer seen yet',
+          json_encode([strategy_order_wait('PENDING', BROKER_T212),
+                       strategy_order_wait('SENT', BROKER_T212),
+                       strategy_order_wait('UNKNOWN', BROKER_T212)]));
+    check('the page has somewhere to show them',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php'),
+                 'strategy_order_wait(') !== false);
+
+    /* Quantities to what the account can deal in. 583.5, 67.1 and 66.63 in
+       one column are the same number written three ways. */
+    check('a fractional account shows two places on every row',
+          fmt_shares(583.5, 2, false) === '583.50'
+          && fmt_shares(67.1, 2, false) === '67.10'
+          && fmt_shares(66.625, 2, false) === '66.63',
+          json_encode([fmt_shares(583.5, 2, false), fmt_shares(67.1, 2, false),
+                       fmt_shares(66.625, 2, false)]));
+    check('and a whole-share account shows none',
+          fmt_shares(750, 0, false) === '750' && fmt_shares(1750, 0, false) === '1,750',
+          json_encode([fmt_shares(750, 0, false), fmt_shares(1750, 0, false)]));
+    check('the mode decides which, rather than the page',
+          (int) strategy_mode_rules('T212_DEMO')['decimals'] === 2
+          && (int) strategy_mode_rules('PAPER')['decimals'] === 0);
+
+    /* Signed money. The gain column read "GBP-4 (-1.1%)": the minus sign on
+       the percentage is in front, the one on the money is in the middle. */
+    check('a loss is written with the sign in front of the figure',
+          fmt_pounds_signed(-4, 0) === '-' . "\xc2\xa3" . '4'
+          && strpos(fmt_pounds_signed(-4, 0), "\xc2\xa3-") === false,
+          fmt_pounds_signed(-4, 0));
+    check('a gain takes a plus and nought takes neither',
+          fmt_pounds_signed(4, 0) === '+' . "\xc2\xa3" . '4'
+          && fmt_pounds_signed(0, 0) === "\xc2\xa3" . '0'
+          && fmt_pounds_signed(null) === VIEW_DASH,
+          json_encode([fmt_pounds_signed(4, 0), fmt_pounds_signed(0, 0)]));
+    check('and the strategies page writes its gains through it',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php'),
+                 'fmt_pounds_signed(') !== false);
+
+    /* The hand-typed note is not a subtitle any more. It said "Above the
+       200 day average, weekly" on a strategy that rebalances monthly, over
+       a generated sentence that said monthly. */
+    $sp_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php');
+    check('the free-text note is no longer printed over the generated rules',
+          strpos($sp_tpl, "\$card['note']") === false, 'still there');
+
+    s_drop($SP);
+    s_drop($SPP);
+
     echo "\n--- stage 2: an order goes to the demo account and nowhere else ---\n";
 
     /* The stub again, this time answering the one path that takes a POST.
@@ -3910,7 +4076,10 @@
        overnight fills at whatever the open does. */
     $s2_night_id = $s2_order('BUY', 0.44);
     $s2_reset();
-    [$s2_night_out] = run_script('send_broker_orders.php', [$S2B],
+    /* --any-time, because what is under test here is the environment
+       guard, not the clock: without it the job stops at "London is shut"
+       and the check passes or fails by the hour the suite is run at. */
+    [$s2_night_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'],
         ['SM_T212_ENV' => 'live-read', 'SM_T212_API_KEY' => 'x', 'SM_T212_API_SECRET' => 'y',
          'SM_T212_BASE_URL' => $s2_base]);
     check('with the environment on live-read nothing is sent at all',
@@ -3931,7 +4100,7 @@
           json_encode($s2_live_try));
 
     /* And it refuses the live host however the environment is set. */
-    [$s2_host_out] = run_script('send_broker_orders.php', [$S2B],
+    [$s2_host_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'],
         ['SM_T212_ENV' => 'demo', 'SM_T212_DEMO_API_KEY' => $s2_key,
          'SM_T212_DEMO_API_SECRET' => 'y', 'SM_T212_BASE_URL' => $s2_base,
          'SM_T212_DEMO_BASE_URL' => 'https://live.trading212.com/api/v0',
@@ -11820,6 +11989,24 @@
         check('no page prints a number with four or more decimal places',
               count($raw) === 0, implode("\n          ", $raw));
 
+        /* ---------------- the sign goes in front ---------------- */
+
+        /* "GBP-4 (-1.1%)" was the gain column on the strategies page: the
+           percentage puts its minus sign where a reader looks for it and
+           the money buries it in the middle of the figure. Every quantity
+           that can come out negative - a gain, a realised profit, a cash
+           movement - goes through fmt_pounds_signed(), and this is the
+           check that says so from the outside. */
+        $signs = [];
+        foreach ($pages as $page) {
+            $text = $visible($curl("$base/$page"));
+            if (preg_match_all('/\x{00A3}\s*-\s*[\d.]+/u', $text, $hits)) {
+                $signs[] = $page . ': ' . implode(' ', array_slice(array_unique($hits[0]), 0, 5));
+            }
+        }
+        check('no page writes a negative amount as a pound sign then a minus',
+              count($signs) === 0, implode("\n          ", $signs));
+
         /* ---------------- "In the news" ---------------- */
 
         /* Announcement text is Investegate's, kept under terms that let a
@@ -12265,11 +12452,21 @@ STUB
         $sp_asof = asof_date();
         $sp_prev = scalar("select distinct date from historical_prices where exchange='XLON'
                             and date<? order by date desc limit 1", [$sp_asof]);
-        $sp_price = (float) scalar("select price from historical_prices
-                                     where symbol='AAA' and exchange='XLON' and date=?", [$sp_asof]);
+        /* In pounds, through the application's own conversion rather than a
+           second copy of it: historical_prices holds pence and the engine
+           works in pounds, and a fixture that mixes the two prices the
+           holding a hundred times over.
+
+           The cash is then whatever makes the account worth GBP105,000
+           today, because the headline figures are read from the account and
+           the positions now rather than from last night's valuation. The
+           series below still says 100,000 the night before, so the return
+           on the page is +5.0% either way. */
+        $sp_price = (float) strategy_price_asof('AAA', 'XLON', $sp_asof);
+        $sp_cash  = 105000 - 1000 * $sp_price;
         db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at,note)
-                       values (?,25000,'GBP','PAPER','Y',now(),?)")
-          ->execute([$sp, 'Paper. <script>alert(1)</script> note.']);
+                       values (?,?,'GBP','PAPER','Y',now(),?)")
+          ->execute([$sp, $sp_cash, 'Paper. <script>alert(1)</script> note.']);
         db()->prepare("insert into strategy_rules (strategy,selection,score_indicator,rank_by,holdings,
                                                    rebalance,exit_rules,exclude_funds,updated_at)
                        values (?,'score','momentum_score','momentum_score',5,'weekly','below_ma200_2d','Y',now())")
@@ -12286,11 +12483,18 @@ STUB
                      -($sp_price * 1000 * 1.0075 + 5.95)]);
         db()->prepare("insert into strategy_targets (strategy,as_of_date,symbol,exchange,target_weight,created_at)
                        values (?,?,'AAA','XLON',0.2,now())")->execute([$sp, $sp_prev]);
+        /* And one order that has not filled, so the block that lists them is
+           rendered by a real request rather than only read as source. */
+        db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,
+                          status,created_at,note)
+                       values (?,?,?,'BBB','XLON','BUY',250,'PENDING',now(),'rebalance')")
+          ->execute([$sp . '-page-2', $sp, $sp_asof]);
         $sp_values = db()->prepare("insert into strategy_values
                                       (strategy,date,cash,holdings_value,total,holdings)
                                     values (?,?,?,?,?,?)");
-        $sp_values->execute([$sp, $sp_prev, 25000, 75000, 100000, 1]);
-        $sp_values->execute([$sp, $sp_asof, 25000, 80000, 105000, 1]);
+        $sp_values->execute([$sp, $sp_prev, $sp_cash, 100000 - $sp_cash, 100000, 1]);
+        $sp_values->execute([$sp, $sp_asof, $sp_cash, 105000 - $sp_cash, 105000, 1]);
         db()->prepare("delete from strategy_values where strategy=?")->execute([STRATEGY_BENCHMARK]);
         $sp_values->execute([STRATEGY_BENCHMARK, $sp_prev, 0, 0, 100, 12]);
         $sp_values->execute([STRATEGY_BENCHMARK, $sp_asof, 0, 0, 102, 12]);
@@ -12313,6 +12517,13 @@ STUB
               && strpos($sp_page, '1,000') !== false);
         check('the trade says why it happened',
               strpos($sp_page, 'rebalance') !== false);
+        /* The card used to say "Nothing held" over an account that had just
+           decided to buy fifteen shares, because an order between the plan
+           and the fill is on neither the holdings table nor the trades. */
+        check('an order that has not filled is listed with what it waits for',
+              stripos($sp_page, 'waiting to fill at tonight') !== false
+              && preg_match('/quote\.php\?symbol=BBB/', $sp_page) === 1,
+              substr($sp_page, max(0, stripos($sp_page, 'waiting to fill')) - 200, 500));
         check('the dealing costs paid are on the page',
               stripos($sp_page, 'Dealing costs paid') !== false);
         check('it says in plain words that no real money is at risk',
@@ -12325,9 +12536,16 @@ STUB
               stripos($sp_page, 'equal weighted') !== false
               && stripos($sp_page, 'leaves out the companies that have left the index') !== false,
               substr($sp_page, max(0, stripos($sp_page, 'benchmark')), 400));
-        check('markup in a strategy note is shown, not run',
+        /* The hand-typed note was printed as the card's subtitle, under a
+           generated sentence that said the same thing from the rules. The
+           two drifted - "weekly" over a strategy that rebalances monthly -
+           and the typed one won the reader. It is off the page until the
+           Rules tab has somewhere to put it, and the check that its markup
+           is escaped comes back with it there. */
+        check('the hand-typed note is not printed over the generated rules',
               strpos($sp_page, '<script>alert(1)</script>') === false
-              && strpos($sp_page, '&lt;script&gt;alert(1)&lt;/script&gt;') !== false);
+              && strpos($sp_page, '&lt;script&gt;alert(1)&lt;/script&gt;') === false,
+              substr($sp_page, max(0, strpos($sp_page, 'alert(1)') - 200), 400));
         check('the rebalance dates are shown',
               stripos($sp_page, 'Last rebalance') !== false
               && stripos($sp_page, 'Next on or after') !== false);

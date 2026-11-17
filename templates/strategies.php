@@ -24,6 +24,17 @@
 	   which is why they go through fmt_percent_of() and the figures on the
 	   dashboard, which are already percentages, do not. */
 	function s_money($value, $decimals = 0) { return e(fmt_pounds($value, $decimals)); }
+	/* Anything that can come out negative - a gain, a difference - goes
+	   through this one, so a loss reads "-GBP4" and not "GBP-4" with the
+	   minus sign buried in the middle of the figure. */
+	function s_money_signed($value, $decimals = 0) { return e(fmt_pounds_signed($value, $decimals)); }
+	/* Quantities to what the account can actually deal in: a fractional
+	   account shows two places on every row, a whole-share account none. */
+	function s_shares($value, $card) {
+		$dp = ($card['mode'] === null) ? 0
+		    : (int) strategy_mode_rules($card['mode'])['decimals'];
+		return e(fmt_shares($value, $dp, false));
+	}
 	function s_percent($value, $decimals = 1) { return e(fmt_percent_of($value, $decimals)); }
 	function s_colour($value) {
 		return $value === null ? '' : ' ' . move_class($value);
@@ -164,12 +175,20 @@
 						No exits between rebalances.
 					<?php endif ?>
 				<?php endif ?>
-				<?php if ($card['note'] !== null): ?>
-					<br><small><?= e($card['note']) ?></small>
-				<?php endif ?>
+				<?php /* The free-text note used to be printed here as a
+				         subtitle. It said "Above the 200 day average, weekly"
+				         on a strategy that rebalances monthly: it is typed by
+				         hand and the generated sentences above it are read
+				         from the rules, so the two drift apart and the hand
+				         typed one wins the reader. It belongs with the rules,
+				         not over them. */ ?>
 			</p>
 
-			<?php if ($card['start'] === null): ?>
+			<?php /* "Not started" only when there is genuinely nothing: no
+			         valuation history and nothing held. An account that
+			         bought this morning has no night behind it yet and is
+			         very much started. */ ?>
+			<?php if ($card['start'] === null && (int) $card['holdings'] === 0): ?>
 				<?php /* A row of dashes reads as a strategy that lost
 				         everything rather than one that has not started. */ ?>
 				<div class="sm-strip mb-3">
@@ -195,9 +214,22 @@
 				<div class="col">
 					<div class="text-muted"><small>Value</small></div>
 					<div class="h5 mb-0"><?= s_money($card['total'], 0) ?></div>
+					<?php /* Cash plus holdings at the last close. When a fill is
+					         newer than that close - an order filled at the
+					         market this morning, and the last close is
+					         yesterday's - the value is today's book at
+					         yesterday's prices, so say which day it is. */ ?>
+					<?php if (!empty($card['prices_behind'])): ?>
+						<div class="text-muted"><small>prices <?= s_date($card['prices_as_of']) ?></small></div>
+					<?php endif ?>
+					<?php if (!empty($card['unpriced'])): ?>
+						<div class="text-muted"><small><?= (int) $card['unpriced'] ?>
+							at cost, no price</small></div>
+					<?php endif ?>
 				</div>
 				<div class="col">
-					<div class="text-muted"><small>Return since <?= s_date($card['start']) ?></small></div>
+					<div class="text-muted"><small><?= $card['start'] === null
+						? 'Return' : 'Return since ' . s_date($card['start']) ?></small></div>
 					<div class="h5 mb-0<?= s_colour($card['return']) ?>"><?= s_percent($card['return']) ?></div>
 				</div>
 				<div class="col">
@@ -260,7 +292,9 @@
 			<!-- Holdings -->
 			<h6>Holdings</h6>
 			<?php if (!count($card['holdings_rows'])): ?>
-				<p class="text-muted">Nothing held. <?= $card['enabled'] === 'Y' ? 'The next rebalance will build the book.' : '' ?></p>
+				<p class="text-muted">Nothing held.
+					<?= $card['enabled'] === 'Y' && !count($card['pending'])
+					    ? 'The next rebalance will build the book.' : '' ?></p>
 			<?php else: ?>
 			<div class="table-responsive mb-3">
 				<table class="table table-sm table-striped">
@@ -284,17 +318,68 @@
 						<tr>
 							<td><a href="quote.php?symbol=<?= urlencode($holding['symbol']) ?>"><?= htmlspecialchars($holding['symbol']) ?></a></td>
 							<td><?= htmlspecialchars((string) $holding['name']) ?><?= $holding['stale'] ? ' <span class="badge bg-warning text-dark">not trading</span>' : '' ?></td>
-							<td class="sm-num"><?= e(fmt_shares($holding['quantity'])) ?></td>
+							<td class="sm-num"><?= s_shares($holding['quantity'], $card) ?></td>
 							<td class="sm-num"><?= e(fmt_pounds($holding['avg_price'])) ?></td>
 							<td class="sm-num"><?= e(fmt_pounds($holding['price'])) ?></td>
 							<td class="sm-num"><?= s_money($holding['value'], 0) ?></td>
 							<td class="sm-num"><?= $holding['weight'] === null
 								? VIEW_DASH : e(fmt_pct($holding['weight'] * 100)) ?></td>
 							<td class="text-end<?= s_colour($holding['gain']) ?>">
-								<?= s_money($holding['gain'], 0) ?>
+								<?= s_money_signed($holding['gain'], 0) ?>
 								<?= $holding['gain_percent'] === null ? '' : '(' . s_percent($holding['gain_percent']) . ')' ?>
 							</td>
 							<td class="text-end"><?= $holding['days_held'] === null ? '&ndash;' : (int) $holding['days_held'] ?></td>
+						</tr>
+					<?php endforeach ?>
+					</tbody>
+				</table>
+			</div>
+			<?php endif ?>
+
+			<?php /* The orders that have not finished. A card with an empty
+			         book and fifteen orders planned for tonight said only
+			         "nothing held", which told a reader the strategy had
+			         done nothing when it had decided everything. */ ?>
+			<?php if (count($card['pending'])): ?>
+			<?php /* Counted by what each one is waiting for, not by the first
+			         one: a run that sent nine of fifteen has two different
+			         waits in the same list, and one sentence over both of
+			         them would be wrong about six orders. */
+			   $waits = [];
+			   foreach ($card['pending'] as $order) {
+			       $wait = strategy_order_wait($order['status'], $order['broker']);
+			       $waits[$wait] = ($waits[$wait] ?? 0) + 1;
+			   } ?>
+			<p class="mb-1">
+				<?php $first_wait = true; foreach ($waits as $wait => $count): ?>
+					<?= $first_wait ? '' : ' ' ?>
+					<strong><?= e(fmt_quantity($count)) ?></strong>
+					order<?= $count === 1 ? ' is' : 's are' ?>
+					<?= e(strtolower($wait)) ?>.
+					<?php $first_wait = false; ?>
+				<?php endforeach ?>
+			</p>
+			<div class="table-responsive mb-3">
+				<table class="table table-sm table-striped">
+					<thead>
+						<tr>
+							<th>Side</th><th>Share</th><th></th>
+							<th class="text-end">Quantity</th>
+							<th>Waiting for</th>
+						</tr>
+					</thead>
+					<tbody>
+					<?php foreach ($card['pending'] as $order): ?>
+						<tr>
+							<td><?= htmlspecialchars((string) $order['side']) ?></td>
+							<td><a href="quote.php?symbol=<?= urlencode($order['symbol']) ?>"><?= htmlspecialchars($order['symbol']) ?></a></td>
+							<td><?= htmlspecialchars((string) $order['name']) ?></td>
+							<td class="sm-num"><?= s_shares($order['quantity'], $card) ?></td>
+							<td><?= e(strategy_order_wait($order['status'], $order['broker'])) ?>
+								<?php if (!empty($order['broker'])): ?>
+									<?= status_badge_html('due', 'DEMO') ?>
+								<?php endif ?>
+							</td>
 						</tr>
 					<?php endforeach ?>
 					</tbody>
@@ -407,7 +492,7 @@
 								<td style="white-space: nowrap"><?= s_date($trade['fill_date'] === null ? $trade['as_of_date'] : $trade['fill_date']) ?></td>
 								<td><?= htmlspecialchars((string) $trade['side']) ?></td>
 								<td><a href="quote.php?symbol=<?= urlencode($trade['symbol']) ?>"><?= htmlspecialchars($trade['symbol']) ?></a></td>
-								<td class="sm-num"><?= e(fmt_shares($trade['quantity'])) ?></td>
+								<td class="sm-num"><?= s_shares($trade['quantity'], $card) ?></td>
 								<td class="sm-num"><?= e(fmt_pounds($trade['fill_price'])) ?></td>
 								<td class="text-end"><?= $trade['status'] === 'FILLED'
 									? s_money((float) $trade['commission'] + (float) $trade['stamp_duty'] + (float) $trade['slippage'], 2)

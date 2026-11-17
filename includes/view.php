@@ -72,10 +72,19 @@
 		return "\xc2\xa3" . number_format((float) $pounds, $dp);
 	}
 
-	/** Money in pounds, signed, so a loss reads as one: -GBP 420.00 */
+	/**
+	 * Money in pounds, signed, so a loss reads as one: -GBP 420.00
+	 *
+	 * The sign goes in front of the sign of currency, where a reader looks
+	 * for it. fmt_pounds() on a negative number writes "GBP -420.00", which
+	 * is the minus sign hidden in the middle of the figure, so every
+	 * quantity that can come out negative - a gain, a difference, a cash
+	 * movement - goes through this one instead. Nought takes no sign.
+	 */
 	function fmt_pounds_signed($pounds, $dp = 2) {
 		if (view_blank($pounds)) { return VIEW_DASH; }
 		$value = (float) $pounds;
+		if ($value == 0) { return fmt_pounds(0, $dp); }
 		return ($value < 0 ? '-' : '+') . fmt_pounds(abs($value), $dp);
 	}
 
@@ -161,11 +170,19 @@
 	 * fractions, so 0.44 of a share has to print as 0.44 rather than as 0 or
 	 * as 0.440000, and the trailing zeros come off so a column of them reads.
 	 */
-	function fmt_shares($value, $dp = 4) {
+	function fmt_shares($value, $dp = 4, $trim = true) {
 
 		if (view_blank($value)) { return VIEW_DASH; }
 
 		$number = (float) $value;
+		$dp     = max(0, (int) $dp);
+
+		/* Fixed places, for a column where every row should line up: a
+		   fractional account's quantities read as 583.50, 67.10, 66.63
+		   rather than as 583.5, 67.1, 66.63, which looks like three
+		   different kinds of number. */
+		if (!$trim) { return number_format($number, $dp, '.', ','); }
+
 		if (abs($number - round($number)) < 0.0000001) {
 			return number_format(round($number));
 		}

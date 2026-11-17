@@ -23,7 +23,7 @@
 					<?php /* Cash is held in pounds, not pence: cash_history.amount
 					         is a decimal(20,4) of pounds and was printing all four
 					         places. */ ?>
-					<td class="sm-num"><?= e(fmt_pounds($cash["amount"])) ?></td>
+					<td class="sm-num"><?= e(fmt_pounds_signed($cash["amount"])) ?></td>
 				</tr>
 			<?php endforeach ?>
 			</tbody>

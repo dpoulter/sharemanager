@@ -310,7 +310,7 @@
 						<tr>
 							<td data-value="<?= e($movement['date']) ?>"><?= e(fmt_date($movement['date'])) ?></td>
 							<td><?= e($movement['type']) ?></td>
-							<td class="sm-num" data-value="<?= e($movement['amount']) ?>"><?= e(fmt_pounds($movement['amount'])) ?></td>
+							<td class="sm-num" data-value="<?= e($movement['amount']) ?>"><?= e(fmt_pounds_signed($movement['amount'])) ?></td>
 						</tr>
 					<?php endforeach ?>
 					</tbody>
