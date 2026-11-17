@@ -50,6 +50,9 @@
 	--sm-status-off:   #4b5563;
 	--sm-status-halt:  #b91c1c;
 	--sm-status-due:   #b45309;
+	/* Green, for a strategy with nothing outstanding. Dark enough to carry
+	   white text at the same contrast as the other four. */
+	--sm-status-ok:    #15803d;
 
 	/* Moves and returns, as text on the page. The dark values are lighter,
 	   because the measurement is against the background behind them and
@@ -199,6 +202,7 @@ th.sm-num,
 .sm-status-off   { background: var(--sm-status-off);   cursor: default; }
 .sm-status-halt  { background: var(--sm-status-halt);  cursor: default; }
 .sm-status-due   { background: var(--sm-status-due);   cursor: default; }
+.sm-status-ok    { background: var(--sm-status-ok);    cursor: default; }
 
 /* Smaller, for three of them in a table cell. */
 .sm-badges-tight .sm-badge {
@@ -458,4 +462,190 @@ th.sm-num,
 	max-height: 36px;
 	max-width: 120px;
 	object-fit: contain;
+}
+
+/* ---------------------------------------------------------------------------
+   The strategies page: a menu on the left, one view on the right.
+   --------------------------------------------------------------------------- */
+
+/* About 240px, and it stays in view while the right-hand side scrolls: the
+   point of the menu is to move between strategies without hunting for it. */
+.sm-side-menu {
+	width: 240px;
+	position: sticky;
+	top: 1rem;
+	align-self: flex-start;
+	max-height: calc(100vh - 2rem);
+	overflow-y: auto;
+}
+
+.sm-side-menu .nav-link {
+	padding: 0.35rem 0.5rem;
+	border-radius: 0.3rem;
+	color: inherit;
+	line-height: 1.25;
+}
+
+/* A tint of whatever the text colour is, so it works in both schemes
+   without a second set of values. Mixed in oklab, like every other mix in
+   this file: sRGB interpolation wanders in lightness. */
+.sm-side-menu .nav-link:hover {
+	background: color-mix(in oklab, currentColor 8%, transparent);
+}
+
+.sm-side-menu .nav-link.active {
+	background: color-mix(in oklab, currentColor 14%, transparent);
+	font-weight: 600;
+}
+
+/* A strategy's entry is two lines: the name with its dot, then the mode and
+   the return. Three things on one line at 240px wrap into a muddle. */
+.sm-menu-line {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+}
+
+.sm-menu-meta {
+	margin-top: 0.15rem;
+	padding-left: 1rem;
+	font-size: 0.8125rem;
+}
+
+.sm-menu-return {
+	font-variant-numeric: tabular-nums;
+}
+
+.sm-menu-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.sm-menu-heading {
+	margin: 0.6rem 0 0.1rem;
+	padding: 0 0.5rem;
+	font-size: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--sm-muted);
+}
+
+/* A stopped strategy is the one somebody needs to look at, so it says so
+   without being opened. */
+.sm-menu-halted .sm-menu-name { color: var(--sm-status-halt); font-weight: 600; }
+
+.sm-menu-disabled { font-size: 0.8125rem; }
+
+/* The status dot: the badge's colour where a badge would not fit. */
+.sm-dot {
+	display: inline-block;
+	width: 0.6rem;
+	height: 0.6rem;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	background: var(--sm-status-off);
+}
+
+.sm-dot-ok     { background: var(--sm-status-ok); }
+.sm-dot-due    { background: var(--sm-status-due); }
+.sm-dot-halted { background: var(--sm-status-halt); }
+
+/* The right-hand column holds tables of eleven columns. A flex item will
+   not shrink below its content unless it is told it may, so without this
+   the view is as wide as its widest table, the menu cannot fit beside it,
+   and the two columns stack - which looks exactly like the CSS not having
+   loaded. */
+.sm-view-col {
+	min-width: 0;
+}
+
+/* Below 768px nothing sits side by side: the menu is one control above the
+   content. Bootstrap's d-md-block does the hiding; this is the width, which
+   would otherwise still be 240px. */
+@media (max-width: 767.98px) {
+	.sm-side-menu {
+		width: auto;
+		position: static;
+		max-height: none;
+	}
+}
+
+/* A table that would rather scroll than squash.
+ *
+ * Inside .table-responsive a table still shrinks to the column it is in,
+ * and a twelve column table in a 1,000px column puts one word per line in
+ * every cell. A floor on the width makes the scroll container do its job
+ * instead. Below 768px .sm-stack takes over and the floor is lifted. */
+.sm-table-wide {
+	min-width: 52rem;
+}
+
+@media (max-width: 767.98px) {
+	.sm-table-wide { min-width: 0; }
+}
+
+/* A wide table as one block per row on a phone.
+ *
+ * Eleven columns at 390px is a table scrolled sideways to read, with the
+ * column headings off the screen by the time the figures are on it. Below
+ * 768px each row becomes a small block and every cell carries its own
+ * label, which is the heading it lost.
+ *
+ * The cells say what they are through data-label, written by the template:
+ * a heading read out of the thead with JavaScript would leave the page
+ * unreadable without one.
+ */
+@media (max-width: 767.98px) {
+
+	.sm-stack thead {
+		/* Not display:none, which takes the headings out of the accessible
+		   tree as well as off the screen. */
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+	}
+
+	.sm-stack,
+	.sm-stack tbody,
+	.sm-stack tr,
+	.sm-stack td {
+		display: block;
+		width: auto;
+	}
+
+	.sm-stack tr {
+		margin-bottom: 0.75rem;
+		padding: 0.25rem 0.5rem;
+		border: 1px solid var(--bs-border-color, #dee2e6);
+		border-radius: 0.375rem;
+	}
+
+	.sm-stack td {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.2rem 0;
+		border: 0;
+		text-align: right;
+	}
+
+	.sm-stack td::before {
+		content: attr(data-label);
+		flex: 0 0 auto;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--sm-muted);
+		text-align: left;
+	}
+
+	/* A cell with no label is a spacer in the stacked layout, not a row of
+	   its own. */
+	.sm-stack td:not([data-label]) {
+		display: none;
+	}
 }

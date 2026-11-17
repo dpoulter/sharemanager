@@ -381,9 +381,11 @@
 	/** A status badge: PAPER, disabled, halted, rebalance tonight. */
 	function status_badge_html($kind, $text = null) {
 		$styles = ['paper' => 'status-paper', 'off' => 'status-off',
-		           'halted' => 'status-halt', 'due' => 'status-due'];
+		           'halted' => 'status-halt', 'due' => 'status-due',
+		           'ok' => 'status-ok'];
 		$words  = ['paper' => 'PAPER', 'off' => 'disabled',
-		           'halted' => 'halted', 'due' => 'rebalance tonight'];
+		           'halted' => 'halted', 'due' => 'rebalance tonight',
+		           'ok' => 'OK'];
 		$key = isset($styles[$kind]) ? $kind : 'off';
 		return '<span class="sm-badge sm-' . $styles[$key] . '">'
 		     . htmlspecialchars($text === null ? $words[$key] : $text) . '</span>';

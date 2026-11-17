@@ -41,7 +41,13 @@
 	 */
 
 	require_once("constants.php");
-	require_once("broker.php");
+	/* By path, not by name. "broker.php" on an include path whose first
+	   entry is the current directory finds public/broker.php when a page
+	   in the docroot requires this file - and that page requires
+	   config.php, which defines every constant a second time. The
+	   strategies page was the first to pull this file in from the
+	   docroot, and it died on "Cannot redeclare apologize()". */
+	require_once(__DIR__ . "/broker.php");
 	require_once("strategy_functions.php");
 
 	/** Whether sql/broker_trading.sql has been applied. */
@@ -799,6 +805,79 @@
 	   --------------------------------------------------------------------- */
 
 	/**
+	 * Whether this strategy's book and the broker's agree, for the page.
+	 *
+	 * Read only: it halts nothing, writes nothing, and says which of the
+	 * three things is true - agreed as at a time, differs and here is what
+	 * by, or nobody has asked today. Beside it, the cash on both sides and
+	 * when the broker was last read at all, because "agrees" about the
+	 * shares while the cash is out by fifty pounds is half an answer.
+	 */
+	function broker_agreement_for($strategy) {
+
+		$out = ['state' => 'unchecked', 'words' => 'Not checked today',
+		        'tone' => 'due', 'as_of' => null, 'read_at' => null,
+		        'differences' => [], 'waiting' => [],
+		        'our_cash' => null, 'their_cash' => null, 'sync' => null];
+
+		$account = strategy_account($strategy);
+		if ($account === null) { return $out; }
+
+		$mode = strategy_mode_rules($account['mode']);
+		if ($mode['broker'] === null) { return $out; }
+
+		$out['our_cash'] = (float) $account['cash'];
+
+		$check = broker_reconcile_positions($strategy, ['report_only' => true]);
+
+		$out['as_of']       = $check['as_of'];
+		$out['read_at']     = $check['read_at'];
+		$out['differences'] = $check['differences'];
+		$out['waiting']     = $check['waiting'];
+
+		/* Whether anybody has asked comes first. The reconciler reports
+		   "never been read" and "not read today" in the same list as a real
+		   disagreement, because to it they are both reasons the books were
+		   not compared - but on a page they are very different things to
+		   tell a reader, and "Differs from Trading 212" when nobody has
+		   looked would be the page inventing a disagreement. */
+		if ($check['as_of'] === null || $check['as_of'] !== date('Y-m-d')) {
+			$out['words'] = 'Not checked today'
+			              . ($check['as_of'] === null ? '' : ', last read ' . $check['as_of']);
+			/* Not a list of disagreements: the reconciler's one line about
+			   nobody having looked, which the words above already say. */
+			$out['differences'] = [];
+		}
+		else if (count($check['differences'])) {
+			$out['state'] = 'differs';
+			$out['tone']  = 'halted';
+			$out['words'] = 'Differs from ' . broker_name($mode['broker']);
+		}
+		else {
+			$out['state'] = 'agreed';
+			$out['tone']  = 'ok';
+			$out['words'] = 'Agrees with ' . broker_name($mode['broker']) . ' as at '
+			              . ($check['read_at'] === null ? $check['as_of'] : $check['read_at']);
+		}
+
+		$values = query("select cash, as_of_date from broker_account_values
+		                  where broker=? order by as_of_date desc limit 1", $mode['broker']);
+		if (count($values)) { $out['their_cash'] = $values[0]['cash'] === null
+		                                         ? null : (float) $values[0]['cash']; }
+
+		$runs = query("select status, finished_at, as_of_date from broker_sync_runs
+		                where broker=? order by run_id desc limit 1", $mode['broker']);
+		if (count($runs)) { $out['sync'] = $runs[0]; }
+
+		return $out;
+	}
+
+	/** The broker's name as a reader knows it. */
+	function broker_name($broker) {
+		return ((string) $broker === BROKER_T212) ? 'Trading 212' : (string) $broker;
+	}
+
+	/**
 	 * Whether the two books can be compared at all, and whether there is
 	 * anything to compare.
 	 *
@@ -872,6 +951,10 @@
 	 * it looks.
 	 */
 	function broker_reconcile_positions($strategy, $options = []) {
+
+		/* report_only: ask the question without acting on the answer. The
+		   Strategies page shows whether the two books agree, and a page
+		   that halts a strategy because somebody loaded it is not a page. */
 
 		$out = ['checked' => 0, 'differences' => [], 'waiting' => [], 'halted' => false,
 		        'as_of' => null, 'read_at' => null];
@@ -1005,7 +1088,7 @@
 		   is reported without stopping anything.
 
 		   A difference in a share the strategy does hold is a halt. */
-		if (count($out['differences'])) {
+		if (count($out['differences']) && empty($options['report_only'])) {
 			broker_halt_strategy($strategy,
 			    "the broker and this application disagree about what is held: "
 			  . implode('; ', array_slice($out['differences'], 0, 3)));

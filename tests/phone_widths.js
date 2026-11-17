@@ -291,8 +291,10 @@ function skip(why) {
 		check('with JavaScript off nothing is waiting on a collapse script',
 		      collapses.length === 0, collapses.join(' '));
 
-		/* And the thing that replaced them opens. */
-		await barePage.goto(`${BASE}/strategies.php`, { waitUntil: 'domcontentloaded' });
+		/* And the thing that replaced them opens. On the broker page: the
+		   strategies page gives its explanation a view of its own in the
+		   menu now, which is a link rather than a fold. */
+		await barePage.goto(`${BASE}/broker.php`, { waitUntil: 'domcontentloaded' });
 		const how = await barePage.locator('details.sm-reveal > summary').first();
 		check('"How this works" is a details', await how.count() > 0);
 		if (await how.count() > 0) {
@@ -301,6 +303,63 @@ function skip(why) {
 			      await barePage.evaluate(() =>
 			          document.querySelector('details.sm-reveal').open) === true);
 		}
+
+		await barePage.goto(`${BASE}/strategies.php?s=_how`, { waitUntil: 'domcontentloaded' });
+		check('and the strategies page\'s explanation is a page of its own',
+		      (await barePage.locator('text=How this works').count()) > 0
+		      && (await barePage.locator('text=No real money is ever at risk').count()) > 0);
+
+		/* The strategies page at 390px: one control above the content, not
+		   two columns side by side, and every view reachable from it. The
+		   menu is a form with a select, so it works with no script at all -
+		   which is what this context is. */
+		const narrow = await browser.newContext({
+			viewport: { width: 390, height: 844 },
+			isMobile: true, hasTouch: true, javaScriptEnabled: false,
+		});
+		const narrowPage = await narrow.newPage();
+		await narrowPage.goto(`${BASE}/login.php`, { waitUntil: 'domcontentloaded' });
+		await narrowPage.fill('input[name=username]', 'tester');
+		await narrowPage.fill('input[name=password]', 'testpass');
+		await narrowPage.click('form[action="login.php"] button[type=submit]');
+		await narrowPage.waitForLoadState('domcontentloaded');
+		await narrowPage.goto(`${BASE}/strategies.php`, { waitUntil: 'domcontentloaded' });
+
+		const menuVisible = await narrowPage.locator('#sm-menu-select').isVisible();
+		const sideVisible = await narrowPage.locator('nav.sm-side-menu').isVisible()
+			.catch(() => false);
+		check('at 390px the menu is one control above the content',
+		      menuVisible === true && sideVisible === false,
+		      `select ${menuVisible}, side menu ${sideVisible}`);
+		check('and it works without a script, through its own button',
+		      await narrowPage.locator('form.sm-menu-phone button[type=submit]').count() > 0);
+
+		/* The summary is one block per strategy, each cell carrying the
+		   heading it lost: eleven columns at 390px is a table scrolled
+		   sideways with its headings off the screen. */
+		const stacked = await narrowPage.evaluate(() => {
+			const cell = document.querySelector('table.sm-stack tbody td[data-label]');
+			if (!cell) { return null; }
+			return { display: getComputedStyle(cell).display,
+			         label: getComputedStyle(cell, '::before').content };
+		});
+		check('and the summary table stacks, with every cell labelled',
+		      stacked !== null && stacked.display === 'flex'
+		      && /strategy|mode|value/i.test(stacked.label || ''),
+		      JSON.stringify(stacked));
+
+		/* And each view answers at that width. */
+		for (const where of ['', '?s=_backtests', '?s=_how']) {
+			await narrowPage.goto(`${BASE}/strategies.php${where}`, { waitUntil: 'domcontentloaded' });
+			const measured = await narrowPage.evaluate(() => ({
+				over: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+				fatal: /Fatal error|Parse error/.test(document.body.innerText),
+			}));
+			check(`the ${where === '' ? 'overview' : where} view fits a phone`,
+			      !measured.fatal && measured.over <= 1,
+			      `${measured.over}px over`);
+		}
+		await narrow.close();
 
 		/* The outlook is the other one. It only draws its fold when there is
 		   an outlook to fold, so the panel is asked for its markup rather

@@ -201,9 +201,16 @@
 			<tbody>
 			<?php foreach ($strategies as $card): ?>
 				<tr>
+					<?php /* Straight at that strategy, now that the page can open
+					         one: the link used to land on the top of a page of
+					         three and leave the reader to find it. The badge says
+					         which kind of account it is, in the words the
+					         strategies page uses. */ ?>
 					<td>
-						<a href="strategies.php"><?= e(strategy_display_name($card['strategy'])) ?></a>
-						<?= status_badge_html('paper') ?>
+						<a href="strategies.php?s=<?= urlencode((string) $card['strategy']) ?>"><?=
+							e(strategy_display_name($card['strategy'])) ?></a>
+						<?= status_badge_html($card['broker'] === null ? 'paper' : 'due',
+						                      strategy_mode_name($card['mode'])) ?>
 					</td>
 					<td class="sm-num"><?= e(fmt_pounds($card['total'])) ?></td>
 					<td class="sm-num"><?= move_pct_html($card['return']) ?></td>

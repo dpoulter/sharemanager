@@ -76,6 +76,23 @@
 	}
 
 	/**
+	 * Whether sql/strategy_backtest_costs.sql has been applied.
+	 *
+	 * The other half of what makes two runs of the same rules different.
+	 * Guarded the same way: a host one deploy behind loses the label, not
+	 * the backtest.
+	 */
+	function backtest_has_cost_settings() {
+		static $known=null;
+		if ($known!==null){ return $known; }
+		$found=query("select count(*) n from information_schema.columns
+		               where table_schema=database() and table_name='strategy_backtest_runs'
+		                 and column_name='cost_settings'");
+		$known=count($found)&&(int)$found[0]['n']>0;
+		return $known;
+	}
+
+	/**
 	 * One table across the runs.
 	 *
 	 * The question these runs are being done to answer is which settings to
@@ -382,6 +399,16 @@
 	      $account_before===null ? 'GBP' : $account_before['currency'],
 	      date('Y-m-d H:i:s'),
 	      'Backtest of '.$strategy.' from '.$from.' to '.$to);
+
+	/* What this run paid to deal, recorded with it. Two runs of the same
+	   rules a month apart can be two different experiments - the cost
+	   settings moved between them - and until now the only thing that said
+	   so was the return. The backtest account is a paper one, so these are
+	   the paper mode's settings as they stand tonight. */
+	if (backtest_has_cost_settings()){
+		query("update strategy_backtest_runs set cost_settings=? where run_id=?",
+		      strategy_backtest_costs_now(STRATEGY_MODE_PAPER)['key'],$run_id);
+	}
 
 	/* $rules already carries the overrides, so the copy the engine reads
 	   for this account is the overridden configuration - and the live

@@ -1087,6 +1087,564 @@
 	}
 
 
+
+	/* ---------------------------------------------------------------------
+	   What the Strategies page needs: words for the modes, the summary
+	   rows behind the menu and the table, the pairs, and the backtest
+	   labels.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * The mode as a reader should see it: Paper, Practice.
+	 *
+	 * PAPER and T212_DEMO are column values. "Practice" is what Trading 212
+	 * calls the account, which is the word somebody looking at the page has
+	 * already seen on the broker's own site.
+	 */
+	function strategy_mode_name($mode) {
+
+		$mode=strtoupper(trim((string)$mode));
+
+		if ($mode===STRATEGY_MODE_T212_DEMO){ return 'Practice'; }
+		if ($mode===STRATEGY_MODE_PAPER){ return 'Paper'; }
+
+		return 'Unknown';
+	}
+
+	/** The mode's dealing rules, as sentences, for the Rules tab. */
+	function strategy_mode_dealing($mode) {
+
+		$rules=strategy_mode_rules($mode);
+
+		$out=[];
+		$out[]='Minimum order '.fmt_pounds($rules['minimum_order'],0).'.';
+		$out[]=empty($rules['fractional'])
+		     ? 'Whole shares only.'
+		     : 'Fractional shares, to '.(int)$rules['decimals'].' decimal places.';
+		$out[]=((float)$rules['commission']>0
+		        ? 'Commission '.fmt_pounds($rules['commission'],2).' a trade'
+		        : 'No commission')
+		     .', stamp duty '.fmt_pct(STRATEGY_STAMP_DUTY_RATE*100,1).' on a purchase'
+		     .', spread allowance '.fmt_pct(STRATEGY_SLIPPAGE_BPS/100,2).'.';
+
+		if ($rules['broker']!==null){
+			$out[]='Orders go to the Trading 212 practice account during the London'
+			      .' session, at most '.fmt_pounds(T212_MAX_RUN_VALUE,0).' a run.';
+		}
+		else {
+			$out[]='Orders fill at the next close, in this database only.';
+		}
+
+		return $out;
+	}
+
+	/**
+	 * The latest close on or before a date, in pounds, for many symbols at
+	 * once.
+	 *
+	 * One query for the whole page instead of one per holding. The page
+	 * shows three strategies, each with fifteen holdings, and every one of
+	 * them was its own round trip to find the same forty-five prices.
+	 *
+	 * The conversion is strategy_price_pounds()'s, the same one
+	 * strategy_price_asof() uses, so there is one answer to what a stored
+	 * price means rather than two.
+	 */
+	function strategy_prices_for($symbols,$exchange,$as_of) {
+
+		$out=[];
+
+		$symbols=array_values(array_unique(array_filter(array_map('strval',(array)$symbols),
+		                                                function($s){ return $s!==''; })));
+		if (!count($symbols)){ return $out; }
+
+		$as_of=substr((string)$as_of,0,10);
+
+		/* The placeholders are built from the count, and every value is
+		   still bound: the only thing interpolated is a run of question
+		   marks. */
+		$marks=implode(',',array_fill(0,count($symbols),'?'));
+
+		$args=array_merge([$exchange,$as_of],$symbols,[$exchange,$as_of],$symbols);
+
+		$sql="select h.symbol, h.date, h.price
+		        from historical_prices h
+		        join (select symbol, max(date) d from historical_prices
+		               where exchange=? and date<=? and price is not null
+		                 and symbol in ($marks)
+		               group by symbol) m
+		          on m.symbol=h.symbol and m.d=h.date
+		       where h.exchange=? and h.date<=? and h.symbol in ($marks)";
+
+		foreach (query($sql,...$args) as $row) {
+			$symbol=(string)$row['symbol'];
+			if (isset($out[$symbol])){ continue; }
+			$out[$symbol]=strategy_price_pounds($row['price'],$symbol,$exchange,
+			                                    substr((string)$row['date'],0,10));
+		}
+
+		return $out;
+	}
+
+	/** The target weights written at the last rebalance, by symbol. */
+	function strategy_target_weights($strategy) {
+
+		$out=[];
+
+		$last=query("select max(as_of_date) d from strategy_targets where strategy=?",$strategy);
+		if (!count($last)||$last[0]['d']===null){ return $out; }
+
+		foreach (query("select symbol, target_weight from strategy_targets
+		                 where strategy=? and as_of_date=?",$strategy,$last[0]['d']) as $row) {
+			$out[(string)$row['symbol']]=(float)$row['target_weight'];
+		}
+
+		return $out;
+	}
+
+	/**
+	 * One row per strategy: everything the menu and the summary table show.
+	 *
+	 * Built from strategy_card(), which is the one place that decides what
+	 * a strategy is worth, plus the count of orders that have not finished
+	 * and - for an account with a broker - whether the two books agree.
+	 */
+	function strategy_summary($strategies,$as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+
+		$rows=[];
+
+		/* Every held symbol on the page, priced in one query rather than
+		   one per holding. */
+		$symbols=[];
+		foreach (query("select distinct symbol from strategy_positions where quantity>0") as $row) {
+			$symbols[]=(string)$row['symbol'];
+		}
+		$prices=strategy_prices_for($symbols,$exchange,$as_of);
+
+		/* The orders that have not finished, counted for every strategy in
+		   one query rather than one each. */
+		$waiting=[];
+		foreach (query("select strategy, count(*) n from strategy_orders
+		                 where status in ('PENDING','SENT','UNKNOWN') group by strategy") as $row) {
+			$waiting[(string)$row['strategy']]=(int)$row['n'];
+		}
+
+		$halted=strategy_halted();
+
+		foreach ((array)$strategies as $strategy) {
+
+			$card=strategy_card($strategy,$exchange,$as_of,$prices);
+
+			$card['waiting']=isset($waiting[$strategy]) ? $waiting[$strategy] : 0;
+			$card['kill_switch']=$halted;
+			/* The broker layer is not loaded by the nightly job, which has
+			   no use for it. A page that wants the agreement line requires
+			   broker_orders.php; everything else gets null and says
+			   nothing, rather than a fatal. */
+			$card['agreement']=($card['broker']===null
+			                    ||!function_exists('broker_agreement_for'))
+			                 ? null : broker_agreement_for($strategy);
+
+			$card['status']=strategy_status($card);
+
+			$rows[]=$card;
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * The worst thing true of a strategy right now, as a badge.
+	 *
+	 * Worst first: a halted strategy with orders waiting is a halted
+	 * strategy, and showing it as "orders waiting" would be the page
+	 * choosing the comfortable half of the truth.
+	 */
+	function strategy_status($card) {
+
+		if (!empty($card['halted'])&&$card['halted']==='Y'){
+			return ['key'=>'halted','words'=>'Halted','tone'=>'halted',
+			        'reason'=>(string)$card['halt_reason']];
+		}
+
+		if (!empty($card['kill_switch'])){
+			return ['key'=>'kill','words'=>'Kill switch on','tone'=>'halted',
+			        'reason'=>'The kill switch file exists, so no strategy places anything.'];
+		}
+
+		if (!empty($card['waiting'])){
+			$n=(int)$card['waiting'];
+			return ['key'=>'orders','words'=>'Orders waiting','tone'=>'due',
+			        'reason'=>$n.' order'.($n===1?'':'s').' planned and not yet filled.'];
+		}
+
+		if (!empty($card['agreement'])&&$card['agreement']['state']!=='agreed'){
+			return ['key'=>'unagreed','words'=>'Not agreed with broker','tone'=>'due',
+			        'reason'=>$card['agreement']['words']];
+		}
+
+		return ['key'=>'ok','words'=>'OK','tone'=>'ok','reason'=>'Nothing outstanding.'];
+	}
+
+	/**
+	 * Accounts running identical rules, paired.
+	 *
+	 * The pair that matters is trend_following against trend_following_t212
+	 * - the same rules, one on paper and one at the broker - but the names
+	 * are not what makes them a pair: the rules are. A hold_rank changed on
+	 * one of them makes them two different strategies, and the panel that
+	 * compares them has to stop claiming otherwise.
+	 */
+	function strategy_pairs($strategies) {
+
+		$key=function($rules){
+			if ($rules===null){ return null; }
+			return implode('|',[
+				(string)$rules['selection'],
+				(string)$rules['screen_id'],
+				(string)$rules['score_indicator'],
+				(string)$rules['rank_by'],
+				(string)$rules['holdings'],
+				(string)$rules['hold_rank'],
+				(string)$rules['rebalance'],
+				(string)$rules['exit_rules'],
+				(string)$rules['exclude_funds'],
+			]);
+		};
+
+		$groups=[];
+		foreach ((array)$strategies as $strategy) {
+			$signature=$key(strategy_rules($strategy));
+			if ($signature===null){ continue; }
+			$groups[$signature][]=$strategy;
+		}
+
+		$pairs=[];
+		foreach ($groups as $group) {
+
+			if (count($group)<2){ continue; }
+
+			/* Paper first, so the panel always reads the same way round. */
+			usort($group,function($a,$b){
+				$am=strategy_account($a); $bm=strategy_account($b);
+				$ab=($am===null)?null:strategy_mode_rules($am['mode'])['broker'];
+				$bb=($bm===null)?null:strategy_mode_rules($bm['mode'])['broker'];
+				if ($ab===$bb){ return strcmp($a,$b); }
+				return ($ab===null) ? -1 : 1;
+			});
+
+			for ($i=1;$i<count($group);$i++) { $pairs[]=[$group[0],$group[$i]]; }
+		}
+
+		return $pairs;
+	}
+
+	/**
+	 * Two accounts on the same rules, side by side.
+	 *
+	 * The fill comparison is the number this is for. The paper account
+	 * fills at the next close with an allowance for the spread; the
+	 * practice account fills at the market during the session. If the two
+	 * are within a few basis points of each other then the paper record's
+	 * cost model is fair, and if they are not then the paper record is
+	 * flattering itself and nothing built on it means very much.
+	 */
+	function strategy_pair_compare($one,$two,$as_of,$exchange=null) {
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+
+		$out=['strategies'=>[$one,$two],'from'=>null,'returns'=>[],'gap'=>null,
+		      'only_in'=>[$one=>[],$two=>[]],'fills'=>[],'average_bp'=>null,
+		      'costs'=>[],'notes'=>[]];
+
+		/* Measured from the later of the two starts: a strategy that began
+		   in March must not be compared against one that began in January
+		   over a period only one of them was invested in. */
+		$starts=[];
+		foreach ([$one,$two] as $strategy) {
+			$rows=query("select min(date) d from strategy_values where strategy=?",$strategy);
+			if (count($rows)&&$rows[0]['d']!==null){ $starts[$strategy]=(string)$rows[0]['d']; }
+		}
+		if (count($starts)===2){ $out['from']=max($starts); }
+
+		foreach ([$one,$two] as $strategy) {
+
+			if ($out['from']!==null){
+				$first=query("select total from strategy_values where strategy=? and date>=?
+				               order by date asc limit 1",$strategy,$out['from']);
+				$card=strategy_card($strategy,$exchange,$as_of);
+				if (count($first)&&(float)$first[0]['total']>0&&$card['total']!==null){
+					$out['returns'][$strategy]=((float)$card['total']/(float)$first[0]['total'])-1;
+				}
+			}
+
+			$traded=query("select ifnull(sum(abs(consideration)),0) v,
+			                      ifnull(sum(commission+stamp_duty+slippage),0) c
+			                 from strategy_orders where strategy=? and status='FILLED'",$strategy);
+
+			$value=count($traded) ? (float)$traded[0]['v'] : 0.0;
+			$cost =count($traded) ? (float)$traded[0]['c'] : 0.0;
+
+			$out['costs'][$strategy]=['traded'=>$value,'paid'=>$cost,
+			                          'percent'=>$value>0 ? $cost/$value : null];
+		}
+
+		if (count($out['returns'])===2){
+			$out['gap']=$out['returns'][$one]-$out['returns'][$two];
+		}
+
+		/* What each holds, and what only one of them does. */
+		$held=[];
+		foreach ([$one,$two] as $strategy) {
+			$held[$strategy]=[];
+			foreach (query("select symbol from strategy_positions
+			                 where strategy=? and quantity>0",$strategy) as $row) {
+				$held[$strategy][]=(string)$row['symbol'];
+			}
+		}
+		$out['only_in'][$one]=array_values(array_diff($held[$one],$held[$two]));
+		$out['only_in'][$two]=array_values(array_diff($held[$two],$held[$one]));
+
+		/* The fills both of them made on the same rebalance, which is the
+		   only fair comparison: two buys of the same share a month apart
+		   say nothing about either cost model. */
+		$ours=[];
+		foreach (query("select strategy, as_of_date, symbol, side, fill_price
+		                  from strategy_orders
+		                 where strategy in (?,?) and status='FILLED' and fill_price is not null",
+		                $one,$two) as $row) {
+			$ours[(string)$row['strategy']][(string)$row['as_of_date'].'|'
+			      .(string)$row['symbol'].'|'.(string)$row['side']]=(float)$row['fill_price'];
+		}
+
+		$total=0.0; $counted=0;
+
+		foreach (($ours[$one] ?? []) as $key => $price_one) {
+
+			if (!isset($ours[$two][$key])||$price_one<=0){ continue; }
+
+			$price_two=$ours[$two][$key];
+			[$date,$symbol,$side]=explode('|',$key);
+
+			$bp=(($price_two/$price_one)-1)*10000;
+
+			$out['fills'][]=['date'=>$date,'symbol'=>$symbol,'side'=>$side,
+			                 'one'=>$price_one,'two'=>$price_two,'bp'=>$bp];
+			$total+=$bp; $counted++;
+		}
+
+		if ($counted>0){ $out['average_bp']=$total/$counted; }
+
+		/* The caveat, every time, because the two are not the same size and
+		   do not deal in the same thing. */
+		$cash=[];
+		foreach ([$one,$two] as $strategy) {
+			$account=strategy_account($strategy);
+			$cash[$strategy]=($account===null) ? null : strategy_mode_name($account['mode']);
+		}
+		$out['notes'][]='The two accounts are different sizes and one deals in whole shares'
+		               .' while the other deals in fractions, so small differences in the'
+		               .' weights are expected.';
+		$out['modes']=$cash;
+
+		return $out;
+	}
+
+	/**
+	 * The backtest runs, labelled by what differs from the live rules.
+	 *
+	 * Three rows reading "rebalance=monthly, hold-rank=30" with three
+	 * different returns is not a comparison. What differed between them was
+	 * the cost settings, which the run records - so the label says so, and
+	 * the run whose rules and costs match the live strategy is marked and
+	 * listed first.
+	 */
+	function strategy_backtest_rows($strategy=null,$limit=50) {
+
+		if (!strategy_backtest_ready()){ return []; }
+
+		$limit=max(1,min(200,(int)$limit));
+
+		$runs=($strategy===null)
+		    ? query("select * from strategy_backtest_runs
+		              order by started_at desc, run_id desc limit ".$limit)
+		    : query("select * from strategy_backtest_runs where strategy=?
+		              order by started_at desc, run_id desc limit ".$limit,$strategy);
+
+		$out=[];
+		$seen=[];
+
+		foreach ($runs as $run) {
+
+			$rules=strategy_rules((string)$run['strategy']);
+			$account=strategy_account((string)$run['strategy']);
+
+			$label=strategy_backtest_label($run,$rules,$account);
+
+			$run['label']=$label['words'];
+			$run['matches_live']=$label['matches_live'];
+			$run['settings_key']=(string)$run['strategy'].'|'.$label['key'];
+
+			/* A later run with the same settings supersedes an earlier one:
+			   the newer answer to the same question is the answer. */
+			$run['superseded']=isset($seen[$run['settings_key']]);
+			$seen[$run['settings_key']]=true;
+
+			$run['a_year']=strategy_backtest_annual($run);
+
+			$out[]=$run;
+		}
+
+		/* The one that matches the live settings first, then the rest
+		   newest first, then the superseded ones. The sort is stable in
+		   PHP 8, so runs that tie keep the order they came out of the
+		   database in. */
+		usort($out,function($a,$b){
+			if ($a['matches_live']!==$b['matches_live']){ return $a['matches_live'] ? -1 : 1; }
+			if ($a['superseded']!==$b['superseded']){ return $a['superseded'] ? 1 : -1; }
+			return 0;
+		});
+
+		return $out;
+	}
+
+	/** A run's return restated as a yearly rate, or null if it cannot be. */
+	function strategy_backtest_annual($run) {
+
+		if ($run['total_return']===null){ return null; }
+
+		$from=strtotime((string)$run['from_date']);
+		$to=strtotime((string)$run['to_date']);
+		if ($from===false||$to===false||$to<=$from){ return null; }
+
+		$years=($to-$from)/(365.25*86400);
+		if ($years<=0.05){ return null; }
+
+		$growth=1.0+(float)$run['total_return'];
+		if ($growth<=0){ return null; }
+
+		return pow($growth,1/$years)-1;
+	}
+
+	/**
+	 * What a backtest run was run with, in words, and whether that is what
+	 * the live strategy does now.
+	 */
+	function strategy_backtest_label($run,$rules,$account=null) {
+
+		$parts=[];
+		$key=[];
+
+		/* The rules it was told to use: the overrides where there are any,
+		   the stored rules where there are not. */
+		$overrides=[];
+		if (array_key_exists('overrides',$run)&&trim((string)$run['overrides'])!==''){
+			foreach (explode(',',(string)$run['overrides']) as $piece) {
+				$piece=trim($piece);
+				if ($piece===''){ continue; }
+				$bits=explode('=',$piece,2);
+				$overrides[trim($bits[0])]=isset($bits[1]) ? trim($bits[1]) : '';
+			}
+		}
+
+		$rebalance=isset($overrides['rebalance']) ? $overrides['rebalance']
+		         : ($rules===null ? null : (string)$rules['rebalance']);
+		$holdings =isset($overrides['holdings']) ? $overrides['holdings']
+		         : ($rules===null ? null : (string)$rules['holdings']);
+		$hold_rank=isset($overrides['hold-rank']) ? $overrides['hold-rank']
+		         : ($rules===null ? null : (string)$rules['hold_rank']);
+
+		if ($rebalance!==null&&$rebalance!==''){ $parts[]=ucfirst((string)$rebalance); }
+		if ($holdings!==null&&$holdings!==''){ $parts[]=$holdings.' holdings'; }
+
+		if ($hold_rank===null||$hold_rank===''||strtolower((string)$hold_rank)==='none'){
+			$parts[]='no hold rank';
+			$hold_rank='none';
+		}
+		else { $parts[]='hold to rank '.$hold_rank; }
+
+		$key[]=$rebalance; $key[]=$holdings; $key[]=$hold_rank;
+
+		/* And what it cost. Two runs of the same rules with different cost
+		   settings are two different experiments, and the only thing that
+		   said so was the return. */
+		$costs=strategy_backtest_costs_words($run);
+		$parts[]=$costs['words'];
+		$key[]=$costs['key'];
+
+		$live=($account===null) ? null : strategy_backtest_costs_now($account['mode']);
+
+		$matches=$rules!==null
+		      && (string)$rebalance===(string)$rules['rebalance']
+		      && (string)$holdings===(string)$rules['holdings']
+		      && (string)$hold_rank===(string)($rules['hold_rank']===null
+		                                       ||(int)$rules['hold_rank']===0
+		                                       ? 'none' : $rules['hold_rank'])
+		      && $live!==null && $costs['key']===$live['key'];
+
+		return ['words'=>implode(', ',$parts),
+		        'key'=>implode('|',$key),
+		        'matches_live'=>$matches];
+	}
+
+	/** The cost settings a run recorded, in words. */
+	function strategy_backtest_costs_words($run) {
+
+		$recorded=array_key_exists('cost_settings',$run)
+		        ? trim((string)$run['cost_settings']) : '';
+
+		if ($recorded!==''){
+			$parts=strategy_backtest_costs_parse($recorded);
+			return ['key'=>$recorded,
+			        'words'=>($parts['commission']>0
+			                  ? fmt_pounds($parts['commission'],2).' commission'
+			                  : 'no commission')];
+		}
+
+		/* A run from before the settings were recorded. What it paid per
+		   fill is the only evidence left, and it is enough to tell a
+		   GBP 5.95 run from a free one. */
+		$fills=(int)$run['fills'];
+		$paid=($run['costs_paid']===null) ? null : (float)$run['costs_paid'];
+
+		if ($fills>0&&$paid!==null){
+			return ['key'=>'per-fill:'.round($paid/$fills,2),
+			        'words'=>'costs not recorded ('.fmt_pounds($paid/$fills,2).' a fill)'];
+		}
+
+		return ['key'=>'unrecorded','words'=>'costs not recorded'];
+	}
+
+	/** The cost settings in force now, in the same shape a run records. */
+	function strategy_backtest_costs_now($mode) {
+
+		$rules=strategy_mode_rules($mode);
+
+		$text='commission='.number_format((float)$rules['commission'],2,'.','')
+		     .', stamp='.number_format(STRATEGY_STAMP_DUTY_RATE,5,'.','')
+		     .', spread_bps='.number_format(STRATEGY_SLIPPAGE_BPS,2,'.','')
+		     .', minimum='.number_format((float)$rules['minimum_order'],2,'.','');
+
+		return ['key'=>$text,'commission'=>(float)$rules['commission']];
+	}
+
+	/** The pieces of a recorded cost setting string. */
+	function strategy_backtest_costs_parse($text) {
+
+		$out=['commission'=>0.0,'stamp'=>0.0,'spread_bps'=>0.0,'minimum'=>0.0];
+
+		foreach (explode(',',(string)$text) as $piece) {
+			$bits=explode('=',trim($piece),2);
+			if (count($bits)!==2){ continue; }
+			$name=trim($bits[0]);
+			if (array_key_exists($name,$out)){ $out[$name]=(float)trim($bits[1]); }
+		}
+
+		return $out;
+	}
+
 	/**
 	 * A name the nightly run must not treat as a strategy: the benchmark's
 	 * row in strategy_values, and any backtest account.
@@ -1510,6 +2068,58 @@
 		}
 
 		return true;
+	}
+
+	/**
+	 * One close below the 200 day average, and not two.
+	 *
+	 * The exit sells on the second. A holding on its first is one close
+	 * away from being sold, which is worth marking on the page: a reader
+	 * looking at the book should be able to see what is about to leave it
+	 * rather than find out from the trades the next morning.
+	 */
+	function strategy_below_ma200_once($symbol,$as_of) {
+
+		$rows=query("select s.date,
+		                    max(case when s.indicator='close_price' then s.value end) close_value,
+		                    max(case when s.indicator='ma200'       then s.value end) ma200_value
+		               from statistics s
+		              where s.symbol=? and s.date<=? and s.indicator in ('close_price','ma200')
+		              group by s.date
+		             having close_value is not null and ma200_value is not null
+		              order by s.date desc
+		              limit 2",$symbol,substr((string)$as_of,0,10));
+
+		if (!count($rows)){ return false; }
+
+		if ((float)$rows[0]['close_value']>=(float)$rows[0]['ma200_value']){ return false; }
+
+		/* Only one so far: with no day before it there is nothing to say it
+		   is the second, and with one that held above the average this is
+		   the first. */
+		return count($rows)<2
+		    || (float)$rows[1]['close_value']>=(float)$rows[1]['ma200_value'];
+	}
+
+	/**
+	 * Which holdings are one close away from being sold.
+	 *
+	 * Only where the strategy actually has the rule: a mark on a card whose
+	 * strategy never sells on the 200 day average would be the page warning
+	 * about something that cannot happen.
+	 */
+	function strategy_exit_warnings($strategy,$as_of) {
+
+		$rules=strategy_rules($strategy);
+		if ($rules===null||!in_array('below_ma200_2d',$rules['exit_list'],true)){ return []; }
+
+		$out=[];
+		foreach (strategy_positions($strategy) as $symbol=>$position) {
+			if ((float)$position['quantity']<=0){ continue; }
+			if (strategy_below_ma200_once($symbol,$as_of)){ $out[]=(string)$symbol; }
+		}
+
+		return $out;
 	}
 
 	/**
@@ -2162,7 +2772,7 @@
 	 * and said so in "unpriced", rather than dropped: a share suspended
 	 * this morning is still money in the account.
 	 */
-	function strategy_value_now($strategy,$as_of,$exchange=null) {
+	function strategy_value_now($strategy,$as_of,$exchange=null,$prices=null) {
 
 		$exchange=($exchange===null) ? session_exchange() : $exchange;
 		$as_of=substr((string)$as_of,0,10);
@@ -2178,7 +2788,11 @@
 		                 where strategy=? and quantity>0",$strategy) as $row) {
 
 			$quantity=(float)$row['quantity'];
-			$price=strategy_price_asof($row['symbol'],(string)$row['exchange'],$as_of);
+			/* From the page's one price query when it brought one, and
+			   from the database when it did not. */
+			$price=($prices!==null&&array_key_exists((string)$row['symbol'],$prices))
+			     ? $prices[(string)$row['symbol']]
+			     : strategy_price_asof($row['symbol'],(string)$row['exchange'],$as_of);
 
 			$out['holdings']++;
 			if ($price===null){
@@ -2234,6 +2848,22 @@
 	}
 
 	/**
+	 * What became of an order, in words.
+	 *
+	 * The status column is the engine's vocabulary. REJECTED is what the
+	 * broker did; "Refused" is what a reader needs to know happened.
+	 */
+	function strategy_order_outcome($status) {
+
+		$words=['FILLED'=>'Filled','REJECTED'=>'Refused','CANCELLED'=>'Cancelled',
+		        'SENT'=>'Sent','UNKNOWN'=>'Unknown','PENDING'=>'Waiting'];
+
+		$status=strtoupper(trim((string)$status));
+
+		return isset($words[$status]) ? $words[$status] : $status;
+	}
+
+	/**
 	 * What an outstanding order is waiting for, in words.
 	 *
 	 * The status column holds PENDING for two different waits: a paper
@@ -2263,7 +2893,7 @@
 	 * make a comparison flatter or damn a strategy for a month it was not
 	 * invested in.
 	 */
-	function strategy_card($strategy,$exchange=null,$as_of=null) {
+	function strategy_card($strategy,$exchange=null,$as_of=null,$prices=null) {
 
 		$exchange=($exchange===null) ? session_exchange() : $exchange;
 
@@ -2279,7 +2909,7 @@
 		$rules=strategy_rules($strategy);
 		$account=strategy_account($strategy);
 		$series=strategy_series($strategy);
-		$now=strategy_value_now($strategy,$as_of,$exchange);
+		$now=strategy_value_now($strategy,$as_of,$exchange,$prices);
 
 		$card=['strategy'=>$strategy,
 		       'rules'=>$rules,
@@ -2359,7 +2989,7 @@
 	 * book" means for a strategy that can sell a name and buy it back two
 	 * months later.
 	 */
-	function strategy_holdings($strategy,$as_of,$exchange=null) {
+	function strategy_holdings($strategy,$as_of,$exchange=null,$prices=null) {
 
 		$exchange=($exchange===null) ? session_exchange() : $exchange;
 		$as_of=substr((string)$as_of,0,10);
@@ -2373,7 +3003,9 @@
 		                where p.strategy=? and p.quantity>0
 		                order by p.symbol",$strategy) as $row) {
 
-			$price=strategy_price_asof($row['symbol'],(string)$row['exchange'],$as_of);
+			$price=($prices!==null&&array_key_exists((string)$row['symbol'],$prices))
+			     ? $prices[(string)$row['symbol']]
+			     : strategy_price_asof($row['symbol'],(string)$row['exchange'],$as_of);
 			/* A float: a Trading 212 account holds 0.44 of a share, and an
 			   int cast here showed the holding as nought on the page while
 			   its average cost and its value were right. */

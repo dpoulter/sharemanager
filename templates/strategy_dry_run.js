@@ -71,8 +71,14 @@
 		return (Number(value) * 100).toFixed(1) + "%";
 	}
 
+	/* What the popup is called. The button supplies it, because what the
+	   next run would do is a different sentence for a paper account and a
+	   practice one - and because "trend_following_t212" is a column value,
+	   not a name for a person to read. */
+	var caption = "Dry run";
+
 	function spinner(strategyName) {
-		title.textContent = "Dry run: " + strategyName;
+		title.textContent = caption;
 		footnote.textContent = "";
 		clear(body);
 		var waiting = element("div", "d-flex align-items-center");
@@ -184,7 +190,7 @@
 
 		clear(body);
 
-		title.textContent = "Dry run: " + report.strategy;
+		title.textContent = caption;
 		footnote.textContent = report.footnote || "";
 
 		var header = element("p", "text-muted mb-3");
@@ -254,6 +260,9 @@
 
 	document.querySelectorAll("[data-dry-run]").forEach(function (button) {
 		button.addEventListener("click", function () {
+			var name = button.getAttribute("data-dry-run-name") || "";
+			var what = button.getAttribute("data-dry-run-title") || "Dry run";
+			caption = name === "" ? what : name + ": " + what;
 			ask(button.getAttribute("data-dry-run") || "");
 		});
 	});

@@ -1,6 +1,5 @@
 /*
- * The strategy chart: every paper strategy and the benchmark on one axis,
- * each line rebased to 100 at its own start.
+ * The strategy chart: every strategy and the benchmark on one axis.
  *
  * Drawn with TradingView Lightweight Charts (Apache-2.0), served from
  * /js/lightweight-charts.standalone.production.js the same way the quote
@@ -12,8 +11,14 @@
  * somebody can edit, so it is data here too. Names go into the legend
  * through textContent, never through innerHTML.
  *
- * Degrading: if the library did not load, or JavaScript is off, the cards
- * above still carry every figure. The status line says which happened
+ * The points are stored totals, not percentages. The rebasing is done here
+ * because there are two ways to read the same series and a toggle between
+ * them: each line from its own first night, which is what "how has this
+ * strategy done" means, or every line from one date, which is the only way
+ * to compare two strategies that started in different months.
+ *
+ * Degrading: if the library did not load, or JavaScript is off, the table
+ * above still carries every figure. The status line says which happened
  * rather than leaving an empty box.
  */
 (function () {
@@ -24,6 +29,8 @@
 
 	var status = document.getElementById("strategy-chart-status");
 	var holder = document.getElementById("strategy-chart-data");
+	var commonBox = document.getElementById("chart-common-base");
+	var backtestBox = document.getElementById("chart-backtests");
 
 	function say(message) {
 		if (status) { status.textContent = message; }
@@ -57,7 +64,6 @@
 		return value === "" ? fallback : value;
 	}
 
-
 	var chart = LightweightCharts.createChart(root, {
 		height: 360,
 		layout: { background: { color: "#ffffff" }, textColor: token("--sm-chart-text", "#333") },
@@ -76,38 +82,102 @@
 
 	var legend = document.createElement("div");
 	legend.className = "mt-2";
+	root.parentNode.insertBefore(legend, root.nextSibling);
 
-	series.forEach(function (line, index) {
+	var drawn = [];
+	var colourIndex = 0;
 
-		var isBenchmark = /equal weighted/i.test(line.name || "");
-		var colour = isBenchmark ? benchmarkColour : colours[index % colours.length];
+	series.forEach(function (line) {
 
-		var drawn = chart.addLineSeries({
+		var kind = String(line.kind || "strategy");
+		var colour = kind === "benchmark"
+			? benchmarkColour
+			: colours[(colourIndex++) % colours.length];
+
+		var options = {
 			color: colour,
-			lineWidth: isBenchmark ? 1 : 2,
+			lineWidth: kind === "strategy" ? 2 : 1,
 			title: String(line.name || "")
-		});
-
-		drawn.setData(line.points || []);
+		};
+		if (kind === "backtest") {
+			options.lineStyle = 2;             //dashed: a replay, not a record
+			options.lineWidth = 1;
+		}
 
 		var tag = document.createElement("span");
 		tag.className = "me-3";
 		tag.style.color = colour;
 		//textContent, so a strategy named after a tag is a strategy named
 		//after a tag rather than a tag.
-		tag.textContent = "■ " + String(line.name || "");
+		tag.textContent = (kind === "backtest" ? "┄ " : "■ ") + String(line.name || "");
 		legend.appendChild(tag);
+
+		drawn.push({ line: line, kind: kind, series: chart.addLineSeries(options), tag: tag });
 	});
 
-	root.parentNode.insertBefore(legend, root.nextSibling);
+	/* The latest first date across the lines being shown: the earliest date
+	   all of them have a value for, which is where a common base has to be
+	   if no line is to start part way up the axis. */
+	function commonStart(shown) {
+		var latest = null;
+		shown.forEach(function (entry) {
+			var points = entry.line.points || [];
+			if (!points.length) { return; }
+			var first = points[0].time;
+			if (latest === null || first > latest) { latest = first; }
+		});
+		return latest;
+	}
 
-	chart.timeScale().fitContent();
+	function rebase(points, from) {
+		var out = [];
+		var base = null;
+		for (var i = 0; i < points.length; i++) {
+			var point = points[i];
+			if (from !== null && point.time < from) { continue; }
+			var total = Number(point.total);
+			if (base === null) {
+				if (!(total > 0)) { continue; }
+				base = total;
+			}
+			out.push({ time: point.time, value: Math.round(100 * total / base * 10000) / 10000 });
+		}
+		return out;
+	}
+
+	function redraw() {
+
+		var showBacktests = !!(backtestBox && backtestBox.checked);
+		var common = !!(commonBox && commonBox.checked);
+
+		var shown = drawn.filter(function (entry) {
+			return entry.kind !== "backtest" || showBacktests;
+		});
+
+		var from = common ? commonStart(shown) : null;
+
+		drawn.forEach(function (entry) {
+			var visible = shown.indexOf(entry) !== -1;
+			entry.series.applyOptions({ visible: visible });
+			entry.tag.style.display = visible ? "" : "none";
+			if (visible) { entry.series.setData(rebase(entry.line.points || [], from)); }
+		});
+
+		chart.timeScale().fitContent();
+
+		say(common
+			? "Every line starts at 100 on " + (from === null ? "its own first night" : from) + "."
+			: "Each line starts at 100 on its own first night.");
+	}
+
+	if (commonBox) { commonBox.addEventListener("change", redraw); }
+	if (backtestBox) { backtestBox.addEventListener("change", redraw); }
+
+	redraw();
 
 	/* Follow the container's width, which is the only thing that changes
 	   when the window does: the height is fixed above. */
 	window.addEventListener("resize", function () {
 		chart.applyOptions({ width: root.clientWidth });
 	});
-
-	say("Each line starts at 100 on its own first night.");
 }());

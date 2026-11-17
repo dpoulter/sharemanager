@@ -374,3 +374,38 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 });
+
+/* The strategies page's phone menu, and its tabs.
+ *
+ * The menu is a form with a select and a Go button, so it works with
+ * JavaScript off. With JavaScript on, choosing submits it and the button is
+ * not needed, so it goes away.
+ *
+ * The tabs are real links - strategies.php?s=x&tab=orders renders that tab
+ * server side - carrying Bootstrap's data-bs-toggle as well, so a click
+ * switches without a reload. The address is then put right by hand, because
+ * Bootstrap switched the pane without navigating and a URL that says
+ * "holdings" while the page shows orders cannot be bookmarked or shared.
+ */
+document.addEventListener('DOMContentLoaded', function () {
+
+    var form = document.querySelector('form.sm-menu-phone');
+    if (form) {
+        var select = form.querySelector('select');
+        var go = form.querySelector('.sm-menu-go');
+        if (select) {
+            select.addEventListener('change', function () { form.submit(); });
+            if (go) { go.classList.add('d-none'); }
+        }
+    }
+
+    if (!window.history || !window.history.replaceState) { return; }
+
+    document.querySelectorAll('.nav-tabs a[data-bs-toggle="tab"][href]')
+        .forEach(function (link) {
+            link.addEventListener('shown.bs.tab', function () {
+                try { window.history.replaceState(null, '', link.getAttribute('href')); }
+                catch (e) { /* a browser that will not have it keeps the old address */ }
+            });
+        });
+});

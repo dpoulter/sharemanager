@@ -21,7 +21,17 @@
 	}
 ?>
 
-	<h1><?= e($title) ?></h1>
+	<?php
+		/* Which account this is. "Broker" over a page of figures does not
+		   say whether they are the practice account's or the live one's,
+		   and those are very different things to be looking at. */
+		$which = ['demo'      => 'Practice account',
+		          'live-read' => 'Live account, read-only'];
+		$env   = (string) $status['environment'];
+		$heading = isset($which[$env]) ? $which[$env] : 'Not connected';
+	?>
+
+	<h1><?= e($title) ?> <small class="text-body-secondary"><?= e($heading) ?></small></h1>
 
 	<p class="sm-sub mb-1">
 		What Trading 212 says this account holds, read from its API.
@@ -47,8 +57,8 @@
 				Holdings are matched to shares by ISIN where both sides have
 				one and by ticker otherwise, and a ticker that fits more than
 				one share is left unmatched rather than guessed at.
-				A strategy in <strong>T212_DEMO</strong> mode sends its orders to
-				the Trading 212 <strong>practice</strong> account between
+				A strategy in <strong>Practice</strong> mode sends its orders to
+				the Trading 212 practice account between
 				<?= e(T212_MARKET_OPEN) ?> and <?= e(T212_MARKET_SHUT) ?>
 				(<?= e(T212_MARKET_TZ) ?>), in fractions of a share, from
 				<?= e(fmt_pounds(T212_MIN_ORDER_VALUE, 0)) ?> an order.

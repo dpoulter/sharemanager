@@ -2153,10 +2153,14 @@
     check('and says so when there is nothing to compare',
           stripos($bv_cmp_none, 'no backtest runs') !== false, $bv_cmp_none);
 
-    /* The page says it too, or the comparison lives only in a terminal. */
-    $bv_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php');
+    /* The page says it too, or the comparison lives only in a terminal.
+       The table is its own file now: a strategy's Backtest tab and the
+       Backtests view draw the same rows, and two copies of eleven columns
+       is two places for a column to go missing from. */
+    $bv_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/strategy_backtests.php');
     check('the page labels a backtest with the settings it used',
-          strpos($bv_tpl, "run['overrides']") !== false && strpos($bv_tpl, 'as stored') !== false);
+          strpos($bv_tpl, "run['label']") !== false
+          && strpos($bv_tpl, "run['matches_live']") !== false);
     check('and shows the costs against the money that went in',
           strpos($bv_tpl, "run['starting_cash']") !== false
           && strpos($bv_tpl, 'of the start') !== false);
@@ -3971,13 +3975,309 @@
 
     /* The hand-typed note is not a subtitle any more. It said "Above the
        200 day average, weekly" on a strategy that rebalances monthly, over
-       a generated sentence that said monthly. */
+       a generated sentence that said monthly. It belongs with the rules,
+       and the page test further down proves where it ended up: in the
+       Rules tab, under "Note:", with its markup escaped. */
     $sp_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php');
-    check('the free-text note is no longer printed over the generated rules',
-          strpos($sp_tpl, "\$card['note']") === false, 'still there');
+    check('the note is printed with the rules rather than over them',
+          strpos($sp_tpl, 'Note: <?= e($card[\'note\'])') !== false,
+          'not in the rules list');
 
     s_drop($SP);
     s_drop($SPP);
+
+    /* ------------------------------------------------------------------ */
+    echo "\n--- the strategies page: status, pairs and backtest labels ---\n";
+
+    /* The status badge says the worst thing that is true. A halted strategy
+       with orders waiting is a halted strategy, and showing it as "orders
+       waiting" would be the page choosing the comfortable half. */
+    $st_row = ['halted' => 'N', 'halt_reason' => null, 'kill_switch' => false,
+               'waiting' => 0, 'agreement' => null];
+
+    check('a strategy with nothing outstanding is OK',
+          strategy_status($st_row)['key'] === 'ok');
+
+    $st_waiting = array_merge($st_row, ['waiting' => 15]);
+    check('orders planned and not yet filled are said, with the count',
+          strategy_status($st_waiting)['key'] === 'orders'
+          && strpos(strategy_status($st_waiting)['reason'], '15') !== false,
+          json_encode(strategy_status($st_waiting)));
+
+    $st_unagreed = array_merge($st_row,
+        ['agreement' => ['state' => 'unchecked', 'words' => 'Not checked today']]);
+    check('a practice account nobody has reconciled today is amber',
+          strategy_status($st_unagreed)['key'] === 'unagreed');
+
+    $st_kill = array_merge($st_waiting, ['kill_switch' => true]);
+    check('the kill switch beats orders waiting',
+          strategy_status($st_kill)['key'] === 'kill');
+
+    $st_halt = array_merge($st_kill, ['halted' => 'Y', 'halt_reason' => 'the books disagree']);
+    check('and a halt beats the kill switch, with its reason in full',
+          strategy_status($st_halt)['key'] === 'halted'
+          && strpos(strategy_status($st_halt)['reason'], 'books disagree') !== false,
+          json_encode(strategy_status($st_halt)));
+
+    /* Pairing is by the rules, not by the names: trend_following against
+       trend_following_t212 is the comparison that matters, and what makes
+       them a pair is that they run the same thing. */
+    $PA = 'test_pair_paper';
+    $PB = 'test_pair_practice';
+    $PC = 'test_pair_other';
+    foreach ([$PA, $PB, $PC] as $p_name) { s_drop($p_name); }
+
+    s_rules($PA, ['holdings' => 5, 'hold_rank' => 9, 'rebalance' => 'monthly']);
+    s_rules($PB, ['holdings' => 5, 'hold_rank' => 9, 'rebalance' => 'monthly']);
+    s_rules($PC, ['holdings' => 5, 'hold_rank' => 9, 'rebalance' => 'weekly']);
+    s_reset($PA, 100000, 'Y', 'PAPER');
+    s_reset($PB, 5000, 'Y', 'T212_DEMO');
+    s_reset($PC, 100000, 'Y', 'PAPER');
+
+    $p_pairs = strategy_pairs([$PA, $PB, $PC]);
+    check('two accounts running the same rules are paired',
+          count($p_pairs) === 1 && in_array($PA, $p_pairs[0], true)
+          && in_array($PB, $p_pairs[0], true),
+          json_encode($p_pairs));
+    check('and the paper one is first, so the panel reads the same way round',
+          count($p_pairs) === 1 && $p_pairs[0][0] === $PA, json_encode($p_pairs));
+    check('a third account on different rules is not in it',
+          count($p_pairs) === 1 && !in_array($PC, $p_pairs[0], true));
+
+    s_rules($PB, ['holdings' => 5, 'hold_rank' => 12, 'rebalance' => 'monthly']);
+    check('changing the hold rank on one of them unpairs them',
+          count(strategy_pairs([$PA, $PB, $PC])) === 0,
+          json_encode(strategy_pairs([$PA, $PB, $PC])));
+    s_rules($PB, ['holdings' => 5, 'hold_rank' => 9, 'rebalance' => 'monthly']);
+
+    /* The fill comparison is the number the pair panel is for: the paper
+       account fills at the close with an allowance for the spread, the
+       practice account at the market. If the two are close, the paper
+       record's cost model is fair. */
+    $p_asof = asof_date();
+    $p_fill = function ($strategy, $symbol, $price) use ($p_asof) {
+        db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,
+                          status,fill_date,fill_price,consideration,commission,stamp_duty,
+                          slippage,total_cost,created_at,filled_at,note)
+                       values (?,?,?,?,'XLON','BUY',100,'FILLED',?,?,?,0,0,0,?,now(),now(),'rebalance')")
+            ->execute([$strategy . ':' . $symbol, $strategy, $p_asof, $symbol, $p_asof,
+                       $price, $price * 100, -($price * 100)]);
+    };
+    /* 499.0p against 499.5p: ten basis points, which is the example in the
+       brief and a tenth of a per cent. */
+    $p_fill($PA, 'AAA', 4.990);
+    $p_fill($PB, 'AAA', 4.995);
+    $p_fill($PA, 'BBB', 3.000);
+
+    $p_compare = strategy_pair_compare($PA, $PB, $p_asof, 'XLON');
+
+    check('the same share on the same rebalance is compared in basis points',
+          count($p_compare['fills']) === 1
+          && abs($p_compare['fills'][0]['bp'] - 10.0) < 0.2,
+          json_encode($p_compare['fills']));
+    check('and the average is the number the panel leads with',
+          $p_compare['average_bp'] !== null && abs($p_compare['average_bp'] - 10.0) < 0.2,
+          json_encode($p_compare['average_bp']));
+    check('a share only one of them bought is not compared',
+          count($p_compare['fills']) === 1, json_encode($p_compare['fills']));
+
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',100,4.99,now()), (?,'BBB','XLON',100,3.0,now())")
+        ->execute([$PA, $PA]);
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',100,4.995,now()), (?,'CCC','XLON',100,2.0,now())")
+        ->execute([$PB, $PB]);
+
+    $p_compare = strategy_pair_compare($PA, $PB, $p_asof, 'XLON');
+    check('what one holds and the other does not is listed both ways',
+          $p_compare['only_in'][$PA] === ['BBB'] && $p_compare['only_in'][$PB] === ['CCC'],
+          json_encode($p_compare['only_in']));
+    check('and the costs are set against what each of them traded',
+          $p_compare['costs'][$PA]['traded'] > 0
+          && array_key_exists('percent', $p_compare['costs'][$PB]),
+          json_encode($p_compare['costs']));
+    check('with the caveat that they are not the same size',
+          count($p_compare['notes']) > 0
+          && stripos(implode(' ', $p_compare['notes']), 'fraction') !== false,
+          json_encode($p_compare['notes']));
+
+    /* Backtest labels. Two runs of the same rules under different cost
+       settings had the same label and two different returns, and the only
+       thing between them was the commission the account was paying. */
+    $BL = 'test_backtest_labels';
+    s_drop($BL);
+    s_rules($BL, ['holdings' => 15, 'hold_rank' => 30, 'rebalance' => 'monthly']);
+    s_reset($BL, 100000, 'Y', 'PAPER');
+    db()->prepare("delete from strategy_backtest_runs where strategy=?")->execute([$BL]);
+
+    $bl_insert = db()->prepare("insert into strategy_backtest_runs
+         (strategy,account,from_date,to_date,overrides,cost_settings,started_at,finished_at,
+          status,trading_days,rebalances,exits,fills,turnover_refusals,start_value,
+          starting_cash,final_value,total_return,benchmark_return,max_drawdown,costs_paid)
+       values (?,?,?,?,?,?,?,now(),'DONE',500,24,4,120,0,100000,100000,?,?,?,0.09,?)");
+
+    /* The live settings, read from the application rather than written out
+       here: a fixture that hard-codes them would say "matches live" after
+       somebody changed the commission. The other two are deliberately not
+       the live ones. */
+    $bl_live = strategy_backtest_costs_now('PAPER')['key'];
+    $bl_old  = 'commission=11.95, stamp=0.00500, spread_bps=25.00, minimum=250.00';
+    $bl_free = 'commission=0.00, stamp=0.00500, spread_bps=25.00, minimum=10.00';
+
+    $bl_insert->execute([$BL, 'bt_' . $BL . '_1', '2021-01-04', '2026-01-02',
+                         'rebalance=monthly, hold-rank=30', $bl_old,
+                         '2026-11-01 10:00:00', 204400, 1.044, 0.40, 5950.00]);
+    $bl_insert->execute([$BL, 'bt_' . $BL . '_2', '2021-01-04', '2026-01-02',
+                         'rebalance=monthly, hold-rank=30', $bl_free,
+                         '2026-11-02 10:00:00', 197000, 0.970, 0.40, 0.00]);
+
+    $bl_rows = strategy_backtest_rows($BL, 10);
+    $bl_labels = [];
+    foreach ($bl_rows as $bl_run) { $bl_labels[] = $bl_run['label']; }
+
+    check('two runs of the same rules under different costs get different labels',
+          count($bl_rows) === 2 && $bl_labels[0] !== $bl_labels[1],
+          json_encode($bl_labels));
+    check('and the label says what the rules were, in words',
+          stripos($bl_labels[0], 'monthly') !== false
+          && stripos($bl_labels[0], 'hold to rank 30') !== false,
+          json_encode($bl_labels));
+    check('the commission is what tells them apart',
+          stripos(implode(' ', $bl_labels), '11.95') !== false
+          && stripos(implode(' ', $bl_labels), 'no commission') !== false,
+          json_encode($bl_labels));
+
+    /* The one whose rules and costs match the live strategy is marked and
+       listed first: it is the one that says what the strategy would have
+       done, and the others are history of the settings. */
+    $bl_insert->execute([$BL, 'bt_' . $BL . '_3', '2021-01-04', '2026-01-02',
+                         'rebalance=monthly, hold-rank=30', $bl_live,
+                         '2026-11-03 10:00:00', 201000, 1.010, 0.40, 120.00]);
+
+    $bl_rows = strategy_backtest_rows($BL, 10);
+    check('the run that matches the live settings is first and marked',
+          count($bl_rows) === 3 && $bl_rows[0]['matches_live'] === true
+          && $bl_rows[1]['matches_live'] === false,
+          json_encode(array_map(function ($r) {
+              return [$r['label'], $r['matches_live'], $r['superseded']]; }, $bl_rows)));
+
+    /* A later run with the same settings supersedes an earlier one: the
+       newer answer to the same question is the answer. */
+    $bl_insert->execute([$BL, 'bt_' . $BL . '_4', '2021-01-04', '2026-01-02',
+                         'rebalance=monthly, hold-rank=30', $bl_free,
+                         '2026-11-04 10:00:00', 198000, 0.980, 0.40, 0.00]);
+
+    $bl_rows = strategy_backtest_rows($BL, 10);
+    $bl_super = 0;
+    foreach ($bl_rows as $bl_run) { if ($bl_run['superseded']) { $bl_super++; } }
+    check('an older run with the same settings is marked superseded',
+          $bl_super === 1, json_encode(array_map(function ($r) {
+              return [$r['started_at'], $r['superseded']]; }, $bl_rows)));
+
+    check('a run restates its return as a yearly rate',
+          $bl_rows[0]['a_year'] !== null
+          && $bl_rows[0]['a_year'] < (float) $bl_rows[0]['total_return'],
+          json_encode([$bl_rows[0]['total_return'], $bl_rows[0]['a_year']]));
+
+    /* A run from before the settings were recorded is still told apart from
+       a free one: what it paid per fill is the evidence that is left. */
+    $bl_insert->execute([$BL, 'bt_' . $BL . '_5', '2021-01-04', '2026-01-02',
+                         'rebalance=monthly, hold-rank=30', null,
+                         '2026-10-01 10:00:00', 190000, 0.900, 0.40, 714.00]);
+    $bl_old_run = null;
+    foreach (strategy_backtest_rows($BL, 10) as $bl_run) {
+        if ($bl_run['account'] === 'bt_' . $BL . '_5') { $bl_old_run = $bl_run; }
+    }
+    check('a run with no cost settings recorded says so, with what it paid a fill',
+          $bl_old_run !== null && stripos($bl_old_run['label'], 'not recorded') !== false
+          && strpos($bl_old_run['label'], '5.95') !== false,
+          $bl_old_run === null ? 'missing' : $bl_old_run['label']);
+
+    db()->prepare("delete from strategy_backtest_runs where strategy=?")->execute([$BL]);
+    s_drop($BL);
+    foreach ([$PA, $PB, $PC] as $p_name) { s_drop($p_name); }
+
+    /* One close below the 200 day average: one more and the exit rule
+       sells it. A reader looking at the book should see what is about to
+       leave it rather than find out from tomorrow's trades. */
+    $EW = 'test_exit_warning';
+    s_drop($EW);
+    s_rules($EW, ['holdings' => 2, 'exit_rules' => 'below_ma200_2d']);
+    s_reset($EW, 100000, 'Y', 'PAPER');
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',100,1.0,now()), (?,'BBB','XLON',100,1.0,now())")
+        ->execute([$EW, $EW]);
+
+    $ew_asof = asof_date();
+    $ew_prev = (string) scalar("select distinct date from historical_prices
+                                 where exchange='XLON' and date<? order by date desc limit 1",
+                               [$ew_asof]);
+    foreach (['AAA', 'BBB'] as $ew_symbol) {
+        foreach ([$ew_prev, $ew_asof] as $ew_date) {
+            db()->prepare("delete from statistics where symbol=? and date=?
+                            and indicator in ('close_price','ma200')")
+                ->execute([$ew_symbol, $ew_date]);
+        }
+    }
+    /* AAA closed above yesterday and below today: one close. BBB closed
+       below on both: the exit has already fired, so it is not a warning. */
+    s_stat('AAA', 'close_price', $ew_prev, 110); s_stat('AAA', 'ma200', $ew_prev, 100);
+    s_stat('AAA', 'close_price', $ew_asof,  90); s_stat('AAA', 'ma200', $ew_asof, 100);
+    s_stat('BBB', 'close_price', $ew_prev,  90); s_stat('BBB', 'ma200', $ew_prev, 100);
+    s_stat('BBB', 'close_price', $ew_asof,  90); s_stat('BBB', 'ma200', $ew_asof, 100);
+
+    check('one close below the average is a warning, two is a sale',
+          strategy_below_ma200_once('AAA', $ew_asof) === true
+          && strategy_below_ma200_once('BBB', $ew_asof) === false
+          && strategy_below_ma200_2d('BBB', $ew_asof) === true,
+          json_encode([strategy_below_ma200_once('AAA', $ew_asof),
+                       strategy_below_ma200_once('BBB', $ew_asof)]));
+    check('and the page is told which holding it is',
+          strategy_exit_warnings($EW, $ew_asof) === ['AAA'],
+          json_encode(strategy_exit_warnings($EW, $ew_asof)));
+
+    /* And nothing is marked on a strategy that does not sell on the 200
+       day average: a warning about something that cannot happen. */
+    s_rules($EW, ['holdings' => 2, 'exit_rules' => '']);
+    check('a strategy without the rule is not warned about it',
+          strategy_exit_warnings($EW, $ew_asof) === [],
+          json_encode(strategy_exit_warnings($EW, $ew_asof)));
+
+    foreach (['AAA', 'BBB'] as $ew_symbol) {
+        foreach ([$ew_prev, $ew_asof] as $ew_date) {
+            db()->prepare("delete from statistics where symbol=? and date=?
+                            and indicator in ('close_price','ma200')")
+                ->execute([$ew_symbol, $ew_date]);
+        }
+    }
+    s_drop($EW);
+
+    /* The mode in words, which is what the page shows. PAPER and T212_DEMO
+       are column values. */
+    check('a mode has a name a reader has seen before',
+          strategy_mode_name('PAPER') === 'Paper'
+          && strategy_mode_name('T212_DEMO') === 'Practice',
+          json_encode([strategy_mode_name('PAPER'), strategy_mode_name('T212_DEMO')]));
+    check('and its dealing rules are sentences',
+          count(strategy_mode_dealing('T212_DEMO')) >= 3
+          && stripos(implode(' ', strategy_mode_dealing('T212_DEMO')), 'fractional') !== false
+          && stripos(implode(' ', strategy_mode_dealing('PAPER')), 'whole shares') !== false,
+          json_encode(strategy_mode_dealing('T212_DEMO')));
+
+    /* One query for every price the page needs, rather than one a holding.
+       Three strategies of fifteen holdings was forty-five round trips to
+       find the same prices. */
+    $pr_prices = strategy_prices_for(['AAA', 'BBB', 'NOSUCH'], 'XLON', asof_date());
+    check('many prices come back from one call, by symbol',
+          array_key_exists('AAA', $pr_prices) && array_key_exists('BBB', $pr_prices)
+          && !array_key_exists('NOSUCH', $pr_prices),
+          json_encode(array_keys($pr_prices)));
+    check('and they are the same numbers the one-at-a-time call gives',
+          abs($pr_prices['AAA'] - (float) strategy_price_asof('AAA', 'XLON', asof_date())) < 0.0001,
+          json_encode([$pr_prices['AAA'], strategy_price_asof('AAA', 'XLON', asof_date())]));
+    check('and no symbols is no query and no answer',
+          strategy_prices_for([], 'XLON', asof_date()) === []);
 
     echo "\n--- stage 2: an order goes to the demo account and nowhere else ---\n";
 
@@ -4696,6 +4996,67 @@
           && ($j_asked['account/summary'] ?? 0) === 0
           && ($j_asked['history/dividends'] ?? 0) === 0,
           json_encode($j_asked));
+
+    echo "\n--- the broker line on a practice card ---\n";
+
+    /* Three things it can say, and the page has to be able to say each.
+       Read only: a page that halts a strategy because somebody loaded it
+       is not a page. */
+    db()->exec("delete from broker_positions");
+    db()->exec("delete from broker_sync_runs");
+    db()->exec("delete from broker_account_values");
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+    db()->prepare("update strategy_accounts set cash=71.31, halted='N', halt_reason=null
+                    where strategy=?")->execute([$S2B]);
+
+    $bl_agree = broker_agreement_for($S2B);
+    check('with nothing read, the line says it has not been checked today',
+          $bl_agree['state'] === 'unchecked'
+          && stripos($bl_agree['words'], 'not checked today') !== false,
+          json_encode($bl_agree));
+
+    db()->prepare("insert into broker_sync_runs (broker, environment, started_at, finished_at,
+                                                 status, as_of_date, price_unit, positions)
+                   values (?,'demo',now(),now(),'OK',?,'pence',1)")
+        ->execute([BROKER_T212, date('Y-m-d')]);
+    db()->prepare("insert into broker_positions (broker, as_of_date, broker_ticker, symbol,
+                                                 quantity, price_unit, synced_at)
+                   values (?,?,'S201l_EQ','S201',0.44,'pence',now())")
+        ->execute([BROKER_T212, date('Y-m-d')]);
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'S201','XLON',0.44,37.195,now())")->execute([$S2B]);
+    db()->prepare("insert into broker_account_values (broker, as_of_date, cash, synced_at)
+                   values (?,?,71.31,now())")->execute([BROKER_T212, date('Y-m-d')]);
+
+    $bl_agree = broker_agreement_for($S2B);
+    check('with the same book on both sides it agrees, as at a time',
+          $bl_agree['state'] === 'agreed'
+          && stripos($bl_agree['words'], 'agrees with trading 212') !== false
+          && count($bl_agree['differences']) === 0,
+          json_encode($bl_agree));
+    check('and says the cash on both sides',
+          abs((float) $bl_agree['our_cash'] - 71.31) < 0.005
+          && abs((float) $bl_agree['their_cash'] - 71.31) < 0.005,
+          json_encode([$bl_agree['our_cash'], $bl_agree['their_cash']]));
+    check('and when the broker was last read, and how that went',
+          $bl_agree['sync'] !== null && $bl_agree['sync']['status'] === 'OK',
+          json_encode($bl_agree['sync']));
+
+    db()->prepare("update broker_positions set quantity=0.88 where symbol='S201'")->execute();
+    $bl_agree = broker_agreement_for($S2B);
+    check('a difference is said as one, and names the share',
+          $bl_agree['state'] === 'differs'
+          && stripos($bl_agree['words'], 'differs from') !== false
+          && stripos(implode(' ', $bl_agree['differences']), 'S201') !== false,
+          json_encode($bl_agree));
+    check('and asking did not halt the strategy',
+          scalar("select halted from strategy_accounts where strategy=?", [$S2B]) === 'N');
+
+    db()->exec("delete from broker_positions");
+    db()->exec("delete from broker_sync_runs");
+    db()->exec("delete from broker_account_values");
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
 
     echo "\n--- fix K: a share the broker does not list ---\n";
 
@@ -11012,13 +11373,14 @@
           strpos($st_tpl, 'strategy_display_name($card[\'strategy\'])') !== false);
 
     /* Eight lines of explanation, with the thing a reader must know - that
-       no real money is at risk - in the middle of it. */
-    check('the opening paragraph is two lines with the rest folded away',
-          strpos($st_tpl, 'How this works') !== false
-          && strpos($st_tpl, '<summary>How this works</summary>') !== false
-          && strpos($st_tpl, 'No real money is ever at risk') !== false
+       no real money is at risk - in the middle of it. It is one line now,
+       and the explanation is a view of its own in the menu. */
+    check('the opening is one line, with the explanation behind a link',
+          strpos($st_tpl, 'No real money is ever at risk') !== false
+          && strpos($st_tpl, 'How this works') !== false
           && strpos($st_tpl, 'No real money is ever at risk')
-             < strpos($st_tpl, 'How this works'));
+             < strpos($st_tpl, 'How this works')
+          && strpos($st_tpl, '<summary>How this works</summary>') === false);
 
     /* A row of dashes reads as a strategy that lost everything rather than
        one that has not started. */
@@ -11029,8 +11391,8 @@
           strpos($st_tpl, 'Switched off, so it never will') !== false);
 
     check('the switched-off strategies are behind a toggle with a count',
-          strpos($st_tpl, 'Show disabled (') !== false
-          && strpos($st_tpl, 'Hide switched-off strategies') !== false
+          strpos($st_tpl, "'Disabled ('") !== false
+          && strpos($st_tpl, 'Hide switched-off') !== false
           && strpos($st_tpl, 'disabled=1') !== false);
 
     /* Returns on this page are stored as fractions - 0.124 is 12.4% - so
@@ -11657,9 +12019,14 @@
     check('the outlook folds with a details',
           strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/ai_outlook_panel.php'),
                  '<details class="sm-reveal"') !== false);
-    check('and so does "How this works"',
-          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php'),
+    check('and so does the broker page\'s "How this works"',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/broker.php'),
                  '<summary>How this works</summary>') !== false);
+    /* The strategies page does not fold its explanation away any more: it
+       is an entry in the menu, which is a link rather than a fold. */
+    check('and the strategies page gives it a view of its own',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php'),
+                 "'s' => '_how'") !== false);
 
     /* The routine filings used to be a link back to the server with the
        filter in the query string: a page reload to see rows the page
@@ -12761,56 +13128,77 @@ STUB
         $sp_values->execute([STRATEGY_BENCHMARK, $sp_prev, 0, 0, 100, 12]);
         $sp_values->execute([STRATEGY_BENCHMARK, $sp_asof, 0, 0, 102, 12]);
 
+        /* Two fetches now, because the page is two columns and one view at a
+           time: the overview, with the summary table and the chart, and the
+           strategy's own card with its tabs. A reader used to scroll past
+           two strategies to reach the third. */
         $sp_page = (string) $curl("$base/strategies.php");
+        $sp_card = (string) $curl("$base/strategies.php?s=" . urlencode($sp));
 
         check('the strategy page renders without a fatal',
               stripos($sp_page, 'Fatal error') === false
               && stripos($sp_page, 'Parse error') === false,
               substr($sp_page, 0, 300));
-        check('it shows the strategy, its value and its return',
-              strpos($sp_page, $sp) !== false
+        check('a card renders without one either',
+              stripos($sp_card, 'Fatal error') === false
+              && stripos($sp_card, 'Parse error') === false,
+              substr($sp_card, 0, 300));
+        check('the summary names the strategy, its value and its return',
+              strpos($sp_page, strategy_display_name($sp)) !== false
               && strpos($sp_page, '105,000') !== false
               && strpos($sp_page, '+5.0%') !== false,
-              substr($sp_page, max(0, strpos($sp_page, $sp)), 400));
+              substr($sp_page, max(0, strpos($sp_page, '105,000') - 400), 600));
         check('and the benchmark over the same period, not over all of history',
               strpos($sp_page, '+2.0%') !== false);
+        check('the summary links at the strategy rather than at the page',
+              strpos($sp_page, 's=' . urlencode($sp)) !== false);
         check('the holding is listed with its weight and a link to the quote page',
-              preg_match('/quote\.php\?symbol=AAA/', $sp_page) === 1
-              && strpos($sp_page, '1,000') !== false);
+              preg_match('/quote\.php\?symbol=AAA/', $sp_card) === 1
+              && strpos($sp_card, '1,000') !== false);
         check('the trade says why it happened',
-              strpos($sp_page, 'rebalance') !== false);
+              strpos($sp_card, 'rebalance') !== false);
         /* The card used to say "Nothing held" over an account that had just
            decided to buy fifteen shares, because an order between the plan
            and the fill is on neither the holdings table nor the trades. */
         check('an order that has not filled is listed with what it waits for',
-              stripos($sp_page, 'waiting to fill at tonight') !== false
-              && preg_match('/quote\.php\?symbol=BBB/', $sp_page) === 1,
-              substr($sp_page, max(0, stripos($sp_page, 'waiting to fill')) - 200, 500));
-        check('the dealing costs paid are on the page',
-              stripos($sp_page, 'Dealing costs paid') !== false);
+              stripos($sp_card, 'waiting to fill at tonight') !== false
+              && preg_match('/quote\.php\?symbol=BBB/', $sp_card) === 1,
+              substr($sp_card, max(0, stripos($sp_card, 'waiting to fill')) - 200, 500));
+        check('the dealing costs paid are at the top of the trades',
+              stripos($sp_card, 'Dealing costs paid') !== false);
         check('it says in plain words that no real money is at risk',
               stripos($sp_page, 'No real money is ever at risk') !== false);
         /* And which of the two kinds of account each card is, because what
-           an order does depends on it. */
-        check('and each card says which mode it is in',
-              stripos($sp_page, 'PAPER') !== false);
+           an order does depends on it - in the words a reader has seen on
+           the broker's own site, not as the column value. */
+        check('and each row says which mode it is in',
+              strpos($sp_page, '>Paper<') !== false
+              && strpos($sp_page, 'PAPER') === false && strpos($sp_page, 'T212_DEMO') === false,
+              substr($sp_page, max(0, strpos($sp_page, 'Mode')), 600));
         check('and names the benchmark, because equal weighted is a choice',
-              stripos($sp_page, 'equal weighted') !== false
-              && stripos($sp_page, 'leaves out the companies that have left the index') !== false,
-              substr($sp_page, max(0, stripos($sp_page, 'benchmark')), 400));
+              stripos($sp_page, 'equal weighted') !== false,
+              substr($sp_page, max(0, stripos($sp_page, 'equal weighted') - 200), 400));
+        check('and says what that leaves out, in the explanation',
+              stripos((string) $curl("$base/strategies.php?s=_how"),
+                      'leaves out the companies that have left the index') !== false);
         /* The hand-typed note was printed as the card's subtitle, under a
            generated sentence that said the same thing from the rules. The
            two drifted - "weekly" over a strategy that rebalances monthly -
            and the typed one won the reader. It is off the page until the
            Rules tab has somewhere to put it, and the check that its markup
            is escaped comes back with it there. */
+        $sp_head = substr($sp_card, 0, max(1, strpos($sp_card, 'nav nav-tabs')));
         check('the hand-typed note is not printed over the generated rules',
-              strpos($sp_page, '<script>alert(1)</script>') === false
-              && strpos($sp_page, '&lt;script&gt;alert(1)&lt;/script&gt;') === false,
-              substr($sp_page, max(0, strpos($sp_page, 'alert(1)') - 200), 400));
+              strpos($sp_head, 'alert(1)') === false,
+              substr($sp_head, max(0, strpos($sp_head, 'alert(1)') - 200), 400));
+        check('it is in the Rules tab instead, with its markup shown rather than run',
+              strpos($sp_card, 'Note:') !== false
+              && strpos($sp_card, '<script>alert(1)</script>') === false
+              && strpos($sp_card, '&lt;script&gt;alert(1)&lt;/script&gt;') !== false,
+              substr($sp_card, max(0, strpos($sp_card, 'Note:') - 100), 400));
         check('the rebalance dates are shown',
-              stripos($sp_page, 'Last rebalance') !== false
-              && stripos($sp_page, 'Next on or after') !== false);
+              stripos($sp_card, 'Last rebalance') !== false
+              && stripos($sp_card, 'Next on or after') !== false);
 
         /* The chart's data is JSON in the page rather than generated
            JavaScript, and the strategy names in it are escaped the same way
@@ -12833,17 +13221,208 @@ STUB
                      'Survivorship: the universe is today\'s FTSE 350. Look-ahead: each date'
                      . ' used only the statistics stored for it.']);
 
-        $sp_with_bt = (string) $curl("$base/strategies.php");
-        check('a backtest appears under the live card, labelled a backtest',
+        $sp_with_bt = (string) $curl("$base/strategies.php?s=" . urlencode($sp) . "&tab=backtest");
+        check('a backtest appears in the strategy\'s own tab, labelled a backtest',
               stripos($sp_with_bt, 'Backtest') !== false
               && strpos($sp_with_bt, '+12.0%') !== false
               && stripos($sp_with_bt, 'Not a record of trading') !== false,
-              substr($sp_with_bt, max(0, stripos($sp_with_bt, 'Backtest')), 500));
+              substr($sp_with_bt, max(0, stripos($sp_with_bt, 'Not a record')), 500));
         check('with its own benchmark figure and its worst fall',
               strpos($sp_with_bt, '+4.0%') !== false && strpos($sp_with_bt, '-8.5%') !== false);
         check('and the survivorship caveat next to it, not buried in a log',
               stripos($sp_with_bt, 'survivorship') !== false);
+        /* Once, at the top of the tab. It used to be printed under every
+           row, which is four copies of the same sentence and none of the
+           emphasis. */
+        check('and the caveat is printed once, not under every run',
+              substr_count($sp_with_bt, 'Flattered by survivorship') === 1,
+              (string) substr_count($sp_with_bt, 'Flattered by survivorship'));
+        check('every run is in the Backtests view as well',
+              stripos((string) $curl("$base/strategies.php?s=_backtests"), '+12.0%') !== false);
         db()->exec("delete from strategy_backtest_runs where strategy='$sp'");
+
+
+        /* ---------------- The menu, and one view at a time ---------------- */
+
+        /* A second strategy, so "only the chosen one's rows are drawn" is a
+           question with an answer. It holds a share the first one does not. */
+        $sp2 = 'test_page_other';
+        foreach (['strategy_orders','strategy_positions','strategy_targets',
+                  'strategy_values','strategy_rules','strategy_accounts'] as $sp_table) {
+            db()->prepare("delete from $sp_table where strategy=?")->execute([$sp2]);
+        }
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                       values (?,5000,'GBP','T212_DEMO','Y',now())")->execute([$sp2]);
+        db()->prepare("insert into strategy_rules (strategy,selection,score_indicator,rank_by,holdings,
+                                                   rebalance,exit_rules,exclude_funds,updated_at)
+                       values (?,'score','momentum_score','momentum_score',5,'weekly','','Y',now())")
+          ->execute([$sp2]);
+        db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                       values (?,'CCC','XLON',12.34,2.5,now())")->execute([$sp2]);
+
+        $sp_menu = (string) $curl("$base/strategies.php");
+
+        check('the menu lists every strategy, by its display name',
+              strpos($sp_menu, strategy_display_name($sp)) !== false
+              && strpos($sp_menu, strategy_display_name($sp2)) !== false,
+              substr($sp_menu, max(0, strpos($sp_menu, 'sm-side-menu')), 900));
+        check('and marks the chosen entry for a screen reader as well as the eye',
+              strpos($sp_menu, 'aria-current="page"') !== false);
+        check('a practice account is called Practice in the menu, not T212_DEMO',
+              strpos($sp_menu, '>Practice<') !== false);
+
+        /* The menu's return and the table's return are the same figure:
+           one strategy cannot say one thing in the list and another in the
+           table. */
+        $sp_menu_block = substr($sp_menu, strpos($sp_menu, 'sm-side-menu'),
+                                strpos($sp_menu, 'sm-view-col') - strpos($sp_menu, 'sm-side-menu'));
+        check('the menu carries the same return as the summary row',
+              strpos($sp_menu_block, '+5.0%') !== false
+              && strpos($sp_menu, '+5.0%') !== false,
+              substr($sp_menu_block, max(0, strpos($sp_menu_block, strategy_display_name($sp))), 400));
+        check('and a status dot beside each one',
+              substr_count($sp_menu_block, 'sm-dot') >= 2,
+              (string) substr_count($sp_menu_block, 'sm-dot'));
+
+        /* One strategy at a time: the page used to read every holding,
+           order and trade of every strategy to draw one of them. */
+        $sp_only = (string) $curl("$base/strategies.php?s=" . urlencode($sp));
+        $sp_only_view = substr($sp_only, strpos($sp_only, 'sm-view-col'));
+        check('only the chosen strategy\'s holdings are drawn',
+              strpos($sp_only_view, 'quote.php?symbol=AAA') !== false
+              && strpos($sp_only_view, 'quote.php?symbol=CCC') === false,
+              substr($sp_only_view, 0, 400));
+
+        /* A bookmark that has gone stale lands somewhere, not on an error. */
+        foreach (['no_such_strategy', '_nonsense', ''] as $sp_bad) {
+            $sp_fallback = (string) $curl("$base/strategies.php?s=" . urlencode($sp_bad));
+            check("'" . $sp_bad . "' falls back to the overview without an error",
+                  stripos($sp_fallback, 'Fatal error') === false
+                  && stripos($sp_fallback, 'Every strategy, side by side') !== false,
+                  substr($sp_fallback, 0, 200));
+        }
+
+        /* And a disabled one is not selectable while it is hidden. */
+        db()->prepare("update strategy_accounts set enabled='N' where strategy=?")->execute([$sp2]);
+        $sp_off = (string) $curl("$base/strategies.php?s=" . urlencode($sp2));
+        check('a switched-off strategy falls back to the overview too',
+              stripos($sp_off, 'Every strategy, side by side') !== false
+              && stripos($sp_off, 'Fatal error') === false);
+        check('and the menu offers them with a count instead',
+              stripos($sp_off, 'Disabled (1)') !== false,
+              substr($sp_off, max(0, stripos($sp_off, 'Disabled')), 200));
+        $sp_shown = (string) $curl("$base/strategies.php?disabled=1&s=" . urlencode($sp2));
+        check('shown, it can be opened like any other',
+              strpos($sp_shown, 'quote.php?symbol=CCC') !== false,
+              substr($sp_shown, max(0, strpos($sp_shown, 'sm-view-col')), 400));
+        db()->prepare("update strategy_accounts set enabled='Y' where strategy=?")->execute([$sp2]);
+
+        /* A halted strategy is the one somebody has to look at, so it is
+           first in its group, marked, and said at the top of the page. */
+        /* Both in one group, because the rule is that a halted strategy
+           sorts to the top of its own group: a practice account below a
+           paper one is the grouping working, not the sort failing. */
+        db()->prepare("update strategy_accounts set mode='PAPER', halted='Y',
+                         halt_reason='the books disagree' where strategy=?")->execute([$sp2]);
+        $sp_halt = (string) $curl("$base/strategies.php");
+        $sp_halt_menu = substr($sp_halt, strpos($sp_halt, 'sm-side-menu'),
+                               strpos($sp_halt, 'sm-view-col') - strpos($sp_halt, 'sm-side-menu'));
+        check('a halted strategy is marked in the menu',
+              strpos($sp_halt_menu, 'sm-menu-halted') !== false
+              && strpos($sp_halt_menu, 'sm-dot-halted') !== false,
+              substr($sp_halt_menu, max(0, strpos($sp_halt_menu, 'sm-menu-halted') - 200), 400));
+        check('and sorts above the ones that are running',
+              strpos($sp_halt_menu, strategy_display_name($sp2))
+              < strpos($sp_halt_menu, strategy_display_name($sp)),
+              json_encode([strpos($sp_halt_menu, strategy_display_name($sp2)),
+                           strpos($sp_halt_menu, strategy_display_name($sp))]));
+        check('the halt is said at the top of the page with its reason',
+              stripos($sp_halt, 'is stopped') !== false
+              && stripos($sp_halt, 'the books disagree') !== false,
+              substr($sp_halt, max(0, stripos($sp_halt, 'is stopped') - 200), 400));
+        check('and the summary row says Halted rather than OK',
+              stripos($sp_halt, '>Halted<') !== false);
+        db()->prepare("update strategy_accounts set mode='T212_DEMO', halted='N',
+                         halt_reason=null where strategy=?")->execute([$sp2]);
+
+        /* Nothing a reader sees is a column value or an internal name. The
+           tooltip is the one exception, because somebody debugging needs
+           it and nobody else sees it. */
+        $sp_visible = function ($html) {
+            $html = preg_replace('#<(script|style)\b[^>]*>.*?</\1>#is', ' ', (string) $html);
+            $html = preg_replace('#<[^>]*>#', ' ', $html);
+            return html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        };
+        $sp_names = [];
+        foreach (['', '?s=' . urlencode($sp), '?s=' . urlencode($sp2),
+                  '?s=_backtests', '?s=_how'] as $sp_url) {
+            $sp_text = $sp_visible($curl("$base/strategies.php$sp_url"));
+            foreach (['PAPER', 'T212_DEMO', $sp, $sp2] as $sp_internal) {
+                if (strpos($sp_text, $sp_internal) !== false) {
+                    $sp_names[] = ($sp_url === '' ? 'overview' : $sp_url) . ': ' . $sp_internal;
+                }
+            }
+        }
+        check('no view shows an internal name or a mode constant',
+              count($sp_names) === 0, implode(', ', $sp_names));
+
+        /* Each view answers. A menu entry that leads nowhere is a menu
+           entry somebody will click once. */
+        foreach ([''              => 'Every strategy, side by side',
+                  '?s=_backtests' => 'Backtests',
+                  '?s=_how'       => 'How this works'] as $sp_url => $sp_needle) {
+            $sp_view = (string) $curl("$base/strategies.php$sp_url");
+            check("the " . ($sp_url === '' ? 'overview' : trim($sp_url, '?s=_')) . " view renders",
+                  stripos($sp_view, $sp_needle) !== false
+                  && stripos($sp_view, 'Fatal error') === false,
+                  substr($sp_view, 0, 200));
+        }
+
+        /* The tab is in the address, so a view can be bookmarked and the
+           dashboard can point at one. */
+        $sp_tab = (string) $curl("$base/strategies.php?s=" . urlencode($sp) . "&tab=rules");
+        check('a tab in the address is the tab that is open',
+              preg_match('/id="pane-rules"[^>]*class="[^"]*show active/', $sp_tab) === 1
+              || preg_match('/class="tab-pane fade show active"\s+id="pane-rules"/', $sp_tab) === 1,
+              substr($sp_tab, max(0, strpos($sp_tab, 'pane-rules') - 120), 300));
+        check('and an unknown tab opens the holdings rather than nothing',
+              preg_match('/class="tab-pane fade show active"\s+id="pane-holdings"/',
+                         (string) $curl("$base/strategies.php?s=" . urlencode($sp) . "&tab=nonsense")) === 1);
+
+        /* The dashboard points at a strategy, not at the top of a page of
+           three. */
+        check('the dashboard links straight at a strategy',
+              strpos((string) $curl("$base/index.php"), 'strategies.php?s=') !== false);
+
+        /* The broker page says which account it is reading. "Broker" over a
+           page of figures does not say whether they are the practice
+           account's or the live one's. */
+        $sp_broker = (string) $curl("$base/broker.php");
+        check('the broker page says which account it is reading',
+              stripos($sp_broker, 'Practice account') !== false
+              || stripos($sp_broker, 'Live account, read-only') !== false
+              || stripos($sp_broker, 'Not connected') !== false,
+              substr($sp_broker, max(0, stripos($sp_broker, '<h1')), 200));
+
+        foreach (['strategy_orders','strategy_positions','strategy_targets',
+                  'strategy_values','strategy_rules','strategy_accounts'] as $sp_table) {
+            db()->prepare("delete from $sp_table where strategy=?")->execute([$sp2]);
+        }
+
+        /* Behind the login, like every other page. A strategy's holdings
+           and what it is about to buy are not for the world. */
+        $sp_anon_code = trim((string) shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 30 '
+                             . escapeshellarg("$base/strategies.php?s=" . urlencode($sp))
+                             . ' 2>/dev/null'));
+        $sp_anon_body = (string) shell_exec('curl -s -m 30 '
+                             . escapeshellarg("$base/strategies.php?s=" . urlencode($sp))
+                             . ' 2>/dev/null');
+        check('an anonymous request for a strategy is redirected to login',
+              $sp_anon_code === '302', "status $sp_anon_code");
+        check('and no holding or figure reaches it',
+              stripos($sp_anon_body, 'quote.php?symbol=AAA') === false
+              && strpos($sp_anon_body, '105,000') === false,
+              substr($sp_anon_body, 0, 200));
 
         /* ---------------- The dry run popup ---------------- */
 
@@ -12984,10 +13563,16 @@ STUB
 
         /* The page itself: one way to ask, not two. The old <pre> card and
            its POST route are gone, and the popup is what is left. */
-        $dr_page = (string) $curl("$base/strategies.php");
+        $dr_page = (string) $curl("$base/strategies.php?s=" . urlencode($sp));
         check('the page offers the popup button',
               strpos($dr_page, 'data-dry-run="' . $sp . '"') !== false,
               substr($dr_page, max(0, strpos($dr_page, 'data-dry-run')), 200));
+        /* And the popup is titled for what it is about to show, in the
+           display name: "trend_following_t212" is a column value. */
+        check('and says which account it is, and what the dry run covers',
+              strpos($dr_page, 'data-dry-run-name="' . strategy_display_name($sp) . '"') !== false
+              && stripos($dr_page, 'data-dry-run-title=') !== false,
+              substr($dr_page, max(0, strpos($dr_page, 'data-dry-run-name')), 300));
         check('and the modal it opens, with a Close and no "run for real"',
               strpos($dr_page, 'id="dry-run-modal"') !== false
               && stripos($dr_page, 'data-bs-dismiss="modal"') !== false

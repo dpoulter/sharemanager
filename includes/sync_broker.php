@@ -26,7 +26,7 @@
 	require_once("constants.php");
 	require_once("functions.php");
 	require_once("share_functions.php");
-	require_once("broker.php");
+	require_once(__DIR__ . "/broker.php");
 
 	log_job("sync_broker");
 
