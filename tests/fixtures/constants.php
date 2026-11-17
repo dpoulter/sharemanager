@@ -97,6 +97,32 @@
     define("SM_VAULT_DIR", getenv('SM_VAULT_DIR') ?: "");
     define("SM_VAULT_WORD_BUDGET", (int)(getenv('SM_VAULT_WORD_BUDGET') ?: 6000));
 
+    // The broker connection. Off by default, which is the state of a host
+    // nobody has given a key to - and the state the suite asserts makes no
+    // network call at all. SM_T212_BASE_URL points at tools/t212_stub.php
+    // where a test wants the request, the paging and the error paths
+    // exercised rather than skipped; no test talks to Trading 212.
+    define("T212_ENV", strtolower(trim((string) (getenv("SM_T212_ENV") ?: "off"))));
+    define("T212_API_KEY",    getenv("SM_T212_API_KEY") ?: "");
+    define("T212_API_SECRET", getenv("SM_T212_API_SECRET") ?: "");
+    define("T212_DEMO_API_KEY",    getenv("SM_T212_DEMO_API_KEY") ?: "");
+    define("T212_DEMO_API_SECRET", getenv("SM_T212_DEMO_API_SECRET") ?: "");
+    define("T212_LIVE_BASE_URL", "https://live.trading212.com/api/v0");
+    define("T212_DEMO_BASE_URL", "https://demo.trading212.com/api/v0");
+    define("T212_BASE_URL", getenv("SM_T212_BASE_URL") ?: "");
+    define("T212_TIMEOUT", (int) (getenv("SM_T212_TIMEOUT") ?: 20));
+    define("T212_PAGE_LIMIT", (int) (getenv("SM_T212_PAGE_LIMIT") ?: 50));
+    define("T212_MAX_PAGES", (int) (getenv("SM_T212_MAX_PAGES") ?: 40));
+    define("T212_MAX_WAIT", (int) (getenv("SM_T212_MAX_WAIT") ?: 60));
+    define("T212_HISTORY_DAYS", (int) (getenv("SM_T212_HISTORY_DAYS") ?: 365));
+    define("T212_INSTRUMENT_DAYS", (int) (getenv("SM_T212_INSTRUMENT_DAYS") ?: 7));
+    define("T212_PRICE_UNIT", strtolower(trim((string) (getenv("SM_T212_PRICE_UNIT") ?: "auto"))));
+    define("T212_PROBE_DIR", getenv("SM_T212_PROBE_DIR") ?: sys_get_temp_dir());
+    // Zero, so the suite does not wait out the published gaps between calls
+    // against a stub on localhost. One on a real host.
+    define("T212_THROTTLE", (float) (getenv("SM_T212_THROTTLE") === false
+                                     ? 1.0 : (float) getenv("SM_T212_THROTTLE")));
+
     // Per row tracing. The suite runs with this off by default and flips it on
     // via SM_TEST_DEBUG_LOG to assert that the gate works in both directions.
     define("DEBUG_LOG", getenv('SM_TEST_DEBUG_LOG') === 'Y' ? 'Y' : 'N');

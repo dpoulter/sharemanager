@@ -256,6 +256,100 @@
     //then strategy notes; policy notes are never dropped.
     define("SM_VAULT_WORD_BUDGET", (int)(getenv("SM_VAULT_WORD_BUDGET") ?: 6000));
 
+    //----------------------------------------------------------------------
+    // The broker connection: Trading 212.
+    //
+    // STAGE 1 IS READ ONLY. No code in this application posts an order to
+    // Trading 212, in either environment. The live key Dale created has no
+    // Orders - Execute permission, so a live order would be refused at the
+    // other end as well; that is a second lock, not the first one.
+    //
+    // Same pattern as the market data providers above: the key is read from
+    // the environment and never committed. Cron reads /etc/sharemanager.env,
+    // the website reads the php-fpm pool:
+    //
+    //     env[SM_T212_ENV]            = live-read
+    //     env[SM_T212_API_KEY]        = ...
+    //     env[SM_T212_API_SECRET]     = ...
+    //
+    // With SM_T212_ENV unset or "off" - which is the default, and what a host
+    // that has not been configured has - every broker function is a no-op
+    // that says so, no request is made, and nothing else in the application
+    // changes behaviour.
+    //----------------------------------------------------------------------
+
+    //off | live-read | demo. Anything else is treated as off and said so, not
+    //guessed at: a typo must not pick an environment.
+    define("T212_ENV", strtolower(trim((string) (getenv("SM_T212_ENV") ?: "off"))));
+
+    //The live, read-only key. Basic auth: base64(key:secret).
+    define("T212_API_KEY",    getenv("SM_T212_API_KEY") ?: "");
+    define("T212_API_SECRET", getenv("SM_T212_API_SECRET") ?: "");
+
+    //The demo key, for stage 2. Separate credentials, separate host: a demo
+    //key is not accepted by the live API and the other way round.
+    define("T212_DEMO_API_KEY",    getenv("SM_T212_DEMO_API_KEY") ?: "");
+    define("T212_DEMO_API_SECRET", getenv("SM_T212_DEMO_API_SECRET") ?: "");
+
+    //The two hosts, which are constants rather than configuration so that no
+    //value of any environment variable can point a request at the live host
+    //while the application thinks it is talking to the demo one.
+    define("T212_LIVE_BASE_URL", "https://live.trading212.com/api/v0");
+    define("T212_DEMO_BASE_URL", "https://demo.trading212.com/api/v0");
+
+    //Overridable so the suite can point the client at tools/t212_stub.php and
+    //exercise the request, the paging, the rate limit handling and the error
+    //paths rather than skipping them. Never set this on a real host: it is
+    //the one setting that could send a request somewhere unintended, so the
+    //client logs the base URL it used on every run.
+    define("T212_BASE_URL", getenv("SM_T212_BASE_URL") ?: "");
+
+    //Seconds to wait for a response. The API is quick; a sync that hangs for
+    //a minute per call holds the nightly run up behind it.
+    define("T212_TIMEOUT", (int) (getenv("SM_T212_TIMEOUT") ?: 20));
+
+    //Rows per page on the cursor-paged history calls. Trading 212's maximum
+    //is 50.
+    define("T212_PAGE_LIMIT", (int) (getenv("SM_T212_PAGE_LIMIT") ?: 50));
+
+    //How many pages one call may follow. A cursor that never ends - a bug at
+    //either end - would otherwise be an infinite loop inside the nightly job.
+    define("T212_MAX_PAGES", (int) (getenv("SM_T212_MAX_PAGES") ?: 40));
+
+    //How long to wait for a 429's reset, at most. The header says when the
+    //limit resets; this is the ceiling on believing it. One wait, then the
+    //run gives up and tomorrow tries again.
+    define("T212_MAX_WAIT", (int) (getenv("SM_T212_MAX_WAIT") ?: 60));
+
+    //How far back the first sync reads the order and dividend history. After
+    //that it only needs what is newer than the newest row it holds.
+    define("T212_HISTORY_DAYS", (int) (getenv("SM_T212_HISTORY_DAYS") ?: 365));
+
+    //How often the instrument list is refreshed. It is a large response on a
+    //one request per 50 seconds limit and it changes when a company lists or
+    //leaves, which is not nightly news.
+    define("T212_INSTRUMENT_DAYS", (int) (getenv("SM_T212_INSTRUMENT_DAYS") ?: 7));
+
+    //Whether the broker quotes prices in pounds or pence, for London shares.
+    //
+    //"auto" works it out by comparing the broker's price for a share against
+    //our own close for the same share on the same day, which is the only
+    //honest answer until a real response has been seen: the API documentation
+    //does not say, and getting it wrong is a factor of 100 on every figure.
+    //Set it to pounds or pence once tools/t212_probe.php has settled it.
+    define("T212_PRICE_UNIT", strtolower(trim((string) (getenv("SM_T212_PRICE_UNIT") ?: "auto"))));
+
+    //Multiplier on the per-endpoint minimum gap between requests. One means
+    //the published limits, which is what a real host wants. Zero in the
+    //suite, which is talking to a stub on localhost and has no quota to
+    //protect - at a real gap the broker tests alone would take two minutes.
+    define("T212_THROTTLE", (float) (getenv("SM_T212_THROTTLE") === false
+                                     ? 1.0 : (float) getenv("SM_T212_THROTTLE")));
+
+    //Where the probe writes the raw responses it was run to collect. Outside
+    //the web root: the file holds the account's positions.
+    define("T212_PROBE_DIR", getenv("SM_T212_PROBE_DIR") ?: "/var/lib/sharemanager/probe");
+
     //Debug Flag. Set to "Y" to have debug_log() write per row tracing to
     //message_log. Leave off for normal running: the batch jobs generate tens of
     //thousands of rows per run with it enabled. Anything worth keeping should

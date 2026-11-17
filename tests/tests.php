@@ -21,6 +21,9 @@
     require_once("news.php");
     require_once("rns.php");
     require_once("ai_outlook.php");
+    //The broker connection. Loading it calls nothing and reaches no network:
+    //only broker_sync() does, and only when a key is configured.
+    require_once("broker.php");
 
     $INCLUDES = dirname(__DIR__) . '/includes';
     $passed = 0; $failed = 0; $failures = [];
@@ -2151,6 +2154,683 @@
     db()->exec("delete from strategy_accounts where strategy like '" . STRATEGY_BACKTEST_PREFIX . "%'");
     db()->exec("delete from strategy_backtest_runs");
     s_drop($BT);
+
+    echo "\n--- the broker connection: what a ticker means ---\n";
+
+    /* Trading 212's only documented ticker is AAPL_US_EQ. The format for a
+       London share is not documented, and the two plausible spellings - a
+       country suffix and a single lower case exchange letter - are taken
+       apart rather than bet on. */
+    foreach ([['AAPL_US_EQ', 'AAPL', 'US'],
+              ['VODl_EQ',    'VOD',  'L'],
+              ['VOD_GB_EQ',  'VOD',  'GB'],
+              ['RR.l_EQ',    'RR.',  'L'],
+              ['BT-Al_EQ',   'BT-A', 'L'],
+              ['TSCO',       'TSCO', null]] as [$bk_in, $bk_code, $bk_market]) {
+        $bk_parts = broker_ticker_code($bk_in);
+        check("'$bk_in' is the code $bk_code",
+              $bk_parts['code'] === $bk_code && $bk_parts['market'] === $bk_market,
+              json_encode($bk_parts));
+    }
+
+    /* London writes a short ticker with a trailing dot and this application
+       writes a share class with a dash. Neither is a different company. */
+    check('a trailing dot and a dash do not make a different company',
+          broker_code_key('RR.') === broker_code_key('RR')
+          && broker_code_key('BT-A') === broker_code_key('BT.A'),
+          json_encode([broker_code_key('RR.'), broker_code_key('BT-A'), broker_code_key('BT.A')]));
+
+    echo "\n--- the broker connection: matching instruments to shares ---\n";
+
+    db()->exec("delete from broker_instruments");
+    db()->exec("update stock_symbols set isin=null where exchange='XLON'");
+
+    /* An ISIN match wins over a ticker match. Here the broker's ticker says
+       CCC and its ISIN says BBB, which is a disagreement somebody has to
+       lose: the ISIN is the company, a ticker is only how one venue writes
+       it. */
+    db()->prepare("update stock_symbols set isin='GB00BBBB0002' where symbol='BBB' and exchange='XLON'")
+        ->execute();
+
+    $bk_match = broker_match_instruments([
+        ['ticker' => 'CCCl_EQ', 'isin' => 'GB00BBBB0002', 'name' => 'Beta PLC',
+         'currencyCode' => 'GBX'],
+        ['ticker' => 'AAAl_EQ', 'isin' => 'GB00AAAA0001', 'name' => 'Alpha PLC',
+         'currencyCode' => 'GBX'],
+        ['ticker' => 'AAPL_US_EQ', 'isin' => 'US0378331005', 'name' => 'Apple',
+         'currencyCode' => 'USD'],
+    ], 'XLON');
+
+    $bk_by_ticker = [];
+    foreach ($bk_match['rows'] as $bk_row) { $bk_by_ticker[$bk_row['broker_ticker']] = $bk_row; }
+
+    check('an ISIN match wins over a ticker match',
+          ($bk_by_ticker['CCCl_EQ']['symbol'] ?? null) === 'BBB'
+          && ($bk_by_ticker['CCCl_EQ']['matched_on'] ?? null) === 'isin',
+          json_encode($bk_by_ticker['CCCl_EQ'] ?? null));
+    check('and a ticker match is used where there is no ISIN on our side',
+          ($bk_by_ticker['AAAl_EQ']['symbol'] ?? null) === 'AAA'
+          && ($bk_by_ticker['AAAl_EQ']['matched_on'] ?? null) === 'ticker',
+          json_encode($bk_by_ticker['AAAl_EQ'] ?? null));
+    check('an instrument that is none of our shares is counted, not matched',
+          !isset($bk_by_ticker['AAPL_US_EQ']) && $bk_match['unknown'] === 1,
+          json_encode([array_keys($bk_by_ticker), $bk_match['unknown']]));
+
+    /* Two instruments fitting one share is the same problem as one code
+       fitting two shares, and has the same answer: neither is chosen. A
+       wrong match values the wrong company's holding. */
+    $bk_two = broker_match_instruments([
+        ['ticker' => 'AAAl_EQ',    'name' => 'Alpha PLC', 'currencyCode' => 'USD'],
+        ['ticker' => 'AAA_US_EQ',  'name' => 'Alpha Inc', 'currencyCode' => 'USD'],
+    ], 'XLON');
+
+    check('two instruments that fit one share are left unmatched, not guessed at',
+          $bk_two['matched'] === 0 && $bk_two['ambiguous'] === 2,
+          json_encode($bk_two));
+    check('and the page is told which ones and why',
+          count(array_filter($bk_two['rows'], function ($r) {
+              return $r['status'] === 'ambiguous'
+                  && stripos((string) $r['note'], 'more than one instrument') !== false; })) === 2,
+          json_encode(array_column($bk_two['rows'], 'note')));
+
+    /* Unless one of them is obviously the sterling one, which settles it
+       without guessing. */
+    $bk_ccy = broker_match_instruments([
+        ['ticker' => 'AAAl_EQ',   'name' => 'Alpha PLC', 'currencyCode' => 'GBX'],
+        ['ticker' => 'AAA_US_EQ', 'name' => 'Alpha Inc', 'currencyCode' => 'USD'],
+    ], 'XLON');
+    check('a sterling instrument is preferred over a foreign one of the same code',
+          $bk_ccy['matched'] === 1
+          && $bk_ccy['rows'][0]['broker_ticker'] === 'AAAl_EQ',
+          json_encode(array_map(function ($r) {
+              return [$r['broker_ticker'], $r['status']]; }, $bk_ccy['rows'])));
+
+    /* And the shares the broker has nothing for are listed rather than
+       quietly missing. */
+    broker_store_instruments(BROKER_T212, $bk_match['rows'], asof_date());
+    $bk_unmatched = array_column(broker_unmatched_symbols(BROKER_T212, 'XLON'), 'symbol');
+    check('a share the broker has no instrument for is listed',
+          in_array('DDD', $bk_unmatched, true) && !in_array('AAA', $bk_unmatched, true),
+          implode(',', $bk_unmatched));
+    check('and a share matched by ISIN is not in that list',
+          !in_array('BBB', $bk_unmatched, true), implode(',', $bk_unmatched));
+
+    db()->exec("update stock_symbols set isin=null where exchange='XLON'");
+    db()->exec("delete from broker_instruments");
+
+    echo "\n--- the broker connection: pounds or pence ---\n";
+
+    /* A London share quoted at 690p is either 690 or 6.90 at the other end,
+       and those are a hundred times apart. The API documentation does not
+       say which, so it is decided by comparing the broker's price against
+       our own close for the same share rather than assumed - get it wrong
+       and every figure on the page is out by a hundred. */
+    $bk_690 = [['symbol' => 'T6P', 'price' => 6.90,  'close' => 690.0]];
+    $bk_pence = [['symbol' => 'T6P', 'price' => 690.0, 'close' => 690.0]];
+
+    check('a 690p share priced at 6.90 means the broker is quoting pounds',
+          broker_price_unit($bk_690, 'auto')['unit'] === 'pounds');
+    check('and the same share priced at 690 means pence',
+          broker_price_unit($bk_pence, 'auto')['unit'] === 'pence');
+    check('either way it is 6.90 in pounds, which is what gets stored',
+          abs(broker_to_pounds(6.90, 'pounds') - 6.90) < 0.0001
+          && abs(broker_to_pounds(690.0, 'pence') - 6.90) < 0.0001);
+
+    /* A price that is neither is not rounded to the nearer answer. */
+    check('a price that is neither leaves the unit unknown',
+          broker_price_unit([['symbol' => 'T6P', 'price' => 64.0, 'close' => 690.0]],
+                            'auto')['unit'] === null);
+    check('and so does a disagreement between two holdings',
+          broker_price_unit([['symbol' => 'A', 'price' => 6.90, 'close' => 690.0],
+                             ['symbol' => 'B', 'price' => 240.0, 'close' => 240.0]],
+                            'auto')['unit'] === null);
+    check('nothing to compare against is unknown too, rather than a guess',
+          broker_price_unit([], 'auto')['unit'] === null
+          && stripos(broker_price_unit([], 'auto')['why'], 'unknown') !== false);
+    check('and the setting overrides the lot, for when the probe has settled it',
+          broker_price_unit([], 'pounds')['unit'] === 'pounds'
+          && broker_price_unit($bk_pence, 'pounds')['unit'] === 'pounds');
+
+
+    echo "\n--- the broker connection: off means off ---\n";
+
+    /* The stub, which is where every request in this section goes. No test
+       talks to Trading 212: the live key reads a real account with real money
+       in it, and a suite that calls somebody's broker on every run is not a
+       suite anybody should run. */
+    $bk_dir  = sys_get_temp_dir() . '/smt212' . getmypid();
+    exec('rm -rf ' . escapeshellarg($bk_dir));
+    @mkdir($bk_dir, 0777, true);
+
+    $bk_port = 8371;
+    $bk_pid  = (int) trim((string) shell_exec(
+        'SM_STUB_DIR=' . escapeshellarg($bk_dir) . ' php -S 127.0.0.1:' . $bk_port . ' '
+        . escapeshellarg(dirname(__DIR__) . '/tools/t212_stub.php')
+        . ' > /dev/null 2>&1 & echo $!'));
+    usleep(900000);
+
+    /* A key that could not be mistaken for a real one, so a test can prove it
+       never reaches a page, a log line or a stored problem. */
+    $bk_key    = 'T212-TEST-KEY-NOT-REAL-7b2e';
+    $bk_secret = 'T212-TEST-SECRET-NOT-REAL-4c9f';
+
+    $bk_base = 'http://127.0.0.1:' . $bk_port . '/api/v0';
+    $bk_env  = ['SM_T212_ENV'        => 'live-read',
+                'SM_T212_API_KEY'    => $bk_key,
+                'SM_T212_API_SECRET' => $bk_secret,
+                'SM_T212_BASE_URL'   => $bk_base,
+                'SM_T212_THROTTLE'   => '0',
+                'SM_T212_MAX_WAIT'   => '1'];
+
+    $bk_write = function ($name, $content) use ($bk_dir) {
+        file_put_contents("$bk_dir/$name", $content);
+    };
+    $bk_remove = function ($name) use ($bk_dir) { @unlink("$bk_dir/$name"); };
+    $bk_reset  = function () use ($bk_dir) { @file_put_contents("$bk_dir/t212_requests", ''); };
+    $bk_asked  = function () use ($bk_dir) {
+        return array_values(array_filter(explode("\n",
+               (string) @file_get_contents("$bk_dir/t212_requests"))));
+    };
+    $bk_last_run = function () {
+        $rows = rows("select * from broker_sync_runs order by run_id desc limit 1");
+        return count($rows) ? $rows[0] : null;
+    };
+
+    /* Prove this run's stub is the one answering before trusting a word it
+       says. A server left behind by an earlier run holds the port, serves its
+       own control directory and turns every check below into a puzzle. */
+    $bk_up = false;
+    for ($bk_try = 0; $bk_try < 25 && !$bk_up; $bk_try++) {
+        usleep(200000);
+        @file_get_contents($bk_base . '/equity/account/summary', false,
+                           stream_context_create(['http' => ['timeout' => 2,
+                                                             'ignore_errors' => true]]));
+        $bk_up = count($bk_asked()) > 0;
+    }
+    check('the broker stub answers, and from this run\'s control directory',
+          $bk_up, 'nothing was recorded in ' . $bk_dir
+                . ' - is a stub from an earlier run still on port ' . $bk_port . '?');
+
+    /* The stub refuses anything whose Basic credentials are not these, so a
+       call that gets an answer at all has proved the header was built right. */
+    $bk_write('t212_auth', $bk_key . ':' . $bk_secret);
+
+    db()->exec("delete from broker_sync_runs");
+    db()->exec("delete from broker_positions");
+    db()->exec("delete from broker_orders");
+    db()->exec("delete from broker_dividends");
+    db()->exec("delete from broker_account_values");
+    db()->exec("delete from broker_instruments");
+
+    /* Off is the normal state of a host nobody has configured, and the one
+       thing it must do is nothing at all: no socket, no row, no complaint. */
+    $bk_reset();
+    [$bk_off_out, $bk_off_rc] = run_script('sync_broker.php', [],
+        ['SM_T212_ENV' => 'off', 'SM_T212_API_KEY' => $bk_key,
+         'SM_T212_API_SECRET' => $bk_secret, 'SM_T212_BASE_URL' => $bk_base]);
+
+    check('with the connection off the job exits cleanly and says so',
+          $bk_off_rc === 0 && stripos($bk_off_out, 'off') !== false,
+          'rc ' . $bk_off_rc . ': ' . $bk_off_out);
+    check('and makes no request at all',
+          count($bk_asked()) === 0, implode("\n", $bk_asked()));
+    check('and writes no run, because nothing ran',
+          (int) scalar("select count(*) from broker_sync_runs") === 0);
+
+    /* The same with an environment set and no key: configuration half done
+       is still not configured. */
+    $bk_reset();
+    [$bk_nokey_out, $bk_nokey_rc] = run_script('sync_broker.php', [],
+        ['SM_T212_ENV' => 'live-read', 'SM_T212_BASE_URL' => $bk_base]);
+    check('an environment with no key asks for nothing either',
+          $bk_nokey_rc === 0 && count($bk_asked()) === 0
+          && stripos($bk_nokey_out, 'no ') !== false,
+          'rc ' . $bk_nokey_rc . ': ' . $bk_nokey_out);
+
+    /* And a typo in the environment name is not read as one of the three. */
+    $bk_reset();
+    [$bk_typo_out] = run_script('sync_broker.php', [],
+        ['SM_T212_ENV' => 'live', 'SM_T212_API_KEY' => $bk_key,
+         'SM_T212_API_SECRET' => $bk_secret, 'SM_T212_BASE_URL' => $bk_base]);
+    check('a mistyped environment is not guessed at',
+          count($bk_asked()) === 0 && stripos($bk_typo_out, "'live'") !== false,
+          $bk_typo_out);
+
+    echo "\n--- the broker connection: a sync ---\n";
+
+    /* A 690p share, which is the figure the brief names: the broker sends
+       6.90 and the page must show GBP6.90, not 690 and not 0.069. */
+    db()->exec("delete from stock_symbols where symbol='T6P'");
+    db()->exec("delete from historical_prices where symbol='T6P'");
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                              sector,market,industry_group,industry)
+                   values ('T6P','Six Ninety PLC','Six Ninety PLC','XLON','Y',
+                           'Industrials','Main Market','Industrials','Aerospace')")->execute();
+    db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                   values ('T6P','XLON',?,690)")->execute([asof_date()]);
+
+    $bk_write('instruments.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'name' => 'Six Ninety PLC', 'currencyCode' => 'GBX',
+         'isin' => 'GB00T6P00001', 'type' => 'STOCK'],
+        ['ticker' => 'AAAl_EQ', 'name' => 'Alpha PLC', 'currencyCode' => 'GBX',
+         'isin' => 'GB00AAAA0001', 'type' => 'STOCK'],
+        ['ticker' => 'AAPL_US_EQ', 'name' => 'Apple', 'currencyCode' => 'USD',
+         'isin' => 'US0378331005', 'type' => 'STOCK'],
+    ]));
+    $bk_write('positions.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 6.10,
+         'currentPrice' => 6.90, 'ppl' => 160.0],
+    ]));
+    $bk_write('orders.json', json_encode(['items' => [
+        ['id' => 'ord-1', 'ticker' => 'T6Pl_EQ', 'filledQuantity' => 200,
+         'fillPrice' => 6.10, 'status' => 'FILLED', 'type' => 'MARKET',
+         'dateCreated' => '2026-11-10T09:30:00Z', 'dateExecuted' => '2026-11-10T09:30:05Z'],
+        ['id' => 'ord-2', 'ticker' => 'AAAl_EQ', 'filledQuantity' => -50,
+         'fillPrice' => 2.40, 'status' => 'FILLED', 'type' => 'MARKET',
+         'dateCreated' => '2026-11-12T10:00:00Z', 'dateExecuted' => '2026-11-12T10:00:02Z'],
+    ], 'nextPagePath' => null]));
+    $bk_write('dividends.json', json_encode(['items' => [
+        ['reference' => 'div-1', 'ticker' => 'T6Pl_EQ', 'amount' => 12.34,
+         'grossAmountPerShare' => 0.0617, 'quantity' => 200,
+         'paidOn' => '2026-11-05T00:00:00Z', 'type' => 'ORDINARY'],
+    ], 'nextPagePath' => null]));
+
+    $bk_reset();
+    [$bk_out, $bk_rc] = run_script('sync_broker.php', ['--instruments'], $bk_env);
+    $bk_run = $bk_last_run();
+
+    check('a sync runs and records what it read',
+          $bk_rc === 0 && $bk_run !== null && $bk_run['status'] === 'OK',
+          'rc ' . $bk_rc . ': ' . $bk_out);
+    check('and sends the key as Basic credentials, which the stub checks',
+          count(array_filter($bk_asked(), function ($line) {
+              return strpos($line, 'auth=present') !== false; })) === count($bk_asked())
+          && count($bk_asked()) > 0,
+          implode("\n", $bk_asked()));
+
+    $bk_cash = rows("select * from broker_account_values order by as_of_date desc limit 1");
+    check('the cash, the invested value and the total are stored in pounds',
+          count($bk_cash) === 1 && abs((float) $bk_cash[0]['cash'] - 250.00) < 0.005
+          && abs((float) $bk_cash[0]['invested'] - 1000.00) < 0.005
+          && abs((float) $bk_cash[0]['total'] - 1250.00) < 0.005,
+          json_encode($bk_cash));
+
+    $bk_pos = rows("select * from broker_positions where symbol='T6P'");
+    check('the 690p holding is valued in pounds, not a hundred times either way',
+          count($bk_pos) === 1
+          && abs((float) $bk_pos[0]['current_price'] - 6.90) < 0.005
+          && abs((float) $bk_pos[0]['value'] - 1380.00) < 0.01
+          && $bk_pos[0]['price_unit'] === 'pounds',
+          json_encode($bk_pos));
+
+    /* The same account sending pence instead must land on the same pounds. */
+    $bk_write('positions.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 610.0,
+         'currentPrice' => 690.0, 'ppl' => 160.0],
+    ]));
+    run_script('sync_broker.php', [], $bk_env);
+    $bk_pence_pos = rows("select * from broker_positions where symbol='T6P'");
+    check('and a broker quoting pence lands on exactly the same figure',
+          count($bk_pence_pos) === 1
+          && abs((float) $bk_pence_pos[0]['current_price'] - 6.90) < 0.005
+          && abs((float) $bk_pence_pos[0]['value'] - 1380.00) < 0.01
+          && $bk_pence_pos[0]['price_unit'] === 'pence',
+          json_encode($bk_pence_pos));
+
+    /* A price that is neither stores nothing rather than something wrong. */
+    $bk_write('positions.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 61.0,
+         'currentPrice' => 64.0, 'ppl' => 160.0],
+    ]));
+    run_script('sync_broker.php', [], $bk_env);
+    $bk_odd = rows("select * from broker_positions where symbol='T6P'");
+    check('a price that matches neither unit stores no price at all',
+          count($bk_odd) === 1 && $bk_odd[0]['current_price'] === null
+          && $bk_odd[0]['value'] === null && $bk_odd[0]['price_unit'] === null,
+          json_encode($bk_odd));
+    check('and the run says so, in words somebody can act on',
+          stripos((string) $bk_last_run()['problems'], 'price unit') !== false
+          && stripos((string) $bk_last_run()['problems'], 'SM_T212_PRICE_UNIT') !== false,
+          (string) $bk_last_run()['problems']);
+
+    /* Back to the honest figures for the rest of the section. */
+    $bk_write('positions.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 6.10,
+         'currentPrice' => 6.90, 'ppl' => 160.0],
+    ]));
+
+    echo "\n--- the broker connection: the history, once each ---\n";
+
+    $bk_orders = rows("select * from broker_orders order by broker_order_id");
+    check('both orders are stored, with a sell read as a sell',
+          count($bk_orders) === 2
+          && $bk_orders[0]['side'] === 'BUY' && (float) $bk_orders[0]['quantity'] === 200.0
+          && $bk_orders[1]['side'] === 'SELL' && (float) $bk_orders[1]['quantity'] === 50.0,
+          json_encode(array_map(function ($o) {
+              return [$o['broker_order_id'], $o['side'], $o['quantity']]; }, $bk_orders)));
+    check('a dividend is stored against our own symbol',
+          (int) scalar("select count(*) from broker_dividends where symbol='T6P'") === 1);
+
+    /* The per-share figure is the one a London investor expects in pence, so
+       it is the one the broker might send that way - and the dividend row
+       carries its own check: the total over the quantity is the same figure
+       in the same currency as the total. 12.34 over 200 is 0.0617 a share,
+       so a per-share of 6.17 arrived in pence and is stored as pounds like
+       everything else. */
+    check('a dividend per share is stored in the same money as its total',
+          abs((float) scalar("select amount_per_share from broker_dividends
+                               where broker_dividend_id='div-1'") - 0.0617) < 0.00001,
+          scalar("select amount_per_share from broker_dividends where broker_dividend_id='div-1'"));
+
+    $bk_write('dividends.json', json_encode(['items' => [
+        ['reference' => 'div-pence', 'ticker' => 'T6Pl_EQ', 'amount' => 12.34,
+         'grossAmountPerShare' => 6.17, 'quantity' => 200,
+         'paidOn' => '2026-11-06T00:00:00Z', 'type' => 'ORDINARY'],
+    ], 'nextPagePath' => null]));
+    run_script('sync_broker.php', [], $bk_env);
+    check('and a per share that arrives in pence lands on the same figure',
+          abs((float) scalar("select amount_per_share from broker_dividends
+                               where broker_dividend_id='div-pence'") - 0.0617) < 0.00001,
+          scalar("select amount_per_share from broker_dividends where broker_dividend_id='div-pence'"));
+    db()->exec("delete from broker_dividends where broker_dividend_id='div-pence'");
+    $bk_write('dividends.json', json_encode(['items' => [
+        ['reference' => 'div-1', 'ticker' => 'T6Pl_EQ', 'amount' => 12.34,
+         'grossAmountPerShare' => 0.0617, 'quantity' => 200,
+         'paidOn' => '2026-11-05T00:00:00Z', 'type' => 'ORDINARY'],
+    ], 'nextPagePath' => null]));
+
+    /* The order calls are not idempotent at the other end, and neither is a
+       nightly job that runs twice: everything is keyed on Trading 212's own
+       ids, so a re-run adds nothing. */
+    $bk_first_seen = scalar("select first_seen from broker_orders where broker_order_id='ord-1'");
+    sleep(1);
+    [$bk_again_out] = run_script('sync_broker.php', [], $bk_env);
+    $bk_again = $bk_last_run();
+
+    check('a second sync adds no duplicate orders or dividends',
+          (int) scalar("select count(*) from broker_orders") === 2
+          && (int) scalar("select count(*) from broker_dividends") === 1,
+          scalar("select count(*) from broker_orders") . '/' .
+          scalar("select count(*) from broker_dividends"));
+    check('and counts none of them as new',
+          (int) $bk_again['new_orders'] === 0 && (int) $bk_again['new_dividends'] === 0,
+          json_encode([$bk_again['new_orders'], $bk_again['new_dividends']]));
+    check('while keeping when each was first seen',
+          scalar("select first_seen from broker_orders where broker_order_id='ord-1'")
+          === $bk_first_seen,
+          json_encode([$bk_first_seen,
+                       scalar("select first_seen from broker_orders where broker_order_id='ord-1'")]));
+
+    echo "\n--- the broker connection: paging ---\n";
+
+    /* The history calls are cursor paged and the cursor is a path. A client
+       that reads the first page and stops silently loses history. */
+    $bk_write('orders.json', json_encode(['items' => [
+        ['id' => 'page1-a', 'ticker' => 'T6Pl_EQ', 'filledQuantity' => 10,
+         'fillPrice' => 6.90, 'status' => 'FILLED', 'dateExecuted' => '2026-11-01T09:00:00Z'],
+        ['id' => 'page1-b', 'ticker' => 'T6Pl_EQ', 'filledQuantity' => 20,
+         'fillPrice' => 6.90, 'status' => 'FILLED', 'dateExecuted' => '2026-11-02T09:00:00Z'],
+    ]]));
+    $bk_write('orders_page2.json', json_encode(['items' => [
+        ['id' => 'page2-a', 'ticker' => 'T6Pl_EQ', 'filledQuantity' => 30,
+         'fillPrice' => 6.90, 'status' => 'FILLED', 'dateExecuted' => '2026-11-03T09:00:00Z'],
+    ], 'nextPagePath' => null]));
+
+    db()->exec("delete from broker_orders");
+    $bk_reset();
+    run_script('sync_broker.php', [], $bk_env);
+
+    check('the cursor is followed to the end',
+          (int) scalar("select count(*) from broker_orders where broker_order_id like 'page%'") === 3,
+          json_encode(rows("select broker_order_id from broker_orders order by broker_order_id")));
+    check('and the second page was actually asked for',
+          count(array_filter($bk_asked(), function ($line) {
+              return strpos($line, 'cursor=next') !== false; })) === 1,
+          implode("\n", $bk_asked()));
+
+    $bk_remove('orders_page2.json');
+
+    echo "\n--- the broker connection: when the other end says no ---\n";
+
+    /* 429 is an instruction, not a failure to retry through. One wait for
+       the reset the headers give, then ask once more. */
+    $bk_write('t212_429_once', '1');
+    $bk_reset();
+    [$bk_429_out, $bk_429_rc] = run_script('sync_broker.php', [], $bk_env);
+
+    check('a single 429 is waited out and the sync finishes',
+          $bk_429_rc === 0 && $bk_last_run()['status'] === 'OK',
+          'rc ' . $bk_429_rc . ': ' . $bk_429_out);
+    check('and the call that was refused was made exactly twice',
+          count(array_filter($bk_asked(), function ($line) {
+              return strpos($line, '/equity/account/summary') !== false; })) === 2,
+          implode("\n", $bk_asked()));
+
+    /* A limit that is still complaining after its own reset wants less
+       traffic than this. The run stops rather than hammering it. */
+    $bk_write('t212_mode', '429');
+    $bk_reset();
+    [$bk_stop_out, $bk_stop_rc] = run_script('sync_broker.php', [], $bk_env);
+
+    check('a limit that does not clear stops the run',
+          stripos($bk_stop_out, 'less traffic') !== false,
+          'rc ' . $bk_stop_rc . ': ' . $bk_stop_out);
+    check('and it asked twice in total, not once per call',
+          count($bk_asked()) === 2, implode("\n", $bk_asked()));
+    $bk_remove('t212_mode');
+
+    /* A key without the permission a call needs answers 403, which is a
+       setting somebody has to change rather than something tonight's run can
+       fix - and it must not cost the calls that do work. */
+    $bk_write('t212_mode_dividends', '403');
+    $bk_reset();
+    [$bk_403_out, $bk_403_rc] = run_script('sync_broker.php', [], $bk_env);
+    $bk_403_run = $bk_last_run();
+
+    check('a 403 on one call does not stop the others',
+          $bk_403_rc === 0 && $bk_403_run['status'] === 'PARTIAL'
+          && (int) $bk_403_run['positions'] === 1,
+          'rc ' . $bk_403_rc . ': ' . $bk_403_out);
+    check('and the page can tell it is a permission rather than a glitch',
+          stripos((string) $bk_403_run['problems'], '(403)') !== false
+          && broker_status()['forbidden'] === true,
+          (string) $bk_403_run['problems']);
+    $bk_remove('t212_mode_dividends');
+
+    /* A response that is not JSON is not half-read. */
+    $bk_write('t212_mode_positions', 'garbage');
+    [$bk_json_out] = run_script('sync_broker.php', [], $bk_env);
+    check('an answer that is not JSON is refused rather than parsed',
+          stripos($bk_json_out, 'not JSON') !== false, $bk_json_out);
+    $bk_remove('t212_mode_positions');
+
+    echo "\n--- the broker connection: the key never gets out ---\n";
+
+    /* The one rule that has no acceptable failure. The key is in the
+       environment, the Authorization header is built at the moment of the
+       request, and nothing that leaves this code carries either. */
+    $bk_write('t212_mode', '401');
+    [$bk_401_out, $bk_401_rc] = run_script('sync_broker.php', [], $bk_env);
+    $bk_401_run = $bk_last_run();
+    $bk_remove('t212_mode');
+
+    check('a refused key says so in words',
+          stripos($bk_401_out, 'did not accept the key') !== false,
+          $bk_401_out);
+    check('and the key is not in the output that says it',
+          strpos($bk_401_out, $bk_key) === false
+          && strpos($bk_401_out, $bk_secret) === false,
+          $bk_401_out);
+    check('nor in what was recorded about the run',
+          strpos((string) $bk_401_run['problems'], $bk_key) === false
+          && strpos((string) $bk_401_run['problems'], $bk_secret) === false,
+          (string) $bk_401_run['problems']);
+    check('nor in the application log',
+          (int) scalar("select count(*) from message_log
+                         where message_text like ? or message_text like ?",
+                       ['%' . $bk_key . '%', '%' . $bk_secret . '%']) === 0);
+
+    /* And the masker holds whatever is handed to it, including a header that
+       was never ours. */
+    /* The masker also takes out a credential it was never configured with -
+       a header or a key=value read out of a response or a file - because the
+       configured key is not the only thing that can end up in a line of
+       text. (That the CONFIGURED key is masked is what the three checks
+       above prove: they ran in a process that had one.) */
+    check('a credential in any text is taken out of it',
+          strpos(t212_mask('Authorization: Basic ' . base64_encode('a:b')),
+                 base64_encode('a:b')) === false
+          && strpos(t212_mask('x-api-key: abc123def'), 'abc123def') === false
+          && strpos(t212_mask('{"apiKey":"abc123def"}'), 'abc123def') === false,
+          t212_mask('Authorization: Basic ' . base64_encode('a:b'))
+          . ' / ' . t212_mask('x-api-key: abc123def')
+          . ' / ' . t212_mask('{"apiKey":"abc123def"}'));
+    check('and text with no credential in it is left alone',
+          t212_mask('read 3 positions') === 'read 3 positions');
+
+    echo "\n--- the broker connection: the probe ---\n";
+
+    /* The probe is what settles the three things the API documentation does
+       not state, so it has to work on the night somebody runs it - and it
+       has to be safe to send its output back, which means no credential in
+       the file. */
+    $bk_probe_dir = $bk_dir . '/probe';
+    @mkdir($bk_probe_dir, 0777, true);
+
+    $bk_run_tool = function ($tool, $args, $env) {
+        global $INCLUDES;
+        $include_path = dirname(__DIR__) . '/tests/fixtures' . PATH_SEPARATOR . $INCLUDES;
+        $cmd = '';
+        foreach ($env as $k => $v) { $cmd .= $k . '=' . escapeshellarg($v) . ' '; }
+        $cmd .= 'php -d include_path=' . escapeshellarg($include_path) . ' '
+              . escapeshellarg(dirname(__DIR__) . '/tools/' . $tool);
+        foreach ($args as $a) { $cmd .= ' ' . escapeshellarg($a); }
+        exec($cmd . ' 2>&1', $out, $rc);
+        return [implode("\n", $out), $rc];
+    };
+
+    [$bk_probe_out, $bk_probe_rc] = $bk_run_tool('t212_probe.php',
+                                                 ['--dir=' . $bk_probe_dir], $bk_env);
+
+    check('the probe runs and asks for the three calls it needs',
+          $bk_probe_rc === 0, 'rc ' . $bk_probe_rc . ': ' . $bk_probe_out);
+    check('it says which field name carried the cash',
+          stripos($bk_probe_out, 'summary_cash') !== false
+          && stripos($bk_probe_out, 'cash = 250') !== false,
+          $bk_probe_out);
+    check('it shows a broker ticker beside our symbol and our own close',
+          stripos($bk_probe_out, 'T6Pl_EQ') !== false
+          && stripos($bk_probe_out, 'our close') !== false,
+          $bk_probe_out);
+    check('and it answers the pounds or pence question outright',
+          stripos($bk_probe_out, 'price unit: pounds') !== false, $bk_probe_out);
+    check('it loads one set of constants, not two',
+          stripos($bk_probe_out, 'already defined') === false, $bk_probe_out);
+
+    $bk_probe_files = glob($bk_probe_dir . '/t212_probe_*.json');
+    check('it writes the raw answers to a file outside the web root',
+          count($bk_probe_files) === 1
+          && strpos((string) $bk_probe_files[0], '/public/') === false,
+          json_encode($bk_probe_files));
+    if (count($bk_probe_files)) {
+        $bk_probe_json = (string) file_get_contents($bk_probe_files[0]);
+        check('the file holds the real answers, so the mapping can be written from it',
+              strpos($bk_probe_json, 'currencyCode') !== false
+              && strpos($bk_probe_json, 'T6Pl_EQ') !== false);
+        check('and no credential, because that file gets sent back',
+              strpos($bk_probe_json, $bk_key) === false
+              && strpos($bk_probe_json, $bk_secret) === false
+              && strpos($bk_probe_json, base64_encode($bk_key . ':' . $bk_secret)) === false);
+        check('it is readable by its owner and nobody else',
+              (fileperms($bk_probe_files[0]) & 0777) === 0600,
+              decoct(fileperms($bk_probe_files[0]) & 0777));
+    }
+
+    /* With the connection off it asks for nothing and writes nothing, like
+       everything else here. */
+    $bk_reset();
+    [$bk_probe_off_out, $bk_probe_off_rc] = $bk_run_tool('t212_probe.php',
+        ['--dir=' . $bk_probe_dir], ['SM_T212_ENV' => 'off', 'SM_T212_BASE_URL' => $bk_base]);
+    check('with the connection off the probe says so and asks for nothing',
+          $bk_probe_off_rc === 1 && count($bk_asked()) === 0
+          && count(glob($bk_probe_dir . '/t212_probe_*.json')) === 1,
+          'rc ' . $bk_probe_off_rc . ': ' . $bk_probe_off_out);
+
+    echo "\n--- the broker connection: nothing here can place an order ---\n";
+
+    /* Stage 1 reads. This is the test the brief asks for in stage 2, written
+       now, because the thing it protects against is a line of code somebody
+       adds later without noticing what it reaches. */
+    $bk_client_src = (string) file_get_contents(dirname(__DIR__) . '/includes/t212_client.php');
+    $bk_broker_src = (string) file_get_contents(dirname(__DIR__) . '/includes/broker.php');
+    $bk_sync_src   = (string) file_get_contents(dirname(__DIR__) . '/includes/sync_broker.php');
+    $bk_page_src   = (string) file_get_contents(dirname(__DIR__) . '/public/broker.php');
+
+    /* Comments first, as ever: a test that reads a comment saying "no POST"
+       and passes is a test of the comment. */
+    $bk_code = function ($php) {
+        $out = '';
+        foreach (token_get_all($php) as $token) {
+            if (is_array($token)) {
+                if (in_array($token[0], [T_COMMENT, T_DOC_COMMENT], true)) { continue; }
+                $out .= $token[1];
+            }
+            else { $out .= $token; }
+        }
+        return $out;
+    };
+
+    foreach (['t212_client.php' => $bk_client_src, 'broker.php' => $bk_broker_src,
+              'sync_broker.php' => $bk_sync_src] as $bk_name => $bk_src) {
+        $bk_bare = $bk_code($bk_src);
+        check("$bk_name names no HTTP method but GET",
+              preg_match('~[\'"](POST|PUT|PATCH|DELETE)[\'"]~i', $bk_bare) === 0
+              && stripos($bk_bare, 'CURLOPT_POST') === false,
+              $bk_name);
+    }
+
+    /* The page is the exception, and for a reason that is not a loophole: it
+       reads $_SERVER["REQUEST_METHOD"] to tell its own form's POST from a
+       page load. What matters for it is that it makes no request of its own -
+       it calls broker_sync(), which goes through the client. */
+    $bk_page_bare = $bk_code($bk_page_src);
+    check('the page itself opens no connection of any kind',
+          stripos($bk_page_bare, 'curl_') === false
+          && stripos($bk_page_bare, 'stream_context_create') === false
+          && stripos($bk_page_bare, 'file_get_contents') === false
+          && stripos($bk_page_bare, 'fsockopen') === false,
+          'public/broker.php');
+
+    check('and the live host appears only where the base URL is defined',
+          substr_count($bk_code((string) file_get_contents(dirname(__DIR__)
+                                . '/includes/constants.php')), 'live.trading212.com') === 1
+          && stripos($bk_code($bk_client_src), 'live.trading212.com') === false
+          && stripos($bk_code($bk_broker_src), 'live.trading212.com') === false);
+    check('the demo host is a constant too, so stage 2 cannot be pointed at the live one',
+          defined('T212_DEMO_BASE_URL') && T212_DEMO_BASE_URL === 'https://demo.trading212.com/api/v0');
+    check('and the client has no method that could post an order',
+          !method_exists('T212Client', 'post') && !method_exists('T212Client', 'request')
+          && !method_exists('T212Client', 'place_order'));
+
+    /* The nightly run reads the broker after the strategies and is allowed to
+       fail without taking the run with it. */
+    $bk_refresh = (string) file_get_contents(dirname(__DIR__) . '/includes/refresh_all.sh');
+    check('the nightly run syncs the broker after the strategies',
+          strpos($bk_refresh, 'sync_broker.php') !== false
+          && strpos($bk_refresh, 'run_strategies.php') < strpos($bk_refresh, 'sync_broker.php'));
+    check('and a broker that is not answering does not take the night with it',
+          preg_match('~sync_broker\.php" \|\| echo~', $bk_refresh) === 1);
+
+    if ($bk_pid > 0) { exec("kill $bk_pid 2>/dev/null"); }
+    exec('rm -rf ' . escapeshellarg($bk_dir));
+    db()->exec("delete from broker_sync_runs");
+    db()->exec("delete from broker_positions");
+    db()->exec("delete from broker_orders");
+    db()->exec("delete from broker_dividends");
+    db()->exec("delete from broker_account_values");
+    db()->exec("delete from broker_instruments");
+    db()->exec("delete from stock_symbols where symbol='T6P'");
+    db()->exec("delete from historical_prices where symbol='T6P'");
 
     echo "\n--- every PHP file parses ---\n";
 
@@ -7888,9 +8568,19 @@
     $pf_set_ma($pf_trend_price * 0.99);
     check('one per cent above it is a warning, because that is the sell rule',
           $pf_trend_of() === 'near');
-    $pf_set_ma($pf_trend_price / 1.02);
-    check('exactly two per cent above is still the warning, not clear of it',
+    /* Just inside the band and just outside it, rather than exactly on it.
+       The average is stored as decimal(20,6) and the rule divides the price
+       by it, so "exactly 2% above" cannot be expressed: round(p / 1.02, 6)
+       comes back as a gap of 0.0200000022 for nine of the twelve seeded
+       prices and 0.0199999984 for the other three. A test on that boundary
+       passes or fails on the day's prices, which is a test of the rounding
+       rather than of the rule. */
+    $pf_set_ma($pf_trend_price / 1.019);
+    check('just inside two per cent is still the warning, not clear of it',
           $pf_trend_of() === 'near');
+    $pf_set_ma($pf_trend_price / 1.025);
+    check('and past it the warning stops, so the band has an edge',
+          $pf_trend_of() === 'above');
     $pf_set_ma($pf_trend_price * 1.05);
     check('and below the average is below it', $pf_trend_of() === 'below');
     db()->prepare("delete from statistics where symbol=? and indicator='ma200'
@@ -9523,7 +10213,7 @@
                   'criteria_list.php','screen_criteria.php','sector_companies.php',
                   'strategies.php','sell.php','buy.php','rankings.php',
                   'statistics.php','statistics_form.php','download_prices.php',
-                  'register.php','reset_passwd.php','in_the_news.php'];
+                  'register.php','reset_passwd.php','in_the_news.php','broker.php'];
         $fatal = [];
         foreach ($pages as $page) {
             $body = (string)$curl("$base/$page");

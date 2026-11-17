@@ -21,6 +21,7 @@ else if (in_array($sm_here, ["screen_list.php", "criteria.php", "criteria_list.p
                              "download_prices.php"], true)) { $sm_section = "screens"; }
 else if ($sm_here === "in_the_news.php")  { $sm_section = "news"; }
 else if ($sm_here === "strategies.php")   { $sm_section = "strategies"; }
+else if ($sm_here === "broker.php")       { $sm_section = "broker"; }
 
 /* How old the figures on this page are. Printed on every page, because a
    reader cannot tell a stale price from a falling one. */
@@ -136,6 +137,15 @@ $sm_user = function_exists("view_username") ? view_username() : "";
         <a class="nav-link<?= $sm_section === 'strategies' ? ' active' : '' ?>"
            <?= $sm_section === 'strategies' ? 'aria-current="page"' : '' ?>
            href="strategies.php">Strategies</a>
+      </li>
+      <!-- The broker connection, read only. Its own entry rather than one
+           under Portfolio: the Portfolio pages are the transactions entered
+           by hand, and the point of this one is that it is somebody else's
+           record of the same thing. -->
+      <li class="nav-item">
+        <a class="nav-link<?= $sm_section === 'broker' ? ' active' : '' ?>"
+           <?= $sm_section === 'broker' ? 'aria-current="page"' : '' ?>
+           href="broker.php">Broker</a>
       </li>
     </ul>
 

@@ -17,6 +17,9 @@
 #   SM_DATA_PROVIDER=fmp          # or eodhd
 #   FMP_API_KEY=the-fmp-key       # when SM_DATA_PROVIDER=fmp
 #   EODHD_API_KEY=the-eodhd-key   # when SM_DATA_PROVIDER=eodhd
+#   SM_T212_ENV=live-read         # off (default), live-read or demo
+#   SM_T212_API_KEY=...           # the read-only Trading 212 key
+#   SM_T212_API_SECRET=...
 #
 # Mode 600 matters: the file holds the database password and an API key.
 #
@@ -140,5 +143,26 @@ fi
 # is a worse page rather than a broken database - and the one job after this
 # has nothing to do with strategies.
 "$PHP" "$APP_DIR/includes/run_strategies.php" || echo "refresh_all: strategies failed" >&2
+
+# What the broker says we hold. After the strategies, because it is a record
+# of somebody else's account rather than an input to anything here: nothing in
+# this run reads these tables.
+#
+# READ ONLY. Four GETs against Trading 212 - the account summary, the
+# positions, the order history and the dividend history - and the instrument
+# list once a week. Nothing in this path can place an order, in either
+# environment, and the live key has no permission to anyway.
+#
+# Does nothing at all unless SM_T212_ENV is live-read or demo and a key is
+# set, which on a host that has not been configured means it prints one line
+# and exits. The key goes in this file beside the others:
+#
+#   SM_T212_ENV=live-read
+#   SM_T212_API_KEY=...
+#   SM_T212_API_SECRET=...
+#
+# Allowed to fail without taking the run with it: a broker that is not
+# answering tonight is a stale page, not a broken database.
+"$PHP" "$APP_DIR/includes/sync_broker.php" || echo "refresh_all: broker sync failed" >&2
 
 echo "refresh_all: $(date '+%Y-%m-%d %H:%M:%S') done"

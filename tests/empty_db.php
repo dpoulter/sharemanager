@@ -135,7 +135,8 @@
                   'criteria.php', 'criteria_list.php', 'screen_criteria.php',
                   'sector_companies.php', 'strategies.php', 'sell.php', 'buy.php',
                   'statistics.php', 'statistics_form.php', 'download_prices.php',
-                  'in_the_news.php', 'rankings.php', 'portfolio_data.php'];
+                  'in_the_news.php', 'rankings.php', 'portfolio_data.php',
+                  'broker.php'];
 
         $broken = []; $noisy = [];
 

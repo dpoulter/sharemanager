@@ -43,6 +43,7 @@ const PAGES = [
 	['the cash history',     'cash_history.php'],
 	['the dividends',        'dividends.php'],
 	['the transactions',     'edit.php'],
+	['the broker',           'broker.php'],
 ];
 
 let passed = 0, failed = 0;
