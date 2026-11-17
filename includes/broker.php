@@ -258,14 +258,61 @@
 			$ticker = $m[1];
 			$market = strtoupper($m[2]);
 		}
-		else if (preg_match('~^([A-Z0-9][A-Z0-9._\-]*?)([a-z])(\d*)$~', $ticker, $m)) {
+		else if (preg_match('~^([A-Z0-9][A-Z0-9._\-]*?)([a-zI])(\d*)$~', $ticker, $m)) {
 			/* The digits are a line rather than part of the code: Shawbrook
-			   is SHAWl1_EQ, not a company called SHAWL1. */
+			   is SHAWl1_EQ, not a company called SHAWL1. I is taken as a
+			   marker too, because PRNI_EQ is PRN on a London line - the one
+			   upper-case marker in the list. */
 			$ticker = $m[1];
 			$market = strtoupper($m[2]);
 		}
 
 		return ['code' => strtoupper($ticker), 'market' => $market];
+	}
+
+	/**
+	 * Which venue a ticker form says a line is on.
+	 *
+	 * Returns 'london', 'foreign' or 'unknown'. The forms are what the real
+	 * list carries, and nothing else is inferred from them:
+	 *
+	 *   london   <code>l_EQ, <code>l1_EQ, <code>p_EQ, <code>I_EQ
+	 *   foreign  <code>_US_EQ, <code>_CA_EQ (a country),
+	 *            <code>d_EQ (EUR), <code>s_EQ (CHF)
+	 *
+	 * This matters because a foreign line must never be matched to a London
+	 * share on a name or a code. Twelve shares were matched to two
+	 * instruments after the second deploy - ASC to ASOS and to a US company
+	 * called ASC, RKT to Reckitt and to Rocket Companies - and a holding in
+	 * Rocket Companies valued as Reckitt is worse than no holding at all.
+	 *
+	 * The currency cannot do this job on its own: the London line for IHG is
+	 * IHGl1_EQ and it reports USD.
+	 *
+	 * A marker this has never seen comes back 'unknown', which is treated as
+	 * foreign everywhere that matters. A new London suffix would then show up
+	 * as an unmatched share - visible, and nobody's holding valued wrongly -
+	 * rather than as a wrong match.
+	 */
+	function broker_venue($broker_ticker) {
+
+		$ticker = trim((string) $broker_ticker);
+		if ($ticker === '') { return 'unknown'; }
+
+		if (strtoupper(substr($ticker, -3)) === '_EQ') { $ticker = substr($ticker, 0, -3); }
+
+		/* A country: AAPL_US, PEY_CA. */
+		if (preg_match('~_[A-Za-z]{2,4}$~', $ticker)) { return 'foreign'; }
+
+		/* A venue marker: one letter, then a line number. I is the only
+		   upper-case one seen (PRNI_EQ, which is PRN in London). */
+		if (preg_match('~([a-zI])\d*$~', $ticker, $m)) {
+			if (in_array($m[1], ['l', 'p', 'I'], true)) { return 'london'; }
+			if (in_array($m[1], ['d', 's'], true))      { return 'foreign'; }
+			return 'unknown';
+		}
+
+		return 'unknown';
 	}
 
 	/**
@@ -327,17 +374,20 @@
 	 *      is only how one venue writes it. Every Trading 212 instrument
 	 *      carries one, so this is exact as soon as ours are filled in.
 	 *
-	 *   2. shortName, among the sterling instruments. Trading 212's ticker
-	 *      keeps a company's OLD code after a rename - Barratt Redrow is
-	 *      still BDEVl_EQ, Entain is GVCl_EQ, Frasers is SPDl_EQ - and
-	 *      shortName carries the current one. Matching on the ticker alone
-	 *      left 32 of the FTSE 350 unmatched, most of them renames.
-	 *      Sterling only, because a shortName is not unique across the
-	 *      world: 18,600 instruments include plenty of three letter codes
-	 *      that are somebody else's.
+	 *   2. shortName, on a London line. Trading 212's ticker keeps a
+	 *      company's OLD code after a rename - Barratt Redrow is still
+	 *      BDEVl_EQ, Entain is GVCl_EQ, Frasers is SPDl_EQ - and shortName
+	 *      carries the current one. Matching on the ticker alone left 32 of
+	 *      the FTSE 350 unmatched, most of them renames.
 	 *
-	 *   3. the stripped ticker, which is what is left for a company that has
-	 *      never been renamed.
+	 *   3. the stripped ticker, on a London line, which is what is left for
+	 *      a company that has never been renamed.
+	 *
+	 * Rules 2 and 3 are London only because a name and a three letter code
+	 * are not unique across 18,600 instruments: ASC is our ASOS and a US
+	 * company, RKT is Reckitt and Rocket Companies. A line on a foreign
+	 * form - _US_EQ, _CA_EQ, d_EQ, s_EQ - or on a form nobody has seen
+	 * before can only be matched by its ISIN.
 	 *
 	 * Each instrument makes one claim, by the best rule it can. Where two
 	 * instruments claim the same share, the better rule wins; if they tie,
@@ -379,23 +429,37 @@
 
 			if ($isin !== null && $isin !== '') { $isins[$isin] = true; }
 
+			$venue    = broker_venue($ticker);
+			$sterling = in_array((string) $currency, ['GBP', 'GBX'], true);
+
 			$row = ['broker_ticker' => $ticker,
 			        'isin'          => $isin,
 			        'short_name'    => $short === null ? null : trim((string) $short),
 			        'name'          => $name === null ? null : (string) $name,
 			        'currency'      => $currency,
+			        'venue'         => $venue,
 			        'market'        => $parts['market'],
 			        'code'          => $parts['code'],
-			        /* GBX for most London lines, GBP for a few. */
-			        'sterling'      => in_array((string) $currency, ['GBP', 'GBX'], true),
-			        /* <code>l_EQ, <code>l1_EQ, <code>p_EQ are London;
-			           <code>_US_EQ and <code>_CA_EQ are not. */
-			        'london'        => preg_match('~[a-z]\d*_EQ$~', $ticker) === 1,
+			        /* GBX for most London lines, GBP for a few - and USD for
+			           IHGl1_EQ, which is why this is not the test for being
+			           a London line. */
+			        'sterling'      => $sterling,
+			        'london'        => $venue === 'london',
 			        'symbol'        => null,
 			        'matched_on'    => null,
 			        'rank'          => null,
 			        'status'        => 'matched',
 			        'note'          => null];
+
+			/* A name or a code may only speak for a line that is on this
+			   market. ASC_US_EQ is a US company whose code is our ASOS
+			   ticker; RKT_US_EQ is Rocket Companies, not Reckitt. Both were
+			   matched by the code rule after the second deploy, and a
+			   holding in Rocket Companies valued as Reckitt is a worse
+			   answer than no holding at all. An unrecognised form is treated
+			   the same way: an unmatched share is visible, a wrong match is
+			   not. The ISIN is exempt, because it is the company. */
+			$may_use_names = $venue === 'london' || ($sterling && $venue !== 'foreign');
 
 			$claim = function ($symbol, $how, $rank) use (&$claims, $row) {
 				$row['symbol']     = $symbol;
@@ -417,8 +481,8 @@
 				continue;
 			}
 
-			/* 2. shortName, sterling only. */
-			if ($row['sterling'] && $row['short_name'] !== null && $row['short_name'] !== '') {
+			/* 2. shortName, on a London line only. */
+			if ($may_use_names && $row['short_name'] !== null && $row['short_name'] !== '') {
 				$short_key = broker_code_key($row['short_name']);
 				if ($short_key !== '' && isset($by_key[$short_key])) {
 					if (count($by_key[$short_key]) === 1) {
@@ -432,9 +496,9 @@
 			}
 
 			/* 3. The ticker, with the parts that are not the company's code
-			      taken off it. */
+			      taken off it. On a London line only, for the same reason. */
 			$key = broker_code_key($parts['code']);
-			if ($key === '' || !isset($by_key[$key])) { $unknown++; continue; }
+			if (!$may_use_names || $key === '' || !isset($by_key[$key])) { $unknown++; continue; }
 
 			if (count($by_key[$key]) > 1) {
 				$refuse('the code ' . $parts['code'] . ' fits ' . implode(', ', $by_key[$key]));
@@ -498,16 +562,30 @@
 		        'isins'     => array_keys($isins)];
 	}
 
-	/** Store a matched instrument list. Re-runnable: the ticker is the key. */
+	/**
+	 * Store a matched instrument list.
+	 *
+	 * REPLACES the mapping for this broker rather than adding to it. The
+	 * first version wrote the rows it had matched and left the rest alone,
+	 * so after the rules changed the table held both answers: 362 matched
+	 * rows for 350 shares, twelve of them matched to a second instrument
+	 * that was a different company, and four ambiguous rows whose notes
+	 * named pairs that had been settled a deploy ago.
+	 *
+	 * A mapping is a photograph of somebody else's list, not a ledger. The
+	 * right way to refresh one is to take a new photograph.
+	 */
 	function broker_store_instruments($broker, array $rows, $as_of = null) {
 
 		$as_of = $as_of === null ? date('Y-m-d') : $as_of;
 
+		query("delete from broker_instruments where broker=?", $broker);
+
 		foreach ($rows as $row) {
 			query("replace into broker_instruments
-			         (broker, broker_ticker, symbol, short_name, isin, currency, name,
-			          status, matched_on, note, last_seen)
-			       values (?,?,?,?,?,?,?,?,?,?,?)",
+			         (broker, broker_ticker, symbol, short_name, isin, currency, venue,
+			          name, status, matched_on, note, last_seen)
+			       values (?,?,?,?,?,?,?,?,?,?,?,?)",
 			      $broker,
 			      mb_substr((string) $row['broker_ticker'], 0, 40),
 			      $row['symbol'] === null ? null : mb_substr((string) $row['symbol'], 0, 50),
@@ -515,6 +593,7 @@
 			        ? null : mb_substr((string) $row['short_name'], 0, 60),
 			      $row['isin'] === null ? null : mb_substr((string) $row['isin'], 0, 12),
 			      $row['currency'] === null ? null : mb_substr((string) $row['currency'], 0, 8),
+			      isset($row['venue']) ? mb_substr((string) $row['venue'], 0, 10) : null,
 			      $row['name'] === null ? null : mb_substr((string) $row['name'], 0, 255),
 			      (string) $row['status'],
 			      $row['matched_on'] === null ? null : (string) $row['matched_on'],
@@ -687,6 +766,33 @@
 		               . " SM_T212_PRICE_UNIT once tools/t212_probe.php has settled it."];
 	}
 
+	/**
+	 * The unit for ONE position, where its own share can settle it.
+	 *
+	 * The sync-wide answer is a vote across the holdings, which is the right
+	 * default and the wrong answer for a line that is quoted in something
+	 * else: the London line for IHG reports USD. Where a holding's own price
+	 * can be compared against our own close for the same share, that
+	 * comparison decides it; where it cannot, the sync-wide answer stands.
+	 *
+	 * The bands are broker_price_unit()'s, for the same reason: half to
+	 * double cannot be confused with fifty to two hundred, and a share does
+	 * not move a hundredfold between our close and the broker's quote.
+	 */
+	function broker_position_unit($price, $close, $fallback) {
+
+		$price = $price === null ? 0.0 : (float) $price;
+		$close = $close === null ? 0.0 : (float) $close;
+
+		if ($price <= 0 || $close <= 0) { return $fallback; }
+
+		$ratio = $close / $price;
+		if ($ratio >= 0.5 && $ratio <= 2)       { return 'pence'; }
+		if ($ratio >= 50 && $ratio <= 200)      { return 'pounds'; }
+
+		return $fallback;
+	}
+
 	/** A broker price in pounds, or null if the unit is not known. */
 	function broker_to_pounds($value, $unit) {
 
@@ -729,8 +835,8 @@
 		foreach ($positions as $position) {
 			query("replace into broker_positions
 			         (broker, as_of_date, broker_ticker, symbol, quantity, average_price,
-			          current_price, value, gain, price_unit, synced_at)
-			       values (?,?,?,?,?,?,?,?,?,?,?)",
+			          current_price, value, gain, price_unit, currency, synced_at)
+			       values (?,?,?,?,?,?,?,?,?,?,?,?)",
 			      $broker, $as_of,
 			      mb_substr((string) $position['broker_ticker'], 0, 40),
 			      $position['symbol'] === null ? null : mb_substr((string) $position['symbol'], 0, 50),
@@ -740,6 +846,7 @@
 			      $position['value'] ?? null,
 			      $position['gain'] ?? null,
 			      $position['price_unit'] ?? null,
+			      isset($position['currency']) ? $position['currency'] : null,
 			      date('Y-m-d H:i:s'));
 		}
 		return count($positions);
@@ -890,6 +997,19 @@
 				broker_store_instruments($broker, $matched['rows'], $as_of);
 				$result['instruments'] = $matched['matched'];
 
+				/* Belt and braces over the unique key: if a share ever ends
+				   up with two instruments again, the page says so rather
+				   than valuing a holding against whichever row a join
+				   happened to pick. */
+				$doubled = query("select symbol, count(*) n from broker_instruments
+				                   where broker=? and status='matched' and symbol is not null
+				                   group by symbol having n > 1", $broker);
+				if (count($doubled)) {
+					$problems[] = count($doubled) . " share(s) are matched to more than one"
+					            . " instrument, which should be impossible: "
+					            . implode(', ', array_column($doubled, 'symbol'));
+				}
+
 				if ($matched['ambiguous'] > 0) {
 					$notices[] = $matched['ambiguous'] . " of the broker's instruments fit"
 					           . " more than one of our shares, so none of them was matched"
@@ -991,11 +1111,26 @@
 			$result['price_unit'] = $unit['unit'];
 			if ($unit['unit'] === null && count($parsed)) { $problems[] = $unit['why']; }
 
+			/* What each held line is quoted in, so a holding in a line that
+			   is not sterling is visible rather than read as pounds. */
+			$ccy = [];
+			foreach (query("select broker_ticker, currency from broker_instruments
+			                 where broker=?", $broker) as $row) {
+				$ccy[(string) $row['broker_ticker']] = $row['currency'];
+			}
+
 			$store = [];
 			foreach ($parsed as $row) {
 
-				$average = broker_to_pounds($row['average'], $unit['unit']);
-				$current = broker_to_pounds($row['current'], $unit['unit']);
+				/* This share's own comparison first, the sync's vote second.
+				   IHG's London line is quoted in USD, and one holding in a
+				   different currency must not decide the unit for the rest
+				   or be forced into theirs. */
+				$own = $row['symbol'] === null ? null : broker_our_close($row['symbol'], $exchange);
+				$row_unit = broker_position_unit($row['current'], $own, $unit['unit']);
+
+				$average = broker_to_pounds($row['average'], $row_unit);
+				$current = broker_to_pounds($row['current'], $row_unit);
 
 				/* The value the broker sent is money, not a price, so it is
 				   in the account's currency whatever the prices are in. When
@@ -1018,7 +1153,25 @@
 				            'current_price' => $current,
 				            'value'         => $value,
 				            'gain'          => $gain,
-				            'price_unit'    => $unit['unit']];
+				            'price_unit'    => $row_unit,
+				            'currency'      => isset($ccy[$row['broker_ticker']])
+				                             ? $ccy[$row['broker_ticker']] : null];
+			}
+
+			/* A holding in a line that is not quoted in sterling: its value
+			   and its gain are the broker's own figures, in the account's
+			   currency, but its price is in whatever the line is quoted in
+			   and nothing here converts it. */
+			$foreign = [];
+			foreach ($store as $row) {
+				if ($row['currency'] !== null
+				    && !in_array((string) $row['currency'], ['GBP', 'GBX'], true)) {
+					$foreign[] = $row['broker_ticker'] . ' (' . $row['currency'] . ')';
+				}
+			}
+			if (count($foreign)) {
+				$notices[] = "held in a line that is not quoted in sterling, so its price"
+				           . " is in that currency rather than pounds: " . implode(', ', $foreign);
 			}
 
 			broker_store_positions($broker, $as_of, $store);

@@ -2418,6 +2418,172 @@
           && broker_price_unit($bk_pence, 'pounds')['unit'] === 'pounds');
 
 
+    echo "\n--- the broker connection: one instrument per share ---\n";
+
+    /* After the second deploy broker_instruments held 362 matched rows for
+       350 shares. Twelve shares had a second instrument that was a different
+       company - ASC to ASOS and to a US company called ASC, RKT to Reckitt
+       and to Rocket Companies, NWG to NatWest and to a US NWG - because a
+       three letter code is not unique across 18,600 instruments. A holding
+       in Rocket Companies valued as Reckitt is a worse answer than no
+       holding at all. */
+    db()->exec("delete from broker_instruments");
+    db()->exec("delete from stock_symbols where symbol in ('ASC','RKT','IHG','MNO','PRN')");
+    foreach (['ASC' => 'ASOS', 'RKT' => 'Reckitt', 'IHG' => 'InterContinental',
+              'MNO' => 'Menhaden', 'PRN' => 'Pearson Two'] as $bk_sym => $bk_name) {
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                                  sector,market,industry_group,industry)
+                       values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','X')")
+            ->execute([$bk_sym, $bk_name, $bk_name]);
+    }
+    db()->exec("update stock_symbols set isin=null where exchange='XLON'");
+    db()->prepare("update stock_symbols set isin='GB00IHG00001' where symbol='IHG'")->execute();
+    db()->prepare("update stock_symbols set isin='GB00MNO00001' where symbol='MNO'")->execute();
+
+    $bk_dupes = broker_match_instruments([
+        ['ticker' => 'ASOSl_EQ',  'shortName' => 'ASC',  'currencyCode' => 'GBX',
+         'isin' => 'GB00ASOS0001', 'name' => 'ASOS'],
+        ['ticker' => 'ASC_US_EQ', 'shortName' => 'ASC',  'currencyCode' => 'USD',
+         'isin' => 'US00ASC00001', 'name' => 'Some US company'],
+        ['ticker' => 'RBl_EQ',    'shortName' => 'RKT',  'currencyCode' => 'GBX',
+         'isin' => 'GB00RKT00001', 'name' => 'Reckitt'],
+        ['ticker' => 'RKT_US_EQ', 'shortName' => 'RKT',  'currencyCode' => 'USD',
+         'isin' => 'US00RKT00001', 'name' => 'Rocket Companies'],
+        /* A European and a Swiss line, whose forms are d and s. */
+        ['ticker' => 'AGTd_EQ',   'shortName' => 'RKT',  'currencyCode' => 'EUR',
+         'isin' => 'DE00RKT00001', 'name' => 'Somebody German'],
+        ['ticker' => 'POLNs_EQ',  'shortName' => 'ASC',  'currencyCode' => 'CHF',
+         'isin' => 'CH00ASC00001', 'name' => 'Somebody Swiss'],
+    ], 'XLON');
+
+    $bk_dup_by = [];
+    foreach ($bk_dupes['rows'] as $bk_row) { $bk_dup_by[$bk_row['broker_ticker']] = $bk_row; }
+
+    check('a foreign line does not take a London share on its name or its code',
+          ($bk_dup_by['ASOSl_EQ']['symbol'] ?? null) === 'ASC'
+          && ($bk_dup_by['RBl_EQ']['symbol'] ?? null) === 'RKT'
+          && !isset($bk_dup_by['ASC_US_EQ']) && !isset($bk_dup_by['RKT_US_EQ'])
+          && !isset($bk_dup_by['AGTd_EQ']) && !isset($bk_dup_by['POLNs_EQ']),
+          json_encode(array_map(function ($r) {
+              return [$r['broker_ticker'], $r['status'], $r['symbol']]; }, $bk_dupes['rows'])));
+    check('and none of that is an ambiguity either, it is simply not ours',
+          $bk_dupes['ambiguous'] === 0 && $bk_dupes['matched'] === 2
+          && $bk_dupes['unknown'] === 4,
+          json_encode($bk_dupes));
+
+    /* The forms the second run turned up, read for what they are. */
+    foreach ([['ASOSl_EQ', 'london'], ['IHGl1_EQ', 'london'], ['PRNI_EQ', 'london'],
+              ['SHCp_EQ', 'london'], ['ASC_US_EQ', 'foreign'], ['PEY_CA_EQ', 'foreign'],
+              ['AGTd_EQ', 'foreign'], ['POLNs_EQ', 'foreign'],
+              ['SOMETHING', 'unknown']] as [$bk_t, $bk_v]) {
+        check("'$bk_t' is read as a $bk_v line", broker_venue($bk_t) === $bk_v,
+              broker_venue($bk_t));
+    }
+    check('and PRNI_EQ is PRN on a London line, not a company called PRNI',
+          broker_ticker_code('PRNI_EQ')['code'] === 'PRN');
+
+    /* IHG is why the currency cannot decide this on its own: its London line
+       reports USD. The ticker form and the GB ISIN identify it. */
+    $bk_ihg = broker_match_instruments([
+        ['ticker' => 'IHGl1_EQ',  'shortName' => 'IHG', 'currencyCode' => 'USD',
+         'isin' => 'GB00IHG00001', 'name' => 'InterContinental Hotels'],
+        ['ticker' => 'IHG_US_EQ', 'shortName' => 'IHG', 'currencyCode' => 'USD',
+         'isin' => 'US00IHG00001', 'name' => 'InterContinental ADR'],
+    ], 'XLON');
+    $bk_ihg_by = [];
+    foreach ($bk_ihg['rows'] as $bk_row) { $bk_ihg_by[$bk_row['broker_ticker']] = $bk_row; }
+    check('a London line quoted in dollars is still the London line',
+          ($bk_ihg_by['IHGl1_EQ']['symbol'] ?? null) === 'IHG'
+          && ($bk_ihg_by['IHGl1_EQ']['matched_on'] ?? null) === 'isin'
+          && !isset($bk_ihg_by['IHG_US_EQ']),
+          json_encode(array_map(function ($r) {
+              return [$r['broker_ticker'], $r['status'], $r['symbol'], $r['matched_on']];
+          }, $bk_ihg['rows'])));
+
+    /* And where one ISIN is on two lines, the London one wins. */
+    $bk_mno = broker_match_instruments([
+        ['ticker' => 'MNO_CA_EQ', 'shortName' => 'MNO', 'currencyCode' => 'CAD',
+         'isin' => 'GB00MNO00001', 'name' => 'Menhaden Canada'],
+        ['ticker' => 'MNOl1_EQ',  'shortName' => 'MNO', 'currencyCode' => 'GBX',
+         'isin' => 'GB00MNO00001', 'name' => 'Menhaden'],
+    ], 'XLON');
+    check('one ISIN on two lines settles on the London one',
+          $bk_mno['matched'] === 1 && $bk_mno['ambiguous'] === 0
+          && $bk_mno['rows'][0]['broker_ticker'] === 'MNOl1_EQ',
+          json_encode(array_map(function ($r) {
+              return [$r['broker_ticker'], $r['status'], $r['symbol']]; }, $bk_mno['rows'])));
+
+    echo "\n--- the broker connection: a refresh replaces the mapping ---\n";
+
+    /* The cause of the twelve doubled shares was not the matching, which
+       picks one: it was the storing. A refresh wrote what it had matched and
+       left every other row alone, so the rows the PREVIOUS rule had matched
+       stayed behind - still marked matched, still pointing at a different
+       company. The same is why four ambiguous rows kept notes about pairs
+       that had been settled a deploy ago. */
+    db()->exec("delete from broker_instruments");
+    broker_store_instruments(BROKER_T212, [
+        ['broker_ticker' => 'ASC_US_EQ', 'symbol' => 'ASC', 'short_name' => 'ASC',
+         'isin' => 'US00ASC00001', 'currency' => 'USD', 'venue' => 'foreign',
+         'name' => 'Some US company', 'status' => 'matched', 'matched_on' => 'ticker',
+         'note' => null],
+        ['broker_ticker' => 'OLDAMBl_EQ', 'symbol' => null, 'short_name' => null,
+         'isin' => null, 'currency' => null, 'venue' => 'london', 'name' => null,
+         'status' => 'ambiguous', 'matched_on' => null,
+         'note' => 'a pair that was settled a deploy ago'],
+    ], '2026-11-16');
+
+    check('a stale mapping is there to be replaced',
+          (int) scalar("select count(*) from broker_instruments") === 2);
+
+    broker_store_instruments(BROKER_T212, $bk_dupes['rows'], asof_date());
+
+    check('a refresh replaces the mapping rather than adding to it',
+          (int) scalar("select count(*) from broker_instruments where broker_ticker='ASC_US_EQ'") === 0
+          && (int) scalar("select count(*) from broker_instruments where broker_ticker='OLDAMBl_EQ'") === 0,
+          json_encode(rows("select broker_ticker, symbol, status from broker_instruments")));
+    check('and no share is left matched to two instruments',
+          (int) scalar("select count(*) from (select symbol from broker_instruments
+                                               where status='matched' and symbol is not null
+                                               group by symbol having count(*) > 1) d") === 0);
+
+    /* The database says so too, so a rule that is wrong one day cannot write
+       the second row at all. */
+    $bk_second = false;
+    try {
+        db()->prepare("insert into broker_instruments
+                         (broker, broker_ticker, symbol, status, last_seen)
+                       values (?,?,?,'matched',?)")
+            ->execute([BROKER_T212, 'ANOTHERl_EQ', 'ASC', asof_date()]);
+        $bk_second = true;
+    }
+    catch (Exception $e) { $bk_second = false; }
+    check('a second instrument for one share is refused by the database',
+          $bk_second === false,
+          $bk_second ? 'it was accepted' : 'refused');
+    /* Two ambiguous rows are fine, though: they have no symbol between them. */
+    check('while two instruments with no share are not a collision',
+          (int) scalar("select count(*) from broker_instruments where status='ambiguous'") >= 0);
+
+    db()->exec("delete from broker_instruments");
+    db()->exec("update stock_symbols set isin=null where exchange='XLON'");
+    db()->exec("delete from stock_symbols where symbol in ('ASC','RKT','IHG','MNO','PRN')");
+
+    echo "\n--- the broker connection: a line quoted in something else ---\n";
+
+    /* IHG's London line reports USD, so one holding can be in a different
+       currency from the rest. Its own comparison decides its unit, and the
+       sync's vote decides the ones that cannot be compared. */
+    check('a holding whose own close settles it does not follow the vote',
+          broker_position_unit(6.90, 690.0, 'pence') === 'pounds'
+          && broker_position_unit(690.0, 690.0, 'pounds') === 'pence',
+          json_encode([broker_position_unit(6.90, 690.0, 'pence'),
+                       broker_position_unit(690.0, 690.0, 'pounds')]));
+    check('and one that cannot be compared falls back to the vote',
+          broker_position_unit(103.4, 690.0, 'pence') === 'pence'
+          && broker_position_unit(null, 690.0, 'pounds') === 'pounds'
+          && broker_position_unit(6.90, null, null) === null);
+
     echo "\n--- the broker connection: off means off ---\n";
 
     /* The stub, which is where every request in this section goes. No test

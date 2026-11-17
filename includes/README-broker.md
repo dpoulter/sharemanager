@@ -16,7 +16,8 @@ Orders - Execute permission anyway.
 | `public/broker.php`, `templates/broker.php` | The page. Logged in only, like every other page. |
 | `tools/t212_stub.php` | The stand-in the suite talks to. No test calls Trading 212. |
 | `sql/broker.sql` | The tables. Safe to apply twice. |
-| `sql/broker_account_fields.sql` | The second migration: the account summary's real fields, the notices column, shortName. **Run this one too.** |
+| `sql/broker_account_fields.sql` | The second migration: the account summary's real fields, the notices column, shortName. |
+| `sql/broker_mapping.sql` | The third: one instrument per share, enforced, and the venue and currency columns. **Run all three.** |
 
 ## Configuration
 
@@ -77,19 +78,52 @@ London ticker forms are `<code>l_EQ`, `<code>l1_EQ` and `<code>p_EQ`; other
 markets are `<code>_US_EQ` and `<code>_CA_EQ`. A share class is `BT/A` there
 and `BT-A` here, and the separators are ignored on both sides.
 
+Rules 2 and 3 apply to London lines only. A name and a three-letter code are
+not unique across 18,600 instruments: `ASC` is our ASOS and a US company,
+`RKT` is Reckitt and Rocket Companies, and matching those on the code gave
+twelve shares two instruments each. A line on a foreign form can only be
+matched by its ISIN.
+
+The form says which venue, not the currency: the London line for **IHG** is
+`IHGl1_EQ` and reports USD.
+
+| Form | Venue |
+|---|---|
+| `<code>l_EQ`, `<code>l1_EQ`, `<code>p_EQ`, `<code>I_EQ` | London |
+| `<code>_US_EQ`, `<code>_CA_EQ`, `<code>d_EQ` (EUR), `<code>s_EQ` (CHF) | foreign |
+| anything else | unknown, treated as foreign |
+
+An unknown form is treated as foreign on purpose: a new London suffix then
+shows up as an unmatched share, which is visible, rather than as a wrong
+match, which is not.
+
 Each instrument makes one claim, by the best rule it can. Where two claim the
 same share the better rule wins, then sterling, then the London ticker form;
 if they still tie, neither is used and the page lists them with their ISIN
 and currency. `SHCp_EQ` beside `CAPCl_EQ` is the case that needs all of it:
 both reduce to the code `SHC`, and `CAPCl_EQ` is the one whose shortName says
-so.
+so. `MNO` is the other: one ISIN on a London and a Canadian line, settled by
+the form.
+
+**A refresh replaces the mapping, it does not add to it.** That is what went
+wrong after the second deploy: the rows the previous rule had matched stayed
+behind as matched, so the table held 362 rows for 350 shares and four
+ambiguous rows whose notes named pairs that had been settled a deploy ago. A
+mapping is a photograph of somebody else's list. There is also a unique key
+on (broker, symbol), so a second instrument for one share cannot be written
+at all, and the sync checks for one anyway.
 
 **Pounds or pence is still open.** The account held nothing on the first run,
 so there was no price to compare. Instruments report `currencyCode` GBX for
 London shares, which points at pence, but a position may differ, so the
 comparison guard stays: `broker_price_unit()` decides by comparing the
 broker's price for a share against our own close for the same share, and it
-settles on the first holding. A position whose unit cannot be decided stores
+settles on the first holding. The decision is per holding, with the
+sync-wide vote as the fallback, because a London line quoted in USD must not
+decide the unit for the rest or be forced into theirs; a holding in a line
+that is not sterling is named as a notice and its price is in that currency,
+not pounds. Its value and gain are the broker's own figures, which are in the
+account's currency. A position whose unit cannot be decided stores
 no price at all rather than one that might be a hundred times out, and the
 page says why. `historical_prices` is pence and the strategy engine is
 pounds, so this is a factor of 100 on every figure.
@@ -119,9 +153,10 @@ could not tell apart made every run a failure.
 
 1. Dale puts the key and secret in `/etc/sharemanager.env` and the php-fpm
    pool, and sets `SM_T212_ENV=live-read`. Nobody else handles them.
-2. Back up the database, deploy, then run both migrations:
-   `mysql sharemanager < sql/broker.sql` and
-   `mysql sharemanager < sql/broker_account_fields.sql`.
+2. Back up the database, deploy, then run the migrations:
+   `sql/broker.sql`, `sql/broker_account_fields.sql`, `sql/broker_mapping.sql`.
+   The last one empties `broker_instruments`; the next sync rebuilds it,
+   which costs one request.
 3. `php tools/t212_probe.php` and send the output back if anything in the
    responses has changed.
 4. `php includes/sync_broker.php --instruments`, then check the cash and the

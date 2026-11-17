@@ -38,13 +38,16 @@ create table if not exists broker_instruments (
   short_name    varchar(60)  null,
   isin          varchar(12)  null,
   currency      varchar(8)   null,
+  venue         varchar(10)  null,
   name          varchar(255) null,
   status        varchar(20)  not null default 'matched',
   matched_on    varchar(20)  null,
   note          varchar(255) null,
   last_seen     date         null,
   primary key (broker, broker_ticker),
-  key (symbol),
+  -- One share, one instrument. Ambiguous rows have a null symbol and do not
+  -- collide: many nulls are allowed in a unique index.
+  unique key uq_broker_symbol (broker, symbol),
   key (isin)
 );
 
@@ -107,6 +110,7 @@ create table if not exists broker_positions (
   value         decimal(16,4) null,
   gain          decimal(16,4) null,
   price_unit    varchar(10)  null,
+  currency      varchar(8)   null,
   synced_at     datetime     null,
   primary key (broker, as_of_date, broker_ticker),
   key (symbol)
