@@ -148,6 +148,10 @@ def load_loader(query_result):
     # rows query() returns, and the currency itself is tested in
     # test_fmp.py against the real helper.
     fmp.quote_currency = lambda profile: None
+    # The ISIN, which the broker connection matches on. None here for the
+    # same reason as the currency above: the reader itself is tested in
+    # test_fmp.py, and this stub is about what the loader does with the rows.
+    fmp.company_isin = lambda profile: None
 
     def fetch_sections(symbol, session=None):
         calls["sections"] += 1

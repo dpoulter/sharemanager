@@ -115,9 +115,21 @@ if ($mode === '500')     { stub_answer(500, json_encode(['error' => 'our end']))
 if ($mode === 'garbage') { stub_answer(200, '<html>not json at all</html>'); }
 
 if ($call === 'summary') {
+    /* The shape the live account really answered on 17 November 2026,
+       figures changed. It nests, which is the thing worth reproducing: the
+       first version of this stub answered a flat object, so the suite
+       agreed with the code and the live account did not. */
     stub_answer(200, stub_json($dir, 'summary', [
-        'cash' => 250.00, 'invested' => 1000.00, 'total' => 1250.00,
-        'free' => 250.00, 'result' => 50.00, 'currencyCode' => 'GBP',
+        'id'       => 52612242,
+        'currency' => 'GBP',
+        'totalValue' => 1250.00,
+        'cash'       => ['availableToTrade' => 250.00,
+                         'reservedForOrders' => 0,
+                         'inPies' => 0],
+        'investments' => ['currentValue' => 1000.00,
+                          'totalCost' => 950.00,
+                          'realizedProfitLoss' => 12.50,
+                          'unrealizedProfitLoss' => 50.00],
     ]));
 }
 

@@ -59,23 +59,76 @@
 	}
 
 	/**
-	 * A field out of a response, by any of the names it might have.
+	 * One value out of a response, by a dotted path.
 	 *
-	 * Returns [value, name] where name is the spelling that was found, or
-	 * [null, null]. The caller decides whether a missing field is worth a
-	 * problem line: a missing average price is, a missing dividend type is
-	 * not.
+	 * The account summary nests: cash is cash.availableToTrade and the
+	 * invested value is investments.currentValue. A reader that only knows
+	 * about top-level keys is handed the whole object and makes a null of
+	 * it, which is how the first live sync stored a blank cash balance
+	 * beside a correct total.
+	 *
+	 * Returns the value, or null if any step of the path is missing.
+	 */
+	function broker_path($row, $path) {
+
+		$node = $row;
+		foreach (explode('.', (string) $path) as $step) {
+			if (!is_array($node) || !array_key_exists($step, $node)) { return null; }
+			$node = $node[$step];
+		}
+		return $node;
+	}
+
+	/**
+	 * A field out of a response, by any of the paths it might have.
+	 *
+	 * Returns [value, path]:
+	 *
+	 *   [null, null]   none of the paths is in the response;
+	 *   [null, path]   the path is there and holds an object or an empty
+	 *                  string, which is not a value - the caller can say so
+	 *                  by name rather than storing a silent null;
+	 *   [value, path]  the value, and which spelling carried it.
+	 *
+	 * Nought is a value. investments.currentValue is 0 on an account that
+	 * holds nothing, and reading that as "missing" would report a problem
+	 * with a figure that is perfectly correct.
 	 */
 	function broker_field($row, array $candidates) {
 
 		if (!is_array($row)) { return [null, null]; }
 
 		foreach ($candidates as $name) {
-			if (array_key_exists($name, $row) && $row[$name] !== null && $row[$name] !== '') {
-				return [$row[$name], $name];
-			}
+
+			$value = broker_path($row, $name);
+			if ($value === null) { continue; }
+
+			if (is_array($value) || $value === '') { return [null, $name]; }
+			return [$value, $name];
 		}
 		return [null, null];
+	}
+
+	/**
+	 * Why a field could not be read, in a sentence, or '' if it could.
+	 *
+	 * The first live sync stored cash as null and called the run a success,
+	 * because nothing checked. A field this application needs and cannot
+	 * find is a problem with the data, and the page has to say which field
+	 * and what the response had instead.
+	 */
+	function broker_field_problem($row, $what, $label, $where) {
+
+		[$value, $name] = broker_field($row, broker_fields($what));
+		if ($value !== null) { return ''; }
+
+		$keys = is_array($row) ? implode(', ', array_keys($row)) : '(not an object)';
+
+		return $name === null
+		     ? "the " . $where . " carried none of the names this knows for "
+		       . $label . " (" . implode(', ', broker_fields($what)) . "). It has: " . $keys
+		     : "the " . $where . "'s " . $name . " is an object rather than a "
+		       . $label . ", so nothing was stored for it.";
 	}
 
 	/** A number out of a response, or null. Strings are numbers here too. */
@@ -108,12 +161,23 @@
 	function broker_fields($what) {
 
 		$map = [
-			'summary_cash'     => ['cash', 'free', 'freeForStocks', 'freeCash', 'availableCash'],
-			'summary_invested' => ['invested', 'investedValue', 'investments'],
-			'summary_total'    => ['total', 'totalValue', 'equity', 'netAssetValue'],
-			'summary_free'     => ['free', 'freeForStocks', 'freeCash'],
-			'summary_result'   => ['result', 'ppl', 'profitLoss', 'unrealisedPnl'],
-			'summary_currency' => ['currencyCode', 'currency'],
+			/* The account summary, as it really answers (17 Nov 2026):
+			     {"id", "currency":"GBP", "totalValue",
+			      "cash":{"availableToTrade","reservedForOrders","inPies"},
+			      "investments":{"currentValue","totalCost",
+			                     "realizedProfitLoss","unrealizedProfitLoss"}}
+			   Values are pounds. The paths are dotted because it nests, and
+			   the lists are short because these are the names it uses rather
+			   than the names it might. */
+			'summary_cash'       => ['cash.availableToTrade'],
+			'summary_reserved'   => ['cash.reservedForOrders'],
+			'summary_in_pies'    => ['cash.inPies'],
+			'summary_invested'   => ['investments.currentValue'],
+			'summary_cost'       => ['investments.totalCost'],
+			'summary_realised'   => ['investments.realizedProfitLoss'],
+			'summary_unrealised' => ['investments.unrealizedProfitLoss'],
+			'summary_total'      => ['totalValue'],
+			'summary_currency'   => ['currency', 'currencyCode'],
 
 			'position_ticker'  => ['ticker', 'instrumentTicker', 'code', 'symbol'],
 			'position_quantity'=> ['quantity', 'qty', 'shares'],
@@ -122,11 +186,21 @@
 			'position_value'   => ['value', 'marketValue', 'currentValue'],
 			'position_result'  => ['ppl', 'profitLoss', 'result', 'gain'],
 
-			'instrument_ticker'=> ['ticker', 'code', 'symbol'],
-			'instrument_isin'  => ['isin', 'ISIN', 'isinCode'],
-			'instrument_name'  => ['name', 'shortName', 'prettyName', 'longName'],
-			'instrument_ccy'   => ['currencyCode', 'currency'],
-			'instrument_type'  => ['type', 'instrumentType'],
+			/* An instrument, as it really answers: ticker, type,
+			   workingScheduleId, isin, currencyCode, name, shortName,
+			   maxOpenQuantity, extendedHours, addedOn. All 18,600 carry an
+			   ISIN; London shares are GBX, with a few GBP.
+
+			   shortName is its own field here rather than a fallback for
+			   name, because it is what the matching turns on: the ticker
+			   keeps a company's old code after a rename - Barratt Redrow is
+			   still BDEVl_EQ - and shortName carries the current one. */
+			'instrument_ticker' => ['ticker', 'code', 'symbol'],
+			'instrument_isin'   => ['isin', 'ISIN', 'isinCode'],
+			'instrument_short'  => ['shortName'],
+			'instrument_name'   => ['name', 'prettyName', 'longName'],
+			'instrument_ccy'    => ['currencyCode', 'currency'],
+			'instrument_type'   => ['type', 'instrumentType'],
 
 			'order_id'         => ['id', 'orderId', 'fillId', 'reference'],
 			'order_ticker'     => ['ticker', 'instrumentTicker', 'code', 'symbol'],
@@ -184,7 +258,9 @@
 			$ticker = $m[1];
 			$market = strtoupper($m[2]);
 		}
-		else if (preg_match('~^([A-Z0-9][A-Z0-9._\-]*)([a-z])$~', $ticker, $m)) {
+		else if (preg_match('~^([A-Z0-9][A-Z0-9._\-]*?)([a-z])(\d*)$~', $ticker, $m)) {
+			/* The digits are a line rather than part of the code: Shawbrook
+			   is SHAWl1_EQ, not a company called SHAWL1. */
 			$ticker = $m[1];
 			$market = strtoupper($m[2]);
 		}
@@ -197,15 +273,18 @@
 	 *
 	 * London writes a short ticker with a trailing dot (RR.) and this
 	 * application writes a share class with a dash (BT-A) where other places
-	 * write a dot (BT.A). None of those differences is a different company,
-	 * and none of them is worth a table of exceptions, so the separators come
-	 * out: RR. RR and BT-A BT.A BTA all key the same.
+	 * write a dot (BT.A) or a slash (BT/A, which is Trading 212's spelling).
+	 * None of those differences is a different company, and none of them is
+	 * worth a table of exceptions, so the separators come out: RR. RR and
+	 * BT-A BT.A BT/A BTA all key the same.
 	 *
 	 * Two of our symbols could in principle key the same way. That is exactly
 	 * why the matcher refuses a key that fits more than one.
 	 */
 	function broker_code_key($code) {
-		return strtoupper(str_replace(['.', '-', ' ', '_'], '', (string) $code));
+		/* The slash is Trading 212's spelling of a share class: BT's A
+		   shares are BT-A here and BT/A there. */
+		return strtoupper(str_replace(['.', '-', '/', ' ', '_'], '', (string) $code));
 	}
 
 	/** Our symbols by comparable key: ['BTA' => ['BT-A'], ...]. */
@@ -241,112 +320,182 @@
 	/**
 	 * The broker's instrument list matched to our symbols.
 	 *
-	 * ISIN wins where both sides have one: it is the company, where a ticker
-	 * is only the way one venue writes it. Otherwise the code decides, and
-	 * only when it decides one symbol - a code that fits two of ours, or two
-	 * of the broker's instruments that fit one of our symbols, is ambiguous
-	 * and is stored as such. Nothing is guessed, in either direction.
+	 * Three rules, in this order, because that is the order they can be
+	 * trusted in:
+	 *
+	 *   1. the ISIN, where both sides have one. It is the company; a ticker
+	 *      is only how one venue writes it. Every Trading 212 instrument
+	 *      carries one, so this is exact as soon as ours are filled in.
+	 *
+	 *   2. shortName, among the sterling instruments. Trading 212's ticker
+	 *      keeps a company's OLD code after a rename - Barratt Redrow is
+	 *      still BDEVl_EQ, Entain is GVCl_EQ, Frasers is SPDl_EQ - and
+	 *      shortName carries the current one. Matching on the ticker alone
+	 *      left 32 of the FTSE 350 unmatched, most of them renames.
+	 *      Sterling only, because a shortName is not unique across the
+	 *      world: 18,600 instruments include plenty of three letter codes
+	 *      that are somebody else's.
+	 *
+	 *   3. the stripped ticker, which is what is left for a company that has
+	 *      never been renamed.
+	 *
+	 * Each instrument makes one claim, by the best rule it can. Where two
+	 * instruments claim the same share, the better rule wins; if they tie,
+	 * sterling wins; if they still tie, the London ticker form wins; and if
+	 * they still tie, neither is used and the page says so. A wrong match
+	 * values the wrong company's holding, so the last step is never a guess.
+	 *
+	 * SHCp_EQ and CAPCl_EQ are the case that needs all of it: both reduce to
+	 * the code SHC, and CAPCl_EQ is the one whose shortName says SHC.
 	 *
 	 * Returns ['rows' => [...], 'matched' => n, 'ambiguous' => n,
-	 *          'unknown' => n] where rows are ready for broker_instruments.
+	 *          'unknown' => n, 'isins' => [...]] where rows are ready for
+	 * broker_instruments and isins is every ISIN the broker listed.
 	 */
 	function broker_match_instruments(array $instruments, $exchange = null) {
 
 		$by_key  = broker_symbol_keys($exchange);
 		$by_isin = broker_symbol_isins($exchange);
 
-		$candidates = [];   // symbol => [row, row, ...]
-		$ambiguous  = [];   // ticker => note
-		$unknown    = 0;
+		$claims    = [];   // symbol => [row, row, ...]
+		$ambiguous = [];   // ticker => row, with its note
+		$unknown   = 0;
+		$isins     = [];
 
 		foreach ($instruments as $instrument) {
 
-			[$ticker]   = broker_field($instrument, broker_fields('instrument_ticker'));
+			[$ticker] = broker_field($instrument, broker_fields('instrument_ticker'));
 			if ($ticker === null || trim((string) $ticker) === '') { continue; }
-			$ticker     = trim((string) $ticker);
+			$ticker   = trim((string) $ticker);
 
 			[$isin]     = broker_field($instrument, broker_fields('instrument_isin'));
+			[$short]    = broker_field($instrument, broker_fields('instrument_short'));
 			[$name]     = broker_field($instrument, broker_fields('instrument_name'));
 			[$currency] = broker_field($instrument, broker_fields('instrument_ccy'));
 
-			$isin  = $isin === null ? null : strtoupper(trim((string) $isin));
-			$parts = broker_ticker_code($ticker);
+			$isin     = $isin === null ? null : strtoupper(trim((string) $isin));
+			$currency = $currency === null ? null : strtoupper(trim((string) $currency));
+			$parts    = broker_ticker_code($ticker);
+
+			if ($isin !== null && $isin !== '') { $isins[$isin] = true; }
 
 			$row = ['broker_ticker' => $ticker,
 			        'isin'          => $isin,
+			        'short_name'    => $short === null ? null : trim((string) $short),
 			        'name'          => $name === null ? null : (string) $name,
-			        'currency'      => $currency === null ? null : strtoupper((string) $currency),
+			        'currency'      => $currency,
 			        'market'        => $parts['market'],
-			        'code'          => $parts['code']];
+			        'code'          => $parts['code'],
+			        /* GBX for most London lines, GBP for a few. */
+			        'sterling'      => in_array((string) $currency, ['GBP', 'GBX'], true),
+			        /* <code>l_EQ, <code>l1_EQ, <code>p_EQ are London;
+			           <code>_US_EQ and <code>_CA_EQ are not. */
+			        'london'        => preg_match('~[a-z]\d*_EQ$~', $ticker) === 1,
+			        'symbol'        => null,
+			        'matched_on'    => null,
+			        'rank'          => null,
+			        'status'        => 'matched',
+			        'note'          => null];
 
-			/* ISIN first. */
+			$claim = function ($symbol, $how, $rank) use (&$claims, $row) {
+				$row['symbol']     = $symbol;
+				$row['matched_on'] = $how;
+				$row['rank']       = $rank;
+				$claims[$symbol][] = $row;
+			};
+			$refuse = function ($why) use (&$ambiguous, $row, $ticker) {
+				$row['status'] = 'ambiguous';
+				$row['note']   = $why;
+				$ambiguous[$ticker] = $row;
+			};
+
+			/* 1. The ISIN. */
 			if ($isin !== null && $isin !== '' && isset($by_isin[$isin])) {
-				if (count($by_isin[$isin]) === 1) {
-					$row['symbol']     = $by_isin[$isin][0];
-					$row['matched_on'] = 'isin';
-					$candidates[$row['symbol']][] = $row;
-					continue;
-				}
-				$ambiguous[$ticker] = 'ISIN ' . $isin . ' is on more than one of our symbols';
+				if (count($by_isin[$isin]) === 1) { $claim($by_isin[$isin][0], 'isin', 0); continue; }
+				$refuse('ISIN ' . $isin . ' is on more than one of our shares ('
+				        . implode(', ', $by_isin[$isin]) . ')');
 				continue;
 			}
 
+			/* 2. shortName, sterling only. */
+			if ($row['sterling'] && $row['short_name'] !== null && $row['short_name'] !== '') {
+				$short_key = broker_code_key($row['short_name']);
+				if ($short_key !== '' && isset($by_key[$short_key])) {
+					if (count($by_key[$short_key]) === 1) {
+						$claim($by_key[$short_key][0], 'short_name', 1);
+						continue;
+					}
+					$refuse('the short name ' . $row['short_name'] . ' fits '
+					        . implode(', ', $by_key[$short_key]));
+					continue;
+				}
+			}
+
+			/* 3. The ticker, with the parts that are not the company's code
+			      taken off it. */
 			$key = broker_code_key($parts['code']);
 			if ($key === '' || !isset($by_key[$key])) { $unknown++; continue; }
 
 			if (count($by_key[$key]) > 1) {
-				$ambiguous[$ticker] = 'the code fits ' . implode(', ', $by_key[$key]);
+				$refuse('the code ' . $parts['code'] . ' fits ' . implode(', ', $by_key[$key]));
 				continue;
 			}
 
-			$row['symbol']     = $by_key[$key][0];
-			$row['matched_on'] = 'ticker';
-			$candidates[$row['symbol']][] = $row;
+			$claim($by_key[$key][0], 'ticker', 2);
 		}
 
-		/* The other direction: two of the broker's instruments fitting one of
-		   our symbols is the same problem. VOD on London and VOD somewhere
-		   else are different shares in different currencies, and picking the
-		   first one read is picking at random. A currency we can see to be
-		   sterling settles it; nothing else does. */
+		/* The contest, where more than one instrument claimed a share. */
 		$rows = [];
-		foreach ($candidates as $symbol => $found) {
+		foreach ($claims as $symbol => $found) {
 
 			if (count($found) > 1) {
 
-				$sterling = array_values(array_filter($found, function ($row) {
-					return in_array((string) $row['currency'], ['GBP', 'GBX', 'GBp'], true);
-				}));
-
-				if (count($sterling) === 1) { $found = $sterling; }
-				else {
-					foreach ($found as $row) {
-						$ambiguous[$row['broker_ticker']] =
-							'more than one instrument fits ' . $symbol . ' ('
-							. implode(', ', array_column($found, 'broker_ticker')) . ')';
-					}
-					continue;
-				}
+				/* The better rule first: a shortName match is current where
+				   a ticker match may be a company's old code. */
+				$best  = min(array_column($found, 'rank'));
+				$found = array_values(array_filter($found,
+				         function ($row) use ($best) { return $row['rank'] === $best; }));
 			}
 
-			$row = $found[0];
-			$row['status'] = 'matched';
-			$row['note']   = null;
-			$rows[] = $row;
+			if (count($found) > 1) {
+				$sterling = array_values(array_filter($found,
+				            function ($row) { return $row['sterling']; }));
+				if (count($sterling) >= 1) { $found = $sterling; }
+			}
+
+			if (count($found) > 1) {
+				$london = array_values(array_filter($found,
+				          function ($row) { return $row['london']; }));
+				if (count($london) >= 1) { $found = $london; }
+			}
+
+			if (count($found) > 1) {
+				foreach ($found as $row) {
+					$row['status'] = 'ambiguous';
+					$row['symbol'] = null;
+					$row['note']   = 'more than one instrument fits ' . $symbol . ' ('
+					               . implode(', ', array_column($found, 'broker_ticker')) . ')';
+					$ambiguous[$row['broker_ticker']] = $row;
+				}
+				continue;
+			}
+
+			/* The instruments that lost the contest are simply not used.
+			   SHCp_EQ beside CAPCl_EQ is not an ambiguity once shortName has
+			   spoken; it is an instrument that is not ours. */
+			$unknown += count($claims[$symbol]) - 1;
+
+			$rows[] = $found[0];
 		}
 
-		foreach ($ambiguous as $ticker => $note) {
-			$parts = broker_ticker_code($ticker);
-			$rows[] = ['broker_ticker' => $ticker, 'symbol' => null, 'isin' => null,
-			           'name' => null, 'currency' => null, 'market' => $parts['market'],
-			           'code' => $parts['code'], 'matched_on' => null,
-			           'status' => 'ambiguous', 'note' => $note];
-		}
+		foreach ($ambiguous as $row) { $rows[] = $row; }
 
-		return ['rows' => $rows,
-		        'matched' => count(array_filter($rows, function ($r) { return $r['status'] === 'matched'; })),
+		return ['rows'      => $rows,
+		        'matched'   => count(array_filter($rows, function ($r) {
+		                           return $r['status'] === 'matched'; })),
 		        'ambiguous' => count($ambiguous),
-		        'unknown' => $unknown];
+		        'unknown'   => $unknown,
+		        'isins'     => array_keys($isins)];
 	}
 
 	/** Store a matched instrument list. Re-runnable: the ticker is the key. */
@@ -356,12 +505,14 @@
 
 		foreach ($rows as $row) {
 			query("replace into broker_instruments
-			         (broker, broker_ticker, symbol, isin, currency, name,
+			         (broker, broker_ticker, symbol, short_name, isin, currency, name,
 			          status, matched_on, note, last_seen)
-			       values (?,?,?,?,?,?,?,?,?,?)",
+			       values (?,?,?,?,?,?,?,?,?,?,?)",
 			      $broker,
 			      mb_substr((string) $row['broker_ticker'], 0, 40),
 			      $row['symbol'] === null ? null : mb_substr((string) $row['symbol'], 0, 50),
+			      (!isset($row['short_name']) || $row['short_name'] === null)
+			        ? null : mb_substr((string) $row['short_name'], 0, 60),
 			      $row['isin'] === null ? null : mb_substr((string) $row['isin'], 0, 12),
 			      $row['currency'] === null ? null : mb_substr((string) $row['currency'], 0, 8),
 			      $row['name'] === null ? null : mb_substr((string) $row['name'], 0, 255),
@@ -411,9 +562,42 @@
 		               order by s.symbol", $exchange, $broker);
 	}
 
+	/**
+	 * Our shares whose ISIN the broker does not list at all.
+	 *
+	 * Every Trading 212 instrument carries an ISIN, so a share of ours whose
+	 * ISIN is nowhere in their list is a share that cannot be bought there -
+	 * which is worth knowing before a strategy picks it, and is a different
+	 * thing from one this application merely failed to match.
+	 *
+	 * Answerable only for the shares we have an ISIN for, which until
+	 * fetch_fmp_fundamentals.py has run is none of them. No ISINs on our
+	 * side means an empty list rather than a claim that nothing is tradeable.
+	 */
+	function broker_isins_not_listed(array $broker_isins, $exchange = null) {
+
+		if (!count($broker_isins)) { return []; }
+
+		$have = [];
+		foreach ($broker_isins as $isin) { $have[strtoupper(trim((string) $isin))] = true; }
+
+		$out = [];
+		foreach (broker_symbol_isins($exchange) as $isin => $symbols) {
+			if (!isset($have[$isin])) {
+				foreach ($symbols as $symbol) { $out[] = $symbol; }
+			}
+		}
+		sort($out);
+		return $out;
+	}
+
 	/** The instruments that fitted more than one thing, with the reason. */
 	function broker_ambiguous_instruments($broker = BROKER_T212) {
-		return query("select broker_ticker, note, last_seen from broker_instruments
+		/* With their ISIN and currency, which the first version threw away:
+		   the next question anybody asks about an ambiguous pair is which
+		   of them is the London line, and the answer was not on the row. */
+		return query("select broker_ticker, short_name, isin, currency, note, last_seen
+		                from broker_instruments
 		               where broker=? and status='ambiguous' order by broker_ticker", $broker);
 	}
 
@@ -519,11 +703,14 @@
 	function broker_store_account_value($broker, $as_of, array $values) {
 
 		query("replace into broker_account_values
-		         (broker, as_of_date, cash, invested, total, free, result, currency, synced_at)
-		       values (?,?,?,?,?,?,?,?,?)",
+		         (broker, as_of_date, cash, reserved, in_pies, invested, invested_cost,
+		          realised, unrealised, total, currency, synced_at)
+		       values (?,?,?,?,?,?,?,?,?,?,?,?)",
 		      $broker, $as_of,
-		      $values['cash'] ?? null, $values['invested'] ?? null, $values['total'] ?? null,
-		      $values['free'] ?? null, $values['result'] ?? null,
+		      $values['cash'] ?? null, $values['reserved'] ?? null, $values['in_pies'] ?? null,
+		      $values['invested'] ?? null, $values['invested_cost'] ?? null,
+		      $values['realised'] ?? null, $values['unrealised'] ?? null,
+		      $values['total'] ?? null,
 		      isset($values['currency']) ? mb_substr((string) $values['currency'], 0, 8) : null,
 		      date('Y-m-d H:i:s'));
 	}
@@ -649,10 +836,19 @@
 		$exchange = isset($options["exchange"]) ? $options["exchange"] : default_exchange();
 		$as_of    = isset($options['as_of']) ? $options['as_of'] : date('Y-m-d');
 
+		/* Two lists, and the difference between them decides the status.
+		   A PROBLEM is something that stops the data being right: a call
+		   that failed, a field this application needed and could not read,
+		   a price unit it could not settle on a share that is held. A
+		   NOTICE is worth saying and wrong with nothing: six instruments
+		   that fit more than one share, a holding whose instrument is not
+		   one of ours. Counting the notices as problems made every run
+		   FAILED on a night when the only thing wrong was the cash. */
 		$result = ['ok' => false, 'ran' => false, 'status' => 'OFF', 'message' => '',
-		           'problems' => [], 'positions' => 0, 'cash' => null, 'new_orders' => 0,
-		           'new_dividends' => 0, 'instruments' => 0, 'unmatched' => 0,
-		           'price_unit' => null, 'requests' => 0, 'as_of' => $as_of];
+		           'problems' => [], 'notices' => [], 'positions' => 0, 'cash' => null,
+		           'new_orders' => 0, 'new_dividends' => 0, 'instruments' => 0,
+		           'unmatched' => 0, 'price_unit' => null, 'requests' => 0,
+		           'as_of' => $as_of];
 
 		if (!broker_ready()) {
 			$result['message'] = "sql/broker.sql has not been applied, so there is"
@@ -673,6 +869,7 @@
 
 		$result['ran'] = true;
 		$problems = [];
+		$notices  = [];
 		$started  = date('Y-m-d H:i:s');
 
 		/* --- the instrument list, weekly ---------------------------------
@@ -692,9 +889,23 @@
 				$matched = broker_match_instruments($rows, $exchange);
 				broker_store_instruments($broker, $matched['rows'], $as_of);
 				$result['instruments'] = $matched['matched'];
+
 				if ($matched['ambiguous'] > 0) {
-					$problems[] = $matched['ambiguous'] . " of the broker's instruments fit"
-					            . " more than one of our shares and were not matched to any.";
+					$notices[] = $matched['ambiguous'] . " of the broker's instruments fit"
+					           . " more than one of our shares, so none of them was matched"
+					           . " to any. They are listed under Mapping.";
+				}
+
+				/* A share whose ISIN is not in the broker's list at all
+				   cannot be traded there, which is worth knowing before a
+				   strategy picks it. Only answerable once our own ISINs are
+				   filled in, which fetch_fmp_fundamentals.py does. */
+				$missing = broker_isins_not_listed($matched['isins'], $exchange);
+				if (count($missing)) {
+					$notices[] = count($missing) . " share(s) have an ISIN that Trading 212"
+					           . " does not list at all, so they cannot be traded there: "
+					           . implode(', ', array_slice($missing, 0, 20))
+					           . (count($missing) > 20 ? ' and ' . (count($missing) - 20) . ' more' : '');
 				}
 			}
 		}
@@ -708,24 +919,33 @@
 			$data = is_array($summary['data']) ? $summary['data'] : [];
 
 			$values = [
-				'cash'     => broker_number($data, broker_fields('summary_cash')),
-				'invested' => broker_number($data, broker_fields('summary_invested')),
-				'total'    => broker_number($data, broker_fields('summary_total')),
-				'free'     => broker_number($data, broker_fields('summary_free')),
-				'result'   => broker_number($data, broker_fields('summary_result')),
+				'cash'          => broker_number($data, broker_fields('summary_cash')),
+				'reserved'      => broker_number($data, broker_fields('summary_reserved')),
+				'in_pies'       => broker_number($data, broker_fields('summary_in_pies')),
+				'invested'      => broker_number($data, broker_fields('summary_invested')),
+				'invested_cost' => broker_number($data, broker_fields('summary_cost')),
+				'realised'      => broker_number($data, broker_fields('summary_realised')),
+				'unrealised'    => broker_number($data, broker_fields('summary_unrealised')),
+				'total'         => broker_number($data, broker_fields('summary_total')),
 			];
 			[$currency] = broker_field($data, broker_fields('summary_currency'));
 			$values['currency'] = $currency === null ? 'GBP' : (string) $currency;
 
-			if ($values['cash'] === null && $values['total'] === null) {
-				$problems[] = "the account summary carried none of the field names this"
-				            . " knows for cash or total (" . implode(', ', array_keys($data))
-				            . "). Nothing was stored for it.";
+			/* Every figure the page shows at the top is checked by name. A
+			   null stored quietly is how the first live sync reported a
+			   correct total beside a blank cash balance and called itself a
+			   success. */
+			foreach (['summary_cash'     => 'cash balance',
+			          'summary_invested' => 'invested value',
+			          'summary_total'    => 'total value'] as $what => $label) {
+				$why = broker_field_problem($data, $what, $label, 'account summary');
+				if ($why !== '') { $problems[] = $why; }
 			}
-			else {
-				broker_store_account_value($broker, $as_of, $values);
-				$result['cash'] = $values['cash'];
-			}
+
+			/* Stored whatever was missing: three figures out of four beats
+			   none, and the problem above says which one is not there. */
+			broker_store_account_value($broker, $as_of, $values);
+			$result['cash'] = $values['cash'];
 		}
 
 		/* --- the positions ------------------------------------------------ */
@@ -806,9 +1026,11 @@
 
 			$unknown = count(array_filter($store, function ($r) { return $r['symbol'] === null; }));
 			if ($unknown > 0) {
-				$problems[] = $unknown . " holding(s) are in instruments this application"
-				            . " could not match to one of its own shares, so they are"
-				            . " shown by the broker's ticker.";
+				/* A notice: the holding is read, stored and shown, by the
+				   broker's own ticker instead of our name for it. */
+				$notices[] = $unknown . " holding(s) are in instruments this application"
+				           . " could not match to one of its own shares, so they are"
+				           . " shown by the broker's ticker.";
 			}
 		}
 
@@ -907,28 +1129,37 @@
 			if (!in_array($problem, $problems, true)) { $problems[] = $problem; }
 		}
 		$problems = array_map('t212_mask', $problems);
+		$notices  = array_map('t212_mask', $notices);
 
 		$result['unmatched'] = count(broker_unmatched_symbols($broker, $exchange));
 		$result['requests']  = $client->requests();
 		$result['problems']  = $problems;
+		$result['notices']   = $notices;
+
+		/* The status is about the problems only. A run that read the cash,
+		   the positions and the history, and had something to say about six
+		   instruments, did its job. */
 		$result['status']    = count($problems) === 0 ? 'OK'
 		                     : ($result['positions'] > 0 || $result['cash'] !== null
 		                        ? 'PARTIAL' : 'FAILED');
 		$result['ok']        = $result['status'] !== 'FAILED';
-		$result['message']   = $result['status'] === 'OK'
-		                     ? "read " . $result['positions'] . " position(s)"
-		                     : implode(' ', $problems);
+		$result['message']   = count($problems)
+		                     ? implode(' ', $problems)
+		                     : "read " . $result['positions'] . " position(s), cash "
+		                       . ($result['cash'] === null ? 'unknown' : $result['cash'])
+		                       . (count($notices) ? '. ' . implode(' ', $notices) : '');
 
 		query("insert into broker_sync_runs
 		         (broker, environment, started_at, finished_at, status, as_of_date,
 		          price_unit, positions, cash, new_orders, new_dividends, instruments,
-		          unmatched, requests, problems)
-		       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		          unmatched, requests, problems, notices)
+		       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		      $broker, $client->environment(), $started, date('Y-m-d H:i:s'),
 		      $result['status'], $as_of, $result['price_unit'], $result['positions'],
 		      $result['cash'], $result['new_orders'], $result['new_dividends'],
 		      $result['instruments'], $result['unmatched'], $result['requests'],
-		      count($problems) ? t212_mask(implode("\n", $problems)) : null);
+		      count($problems) ? t212_mask(implode("\n", $problems)) : null,
+		      count($notices) ? t212_mask(implode("\n", $notices)) : null);
 
 		write_log("sync_broker",
 		          "env=" . $client->environment() . " status=" . $result['status']
@@ -941,6 +1172,7 @@
 		        . " requests=" . $result['requests']
 		        . (count($client->notes())
 		           ? " notes=" . t212_mask(implode('; ', $client->notes())) : "")
+		        . (count($notices) ? " notices=" . t212_mask(implode('; ', $notices)) : "")
 		        . (count($problems) ? " problems=" . t212_mask(implode('; ', $problems)) : ""));
 
 		return $result;
@@ -998,9 +1230,15 @@
 		$rows = query("select max(as_of_date) d from broker_positions where broker=?", $broker);
 		if (!count($rows) || $rows[0]['d'] === null) { return []; }
 
-		return query("select p.*, s.name
+		/* matched_on comes from the instrument row rather than the position:
+		   how a holding was matched is a fact about the mapping, and the
+		   page shows it so that a rename matched on shortName can be told
+		   from a plain ticker match without reading the code. */
+		return query("select p.*, s.name, i.matched_on, i.short_name
 		                from broker_positions p
 		                left join stock_symbols s on s.symbol=p.symbol and s.enabled='Y'
+		                left join broker_instruments i on i.broker=p.broker
+		                     and i.broker_ticker=p.broker_ticker
 		               where p.broker=? and p.as_of_date=?
 		               order by p.value desc, p.broker_ticker", $broker, (string) $rows[0]['d']);
 	}

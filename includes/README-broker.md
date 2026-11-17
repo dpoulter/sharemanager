@@ -16,6 +16,7 @@ Orders - Execute permission anyway.
 | `public/broker.php`, `templates/broker.php` | The page. Logged in only, like every other page. |
 | `tools/t212_stub.php` | The stand-in the suite talks to. No test calls Trading 212. |
 | `sql/broker.sql` | The tables. Safe to apply twice. |
+| `sql/broker_account_fields.sql` | The second migration: the account summary's real fields, the notices column, shortName. **Run this one too.** |
 
 ## Configuration
 
@@ -36,48 +37,98 @@ that says so: no socket is opened, no row is written, and nothing else in the
 application behaves differently. That is the state of a host nobody has
 configured, and the suite checks it.
 
-## The three things the API does not tell us
+## What the API really answers
 
-Version 0 of the API is beta, and its documentation gives no response fields,
-no price units and no ticker format for London shares - the only example is
-`AAPL_US_EQ`. All three are therefore worked out rather than assumed:
+Version 0 is beta and its documentation gives no response fields, no price
+units and no ticker format for London shares. The first live run (17 Nov
+2026) settled two of the three; `tools/t212_probe.php` is what settled them
+and is what to run again if anything changes.
 
-1. **Field names.** Every read goes through `broker_field()`, which takes the
-   spellings that are plausible and records a problem when the response
-   carries none of them, instead of storing null and looking fine.
-2. **The ticker format.** `broker_ticker_code()` strips the parts that are
-   certainly not the company's code - a trailing `_EQ`, a `_XX` country
-   marker, a single trailing lower-case letter - and matches what is left.
-   ISIN wins where both sides have one. A code that fits more than one of our
-   shares, or two instruments that fit one share, is left unmatched and shown
-   on the page: a wrong match values the wrong company's holding.
-3. **Pounds or pence.** `historical_prices` is pence and the strategy engine
-   is pounds, so this is a factor of 100 on every figure.
-   `broker_price_unit()` decides it by comparing the broker's price for a
-   share against our own close for the same share. A position whose unit
-   cannot be decided stores no price at all rather than one that might be a
-   hundred times out, and the page says why.
+**The account summary nests.** This is what it answers:
 
-Run `php tools/t212_probe.php` to settle all three against real responses. It
-makes three GETs, prints the answers, and writes the raw JSON - credentials
-masked, mode 600 - to `SM_T212_PROBE_DIR`, outside the web root. Once the
-answers are known, the candidate lists in `broker_fields()` can be cut to the
-spelling that is real and `SM_T212_PRICE_UNIT` set to the right one. Keep the
-guards: a beta API can change them back.
+```
+{"id":..., "currency":"GBP", "totalValue":250.00,
+ "cash":{"availableToTrade":250.00,"reservedForOrders":0,"inPies":0},
+ "investments":{"currentValue":0,"totalCost":0,
+                "realizedProfitLoss":0,"unrealizedProfitLoss":0}}
+```
 
-Nothing fills `stock_symbols.isin` yet - no job this application runs has an
-ISIN to write - so in practice the mapping is by code until something does.
-FMP's company profile carries one, which is the obvious place to get it.
+Values are pounds. `broker_fields()` holds those paths, dotted, and
+`broker_field()` follows them. The first version read top-level keys only,
+was handed the `cash` object, made a null of it and called the run a success:
+a correct total of GBP250.00 beside a blank cash balance. Every figure the
+page shows at the top is now checked by name, and a field that is missing -
+or that holds an object - is a problem that says which field and what the
+response had instead.
+
+**The ticker keeps a company's old code after a rename, and `shortName`
+carries the current one.** Barratt Redrow is `BDEVl_EQ`, Entain is `GVCl_EQ`,
+Frasers is `SPDl_EQ`, Vistry is `BVSl_EQ`, LSEG is `LSEl_EQ`, Harbour Energy
+is `PMOl_EQ`. Matching on the ticker alone left 32 of the FTSE 350 unmatched.
+The rule, in order:
+
+1. the **ISIN**, where both sides have one. All 18,600 of their instruments
+   carry one; ours come from FMP (see below);
+2. **shortName**, among the sterling instruments only - `GBX` for most London
+   lines, `GBP` for a few. A short name is not unique across the world;
+3. the **stripped ticker**, for a company that has never been renamed.
+
+London ticker forms are `<code>l_EQ`, `<code>l1_EQ` and `<code>p_EQ`; other
+markets are `<code>_US_EQ` and `<code>_CA_EQ`. A share class is `BT/A` there
+and `BT-A` here, and the separators are ignored on both sides.
+
+Each instrument makes one claim, by the best rule it can. Where two claim the
+same share the better rule wins, then sterling, then the London ticker form;
+if they still tie, neither is used and the page lists them with their ISIN
+and currency. `SHCp_EQ` beside `CAPCl_EQ` is the case that needs all of it:
+both reduce to the code `SHC`, and `CAPCl_EQ` is the one whose shortName says
+so.
+
+**Pounds or pence is still open.** The account held nothing on the first run,
+so there was no price to compare. Instruments report `currencyCode` GBX for
+London shares, which points at pence, but a position may differ, so the
+comparison guard stays: `broker_price_unit()` decides by comparing the
+broker's price for a share against our own close for the same share, and it
+settles on the first holding. A position whose unit cannot be decided stores
+no price at all rather than one that might be a hundred times out, and the
+page says why. `historical_prices` is pence and the strategy engine is
+pounds, so this is a factor of 100 on every figure.
+
+`stock_symbols.isin` is filled by `python/fetch_fmp_fundamentals.py` from the
+FMP company profile, which makes the match exact rather than clever. Until
+that has run once, the mapping is by shortName and ticker. A share whose ISIN
+Trading 212 does not list at all cannot be traded there, and the sync says so
+as a notice.
+
+## Problems and notices
+
+A **problem** stopped the data being right: a call that failed, a field the
+application needed and could not read, a price unit it could not settle on a
+share that is held. It sets the run to PARTIAL or FAILED and shows on the
+page under "What the last sync could not do".
+
+A **notice** is worth saying and wrong with nothing: instruments that fit
+more than one share, a holding whose instrument is not one of ours, a share
+whose ISIN the broker does not list. It leaves the run OK and shows under
+"Worth knowing".
+
+The two were one list on the first deploy, so six instruments the matcher
+could not tell apart made every run a failure.
 
 ## Deploying it
 
 1. Dale puts the key and secret in `/etc/sharemanager.env` and the php-fpm
    pool, and sets `SM_T212_ENV=live-read`. Nobody else handles them.
-2. Back up the database, deploy, then `mysql sharemanager < sql/broker.sql`.
-3. `php tools/t212_probe.php` and send the output back before trusting the
-   mapping.
+2. Back up the database, deploy, then run both migrations:
+   `mysql sharemanager < sql/broker.sql` and
+   `mysql sharemanager < sql/broker_account_fields.sql`.
+3. `php tools/t212_probe.php` and send the output back if anything in the
+   responses has changed.
 4. `php includes/sync_broker.php --instruments`, then check the cash and the
    positions on the broker page against the Trading 212 app.
+5. The ISINs arrive with the next nightly fundamentals run, or run
+   `python3 python/fetch_fmp_fundamentals.py` by hand; the next
+   `--instruments` sync then matches on them.
 
 The nightly run does the sync after the strategies and is allowed to fail
 without taking the night with it.

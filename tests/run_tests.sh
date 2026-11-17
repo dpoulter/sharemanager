@@ -125,6 +125,9 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/screen_last_run.sql" > /dev/null || exit 1
 echo "applying sql/broker.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/broker.sql" > /dev/null || exit 1
 
+echo "applying sql/broker_account_fields.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_account_fields.sql" > /dev/null || exit 1
+
 # After sql/report_currency.sql, which adds the column this one sits after.
 echo "applying sql/strategy_prices.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_prices.sql" > /dev/null || exit 1
@@ -170,7 +173,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       strategy_rules user_theme market_breadth statistics_indicator_index screen_last_run \
                       strategy_hold_rank strategy_display_name \
                       strategy_backtest strategy_backtest_overrides strategy_prices \
-                      broker; do
+                      broker broker_account_fields; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
      done
 

@@ -122,6 +122,40 @@ def quote_currency(profile):
     return value
 
 
+def company_isin(profile):
+    """The ISIN from Profile.isin, or None.
+
+    The broker connection matches Trading 212's instruments to these symbols,
+    and the ticker is the weakest thing to match on: Trading 212 keeps a
+    company's old code after a rename, so Barratt Redrow is still BDEVl_EQ.
+    Every one of their 18,600 instruments carries an ISIN, so filling ours
+    makes the match exact rather than clever.
+
+    Twelve characters: two letters of country, nine of national number and a
+    check digit. Anything else is not an ISIN and is left alone rather than
+    stored as one - a wrong ISIN would match the wrong company's instrument,
+    which is worse than no ISIN at all.
+    """
+    if not isinstance(profile, dict):
+        return None
+
+    value = profile.get("isin")
+
+    if not isinstance(value, str):
+        return None
+
+    value = value.strip().upper()
+
+    if len(value) != 12:
+        return None
+    if not value[:2].isalpha():
+        return None
+    if not value[2:].isalnum():
+        return None
+
+    return value
+
+
 def is_fund_flag(profile):
     """'Y', 'N' or None from Profile.isFund.
 

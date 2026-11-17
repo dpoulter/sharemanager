@@ -94,18 +94,37 @@
 		$data = $answer['data'];
 
 		if ($call === 'summary') {
-			/* Point 1: the field names. Printed with their values, because
-			   "cash" and "free" are both plausible names for two different
-			   numbers and only the figures say which is which. */
+			/* Point 1: the field names, printed with their values, because
+			   only the figures say which name carries which number.
+			   Nested, because the summary nests: the first version printed
+			   "cash = Array" with a warning, which is the shape of the
+			   response saying something the reader could not hear. */
+			$walk = function ($node, $prefix = '') use (&$walk) {
+				foreach ((array) $node as $name => $value) {
+					$path = $prefix === '' ? (string) $name : $prefix . '.' . $name;
+					if (is_array($value)) { $walk($value, $path); }
+					else if (is_bool($value)) { echo "    " . $path . " = "
+					                                . ($value ? 'true' : 'false') . "\r\n"; }
+					else { echo "    " . $path . " = " . (string) $value . "\r\n"; }
+				}
+			};
 			echo "  fields: " . implode(', ', array_keys((array) $data)) . "\r\n";
-			foreach ((array) $data as $name => $value) {
-				if (is_scalar($value)) { echo "    " . $name . " = " . $value . "\r\n"; }
-			}
-			foreach (['summary_cash', 'summary_invested', 'summary_total'] as $want) {
+			$walk($data);
+
+			foreach (['summary_cash'       => 'cash',
+			          'summary_invested'   => 'invested value',
+			          'summary_total'      => 'total value',
+			          'summary_reserved'   => 'reserved for orders',
+			          'summary_in_pies'    => 'in pies',
+			          'summary_cost'       => 'cost of holdings',
+			          'summary_realised'   => 'realised profit',
+			          'summary_unrealised' => 'unrealised profit'] as $want => $label) {
 				[$value, $found] = broker_field((array) $data, broker_fields($want));
-				echo "  " . str_pad($want, 18)
-				   . ($found === null ? "NOT FOUND - add its name to broker_fields()"
-				                      : $found . " = " . $value) . "\r\n";
+				echo "  " . str_pad($want, 20)
+				   . ($value === null
+				      ? "NOT FOUND (" . implode(', ', broker_fields($want))
+				        . ") - add its path to broker_fields()"
+				      : $found . " = " . (string) $value) . "\r\n";
 			}
 		}
 
@@ -180,11 +199,32 @@
 			foreach ($matched['rows'] as $row) {
 				if ($row['status'] !== 'matched' || $shown >= 10) { continue; }
 				echo "    " . str_pad((string) $row['broker_ticker'], 14)
+				   . " short=" . str_pad((string) $row['short_name'], 8)
 				   . " -> " . str_pad((string) $row['symbol'], 8)
-				   . " by " . str_pad((string) $row['matched_on'], 7)
+				   . " by " . str_pad((string) $row['matched_on'], 11)
 				   . " ccy=" . (string) $row['currency'] . "\r\n";
 				$shown++;
 			}
+
+			/* The ones it could not tell apart, in full: this is the list
+			   somebody has to look at, and it is short. */
+			foreach ($matched['rows'] as $row) {
+				if ($row['status'] !== 'ambiguous') { continue; }
+				echo "    AMBIGUOUS " . str_pad((string) $row['broker_ticker'], 14)
+				   . " short=" . str_pad((string) $row['short_name'], 8)
+				   . " ccy=" . str_pad((string) $row['currency'], 5)
+				   . " isin=" . str_pad((string) $row['isin'], 13)
+				   . " " . (string) $row['note'] . "\r\n";
+			}
+
+			/* And the shares the broker does not list at all, which is a
+			   different thing from one this could not match. */
+			$not_listed = broker_isins_not_listed($matched['isins'], default_exchange());
+			echo "  our shares whose ISIN Trading 212 does not list: "
+			   . (count($not_listed) ? implode(', ', $not_listed) : 'none')
+			   . (count(broker_symbol_isins(default_exchange())) ? ''
+			      : ' (none of our shares has an ISIN yet, so nothing could be checked)')
+			   . "\r\n";
 			$out['matching'] = ['matched' => $matched['matched'],
 			                    'ambiguous' => $matched['ambiguous'],
 			                    'unknown' => $matched['unknown']];

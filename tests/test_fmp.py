@@ -320,6 +320,29 @@ check("and anything that is not a three letter code is refused",
       and fmp.quote_currency({"currency": ""}) is None
       and fmp.quote_currency({"currency": 826}) is None)
 
+print("\n--- the ISIN, which is what the broker matches on ---")
+
+# Trading 212 keeps a company's OLD code in its ticker after a rename -
+# Barratt Redrow is still BDEVl_EQ - so matching on a ticker misses exactly
+# the companies that have changed. All 18,600 of their instruments carry an
+# ISIN, so ours makes the match exact.
+check("an ISIN comes back upper-cased and trimmed",
+      fmp.company_isin({"isin": " gb00bbbb0002 "}) == "GB00BBBB0002"
+      and fmp.company_isin({"isin": "GB0002162385"}) == "GB0002162385")
+check("a profile that does not say is left alone rather than guessed at",
+      fmp.company_isin({}) is None
+      and fmp.company_isin(None) is None
+      and fmp.company_isin({"isin": None}) is None
+      and fmp.company_isin({"isin": ""}) is None)
+# A wrong ISIN matches the wrong company's instrument, which is worse than
+# no ISIN: the holding would be valued against somebody else's share.
+check("and anything that is not twelve characters of ISIN is refused",
+      fmp.company_isin({"isin": "GB00BBBB"}) is None
+      and fmp.company_isin({"isin": "GB00BBBB0002X"}) is None
+      and fmp.company_isin({"isin": "1200BBBB0002"}) is None
+      and fmp.company_isin({"isin": "GB00BBBB-002"}) is None
+      and fmp.company_isin({"isin": 826}) is None)
+
 # It goes into stock_info under Derived, beside the other computed figures,
 # and it uses the raw market cap rather than the pence-normalised one: the
 # cash flow figures are in major units and so is marketCap.

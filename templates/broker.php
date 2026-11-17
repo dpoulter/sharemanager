@@ -112,6 +112,11 @@
 		</div>
 		<?php endif ?>
 
+		<?php /* Two lists, because they are two different things. A problem
+		         stopped something being right and wants doing something
+		         about; a notice is the run telling you what it noticed. Six
+		         instruments it could not tell apart used to be filed as a
+		         problem, which made every run read as a failure. */ ?>
 		<?php if ($status['run'] !== null && trim((string) $status['run']['problems']) !== ''): ?>
 		<div class="mt-2">
 			<div class="sm-strip-label">What the last sync could not do</div>
@@ -119,6 +124,19 @@
 			<?php foreach (explode("\n", (string) $status['run']['problems']) as $problem): ?>
 				<?php if (trim($problem) === '') { continue; } ?>
 				<li><small><?= e($problem) ?></small></li>
+			<?php endforeach ?>
+			</ul>
+		</div>
+		<?php endif ?>
+
+		<?php if ($status['run'] !== null && array_key_exists('notices', $status['run'])
+		          && trim((string) $status['run']['notices']) !== ''): ?>
+		<div class="mt-2">
+			<div class="sm-strip-label">Worth knowing</div>
+			<ul class="mb-0">
+			<?php foreach (explode("\n", (string) $status['run']['notices']) as $notice): ?>
+				<?php if (trim($notice) === '') { continue; } ?>
+				<li class="text-muted"><small><?= e($notice) ?></small></li>
 			<?php endforeach ?>
 			</ul>
 		</div>
@@ -160,15 +178,23 @@
 				<div class="sm-strip-value"><?= b_money($values['total']) ?></div>
 			</div>
 			<div class="sm-strip-item">
-				<div class="sm-strip-label">Gain</div>
-				<div class="sm-strip-value"><?= $values['result'] === null
-					? e(VIEW_DASH) : move_pounds_html($values['result']) ?></div>
+				<div class="sm-strip-label">Gain, unrealised</div>
+				<div class="sm-strip-value"><?= $values['unrealised'] === null
+					? e(VIEW_DASH) : move_pounds_html($values['unrealised']) ?></div>
 			</div>
 		</div>
 	</div>
-	<p class="text-muted"><small>
+	<?php /* The rest of what the summary carries. Second rank rather than
+	         hidden: a reader wants the cash, the invested value and the
+	         total first, and then to be able to find the money set aside
+	         for an order that has not filled. */ ?>
+	<p class="text-muted mb-3"><small>
 		As at <?= b_date($values['as_of_date']) ?>, in
 		<?= e((string) ($values['currency'] === null ? 'GBP' : $values['currency'])) ?>.
+		Reserved for orders <?= b_money($values['reserved']) ?>,
+		in pies <?= b_money($values['in_pies']) ?>,
+		cost of what is held <?= b_money($values['invested_cost']) ?>,
+		realised <?= b_money($values['realised']) ?>.
 	</small></p>
 	<?php endif ?>
 
@@ -181,7 +207,7 @@
 		<table class="table table-sm">
 			<thead>
 				<tr>
-					<th>Share</th><th>Broker ticker</th>
+					<th>Share</th><th>Broker ticker</th><th>Matched on</th>
 					<th class="text-end">Quantity</th>
 					<th class="text-end">Average (&pound;)</th>
 					<th class="text-end">Price (&pound;)</th>
@@ -204,6 +230,7 @@
 						<?php endif ?>
 					</td>
 					<td><small><?= e((string) $position['broker_ticker']) ?></small></td>
+					<td><small class="text-muted"><?= e((string) $position['matched_on']) ?></small></td>
 					<td class="sm-num"><?= e(fmt_quantity($position['quantity'])) ?></td>
 					<td class="sm-num"><?= b_money($position['average_price']) ?></td>
 					<td class="sm-num"><?= b_money($position['current_price']) ?></td>
@@ -314,7 +341,10 @@
 				company's holding.</small></p>
 			<ul>
 			<?php foreach ($ambiguous as $row): ?>
-				<li><small><?= e((string) $row['broker_ticker']) ?>:
+				<li><small><?= e((string) $row['broker_ticker']) ?>
+					<?php if ($row['short_name'] !== null): ?>(<?= e((string) $row['short_name']) ?>)<?php endif ?>
+					<?= e((string) $row['currency']) ?>
+					<?= e((string) $row['isin']) ?>:
 					<?= e((string) $row['note']) ?></small></li>
 			<?php endforeach ?>
 			</ul>

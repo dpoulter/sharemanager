@@ -29,7 +29,8 @@ import mysql.connector
 from functions import query, db_config
 from pipeline import pipeline_resolve_asofdate, report_ccy_is_stale
 from fmp import (fetch_sections, flatten, fetch_reported_currency,
-                 fetch_fx_pair, resolve_fx_rate, is_fund_flag, quote_currency, FX_BASE,
+                 fetch_fx_pair, resolve_fx_rate, is_fund_flag, quote_currency,
+                 company_isin, FX_BASE,
                  FmpError)
 
 EXCHANGE = 'XLON'
@@ -145,7 +146,7 @@ def main():
     cursor = connection.cursor()
 
     loaded = skipped = failed = 0
-    currencies_read = funds_flagged = foreign_quotes = 0
+    currencies_read = funds_flagged = foreign_quotes = isins_read = 0
     started = time.time()
 
     for n, symbol in enumerate(symbols, 1):
@@ -217,6 +218,20 @@ def main():
             if quote_ccy.upper() not in ("GBP", "GBX"):
                 foreign_quotes += 1
 
+        # The ISIN, which is what the broker connection matches on. Trading
+        # 212's ticker keeps a company's OLD code after a rename - Barratt
+        # Redrow is still BDEVl_EQ there - so matching on a ticker misses
+        # exactly the companies that have changed, and every one of their
+        # instruments carries an ISIN. Written from the profile that is
+        # fetched every run anyway, so it costs nothing.
+        isin = company_isin(sections.get("Profile"))
+        if isin is not None:
+            cursor.execute("update stock_symbols set isin=%s "
+                           "where symbol=%s and exchange=%s",
+                           (isin, symbol, EXCHANGE))
+            connection.commit()
+            isins_read += 1
+
         if not flat:
             # FMP answers an unknown ticker with an empty list rather than an
             # error. Leave whatever a previous run stored rather than deleting
@@ -247,9 +262,10 @@ def main():
     connection.close()
 
     print("as of {}: {} loaded, {} with no data, {} failed, {} currencies read, "
-          "{} flagged as funds, {} quoted in something other than sterling, {:.0f}s"
+          "{} flagged as funds, {} quoted in something other than sterling, "
+          "{} ISINs, {:.0f}s"
           .format(asofdate, loaded, skipped, failed, currencies_read,
-                  funds_flagged, foreign_quotes, time.time() - started))
+                  funds_flagged, foreign_quotes, isins_read, time.time() - started))
     # A run where nothing loaded is a failure worth a non-zero exit, so cron
     # reports it rather than looking like a clean night.
     return 1 if loaded == 0 else 0

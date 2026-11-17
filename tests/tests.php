@@ -2220,8 +2220,8 @@
        fitting two shares, and has the same answer: neither is chosen. A
        wrong match values the wrong company's holding. */
     $bk_two = broker_match_instruments([
-        ['ticker' => 'AAAl_EQ',    'name' => 'Alpha PLC', 'currencyCode' => 'USD'],
-        ['ticker' => 'AAA_US_EQ',  'name' => 'Alpha Inc', 'currencyCode' => 'USD'],
+        ['ticker' => 'AAAl_EQ', 'name' => 'Alpha PLC', 'currencyCode' => 'USD'],
+        ['ticker' => 'AAAp_EQ', 'name' => 'Alpha Inc', 'currencyCode' => 'USD'],
     ], 'XLON');
 
     check('two instruments that fit one share are left unmatched, not guessed at',
@@ -2233,8 +2233,11 @@
                   && stripos((string) $r['note'], 'more than one instrument') !== false; })) === 2,
           json_encode(array_column($bk_two['rows'], 'note')));
 
-    /* Unless one of them is obviously the sterling one, which settles it
-       without guessing. */
+    /* Unless one of them is obviously the sterling one, or obviously the
+       London line, which settles it on the data rather than by guessing.
+       Both tie-breaks are real: Trading 212 writes London as <code>l_EQ,
+       <code>l1_EQ or <code>p_EQ, and other markets as <code>_US_EQ or
+       <code>_CA_EQ. */
     $bk_ccy = broker_match_instruments([
         ['ticker' => 'AAAl_EQ',   'name' => 'Alpha PLC', 'currencyCode' => 'GBX'],
         ['ticker' => 'AAA_US_EQ', 'name' => 'Alpha Inc', 'currencyCode' => 'USD'],
@@ -2244,6 +2247,129 @@
           && $bk_ccy['rows'][0]['broker_ticker'] === 'AAAl_EQ',
           json_encode(array_map(function ($r) {
               return [$r['broker_ticker'], $r['status']]; }, $bk_ccy['rows'])));
+
+    /* The three pairs the first live run could not tell apart were exactly
+       this shape: MNTNl_EQ beside MNTN_US_EQ, PEYl_EQ beside PEY_CA_EQ,
+       SHCp_EQ beside SHC_US_EQ. */
+    $bk_pairs = broker_match_instruments([
+        ['ticker' => 'AAAl_EQ',   'shortName' => 'AAA', 'currencyCode' => 'GBX',
+         'isin' => 'GB00AAAA0001'],
+        ['ticker' => 'AAA_US_EQ', 'shortName' => 'AAA', 'currencyCode' => 'USD',
+         'isin' => 'US00AAAA0001'],
+        ['ticker' => 'BBBl_EQ',   'shortName' => 'BBB', 'currencyCode' => 'GBX',
+         'isin' => 'GB00BBBB0002'],
+        ['ticker' => 'BBB_CA_EQ', 'shortName' => 'BBB', 'currencyCode' => 'CAD',
+         'isin' => 'CA00BBBB0002'],
+    ], 'XLON');
+    $bk_pair_by = [];
+    foreach ($bk_pairs['rows'] as $bk_row) { $bk_pair_by[$bk_row['broker_ticker']] = $bk_row; }
+    check('a London line beside a foreign one of the same name is not an ambiguity',
+          $bk_pairs['ambiguous'] === 0
+          && ($bk_pair_by['AAAl_EQ']['symbol'] ?? null) === 'AAA'
+          && ($bk_pair_by['BBBl_EQ']['symbol'] ?? null) === 'BBB',
+          json_encode(array_map(function ($r) {
+              return [$r['broker_ticker'], $r['status'], $r['symbol']]; }, $bk_pairs['rows'])));
+
+    /* And what is left over keeps enough of itself to be looked into: the
+       first live run stored ambiguous rows with no ISIN and no currency,
+       which is exactly what somebody needs to tell the two apart. */
+    $bk_amb_keep = broker_match_instruments([
+        ['ticker' => 'AAAl_EQ', 'shortName' => 'AAA', 'currencyCode' => 'USD',
+         'isin' => 'US00AAAA0001'],
+        ['ticker' => 'AAAp_EQ', 'shortName' => 'AAA', 'currencyCode' => 'USD',
+         'isin' => 'US00AAAA0002'],
+    ], 'XLON');
+    db()->exec("delete from broker_instruments");
+    broker_store_instruments(BROKER_T212, $bk_amb_keep['rows'], asof_date());
+    $bk_amb_rows = broker_ambiguous_instruments();
+    check('an ambiguous row keeps its ISIN and its currency, to be settled later',
+          count($bk_amb_rows) === 2
+          && $bk_amb_rows[0]['isin'] !== null && $bk_amb_rows[0]['currency'] === 'USD'
+          && $bk_amb_rows[0]['short_name'] === 'AAA',
+          json_encode($bk_amb_rows));
+    db()->exec("delete from broker_instruments");
+
+    echo "\n--- the broker connection: a rename keeps the old ticker ---\n";
+
+    /* Trading 212's ticker keeps a company's OLD code after a rename, and
+       shortName carries the current one. Matching on the ticker alone left
+       32 of the FTSE 350 unmatched on the first live run - Barratt Redrow
+       as BDEVl_EQ, Entain as GVCl_EQ, Frasers as SPDl_EQ, Vistry as
+       BVSl_EQ, LSEG as LSEl_EQ, Harbour Energy as PMOl_EQ. */
+    db()->exec("delete from stock_symbols where symbol in ('BTRW','SHAW','BT-A','SHC')");
+    foreach (['BTRW' => 'Barratt Redrow', 'SHAW' => 'Shawbrook',
+              'BT-A' => 'BT Group', 'SHC' => 'Shaftesbury Capital'] as $bk_sym => $bk_name) {
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                                  sector,market,industry_group,industry)
+                       values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','X')")
+            ->execute([$bk_sym, $bk_name, $bk_name]);
+    }
+
+    $bk_renamed = broker_match_instruments([
+        ['ticker' => 'BDEVl_EQ', 'shortName' => 'BTRW', 'name' => 'Barratt Redrow',
+         'currencyCode' => 'GBX', 'isin' => 'GB00BTRW0001'],
+        ['ticker' => 'SHAWl1_EQ', 'shortName' => 'SHAW', 'name' => 'Shawbrook',
+         'currencyCode' => 'GBX', 'isin' => 'GB00SHAW0001'],
+        ['ticker' => 'BTl_EQ', 'shortName' => 'BT/A', 'name' => 'BT Group',
+         'currencyCode' => 'GBX', 'isin' => 'GB00BT000001'],
+        /* The pair the brief singles out: both reduce to the code SHC, and
+           the one whose shortName says SHC is the Shaftesbury line. */
+        ['ticker' => 'CAPCl_EQ', 'shortName' => 'SHC', 'name' => 'Shaftesbury Capital',
+         'currencyCode' => 'GBX', 'isin' => 'GB00CAPC0001'],
+        ['ticker' => 'SHCp_EQ', 'shortName' => 'SHCO', 'name' => 'Somebody Else',
+         'currencyCode' => 'GBX', 'isin' => 'GB00SHCO0001'],
+    ], 'XLON');
+
+    $bk_ren_by = [];
+    foreach ($bk_renamed['rows'] as $bk_row) { $bk_ren_by[$bk_row['broker_ticker']] = $bk_row; }
+
+    check('a renamed company matches on its short name, not on the old ticker',
+          ($bk_ren_by['BDEVl_EQ']['symbol'] ?? null) === 'BTRW'
+          && ($bk_ren_by['BDEVl_EQ']['matched_on'] ?? null) === 'short_name',
+          json_encode($bk_ren_by['BDEVl_EQ'] ?? null));
+    check('the l1 line is read as a line rather than as part of the code',
+          broker_ticker_code('SHAWl1_EQ')['code'] === 'SHAW'
+          && ($bk_ren_by['SHAWl1_EQ']['symbol'] ?? null) === 'SHAW',
+          json_encode([broker_ticker_code('SHAWl1_EQ'), $bk_ren_by['SHAWl1_EQ'] ?? null]));
+    check('a share class matches across the slash and the dash',
+          ($bk_ren_by['BTl_EQ']['symbol'] ?? null) === 'BT-A',
+          json_encode($bk_ren_by['BTl_EQ'] ?? null));
+    check('the instrument whose short name says SHC is the one that gets SHC',
+          ($bk_ren_by['CAPCl_EQ']['symbol'] ?? null) === 'SHC'
+          && !isset($bk_ren_by['SHCp_EQ']),
+          json_encode(array_map(function ($r) {
+              return [$r['broker_ticker'], $r['status'], $r['symbol']]; }, $bk_renamed['rows'])));
+    check('and none of that counted as an ambiguity',
+          $bk_renamed['ambiguous'] === 0, json_encode($bk_renamed));
+
+    /* A short name is not unique across 18,600 instruments, so it only
+       counts for the sterling ones. */
+    $bk_foreign = broker_match_instruments([
+        ['ticker' => 'XYZ_US_EQ', 'shortName' => 'BTRW', 'name' => 'Someone American',
+         'currencyCode' => 'USD', 'isin' => 'US00XYZ00001'],
+    ], 'XLON');
+    check('a foreign instrument does not take a share on its short name',
+          $bk_foreign['matched'] === 0 && $bk_foreign['unknown'] === 1,
+          json_encode($bk_foreign));
+
+    echo "\n--- the broker connection: a share the broker does not list ---\n";
+
+    /* Every Trading 212 instrument carries an ISIN, so a share of ours whose
+       ISIN is nowhere in their list cannot be bought there - which is a
+       different thing from one this application merely failed to match. */
+    db()->exec("update stock_symbols set isin=null where exchange='XLON'");
+    db()->prepare("update stock_symbols set isin='GB00BTRW0001' where symbol='BTRW'")->execute();
+    db()->prepare("update stock_symbols set isin='GB00NOWHERE1' where symbol='SHAW'")->execute();
+
+    $bk_not_listed = broker_isins_not_listed(['GB00BTRW0001', 'GB00CAPC0001'], 'XLON');
+    check('a share whose ISIN the broker does not list at all is named',
+          $bk_not_listed === ['SHAW'], json_encode($bk_not_listed));
+    check('and with no ISINs on our side nothing is claimed either way',
+          broker_isins_not_listed([], 'XLON') === [],
+          json_encode(broker_isins_not_listed([], 'XLON')));
+
+    db()->exec("update stock_symbols set isin=null where exchange='XLON'");
+    db()->exec("delete from stock_symbols where symbol in ('BTRW','SHAW','BT-A','SHC')");
 
     /* And the shares the broker has nothing for are listed rather than
        quietly missing. */
@@ -2448,11 +2574,22 @@
           && count($bk_asked()) > 0,
           implode("\n", $bk_asked()));
 
+    /* The summary nests, which is what the first live sync got wrong: it
+       stored a correct total of GBP250.00 beside a blank cash balance,
+       because the reader only knew about top-level keys and was handed the
+       cash OBJECT. Every figure it carries is stored now. */
     $bk_cash = rows("select * from broker_account_values order by as_of_date desc limit 1");
-    check('the cash, the invested value and the total are stored in pounds',
+    check('the cash, the invested value and the total are read out of the nesting',
           count($bk_cash) === 1 && abs((float) $bk_cash[0]['cash'] - 250.00) < 0.005
           && abs((float) $bk_cash[0]['invested'] - 1000.00) < 0.005
           && abs((float) $bk_cash[0]['total'] - 1250.00) < 0.005,
+          json_encode($bk_cash));
+    check('and so are the five figures beside them',
+          abs((float) $bk_cash[0]['invested_cost'] - 950.00) < 0.005
+          && abs((float) $bk_cash[0]['realised'] - 12.50) < 0.005
+          && abs((float) $bk_cash[0]['unrealised'] - 50.00) < 0.005
+          && (float) $bk_cash[0]['reserved'] === 0.0 && (float) $bk_cash[0]['in_pies'] === 0.0
+          && $bk_cash[0]['currency'] === 'GBP',
           json_encode($bk_cash));
 
     $bk_pos = rows("select * from broker_positions where symbol='T6P'");
@@ -2688,6 +2825,165 @@
     check('and text with no credential in it is left alone',
           t212_mask('read 3 positions') === 'read 3 positions');
 
+    echo "\n--- the broker connection: a field it cannot read is a problem ---\n";
+
+    /* The account summary nests. A reader that only knows top-level keys is
+       handed the cash object, makes a null of it, stores it and says the run
+       went well - which is what the first live sync did. */
+    $bk_real = ['id' => 52612242, 'currency' => 'GBP', 'totalValue' => 250.00,
+                'cash' => ['availableToTrade' => 250.00, 'reservedForOrders' => 0,
+                           'inPies' => 0],
+                'investments' => ['currentValue' => 0, 'totalCost' => 0,
+                                  'realizedProfitLoss' => 0,
+                                  'unrealizedProfitLoss' => 0]];
+
+    check('a dotted path reads a figure out of the nesting',
+          broker_path($bk_real, 'cash.availableToTrade') === 250.00
+          && broker_path($bk_real, 'investments.currentValue') === 0
+          && broker_path($bk_real, 'cash.nothing') === null,
+          json_encode(broker_path($bk_real, 'cash.availableToTrade')));
+    check('and the field map asks for them by that path',
+          broker_number($bk_real, broker_fields('summary_cash')) === 250.00
+          && broker_number($bk_real, broker_fields('summary_invested')) === 0.0
+          && broker_number($bk_real, broker_fields('summary_total')) === 250.00,
+          json_encode([broker_number($bk_real, broker_fields('summary_cash')),
+                       broker_number($bk_real, broker_fields('summary_invested'))]));
+    /* Nought is a figure. An account holding nothing has an invested value
+       of 0, and reading that as "missing" would report a problem with a
+       number that is perfectly correct. */
+    check('nought is a value, not a missing field',
+          broker_field_problem($bk_real, 'summary_invested', 'invested value', 'account summary') === '',
+          broker_field_problem($bk_real, 'summary_invested', 'invested value', 'account summary'));
+
+    check('a field that is not there at all is a problem that names it',
+          stripos(broker_field_problem(['totalValue' => 250.0], 'summary_cash',
+                                       'cash balance', 'account summary'),
+                  'cash.availableToTrade') !== false,
+          broker_field_problem(['totalValue' => 250.0], 'summary_cash', 'cash balance',
+                               'account summary'));
+    check('and a field that holds an object says so rather than storing a null',
+          stripos(broker_field_problem(['cash' => ['availableToTrade' => ['x' => 1]]],
+                                       'summary_cash', 'cash balance', 'account summary'),
+                  'object') !== false,
+          broker_field_problem(['cash' => ['availableToTrade' => ['x' => 1]]],
+                               'summary_cash', 'cash balance', 'account summary'));
+
+    /* End to end: the response the live account really sent, through the
+       sync, with the figures it really holds. */
+    $bk_write('summary.json', json_encode($bk_real));
+    $bk_write('positions.json', json_encode([]));
+    db()->exec("delete from broker_account_values");
+    run_script('sync_broker.php', [], $bk_env);
+    $bk_live = rows("select * from broker_account_values order by as_of_date desc limit 1");
+
+    check('the live account\'s own answer stores cash 250, invested 0, total 250',
+          count($bk_live) === 1
+          && abs((float) $bk_live[0]['cash'] - 250.00) < 0.005
+          && (float) $bk_live[0]['invested'] === 0.0
+          && abs((float) $bk_live[0]['total'] - 250.00) < 0.005,
+          json_encode($bk_live));
+    check('and the run is OK rather than failed',
+          $bk_last_run()['status'] === 'OK',
+          json_encode([$bk_last_run()['status'], $bk_last_run()['problems']]));
+
+    /* The old flat shape, which is what the code used to expect: now it is
+       a problem that names the field rather than a silent null. */
+    $bk_write('summary.json', json_encode(['cash' => 250.00, 'total' => 250.00]));
+    run_script('sync_broker.php', [], $bk_env);
+    $bk_flat_run = $bk_last_run();
+    check('a summary this cannot read is a problem, not a quiet null',
+          $bk_flat_run['status'] !== 'OK'
+          && stripos((string) $bk_flat_run['problems'], 'cash balance') !== false
+          && stripos((string) $bk_flat_run['problems'], 'cash.availableToTrade') !== false,
+          json_encode([$bk_flat_run['status'], $bk_flat_run['problems']]));
+    check('and it says what the response had instead',
+          stripos((string) $bk_flat_run['problems'], 'It has: cash, total') !== false,
+          (string) $bk_flat_run['problems']);
+
+    $bk_write('summary.json', json_encode($bk_real));
+
+    echo "\n--- the broker connection: a notice is not a problem ---\n";
+
+    /* Six instruments it could not tell apart was filed as a problem, so no
+       run could ever finish as OK - and with the cash null on top of it,
+       every run read as FAILED. A notice is the run telling you what it
+       noticed; a problem is something that stopped the data being right. */
+    $bk_write('instruments.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'shortName' => 'T6P', 'name' => 'Six Ninety PLC',
+         'currencyCode' => 'GBX', 'isin' => 'GB00T6P00001'],
+        ['ticker' => 'AAAl_EQ', 'shortName' => 'AAA', 'name' => 'Alpha PLC',
+         'currencyCode' => 'USD', 'isin' => 'US00AAAA0001'],
+        ['ticker' => 'AAAp_EQ', 'shortName' => 'AAA', 'name' => 'Alpha Two',
+         'currencyCode' => 'USD', 'isin' => 'US00AAAA0002'],
+    ]));
+    run_script('sync_broker.php', ['--instruments'], $bk_env);
+    $bk_amb_run = $bk_last_run();
+
+    check('instruments it cannot tell apart do not make the run a failure',
+          $bk_amb_run['status'] === 'OK'
+          && (string) $bk_amb_run['problems'] === '',
+          json_encode([$bk_amb_run['status'], $bk_amb_run['problems']]));
+    check('they are recorded as something worth knowing instead',
+          stripos((string) $bk_amb_run['notices'], 'fit more than one') !== false,
+          (string) $bk_amb_run['notices']);
+    check('and the instruments themselves are stored as ambiguous, with their currency',
+          (int) scalar("select count(*) from broker_instruments
+                         where status='ambiguous' and currency='USD'") === 2,
+          json_encode(rows("select broker_ticker, status, currency, note from broker_instruments")));
+
+    /* A holding the mapping could not name is the same kind of thing: the
+       position is read, stored and shown by the broker's ticker. */
+    $bk_write('positions.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 6.10,
+         'currentPrice' => 6.90, 'ppl' => 160.0],
+        ['ticker' => 'ZZZl_EQ', 'quantity' => 10, 'averagePrice' => 1.00,
+         'currentPrice' => 1.10, 'ppl' => 1.0],
+    ]));
+    run_script('sync_broker.php', [], $bk_env);
+    $bk_hold_run = $bk_last_run();
+    check('a holding whose instrument is not one of ours is a notice too',
+          $bk_hold_run['status'] === 'OK'
+          && stripos((string) $bk_hold_run['notices'], 'could not match') !== false
+          && (int) scalar("select count(*) from broker_positions where symbol is null") === 1,
+          json_encode([$bk_hold_run['status'], $bk_hold_run['problems'],
+                       $bk_hold_run['notices']]));
+
+    /* But a price unit that cannot be settled on a share that IS held stops
+       the figures being right, so that stays a problem. */
+    $bk_write('positions.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 61.0,
+         'currentPrice' => 64.0, 'ppl' => 160.0],
+    ]));
+    run_script('sync_broker.php', [], $bk_env);
+    check('an undecided price unit on a share that is held is still a problem',
+          $bk_last_run()['status'] !== 'OK'
+          && stripos((string) $bk_last_run()['problems'], 'price unit') !== false,
+          json_encode([$bk_last_run()['status'], $bk_last_run()['problems']]));
+
+    $bk_write('positions.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 6.10,
+         'currentPrice' => 6.90, 'ppl' => 160.0],
+    ]));
+    $bk_write('instruments.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'shortName' => 'T6P', 'name' => 'Six Ninety PLC',
+         'currencyCode' => 'GBX', 'isin' => 'GB00T6P00001'],
+    ]));
+    run_script('sync_broker.php', ['--instruments'], $bk_env);
+
+    /* The page keeps the two apart as well, or the distinction is only in
+       the database. */
+    $bk_page_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/broker.php');
+    check('the page shows what the sync could not do and what it noticed, separately',
+          strpos($bk_page_tpl, "['run']['problems']") !== false
+          && strpos($bk_page_tpl, "['run']['notices']") !== false
+          && strpos($bk_page_tpl, 'Worth knowing') !== false);
+    check('and shows the figures the summary really carries',
+          strpos($bk_page_tpl, "values['unrealised']") !== false
+          && strpos($bk_page_tpl, "values['reserved']") !== false
+          && strpos($bk_page_tpl, "values['invested_cost']") !== false);
+    check('and says what each holding was matched on',
+          strpos($bk_page_tpl, "position['matched_on']") !== false);
+
     echo "\n--- the broker connection: the probe ---\n";
 
     /* The probe is what settles the three things the API documentation does
@@ -2714,9 +3010,10 @@
 
     check('the probe runs and asks for the three calls it needs',
           $bk_probe_rc === 0, 'rc ' . $bk_probe_rc . ': ' . $bk_probe_out);
-    check('it says which field name carried the cash',
+    check('it says which field name carried the cash, nesting and all',
           stripos($bk_probe_out, 'summary_cash') !== false
-          && stripos($bk_probe_out, 'cash = 250') !== false,
+          && stripos($bk_probe_out, 'cash.availableToTrade = 250') !== false
+          && stripos($bk_probe_out, 'Array') === false,
           $bk_probe_out);
     check('it shows a broker ticker beside our symbol and our own close',
           stripos($bk_probe_out, 'T6Pl_EQ') !== false

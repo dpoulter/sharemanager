@@ -35,6 +35,7 @@ create table if not exists broker_instruments (
   broker        varchar(20)  not null,
   broker_ticker varchar(40)  not null,
   symbol        varchar(50)  null,
+  short_name    varchar(60)  null,
   isin          varchar(12)  null,
   currency      varchar(8)   null,
   name          varchar(255) null,
@@ -67,15 +68,18 @@ alter table stock_symbols
 -- for this account, and the brief says so; the one thing that is NOT assumed
 -- is the unit prices come back in - see broker_positions.
 create table if not exists broker_account_values (
-  broker      varchar(20) not null,
-  as_of_date  date        not null,
-  cash        decimal(16,4) null,
-  invested    decimal(16,4) null,
-  total       decimal(16,4) null,
-  free        decimal(16,4) null,
-  result      decimal(16,4) null,
-  currency    varchar(8)  null,
-  synced_at   datetime    null,
+  broker        varchar(20) not null,
+  as_of_date    date        not null,
+  cash          decimal(16,4) null,
+  reserved      decimal(16,4) null,
+  in_pies       decimal(16,4) null,
+  invested      decimal(16,4) null,
+  invested_cost decimal(16,4) null,
+  realised      decimal(16,4) null,
+  unrealised    decimal(16,4) null,
+  total         decimal(16,4) null,
+  currency      varchar(8)  null,
+  synced_at     datetime    null,
   primary key (broker, as_of_date)
 );
 
@@ -179,6 +183,7 @@ create table if not exists broker_sync_runs (
   unmatched     int          null,
   requests      int          null,
   problems      text         null,
+  notices       text         null,
   key (broker, started_at)
 );
 
