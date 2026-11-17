@@ -43,6 +43,13 @@
 				Holdings are matched to shares by ISIN where both sides have
 				one and by ticker otherwise, and a ticker that fits more than
 				one share is left unmatched rather than guessed at.
+				A strategy in <strong>T212_DEMO</strong> mode sends its orders to
+				the Trading 212 <strong>practice</strong> account between
+				<?= e(T212_MARKET_OPEN) ?> and <?= e(T212_MARKET_SHUT) ?>
+				(<?= e(T212_MARKET_TZ) ?>), in fractions of a share, from
+				<?= e(fmt_pounds(T212_MIN_ORDER_VALUE, 0)) ?> an order.
+				Nothing anywhere in this application can place an order against
+				the live account: see includes/README-broker.md.
 			</small>
 		</div>
 	</details>
@@ -87,6 +94,16 @@
 				<div class="sm-strip-label">Instrument list</div>
 				<div><?= $status['instruments_as_of'] === null
 					? e(VIEW_DASH) : b_date($status['instruments_as_of']) ?></div>
+			</div>
+			<?php /* When orders go, for the strategies that send them. The
+			         nightly job plans and this window is when the plan is
+			         sent: a market order queued overnight fills at whatever
+			         the open does, which is not the price anything was
+			         decided at. */ ?>
+			<div class="sm-strip-item">
+				<div class="sm-strip-label">Orders are sent</div>
+				<div><?= e(T212_MARKET_OPEN) ?>&ndash;<?= e(T212_MARKET_SHUT) ?>
+					<small class="text-muted"><?= e(T212_MARKET_TZ) ?></small></div>
 			</div>
 		</div>
 

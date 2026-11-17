@@ -278,6 +278,11 @@
     // changes behaviour.
     //----------------------------------------------------------------------
 
+    //The only broker this application knows about. A value rather than an
+    //assumption: the broker_* tables key on it, and a second broker would be
+    //a row beside it rather than a migration.
+    define("BROKER_T212", "t212");
+
     //off | live-read | demo. Anything else is treated as off and said so, not
     //guessed at: a typo must not pick an environment.
     define("T212_ENV", strtolower(trim((string) (getenv("SM_T212_ENV") ?: "off"))));
@@ -296,6 +301,13 @@
     //while the application thinks it is talking to the demo one.
     define("T212_LIVE_BASE_URL", "https://live.trading212.com/api/v0");
     define("T212_DEMO_BASE_URL", "https://demo.trading212.com/api/v0");
+
+    //Where a DEMO order is sent, when the suite needs it to go to
+    //tools/t212_stub.php instead. This is the only way the order host can be
+    //anything but T212_DEMO_BASE_URL, and the order function refuses a value
+    //that names the live host whatever is set here. Never set it on a real
+    //host.
+    define("T212_DEMO_BASE_URL_OVERRIDE", getenv("SM_T212_DEMO_BASE_URL") ?: "");
 
     //Overridable so the suite can point the client at tools/t212_stub.php and
     //exercise the request, the paging, the rate limit handling and the error
@@ -345,6 +357,38 @@
     //protect - at a real gap the broker tests alone would take two minutes.
     define("T212_THROTTLE", (float) (getenv("SM_T212_THROTTLE") === false
                                      ? 1.0 : (float) getenv("SM_T212_THROTTLE")));
+
+    // Trading 212's own minimum is GBP 1. Ten is Dale's: an order smaller
+    // than that moves a GBP 250 account by four per cent of one holding,
+    // and the cash it leaves idle is worth less than the noise it adds.
+    define("T212_MIN_ORDER_VALUE", (float) (getenv("SM_T212_MIN_ORDER") ?: 10.00));
+
+    // How many decimal places a quantity may have. NOT YET CONFIRMED against
+    // the demo account - the documentation gives no rule and their sell
+    // example is -10.5, so two places is a guess that errs small. Confirm it
+    // on demo before relying on it, and raise it here if they allow more:
+    // rounding DOWN to fewer places than allowed costs a little cash sitting
+    // idle, rounding to more than allowed gets the order refused.
+    define("T212_QUANTITY_DECIMALS", (int) (getenv("SM_T212_QUANTITY_DECIMALS") ?: 2));
+
+    // The most one run may send, in pounds of consideration. A cap on the
+    // damage a bug can do in one go: the account holds GBP 250, so a run
+    // that wants to send four figures is wrong about something.
+    define("T212_MAX_RUN_VALUE", (float) (getenv("SM_T212_MAX_RUN_VALUE") ?: 1000.00));
+
+    // When the London market is open, in London time. Orders are sent
+    // during the session and never outside it: a market order queued
+    // overnight fills at whatever the open does, which is not the price
+    // anything was decided at.
+    define("T212_MARKET_OPEN",  getenv("SM_T212_MARKET_OPEN")  ?: "08:00");
+    define("T212_MARKET_SHUT",  getenv("SM_T212_MARKET_SHUT")  ?: "16:30");
+    define("T212_MARKET_TZ",    getenv("SM_T212_MARKET_TZ")    ?: "Europe/London");
+
+    // How long an order may sit SENT before the next run goes looking for it
+    // at the broker, and how long an UNKNOWN one is given to turn up before
+    // it is written off as never having arrived.
+    define("T212_POLL_AFTER_SECONDS",   (int) (getenv("SM_T212_POLL_AFTER") ?: 30));
+    define("T212_UNKNOWN_AFTER_SECONDS",(int) (getenv("SM_T212_UNKNOWN_AFTER") ?: 900));
 
     //Where the probe writes the raw responses it was run to collect. Outside
     //the web root: the file holds the account's positions.

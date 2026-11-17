@@ -40,8 +40,8 @@
 	require_once("constants.php");
 	require_once("t212_client.php");
 
-	/** The only broker this knows about. A column, not an assumption. */
-	define("BROKER_T212", "t212");
+	/* BROKER_T212 lives in constants.php: the strategy engine needs the
+	   same name for an account's mode and does not include this file. */
 
 	/** Whether sql/broker.sql has been applied. */
 	function broker_ready() {

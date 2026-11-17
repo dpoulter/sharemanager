@@ -126,9 +126,13 @@ fi
 # writes - run before it, every strategy would be trading on yesterday's
 # scores.
 #
-# PAPER ONLY. Nothing in this path can place a real order: every account is
-# mode='PAPER' and no code supports anything else. The kill switch stops it
-# with a file:
+# NOTHING IN THIS PATH SENDS AN ORDER ANYWHERE. A PAPER account is filled by
+# this database at the next close. A T212_DEMO account is planned here and its
+# orders are left PENDING: they are sent during the session by
+# includes/send_broker_orders.php, to Trading 212's practice account and to
+# nothing else. No mode in this application can reach the live account.
+#
+# The kill switch stops all of it with a file:
 #
 #   sudo install -d /var/lib/sharemanager
 #   sudo touch /var/lib/sharemanager/STOP_TRADING     # stop

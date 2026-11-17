@@ -32,6 +32,10 @@
  *                    the query and whether credentials arrived. Never the
  *                    credentials themselves, in a file a person might paste
  *                    somewhere.
+ *   t212_place       ok | reject | slow | timeout | 500 | forbidden, for the
+ *                    stage 2 order path
+ *   t212_next_order_id  the id the next accepted order comes back with
+ *   t212_orders      appended to, one line per order body that arrived
  */
 
 $dir  = getenv('SM_STUB_DIR') ?: sys_get_temp_dir();
@@ -45,6 +49,7 @@ $calls = [
     '/api/v0/equity/history/orders'       => 'orders',
     '/api/v0/equity/history/dividends'    => 'dividends',
     '/api/v0/equity/orders'               => 'pending',
+    '/api/v0/equity/orders/market'        => 'place',
 ];
 $call = isset($calls[$path]) ? $calls[$path] : null;
 
@@ -82,10 +87,15 @@ function stub_answer($status, $body, $reset = 30) {
     exit;
 }
 
-/* Stage 1 reads. A stub that happily accepted a POST would hide exactly the
-   mistake the suite is checking for. */
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
-    stub_answer(405, json_encode(['error' => 'this stub answers GET only']));
+/* One path takes a POST: the stage 2 market order. Everything else answers
+   GET and nothing else, so a stray write shows up as a 405 here rather than
+   being quietly accepted. */
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+if ($method !== 'GET' && !($method === 'POST' && $path === '/api/v0/equity/orders/market')) {
+    stub_answer(405, json_encode(['error' => 'this stub answers GET, and POST to one path']));
+}
+if ($method === 'GET' && $path === '/api/v0/equity/orders/market') {
+    stub_answer(405, json_encode(['error' => 'the order path takes a POST']));
 }
 
 if ($call === null) {
@@ -143,6 +153,74 @@ if ($call === 'instruments') {
 
 if ($call === 'pending') {
     stub_answer(200, stub_json($dir, 'pending', []));
+}
+
+/* The order itself. Records what arrived - the ticker, the quantity, and
+   that a quantity is signed - so a test can assert a sell went as a negative
+   number without the stub having to know what a sell is.
+
+   t212_place controls the answer:
+     ok (default)  accepted, with an id from t212_next_order_id or a made-up one
+     reject        400 with a message about the quantity, which is how a share
+                   that does not deal in fractions refuses one
+     timeout       no answer at all, so the caller cannot know whether it
+                   arrived - the case the whole SENT/UNKNOWN dance is for
+     500           the same question, from the other direction */
+if ($call === 'place') {
+
+    $body = file_get_contents('php://input');
+    @file_put_contents("$dir/t212_orders", $body . "\n", FILE_APPEND);
+
+    $mode = stub_mode($dir, 'place');
+    if (is_file("$dir/t212_place")) {
+        $mode = trim((string) @file_get_contents("$dir/t212_place")) ?: 'ok';
+    }
+
+    if ($mode === 'slow') {
+        /* A real timeout: the order is taken and the answer never comes
+           back in time. Pair it with SM_T212_TIMEOUT=1 so a test costs a
+           second rather than twenty. */
+        sleep((int) (getenv('SM_STUB_SLEEP') ?: 3));
+        stub_answer(200, json_encode(['id' => 'late-' . substr(sha1((string) $body), 0, 8),
+                                      'status' => 'WORKING']));
+    }
+    if ($mode === 'timeout') {
+        /* The other shape of the same question: an answer arrives and is
+           not JSON, so the order may well have been taken and its id is
+           unknown from here. */
+        header('HTTP/1.1 200 OK');
+        print('{"partial":');
+        exit;
+    }
+    if ($mode === '500') { stub_answer(500, json_encode(['error' => 'our end'])); }
+    if ($mode === 'reject') {
+        stub_answer(400, json_encode(['code' => 'QuantityPrecisionInvalid',
+                                      'message' => 'quantity has too many decimal places']));
+    }
+    if ($mode === 'forbidden') {
+        stub_answer(403, json_encode(['code' => 'Forbidden']));
+    }
+
+    $sent = json_decode((string) $body, true);
+    $id = is_file("$dir/t212_next_order_id")
+        ? trim((string) file_get_contents("$dir/t212_next_order_id"))
+        : 'stub-' . substr(sha1((string) $body . microtime()), 0, 10);
+
+    /* The accepted order joins the pending list, so a poll finds it there
+       until a test moves it into the history. */
+    $pending = json_decode(stub_json($dir, 'pending', []), true);
+    if (!is_array($pending)) { $pending = []; }
+    $pending[] = ['id' => $id,
+                  'ticker' => is_array($sent) ? ($sent['ticker'] ?? null) : null,
+                  'quantity' => is_array($sent) ? ($sent['quantity'] ?? null) : null,
+                  'status' => 'WORKING',
+                  'dateCreated' => gmdate('c')];
+    @file_put_contents("$dir/pending.json", json_encode($pending));
+
+    stub_answer(200, json_encode(['id' => $id, 'status' => 'WORKING',
+                                  'ticker' => is_array($sent) ? ($sent['ticker'] ?? null) : null,
+                                  'quantity' => is_array($sent) ? ($sent['quantity'] ?? null) : null,
+                                  'dateCreated' => gmdate('c')]));
 }
 
 /* The cursor-paged history. The second page exists only if the test wrote

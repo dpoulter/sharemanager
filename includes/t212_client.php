@@ -6,10 +6,21 @@
 	 * Everything that knows how to talk to Trading 212 lives here, and in
 	 * stage 1 everything it knows how to do is read.
 	 *
-	 * GET ONLY. There is no method on this class that posts, puts, patches or
-	 * deletes, and the one request builder hard-codes "GET". An order cannot
-	 * be placed through this file by passing it different arguments, which is
-	 * a stronger statement than a flag that says not to.
+	 * READS ARE GET ONLY. One method writes - place_market_order() - and it
+	 * is the only place in this application that sends anything but a GET.
+	 * It cannot be pointed at the live account:
+	 *
+	 *   it refuses unless the environment is 'demo';
+	 *   it builds its URL from T212_DEMO_BASE_URL, a constant, rather than
+	 *   from the base URL the reads use;
+	 *   it refuses any host whose name contains the live one, whatever has
+	 *   been set in the environment;
+	 *   and the live key has no Orders - Execute permission anyway, so the
+	 *   other end would refuse it too.
+	 *
+	 * That is four locks on a door that only opens onto a practice account.
+	 * Real money stays off until Dale decides, after at least three months
+	 * of paper results.
 	 *
 	 * The API is version 0 and described by its own documentation as beta, so
 	 * the endpoints, their limits and their response shapes are all in one
@@ -289,6 +300,130 @@
 
 			return ['ok' => true, 'status' => 200, 'data' => null,
 			        'items' => $items, 'pages' => $pages];
+		}
+
+		/**
+		 * Place a market order. DEMO ONLY.
+		 *
+		 * $quantity is signed: negative is a sell, which is how Trading 212
+		 * says which way round a trade goes.
+		 *
+		 * Returns the same shape as get(), with the broker's order id in
+		 * data on success. The caller must have recorded the order BEFORE
+		 * calling this: the order calls are not idempotent, so a request
+		 * that times out must never be sent again blind.
+		 *
+		 * 'unreachable' and a 5xx are the dangerous answers - the order may
+		 * or may not have arrived - and they come back with kind 'unknown'
+		 * so a caller cannot mistake them for a refusal.
+		 */
+		public function place_market_order($ticker, $quantity) {
+
+			/* Lock one: the environment. */
+			if ($this->env !== 'demo') {
+				return $this->failure('refused', 0,
+				       "an order can only be placed against the demo account, and"
+				     . " SM_T212_ENV is '" . $this->env . "'.");
+			}
+			if (!$this->configured()) {
+				return $this->failure('not_configured', 0, $this->why_not());
+			}
+
+			/* Lock two: the host is the demo constant, or an override that
+			   is checked below. The reads' base URL is not consulted. */
+			$base = defined('T212_DEMO_BASE_URL_OVERRIDE')
+			     && trim((string) T212_DEMO_BASE_URL_OVERRIDE) !== ''
+			      ? rtrim(trim((string) T212_DEMO_BASE_URL_OVERRIDE), '/')
+			      : T212_DEMO_BASE_URL;
+
+			/* Lock three: not the live host, whatever anyone has set. */
+			$host = (string) parse_url($base, PHP_URL_HOST);
+			if ($host === '' || stripos($host, 'live.trading212.com') !== false
+			    || stripos($base, 'live.trading212.com') !== false) {
+				return $this->failure('refused', 0,
+				       "refusing to send an order to '" . $host . "': orders go to the"
+				     . " demo account and nowhere else.");
+			}
+
+			$quantity = (float) $quantity;
+			if ($quantity === 0.0) {
+				return $this->failure('refused', 0, "an order for nothing is not an order.");
+			}
+
+			$body = json_encode(['ticker' => (string) $ticker, 'quantity' => $quantity]);
+			if ($body === false) {
+				return $this->failure('refused', 0, "could not build the order.");
+			}
+
+			$this->wait_for('place_order', 1.0);
+
+			$context = stream_context_create(["http" => [
+				"method"  => "POST",
+				"header"  => "Authorization: Basic "
+				           . base64_encode($this->key . ':' . $this->secret) . "\r\n"
+				           . "Content-Type: application/json\r\n"
+				           . "Accept: application/json\r\n"
+				           . "User-Agent: sharemanager/1.0 (private portfolio tool)\r\n"
+				           . "Connection: close\r\n",
+				"content" => $body,
+				"timeout" => $this->timeout,
+				"ignore_errors" => true,
+			]]);
+
+			$http_response_header = [];
+			$this->requests++;
+			$this->last_call['place_order'] = microtime(true);
+
+			$answer = @file_get_contents($base . '/equity/orders/market', false, $context);
+
+			$headers = (array) ($http_response_header ?? []);
+			$status  = 0;
+			foreach ($headers as $line) {
+				if (preg_match('~^HTTP/\S+\s+(\d{3})~', $line, $m)) { $status = (int) $m[1]; }
+			}
+			$this->read_rate_limit($headers);
+
+			/* The two answers that mean "ask the broker what happened"
+			   rather than "it did not happen". */
+			if ($answer === false) {
+				return $this->failure('unknown', $status,
+				       "the order was sent and Trading 212 did not answer within "
+				     . $this->timeout . " seconds. Whether it arrived is not known from here.");
+			}
+			if ($status >= 500) {
+				return $this->failure('unknown', $status,
+				       "the order was sent and Trading 212 answered " . $status
+				     . ". Whether it arrived is not known from here.");
+			}
+
+			if ($status === 401 || $status === 403) {
+				return $this->failure($status === 401 ? 'unauthorised' : 'forbidden', $status,
+				       "Trading 212 refused the order (" . $status . "). The demo key does"
+				     . " not have the permission to place one.");
+			}
+			if ($status === 429) {
+				return $this->failure('rate_limited', 429,
+				       "Trading 212 asked for less traffic, so the order was not placed."
+				     . " It is not retried: the order calls are not idempotent.", true);
+			}
+
+			$decoded = json_decode((string) $answer, true);
+
+			if ($status >= 400) {
+				$why = is_array($decoded) && isset($decoded['code']) ? (string) $decoded['code']
+				     : (is_array($decoded) && isset($decoded['message'])
+				        ? (string) $decoded['message'] : 'no reason given');
+				return $this->failure('rejected', $status,
+				       "Trading 212 refused the order: " . t212_mask($why));
+			}
+
+			if (!is_array($decoded)) {
+				return $this->failure('unknown', $status,
+				       "Trading 212 accepted the order and answered something that is not"
+				     . " JSON, so its id is not known from here.");
+			}
+
+			return ['ok' => true, 'status' => $status, 'data' => $decoded];
 		}
 
 		/* ----------------------------------------------------------------- */

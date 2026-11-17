@@ -63,6 +63,95 @@
 	// day is a data gap; a week is a takeover, a suspension or a delisting.
 	define("STRATEGY_STALE_SESSIONS", 5);
 
+	//---------------------------------------------------------------------
+	// The two ways an account can trade.
+	//
+	// PAPER is this database pretending to be a broker: whole shares, a
+	// GBP 5.95 commission and a GBP 250 minimum order, because that is what
+	// the engine was written against in September 2026 and changing it now
+	// would make the paper record incomparable with its own past.
+	//
+	// T212_DEMO sends the same plan to Trading 212's practice account,
+	// which charges no commission and deals from GBP 1 in fractions of a
+	// share. A GBP 250 account can hold fifteen names at about GBP 16.67
+	// each - but only if the quantity can be 0.44 of a share, which is why
+	// the minimum and the rounding belong to the mode rather than to the
+	// engine.
+	//
+	// NOTHING HERE TRADES REAL MONEY. T212_DEMO posts to the demo host and
+	// to nothing else; see includes/broker_orders.php.
+	//---------------------------------------------------------------------
+
+	define("STRATEGY_MODE_PAPER",     "PAPER");
+	define("STRATEGY_MODE_T212_DEMO", "T212_DEMO");
+
+	/* The figures a Trading 212 account trades by - the minimum order, the
+	   quantity precision, the per-run cap, the session times - are in
+	   constants.php beside the rest of the broker's settings, because the
+	   broker page reads them too and does not load the strategy engine. */
+
+	/**
+	 * What a mode allows, in one place.
+	 *
+	 * Every figure the engine uses that differs between a paper account and
+	 * a Trading 212 one is here, so the difference is a table rather than a
+	 * scattering of if statements - and so that the paper account's
+	 * behaviour is demonstrably unchanged by stage 2.
+	 */
+	function strategy_mode_rules($mode) {
+
+		$mode = strtoupper(trim((string) $mode));
+
+		if ($mode === STRATEGY_MODE_T212_DEMO) {
+			return [
+				'mode'          => STRATEGY_MODE_T212_DEMO,
+				'broker'        => BROKER_T212,
+				'demo'          => true,
+				'minimum_order' => T212_MIN_ORDER_VALUE,
+				'fractional'    => true,
+				'decimals'      => max(0, min(8, (int) T212_QUANTITY_DECIMALS)),
+				'commission'    => 0.0,
+				'words'         => 'Trading 212 demo',
+			];
+		}
+
+		return [
+			'mode'          => STRATEGY_MODE_PAPER,
+			'broker'        => null,
+			'demo'          => false,
+			'minimum_order' => STRATEGY_MIN_ORDER_VALUE,
+			'fractional'    => false,
+			'decimals'      => 0,
+			'commission'    => STRATEGY_COMMISSION,
+			'words'         => 'paper',
+		];
+	}
+
+	/** Whether a mode is one this application knows how to run. */
+	function strategy_mode_known($mode) {
+		return in_array(strtoupper(trim((string) $mode)),
+		                [STRATEGY_MODE_PAPER, STRATEGY_MODE_T212_DEMO], true);
+	}
+
+	/**
+	 * A quantity rounded to what the mode can actually trade, always DOWN.
+	 *
+	 * Down, so an order never costs more than the target it was sized from.
+	 * The cash left over sits idle until the next rebalance, which is the
+	 * right direction to be wrong in: the alternative is an order the
+	 * account cannot pay for.
+	 */
+	function strategy_round_quantity($quantity, $rules) {
+
+		$quantity = (float) $quantity;
+		if ($quantity <= 0) { return 0.0; }
+
+		if (empty($rules['fractional'])) { return (float) floor($quantity); }
+
+		$factor = pow(10, max(0, (int) $rules['decimals']));
+		return floor($quantity * $factor) / $factor;
+	}
+
 	// The benchmark's own row in strategy_values. Underscore first so it can
 	// never collide with a strategy name: strategy_strategies() skips it.
 	define("STRATEGY_BENCHMARK", "_benchmark");
@@ -314,7 +403,7 @@
 				write_log("strategy","cannot price held symbol ".$symbol." as of ".$as_of_date);
 				return null;
 			}
-			$value += $price * (int)$position['quantity'];
+			$value += $price * (float)$position['quantity'];
 		}
 		return $value;
 	}
@@ -328,12 +417,27 @@
 	 */
 	function strategy_plan_orders($strategy,$as_of_date,$targets=null) {
 
-		$plan=['orders'=>[],'errors'=>[],'account_value'=>null];
+		$plan=['orders'=>[],'errors'=>[],'skipped'=>[],'account_value'=>null,
+		       'mode'=>STRATEGY_MODE_PAPER];
 
 		$account=strategy_account($strategy);
 		if ($account===null){ $plan['errors'][]="no account for strategy ".$strategy; return $plan; }
 		if ($account['enabled']!=='Y'){ $plan['errors'][]="account is disabled"; return $plan; }
-		if ($account['mode']!=='PAPER'){ $plan['errors'][]="only PAPER mode is supported"; return $plan; }
+		if (!strategy_mode_known($account['mode'])){
+			$plan['errors'][]="mode '".$account['mode']."' is not one this knows how to run";
+			return $plan;
+		}
+		if ($account['halted']==='Y'){
+			$plan['errors'][]="halted: ".(string)$account['halt_reason'];
+			return $plan;
+		}
+
+		/* Everything that differs between a paper account and a Trading 212
+		   one: the minimum order, whether a quantity can be a fraction, and
+		   the commission. The paper account's figures are unchanged, so the
+		   paper record stays comparable with its own past. */
+		$mode=strategy_mode_rules($account['mode']);
+		$plan['mode']=$mode['mode'];
 
 		$account_value=strategy_account_value($strategy,$as_of_date);
 		if ($account_value===null){ $plan['errors'][]="cannot value the account, refusing to trade"; return $plan; }
@@ -367,7 +471,7 @@
 		//short. Reserving the costs up front leaves a small cash buffer, which
 		//is the right direction to be wrong in.
 		$cost_multiplier=1+STRATEGY_STAMP_DUTY_RATE+(STRATEGY_SLIPPAGE_BPS/10000);
-		$investable=($account_value-(STRATEGY_COMMISSION*count($targets)))/$cost_multiplier;
+		$investable=($account_value-($mode['commission']*count($targets)))/$cost_multiplier;
 		if ($investable<=0){ $plan['errors'][]="account too small to cover dealing costs"; return $plan; }
 
 		//Buys and rebalances
@@ -389,8 +493,17 @@
 				continue;
 			}
 
-			$target_quantity=(int)floor(($weight*$investable)/$price);
-			$held=isset($positions[$symbol]) ? (int)$positions[$symbol]['quantity'] : 0;
+			/* A share the broker will not deal in fractions of is sized in
+			   whole shares whatever the mode allows. Learnt from the broker
+			   refusing one, not guessed at. */
+			$share_rules=$mode;
+			if (!empty($mode['fractional'])&&strategy_whole_shares_only($symbol,$mode['broker'])){
+				$share_rules['fractional']=false;
+				$share_rules['decimals']=0;
+			}
+
+			$target_quantity=strategy_round_quantity(($weight*$investable)/$price,$share_rules);
+			$held=isset($positions[$symbol]) ? (float)$positions[$symbol]['quantity'] : 0.0;
 			$delta=$target_quantity-$held;
 
 			/* Leave a holding alone while its weight is close enough. A
@@ -409,10 +522,33 @@
 				if (abs($held_weight-$weight)<=STRATEGY_DRIFT_BAND){ continue; }
 			}
 
-			//Skip adjustments too small to be worth the dealing costs. A
-			//one share correction on a 160 pound stock costs commission plus
-			//stamp to move the weight by a rounding error.
-			if ($delta!==0&&(abs($delta)*$price)>=STRATEGY_MIN_ORDER_VALUE){
+			/* Skip adjustments too small to be worth placing. On a paper
+			   account that is GBP 250, because a one share correction on a
+			   160 pound stock costs commission plus stamp to move the weight
+			   by a rounding error. On a Trading 212 account there is no
+			   commission and the minimum is GBP 10, so a small account can
+			   actually hold fifteen names.
+
+			   An order that rounds away to nothing, or that falls under the
+			   minimum, is recorded with its reason rather than dropped in
+			   silence: its cash sits idle until the next rebalance and
+			   somebody should be able to see why. */
+			$value=abs($delta)*$price;
+
+			if (abs($delta)>0&&$value<$mode['minimum_order']){
+				$plan['skipped'][]=['symbol'=>$symbol,'side'=>$delta>0?'BUY':'SELL',
+				                    'quantity'=>abs($delta),'value'=>$value,
+				                    'reason'=>'under the '.$mode['minimum_order']
+				                             .' minimum order for '.$mode['words']];
+			}
+			else if (abs($delta)<=0&&$target_quantity<=0&&$held<=0){
+				$plan['skipped'][]=['symbol'=>$symbol,'side'=>'BUY','quantity'=>0.0,
+				                    'value'=>0.0,
+				                    'reason'=>'the target rounds to nothing at '
+				                             .round($price,2).' a share'];
+			}
+
+			if (abs($delta)>0&&$value>=$mode['minimum_order']){
 				$plan['orders'][]=[
 					'symbol'=>$symbol,'exchange'=>$target['exchange'],
 					'side'=>$delta>0?'BUY':'SELL','quantity'=>abs($delta),
@@ -431,9 +567,9 @@
 
 		//Exits: anything held that is no longer a target
 		foreach ($positions as $symbol=>$position) {
-			if (!isset($wanted[$symbol])&&(int)$position['quantity']>0){
+			if (!isset($wanted[$symbol])&&(float)$position['quantity']>0){
 				$price=strategy_price_asof($symbol,$position['exchange'],$as_of_date);
-				$held=(int)$position['quantity'];
+				$held=(float)$position['quantity'];
 				$plan['orders'][]=[
 					'symbol'=>$symbol,'exchange'=>$position['exchange'],
 					'side'=>'SELL','quantity'=>$held,
@@ -490,23 +626,57 @@
 	}
 
 	/**
+	 * Whether the broker refuses fractions of this share.
+	 *
+	 * Null in broker_instruments means nobody has found out, which is the
+	 * state of every row until an order is refused for its quantity. The
+	 * instruments list carries no field that says, so this is learnt from
+	 * the broker rather than guessed at - and a share that has never been
+	 * ordered is sized in fractions until it says otherwise, which is the
+	 * only answer that can be tested against anything.
+	 */
+	function strategy_whole_shares_only($symbol,$broker=null) {
+
+		if ($broker===null){ return false; }
+
+		/* Asked every time rather than cached. The run that learns this is
+		   the run that sends orders, and it plans again afterwards: a cache
+		   taken before the broker refused an order would still be saying
+		   "fractions are fine" when the next plan is written. One indexed
+		   row per symbol is not worth being wrong about. */
+		$rows=query("select whole_shares from broker_instruments
+		              where broker=? and symbol=? and whole_shares='Y'",$broker,$symbol);
+
+		return count($rows)>0;
+	}
+
+	/**
 	 * Dealing costs for one fill. Buys pay stamp duty, sells do not; both pay
 	 * commission and half the spread.
 	 */
-	function strategy_costs($side,$quantity,$price) {
+	function strategy_costs($side,$quantity,$price,$mode=null) {
+
+		/* The commission belongs to the mode: Trading 212 charges none,
+		   and the paper account's GBP 5.95 is what its own record was built
+		   on. Stamp duty and the spread do not care who the broker is -
+		   half a per cent on a purchase of UK shares is the government's,
+		   whatever the size, and the spread is the market's. The PTM levy
+		   starts at GBP 10,000 and cannot apply to an account this size. */
+		$rules=strategy_mode_rules($mode===null ? STRATEGY_MODE_PAPER : $mode);
+
 		$consideration=$quantity*$price;
 		$slippage=$consideration*(STRATEGY_SLIPPAGE_BPS/10000);
 		$stamp_duty=($side==='BUY') ? $consideration*STRATEGY_STAMP_DUTY_RATE : 0;
 		return [
 			'consideration'=>$consideration,
-			'commission'=>STRATEGY_COMMISSION,
+			'commission'=>$rules['commission'],
 			'stamp_duty'=>$stamp_duty,
 			'slippage'=>$slippage,
 			//Signed cash effect: a buy leaves the account, a sell arrives,
 			//and costs are always a subtraction.
 			'total_cost'=>($side==='BUY')
-				? -($consideration+$slippage+$stamp_duty+STRATEGY_COMMISSION)
-				:  ($consideration-$slippage-STRATEGY_COMMISSION),
+				? -($consideration+$slippage+$stamp_duty+$rules['commission'])
+				:  ($consideration-$slippage-$rules['commission']),
 		];
 	}
 
@@ -625,12 +795,14 @@
 			return $reject("no price after ".$order['as_of_date']);
 		}
 
-		$quantity=(int)$order['quantity'];
-		$costs=strategy_costs($order['side'],$quantity,$fill['price']);
-
 		$account=strategy_account($order['strategy']);
+		$mode=strategy_mode_rules($account===null ? STRATEGY_MODE_PAPER : $account['mode']);
+
+		$quantity=(float)$order['quantity'];
+		$costs=strategy_costs($order['side'],$quantity,$fill['price'],$mode['mode']);
+
 		$positions=strategy_positions($order['strategy']);
-		$held=isset($positions[$order['symbol']]) ? (int)$positions[$order['symbol']]['quantity'] : 0;
+		$held=isset($positions[$order['symbol']]) ? (float)$positions[$order['symbol']]['quantity'] : 0.0;
 
 		/* A buy the cash no longer covers is trimmed to fit rather than
 		   rejected.
@@ -656,9 +828,9 @@
 			$cash=(float)$account['cash'];
 			$per_share=$fill['price']*(1+STRATEGY_STAMP_DUTY_RATE+(STRATEGY_SLIPPAGE_BPS/10000));
 			$affordable=($per_share>0)
-			          ? (int)floor(($cash-STRATEGY_COMMISSION)/$per_share) : 0;
+			          ? strategy_round_quantity(($cash-$mode['commission'])/$per_share,$mode) : 0.0;
 
-			if ($affordable<1){
+			if ($affordable<=0){
 				return $reject("insufficient cash: need ".round(-$costs['total_cost'],2)
 				               ." have ".$account['cash']);
 			}
@@ -667,7 +839,7 @@
 			          .$affordable." shares: the fill price moved against the plan");
 
 			$quantity=$affordable;
-			$costs=strategy_costs($order['side'],$quantity,$fill['price']);
+			$costs=strategy_costs($order['side'],$quantity,$fill['price'],$mode['mode']);
 
 			query("update strategy_orders set quantity=?, note=? where client_order_id=?",
 			      $quantity,
@@ -682,7 +854,7 @@
 				               .": need ".round(-$costs['total_cost'],2)." have ".$cash);
 			}
 		}
-		if ($order['side']==='SELL'&&$quantity>$held){
+		if ($order['side']==='SELL'&&$quantity>$held+0.00000001){
 			//No shorting in a long only paper book.
 			return $reject("cannot sell ".$quantity." of ".$order['symbol'].", hold ".$held);
 		}
@@ -697,7 +869,8 @@
 			//Average cost carries the dealing costs, so realised profit is
 			//measured after what it actually took to get in.
 			$previous_cost=$held * (isset($positions[$order['symbol']]) ? (float)$positions[$order['symbol']]['avg_price'] : 0);
-			$avg_price=($previous_cost + (-$costs['total_cost'])) / max($new_quantity,1);
+			$avg_price=($new_quantity>0)
+			         ? ($previous_cost + (-$costs['total_cost'])) / $new_quantity : 0.0;
 		}
 		else {
 			$new_quantity=$held-$quantity;
@@ -935,11 +1108,17 @@
 
 		if (!strategy_rules_ready()){ return []; }
 
+		/* The modes this application knows how to run, named rather than
+		   assumed: an account whose mode is anything else - a half finished
+		   migration, a typo, a mode a later version adds - is not run at
+		   all rather than run as if it were a paper one. Reserved names
+		   (the backtest accounts) are skipped whatever their mode. */
 		$out=[];
-		foreach (query("select a.strategy from strategy_accounts a, strategy_rules r
-		                 where r.strategy=a.strategy and a.enabled='Y' and a.mode='PAPER'
+		foreach (query("select a.strategy, a.mode from strategy_accounts a, strategy_rules r
+		                 where r.strategy=a.strategy and a.enabled='Y'
 		                 order by a.strategy") as $row) {
 			if (strategy_reserved($row['strategy'])){ continue; }
+			if (!strategy_mode_known($row['mode'])){ continue; }
 			$out[]=$row['strategy'];
 		}
 		return $out;
@@ -1193,7 +1372,7 @@
 		   two. */
 		$held=[];
 		foreach (strategy_positions($rules['strategy']) as $symbol => $position) {
-			if ((int)$position['quantity']>0){ $held[$symbol]=true; }
+			if ((float)$position['quantity']>0){ $held[$symbol]=true; }
 		}
 
 		$keeping=[]; $spare=[];
@@ -1376,13 +1555,13 @@
 
 		foreach (strategy_positions($strategy) as $symbol=>$position) {
 
-			if ((int)$position['quantity']<=0){ continue; }
+			if ((float)$position['quantity']<=0){ continue; }
 
 			$position_exchange=(string)$position['exchange'];
 
 			if (strategy_price_stale($symbol,$position_exchange,$as_of)){
 				$exits[]=['symbol'=>$symbol,'exchange'=>$position_exchange,
-				          'quantity'=>(int)$position['quantity'],
+				          'quantity'=>(float)$position['quantity'],
 				          'reason'=>'delisted','last_price'=>true];
 				continue;
 			}
@@ -1390,7 +1569,7 @@
 			if (in_array('below_ma200_2d',$exit_list,true)
 			    &&strategy_below_ma200_2d($symbol,$as_of)){
 				$exits[]=['symbol'=>$symbol,'exchange'=>$position_exchange,
-				          'quantity'=>(int)$position['quantity'],
+				          'quantity'=>(float)$position['quantity'],
 				          'reason'=>'below_ma200_2d','last_price'=>false];
 			}
 		}
@@ -1459,7 +1638,8 @@
 
 		$report=['lines'=>[],'orders'=>[],'errors'=>[],
 		         'filled'=>0,'rejected'=>0,'skipped'=>0,'pending'=>0,
-		         'account_value'=>null,'halted'=>false];
+		         'account_value'=>null,'halted'=>false,'mode'=>STRATEGY_MODE_PAPER,
+		         'not_placed'=>[]];
 
 		$say=function($line) use (&$report) { $report['lines'][]=$line; };
 
@@ -1470,7 +1650,17 @@
 			return $report;
 		}
 
-		if (!$dry_run){
+		$account=strategy_account($strategy);
+		$mode=strategy_mode_rules($account===null ? STRATEGY_MODE_PAPER : $account['mode']);
+		$report['mode']=$mode['mode'];
+
+		if ($account!==null&&$account['halted']==='Y'){
+			$report['errors'][]="halted: ".(string)$account['halt_reason'];
+			$report['halted']=true;
+			return $report;
+		}
+
+		if (!$dry_run&&$mode['broker']===null){
 			$resume=strategy_resume_pending($strategy);
 			if ($resume['halted']){
 				$report['errors'][]="pending orders exist and the account is not in PAPER mode;"
@@ -1493,7 +1683,15 @@
 		$plan=strategy_plan_orders($strategy,$as_of,$targets);
 		$report['account_value']=$plan['account_value'];
 		$report['orders']=$plan['orders'];
+		$report['not_placed']=isset($plan['skipped']) ? $plan['skipped'] : [];
 		foreach ($plan['errors'] as $error) { $report['errors'][]=$error; }
+
+		/* What was deliberately not ordered, and why. Cash left idle because
+		   an order would have been too small is a decision, and a decision
+		   nobody can see is indistinguishable from a bug. */
+		foreach ($report['not_placed'] as $missed) {
+			$say(sprintf("skip %-8s %s",$missed['symbol'],$missed['reason']));
+		}
 
 		if (count($plan['orders'])===0){
 			$say("no orders");
@@ -1502,7 +1700,8 @@
 		}
 
 		foreach ($plan['orders'] as $order) {
-			$say(sprintf("%-4s %-8s %6d @ ~%s",$order['side'],$order['symbol'],$order['quantity'],
+			$say(sprintf("%-4s %-8s %10s @ ~%s",$order['side'],$order['symbol'],
+			             rtrim(rtrim(number_format($order['quantity'],4,'.',''),'0'),'.'),
 			             $order['reference_price']===null ? '?' : round($order['reference_price'],2)));
 		}
 
@@ -1530,6 +1729,13 @@
 			$client_order_id=strategy_record_order($strategy,$as_of,$order,'rebalance');
 			if ($client_order_id===null){ $report['skipped']++; continue; }
 
+			/* A broker account's orders are not filled here. They are
+			   recorded PENDING and sent during the session by
+			   includes/send_broker_orders.php, because a market order
+			   queued overnight fills at whatever the open does - which is
+			   not the price anything was decided at. */
+			if ($mode['broker']!==null){ $report['pending']++; continue; }
+
 			if (strategy_fill_order($client_order_id)){ $report['filled']++; continue; }
 
 			/* Not filled. Left PENDING means the market has not traded
@@ -1542,8 +1748,11 @@
 		}
 
 		$account=strategy_account($strategy);
-		$summary=$strategy." ".$as_of.": ".$report['filled']." filled, "
-		        .$report['pending']." waiting for the next close, ".$report['rejected']
+		$summary=$strategy." ".$as_of." (".$mode['words']."): ".$report['filled']." filled, "
+		        .$report['pending']
+		        .($mode['broker']===null ? " waiting for the next close, "
+		                                 : " waiting to be sent in the session, ")
+		        .$report['rejected']
 		        ." rejected, ".$report['skipped']." already placed, cash "
 		        .round((float)$account['cash'],2);
 		write_log("strategy",$summary);
@@ -1584,7 +1793,20 @@
 
 		$account=strategy_account($strategy);
 		if ($account===null){ $night['errors'][]="no account for ".$strategy; return $night; }
-		if ($account['mode']!=='PAPER'){ $night['errors'][]="only PAPER mode is supported"; return $night; }
+
+		/* PAPER or T212_DEMO, and nothing else. A mode this application does
+		   not know is not run as if it were one it does. A T212_DEMO account
+		   is planned here like any other and its orders are sent during the
+		   session by includes/send_broker_orders.php; nothing in the nightly
+		   path sends anything anywhere. */
+		if (!strategy_mode_known($account['mode'])){
+			$night['errors'][]="mode '".$account['mode']."' is not one this knows how to run";
+			return $night;
+		}
+		if ($account['halted']==='Y'){
+			$night['errors'][]="halted: ".(string)$account['halt_reason'];
+			return $night;
+		}
 
 		try {
 
@@ -1660,7 +1882,7 @@
 
 		foreach (strategy_positions($strategy) as $symbol=>$position) {
 
-			if ((int)$position['quantity']<=0){ continue; }
+			if ((float)$position['quantity']<=0){ continue; }
 
 			$price=strategy_price_asof($symbol,(string)$position['exchange'],$as_of);
 			if ($price===null){
@@ -1675,7 +1897,7 @@
 				$stale[]=$symbol.' (stale)';
 			}
 
-			$holdings_value += $price*(int)$position['quantity'];
+			$holdings_value += $price*(float)$position['quantity'];
 			$holdings++;
 		}
 
@@ -1949,6 +2171,12 @@
 		       'note'=>$account===null ? null : $account['note'],
 		       'enabled'=>$account===null ? 'N' : $account['enabled'],
 		       'mode'=>$account===null ? null : $account['mode'],
+		       'mode_words'=>$account===null ? null
+		                   : strategy_mode_rules($account['mode'])['words'],
+		       'broker'=>$account===null ? null
+		               : strategy_mode_rules($account['mode'])['broker'],
+		       'halted'=>$account===null ? 'N' : $account['halted'],
+		       'halt_reason'=>$account===null ? null : $account['halt_reason'],
 		       'cash'=>$account===null ? 0.0 : (float)$account['cash'],
 		       'screen'=>null,
 		       'start'=>null,'as_of'=>null,
@@ -2021,7 +2249,10 @@
 		                order by p.symbol",$strategy) as $row) {
 
 			$price=strategy_price_asof($row['symbol'],(string)$row['exchange'],$as_of);
-			$quantity=(int)$row['quantity'];
+			/* A float: a Trading 212 account holds 0.44 of a share, and an
+			   int cast here showed the holding as nought on the page while
+			   its average cost and its value were right. */
+			$quantity=(float)$row['quantity'];
 			$value=($price===null) ? null : $price*$quantity;
 			$cost=(float)$row['avg_price']*$quantity;
 
@@ -2096,7 +2327,7 @@
 		$out=[];
 		foreach (query("select as_of_date, fill_date, symbol, side, quantity, fill_price,
 		                       consideration, commission, stamp_duty, slippage, total_cost,
-		                       status, note
+		                       status, note, broker, broker_order_id, broker_status, sent_at
 		                  from strategy_orders where strategy=?
 		                 order by ifnull(fill_date,as_of_date) desc, symbol asc
 		                 limit ".$limit,$strategy) as $row) {
@@ -2313,7 +2544,7 @@
 		$cash_before=(float)$account['cash'];
 		$holdings_before=0;
 		foreach ($positions as $position) {
-			if ((int)$position['quantity']>0){ $holdings_before++; }
+			if ((float)$position['quantity']>0){ $holdings_before++; }
 		}
 
 		$companies=[];

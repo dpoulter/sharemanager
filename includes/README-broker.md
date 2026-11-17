@@ -1,9 +1,15 @@
 # The broker connection (Trading 212)
 
-Stage 1 of the Trading 212 brief: **read only**. The application reads the
-account and writes down what it said. Nothing in this path can place, amend or
-cancel an order, in either environment, and the live key has no
-Orders - Execute permission anyway.
+Stage 1 is **read only**: the application reads the account and writes down
+what it said. Stage 2 sends the strategy engine's orders to Trading 212's
+**practice account**, and to nothing else.
+
+**No live orders, ever.** The order call refuses unless `SM_T212_ENV=demo`,
+builds its URL from a constant demo host rather than from the base URL the
+reads use, and refuses any host whose name contains the live one. The live key
+has no Orders - Execute permission, so the other end would refuse it too. Real
+money stays off until Dale decides, after at least three months of paper
+results.
 
 ## What it is
 
@@ -14,10 +20,13 @@ Orders - Execute permission anyway.
 | `includes/sync_broker.php` | The nightly job. `php includes/sync_broker.php [--instruments]` |
 | `tools/t212_probe.php` | The discovery script. Run it first; see below. |
 | `public/broker.php`, `templates/broker.php` | The page. Logged in only, like every other page. |
+| `includes/broker_orders.php` | Stage 2: sending, resolving and reconciling. |
+| `includes/send_broker_orders.php` | The daytime job that sends. |
 | `tools/t212_stub.php` | The stand-in the suite talks to. No test calls Trading 212. |
 | `sql/broker.sql` | The tables. Safe to apply twice. |
 | `sql/broker_account_fields.sql` | The second migration: the account summary's real fields, the notices column, shortName. |
-| `sql/broker_mapping.sql` | The third: one instrument per share, enforced, and the venue and currency columns. **Run all three.** |
+| `sql/broker_mapping.sql` | The third: one instrument per share, enforced, and the venue and currency columns. |
+| `sql/broker_trading.sql` | The fourth: fractional quantities, where an order is, and whether a strategy is halted. **Run all four.** |
 
 ## Configuration
 
@@ -168,18 +177,80 @@ could not tell apart made every run a failure.
 The nightly run does the sync after the strategies and is allowed to fail
 without taking the night with it.
 
-## Stage 2, when stage 1 has been checked
+## Stage 2: sending orders to the practice account
 
-Not built. It is order placement **against the demo environment only**, and
-the brief's guards are the design: a demo host that is a constant with no code
-path to the live one, an order recorded as `SENT` with its own id before the
-call and left `UNKNOWN` rather than resent on a timeout, the same limits and
-kill switch as the paper engine, sending only while the market is open, and a
-daily reconciliation that halts a strategy on any difference. Live orders are
-a separate brief after the paper period and Dale's decision.
+An account's `mode` is `PAPER` or `T212_DEMO`. The difference is a table, in
+`strategy_mode_rules()`:
 
-The suite already asserts the half of that which can be asserted today:
-nothing in `includes/t212_client.php`, `includes/broker.php` or
-`includes/sync_broker.php` names any HTTP method but GET, the page opens no
-connection of its own, and `live.trading212.com` appears exactly once in the
-whole application - where the constant is defined.
+| | `PAPER` | `T212_DEMO` |
+|---|---|---|
+| Minimum order | GBP 250 | GBP 10 |
+| Quantities | whole shares | fractions, 2 decimal places |
+| Commission | GBP 5.95 | none |
+| Stamp duty | 0.5% of a buy | 0.5% of a buy |
+| Spread allowance | 25bp each way | 25bp when planning; the real fill price when filling |
+| Filled by | this database, at the next close | Trading 212, during the session |
+
+The paper figures are deliberately unchanged: its record only means something
+if the rules it was built under do not move. The PTM levy starts at GBP 10,000
+and cannot apply to an account this size.
+
+The GBP 250 minimum and whole shares were written for an account paying GBP
+5.95 a trade. Trading 212 charges nothing and deals from GBP 1, so a GBP 250
+account can hold all fifteen names at about GBP 16.67 each - but only if a
+quantity can be 0.44 of a share. Quantities round **down**, so an order never
+costs more than the target it was sized from; what is left sits idle until the
+next rebalance, and an order that rounds to nothing or falls under the minimum
+is recorded with its reason rather than vanishing. The 2-point drift band
+stays: without it a small account would trade pennies at every rebalance.
+
+**When things happen.** The nightly run plans and sends nothing: a market order
+queued overnight fills at whatever the open does, which is not the price
+anything was decided at. `includes/send_broker_orders.php` sends, from cron
+through the session:
+
+```
+0,10,20,30,40,50 8-16 * * 1-5 \
+  /usr/bin/php /var/www/sharemanager/includes/send_broker_orders.php \
+  >> /var/log/sharemanager-broker.log 2>&1
+```
+
+It does three things in order: resolve what is already out there, reconcile
+the two books, then send what is still PENDING.
+
+**An order's life.** `PENDING` (planned) → `SENT` (gone, with the time written
+*before* the call) → `FILLED`, `REJECTED` or `CANCELLED`. The order calls are
+not idempotent, so a request whose answer never arrived becomes `UNKNOWN` and
+is never sent again blind: the next run matches it against the broker's
+pending orders and history by ticker, side and time. One candidate is adopted;
+none, after fifteen minutes, means it never arrived; **two means the strategy
+halts**, because a wrong guess there doubles a position.
+
+**Halting.** A difference between the engine's positions and the broker's
+stops that strategy until a person clears it (`strategy_accounts.halted`). A
+disagreement about what is held is a disagreement about what everything is
+worth. An order in flight explains a difference, so it is not one, and a
+reconciliation against yesterday's read is not attempted at all.
+
+**Limits**: the same 20% position, 50 orders and 50% turnover as the paper
+engine, the same kill switch file, plus `T212_MAX_RUN_VALUE` (GBP 1,000) as a
+cap on what one run may send.
+
+### To find out on the demo account, before relying on it
+
+The documentation gives no rule for any of these, so they are set to the
+careful answer and want confirming:
+
+- **whether a fractional `quantity` is accepted for London shares.** Their
+  sell example is -10.5, which implies yes, but it is not stated.
+- **how many decimal places.** `SM_T212_QUANTITY_DECIMALS` is 2. Rounding down
+  to fewer than allowed costs a little idle cash; rounding to more than allowed
+  gets the order refused.
+- **the smallest quantity, per instrument if it varies.** `maxOpenQuantity` is
+  the only quantity field the instruments list carries.
+- **whether any FTSE 350 share is whole-share only.** Nothing in the data says,
+  so it is learnt: an order refused for its quantity sets
+  `broker_instruments.whole_shares`, and that share is sized in whole shares
+  from then on.
+
+Write the answers here when they are known.

@@ -24,6 +24,9 @@
     //The broker connection. Loading it calls nothing and reaches no network:
     //only broker_sync() does, and only when a key is configured.
     require_once("broker.php");
+    //Stage 2: the orders a T212_DEMO account sends. Loading it sends
+    //nothing; only broker_send_orders() does, and only to the demo host.
+    require_once("broker_orders.php");
 
     $INCLUDES = dirname(__DIR__) . '/includes';
     $passed = 0; $failed = 0; $failures = [];
@@ -638,10 +641,22 @@
           json_encode(rows("select strategy, cash, mode, enabled from strategy_accounts
                              where strategy in ('trending_value','trend_following')")));
 
-    /* PAPER is the whole point. A row saying anything else must not be
-       picked up by the nightly run, and nothing in the engine supports it. */
-    check('no account anywhere is in any mode but PAPER',
-          (int)scalar("select count(*) from strategy_accounts where mode<>'PAPER'") === 0);
+    /* The two live strategies are PAPER and stay PAPER: their record only
+       means anything if the rules it was built under do not move. Stage 2
+       adds T212_DEMO, which trades a Trading 212 practice account - so the
+       check is no longer "nothing but PAPER" but "nothing this application
+       does not know how to run", and nothing that could reach real money. */
+    check('the live strategies are paper accounts',
+          (int)scalar("select count(*) from strategy_accounts
+                        where strategy in ('trending_value','trend_following')
+                          and mode='PAPER'") === 2);
+    check('and no account anywhere is in a mode this cannot run',
+          (int)scalar("select count(*) from strategy_accounts
+                        where mode not in ('PAPER','T212_DEMO')") === 0,
+          json_encode(rows("select strategy, mode from strategy_accounts
+                             where mode not in ('PAPER','T212_DEMO')")));
+    check('and no mode anywhere names the live account',
+          (int)scalar("select count(*) from strategy_accounts where mode like '%LIVE%'") === 0);
 
     /* The migration is re-runnable and converges: a strategy somebody has
        experimented on goes back to what the file says. */
@@ -678,17 +693,18 @@
                      $r['holdings'],$r['hold_rank'],$r['rebalance'],$r['exit_rules'],
                      $r['exclude_funds'],$r['start_date']]);
     }
-    function s_account($strategy, $cash = 100000, $enabled = 'Y') {
+    function s_account($strategy, $cash = 100000, $enabled = 'Y', $mode = 'PAPER') {
         db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
-                       values (?,?,'GBP','PAPER',?,now())
-                       on duplicate key update cash=values(cash), enabled=values(enabled)")
-          ->execute([$strategy,$cash,$enabled]);
+                       values (?,?,'GBP',?,?,now())
+                       on duplicate key update cash=values(cash), enabled=values(enabled),
+                                               mode=values(mode), halted='N', halt_reason=null")
+          ->execute([$strategy,$cash,$mode,$enabled]);
     }
-    function s_reset($strategy, $cash = 100000, $enabled = 'Y') {
+    function s_reset($strategy, $cash = 100000, $enabled = 'Y', $mode = 'PAPER') {
         foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values'] as $table) {
             db()->prepare("delete from $table where strategy=?")->execute([$strategy]);
         }
-        s_account($strategy, $cash, $enabled);
+        s_account($strategy, $cash, $enabled, $mode);
     }
     function s_drop($strategy) {
         foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values',
@@ -1289,8 +1305,12 @@
           strategy_below_ma200_2d('AAA', $SASOF) === true);
 
     $exits = strategy_exits_due($S, $SASOF, 'XLON');
+    /* A quantity is a float since stage 2, because a Trading 212 account
+       holds 0.44 of a share. The whole position is what goes, whatever
+       shape the number is. */
     check('the whole position goes, not part of it',
-          count($exits) === 1 && $exits[0]['symbol'] === 'AAA' && $exits[0]['quantity'] === 100,
+          count($exits) === 1 && $exits[0]['symbol'] === 'AAA'
+          && abs((float) $exits[0]['quantity'] - 100.0) < 0.0000001,
           json_encode($exits));
 
     $placed = strategy_place_exits($S, $SASOF, false, 'XLON');
@@ -3149,6 +3169,16 @@
           && strpos($bk_page_tpl, "values['invested_cost']") !== false);
     check('and says what each holding was matched on',
           strpos($bk_page_tpl, "position['matched_on']") !== false);
+    /* Stage 2: when orders go. The nightly job plans and the session is
+       when the plan is sent, so a reader who sees a planned order at
+       midnight should be able to tell why it has not gone. */
+    check('and when orders are sent, in London time',
+          strpos($bk_page_tpl, 'Orders are sent') !== false
+          && strpos($bk_page_tpl, 'T212_MARKET_OPEN') !== false
+          && strpos($bk_page_tpl, 'T212_MARKET_TZ') !== false);
+    check('and that the practice account is the only one orders can reach',
+          stripos($bk_page_tpl, 'practice') !== false
+          && stripos($bk_page_tpl, 'live account') !== false);
 
     echo "\n--- the broker connection: the probe ---\n";
 
@@ -3243,7 +3273,7 @@
         return $out;
     };
 
-    foreach (['t212_client.php' => $bk_client_src, 'broker.php' => $bk_broker_src,
+    foreach (['broker.php' => $bk_broker_src,
               'sync_broker.php' => $bk_sync_src] as $bk_name => $bk_src) {
         $bk_bare = $bk_code($bk_src);
         check("$bk_name names no HTTP method but GET",
@@ -3251,6 +3281,30 @@
               && stripos($bk_bare, 'CURLOPT_POST') === false,
               $bk_name);
     }
+
+    /* The client has exactly one method that writes, and it is the stage 2
+       order. Anything else that posted would be a second way out of this
+       application, which is the thing the rest of these checks are about. */
+    $bk_client_bare = $bk_code($bk_client_src);
+    check('the client names POST exactly once, in the order it sends',
+          substr_count($bk_client_bare, '"POST"') + substr_count($bk_client_bare, "'POST'") === 1
+          && preg_match('~[\'"](PUT|PATCH|DELETE)[\'"]~i', $bk_client_bare) === 0
+          && stripos($bk_client_bare, 'CURLOPT_POST') === false,
+          substr_count($bk_client_bare, '"POST"') . ' occurrence(s)');
+    /* The method's own text, taken out between its name and the next
+       function, so a pattern cannot wander past the end of it and find
+       something in a different method. */
+    $bk_order_method = '';
+    $bk_at = strpos($bk_client_bare, 'function place_market_order');
+    if ($bk_at !== false) {
+        $bk_next = strpos($bk_client_bare, 'function ', $bk_at + 20);
+        $bk_order_method = substr($bk_client_bare, $bk_at,
+                                  $bk_next === false ? null : $bk_next - $bk_at);
+    }
+    check('and that one is in place_market_order and nowhere else',
+          $bk_order_method !== ''
+          && substr_count($bk_order_method, '"POST"') === 1,
+          'POST is outside the order method');
 
     /* The page is the exception, and for a reason that is not a loophole: it
        reads $_SERVER["REQUEST_METHOD"] to tell its own form's POST from a
@@ -3264,16 +3318,26 @@
           && stripos($bk_page_bare, 'fsockopen') === false,
           'public/broker.php');
 
-    check('and the live host appears only where the base URL is defined',
+    /* The live host is named in exactly two places in the whole
+       application: where the constant is defined, and in the refusal that
+       checks an order is not being sent to it. Nowhere builds a request
+       from it but the reads. */
+    check('the live host appears only where the base URL is defined and where it is refused',
           substr_count($bk_code((string) file_get_contents(dirname(__DIR__)
                                 . '/includes/constants.php')), 'live.trading212.com') === 1
-          && stripos($bk_code($bk_client_src), 'live.trading212.com') === false
-          && stripos($bk_code($bk_broker_src), 'live.trading212.com') === false);
+          && substr_count($bk_client_bare, 'live.trading212.com') === 2
+          && stripos($bk_code($bk_broker_src), 'live.trading212.com') === false
+          && stripos($bk_code((string) file_get_contents(dirname(__DIR__)
+                              . '/includes/broker_orders.php')), 'live.trading212.com') === false);
+    check('and the order method builds its URL from the demo constant, not from the base',
+          strpos($bk_order_method, 'T212_DEMO_BASE_URL') !== false
+          && strpos($bk_order_method, '$this->base') === false,
+          substr($bk_order_method, 0, 200));
     check('the demo host is a constant too, so stage 2 cannot be pointed at the live one',
           defined('T212_DEMO_BASE_URL') && T212_DEMO_BASE_URL === 'https://demo.trading212.com/api/v0');
-    check('and the client has no method that could post an order',
+    check('and the client has no general purpose way to send anything',
           !method_exists('T212Client', 'post') && !method_exists('T212Client', 'request')
-          && !method_exists('T212Client', 'place_order'));
+          && !method_exists('T212Client', 'send'));
 
     /* The nightly run reads the broker after the strategies and is allowed to
        fail without taking the run with it. */
@@ -3294,6 +3358,606 @@
     db()->exec("delete from broker_instruments");
     db()->exec("delete from stock_symbols where symbol='T6P'");
     db()->exec("delete from historical_prices where symbol='T6P'");
+
+    echo "\n--- stage 2: what a mode allows ---\n";
+
+    /* The GBP 250 minimum and whole shares date from September 2026, when
+       the engine assumed GBP 5.95 a trade. Trading 212 charges nothing and
+       deals from GBP 1 in fractions, so a GBP 250 account can hold fifteen
+       names at about GBP 16.67 each - but only if the minimum and the
+       rounding belong to the mode rather than to the engine. The paper
+       figures are unchanged on purpose: its record has to stay comparable
+       with its own past. */
+    $s2_paper = strategy_mode_rules('PAPER');
+    $s2_demo  = strategy_mode_rules('T212_DEMO');
+
+    check('a paper account keeps its GBP 250 minimum and its whole shares',
+          abs($s2_paper['minimum_order'] - 250.0) < 0.005
+          && $s2_paper['fractional'] === false
+          && abs($s2_paper['commission'] - 5.95) < 0.005,
+          json_encode($s2_paper));
+    check('and a Trading 212 account deals from GBP 10 in fractions, free',
+          abs($s2_demo['minimum_order'] - 10.0) < 0.005
+          && $s2_demo['fractional'] === true
+          && $s2_demo['commission'] === 0.0,
+          json_encode($s2_demo));
+    check('an unknown mode is not run at all rather than treated as one of them',
+          strategy_mode_known('PAPER') && strategy_mode_known('T212_DEMO')
+          && !strategy_mode_known('T212_LIVE') && !strategy_mode_known(''));
+
+    /* Down, always: an order must never cost more than the target it was
+       sized from. The cash left over sits idle until the next rebalance,
+       which is the right direction to be wrong in. */
+    check('a quantity is rounded down to what the mode can trade',
+          strategy_round_quantity(0.4482, $s2_demo) === 0.44
+          && strategy_round_quantity(3.99, $s2_paper) === 3.0
+          && strategy_round_quantity(0.009, $s2_demo) === 0.0,
+          json_encode([strategy_round_quantity(0.4482, $s2_demo),
+                       strategy_round_quantity(3.99, $s2_paper)]));
+
+    /* The figure the brief names: GBP 250 across fifteen names is GBP 16.67
+       each, and a 3,719.5p share is 0.44 of a share at two decimal places.
+       Worked here from the same arithmetic the planner uses. */
+    $s2_each  = 250.0 / 15;
+    $s2_price = 37.195;                       // 3,719.5p in pounds
+    $s2_qty   = strategy_round_quantity($s2_each / $s2_price, $s2_demo);
+    check('GBP 16.67 of a 3,719.5p share is 0.44 of one',
+          $s2_qty === 0.44, (string) $s2_qty);
+    check('and it costs no more than the target it was sized from',
+          $s2_qty * $s2_price <= $s2_each + 0.00001,
+          ($s2_qty * $s2_price) . ' vs ' . $s2_each);
+
+    echo "\n--- stage 2: a small account can hold fifteen names ---\n";
+
+    /* The whole point of the exercise, planned end to end: GBP 250, fifteen
+       equally weighted names, no commission. On the paper rules the same
+       account plans nothing at all, because every order is under GBP 250. */
+    $S2 = 'test_t212_small';
+    s_drop($S2);
+    db()->exec("delete from stock_symbols where symbol like 'S2%'");
+    db()->exec("delete from historical_prices where symbol like 'S2%'");
+
+    $s2_asof = asof_date();
+    $s2_symbols = [];
+    for ($s2_i = 1; $s2_i <= 15; $s2_i++) {
+        $s2_sym = 'S2' . str_pad((string) $s2_i, 2, '0', STR_PAD_LEFT);
+        $s2_symbols[] = $s2_sym;
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                                  sector,market,industry_group,industry)
+                       values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','X')")
+            ->execute([$s2_sym, 'Small ' . $s2_i, 'Small ' . $s2_i]);
+        /* Prices from 37.195 pounds (a 3,719.5p share) downwards, so the
+           first one is the brief's example and the rest are ordinary. */
+        db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                       values (?,'XLON',?,?)")
+            ->execute([$s2_sym, $s2_asof, 3719.5 - ($s2_i - 1) * 200]);
+    }
+
+    s_rules($S2, ['selection' => 'score', 'score_indicator' => 'momentum_score',
+                  'holdings' => 15, 'rebalance' => 'monthly']);
+    s_reset($S2, 250.00, 'Y', 'T212_DEMO');
+
+    /* Targets written straight in: which shares the strategy picks is not
+       what this is about.
+
+       Rounded DOWN to the column's six places. A fifteenth is 0.0666666...,
+       which the column rounds UP to 0.066667, and fifteen of those sum to
+       1.000005 - over one, which the planner refuses as it should. The
+       engine's own target writer has the same rounding to do; this is a
+       fixture, so it does it the same way rather than testing it. */
+    $s2_weight = floor((1 / 15) * 1000000) / 1000000;
+    db()->prepare("delete from strategy_targets where strategy=?")->execute([$S2]);
+    foreach ($s2_symbols as $s2_sym) {
+        db()->prepare("insert into strategy_targets (strategy,as_of_date,symbol,exchange,
+                                                     target_weight,created_at)
+                       values (?,?,?,'XLON',?,now())")
+            ->execute([$S2, $s2_asof, $s2_sym, $s2_weight]);
+    }
+
+    $s2_plan = strategy_plan_orders($S2, $s2_asof);
+
+    check('a GBP 250 Trading 212 account plans all fifteen names',
+          count($s2_plan['orders']) === 15 && count($s2_plan['errors']) === 0,
+          json_encode([count($s2_plan['orders']), $s2_plan['errors']]));
+    check('each one is about GBP 16.67, in fractions of a share',
+          count($s2_plan['orders']) === 15
+          && count(array_filter($s2_plan['orders'], function ($o) {
+                 $value = $o['quantity'] * $o['reference_price'];
+                 return $value > 14.0 && $value <= 16.67 && $o['quantity'] < 1.0; })) >= 1,
+          json_encode(array_map(function ($o) {
+              return [$o['symbol'], $o['quantity'],
+                      round($o['quantity'] * $o['reference_price'], 2)]; },
+              array_slice($s2_plan['orders'], 0, 3))));
+    check('and the 3,719.5p share is 0.44 of one, as the brief worked out',
+          abs((float) $s2_plan['orders'][0]['quantity'] - 0.44) < 0.0001,
+          json_encode([$s2_plan['orders'][0]['symbol'], $s2_plan['orders'][0]['quantity']]));
+    check('nothing is planned for more than the cash in the account',
+          array_sum(array_map(function ($o) {
+              return $o['quantity'] * $o['reference_price']; }, $s2_plan['orders'])) <= 250.0,
+          (string) array_sum(array_map(function ($o) {
+              return $o['quantity'] * $o['reference_price']; }, $s2_plan['orders'])));
+
+    /* The same account on the paper rules: every order is under GBP 250, so
+       none is placed and the cash sits idle - which is exactly the behaviour
+       the Trading 212 mode exists to fix, and exactly the behaviour the
+       paper record was built on. */
+    db()->prepare("update strategy_accounts set mode='PAPER' where strategy=?")->execute([$S2]);
+    $s2_paper_plan = strategy_plan_orders($S2, $s2_asof);
+    $s2_reasons = implode(' | ', array_column($s2_paper_plan['skipped'], 'reason'));
+    check('the same account on paper rules plans nothing, and says why',
+          count($s2_paper_plan['orders']) === 0
+          && count($s2_paper_plan['skipped']) === 15,
+          json_encode(array_slice($s2_paper_plan['skipped'], 0, 2)));
+    check('some because a whole share costs less than the GBP 250 minimum',
+          stripos($s2_reasons, '250 minimum order for paper') !== false, $s2_reasons);
+    check('and the dearer ones because a whole share is more than the target',
+          stripos($s2_reasons, 'rounds to nothing') !== false, $s2_reasons);
+    check('and a paper account still buys whole shares',
+          strategy_round_quantity(1.9, strategy_mode_rules('PAPER')) === 1.0);
+    db()->prepare("update strategy_accounts set mode='T212_DEMO' where strategy=?")->execute([$S2]);
+
+    /* An order too small to place is skipped with its reason rather than
+       disappearing: its cash stays idle and somebody should see why. */
+    db()->prepare("delete from strategy_targets where strategy=?")->execute([$S2]);
+    db()->prepare("insert into strategy_targets (strategy,as_of_date,symbol,exchange,
+                                                 target_weight,created_at)
+                   values (?,?,?,'XLON',?,now())")
+        ->execute([$S2, $s2_asof, $s2_symbols[0], 0.02]);
+    $s2_small = strategy_plan_orders($S2, $s2_asof);
+    check('an order under the minimum is skipped, with the reason on it',
+          count($s2_small['orders']) === 0 && count($s2_small['skipped']) === 1
+          && stripos($s2_small['skipped'][0]['reason'], 'minimum') !== false,
+          json_encode($s2_small['skipped']));
+
+    /* A share the broker will not deal in fractions of falls back to whole
+       shares. Learnt from the broker refusing one, not guessed at. */
+    db()->exec("delete from broker_instruments");
+    db()->prepare("insert into broker_instruments (broker, broker_ticker, symbol, status,
+                                                   whole_shares, venue, last_seen)
+                   values (?,?,?,'matched','Y','london',?)")
+        ->execute([BROKER_T212, 'S201l_EQ', $s2_symbols[0], $s2_asof]);
+
+    db()->prepare("delete from strategy_targets where strategy=?")->execute([$S2]);
+    foreach ($s2_symbols as $s2_sym) {
+        db()->prepare("insert into strategy_targets (strategy,as_of_date,symbol,exchange,
+                                                     target_weight,created_at)
+                       values (?,?,?,'XLON',?,now())")
+            ->execute([$S2, $s2_asof, $s2_sym, $s2_weight]);
+    }
+    $s2_whole = strategy_plan_orders($S2, $s2_asof);
+    $s2_whole_by = [];
+    foreach ($s2_whole['orders'] as $s2_o) { $s2_whole_by[$s2_o['symbol']] = $s2_o; }
+    $s2_whole_skipped = [];
+    foreach ($s2_whole['skipped'] as $s2_o) { $s2_whole_skipped[$s2_o['symbol']] = $s2_o; }
+
+    check('a share that deals in whole shares only is sized in whole shares, or skipped',
+          !isset($s2_whole_by[$s2_symbols[0]])
+          && isset($s2_whole_skipped[$s2_symbols[0]])
+          && stripos($s2_whole_skipped[$s2_symbols[0]]['reason'], 'rounds to nothing') !== false,
+          json_encode([$s2_whole_by[$s2_symbols[0]] ?? null,
+                       $s2_whole_skipped[$s2_symbols[0]] ?? null]));
+    $s2_other = $s2_whole_by[$s2_symbols[14]] ?? null;
+    check('while the others are still sized in fractions',
+          $s2_other !== null
+          && abs((float) $s2_other['quantity'] - round((float) $s2_other['quantity'])) > 0.001,
+          json_encode($s2_other));
+
+    db()->exec("delete from broker_instruments");
+
+    /* A fraction of a share has to survive every step between the fill and
+       the page. An int cast anywhere in that path shows a holding of 0.44
+       as nought, with its average cost and its value beside it, which is
+       the shape of a bug that looks like a data problem. */
+    $S2H = 'test_t212_holding';
+    s_drop($S2H);
+    s_rules($S2H, ['holdings' => 1]);
+    s_reset($S2H, 100.00, 'Y', 'T212_DEMO');
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',0.44,37.3809,now())")->execute([$S2H]);
+
+    $s2_held = strategy_holdings($S2H, asof_date(), 'XLON');
+    check('a fraction of a share is a fraction all the way to the page',
+          count($s2_held) === 1 && abs((float) $s2_held[0]['quantity'] - 0.44) < 0.0001,
+          json_encode($s2_held));
+    check('and the shared formatter prints it as one',
+          fmt_shares(0.44) === '0.44' && fmt_shares(750) === '750'
+          && fmt_shares(0.4) === '0.4' && fmt_shares(null) === VIEW_DASH,
+          json_encode([fmt_shares(0.44), fmt_shares(750), fmt_shares(0.4)]));
+    check('the strategy page prints quantities through it',
+          strpos(php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php'),
+                 'fmt_shares(') !== false);
+    check('and so does the popup that shows tonight\'s plan',
+          strpos((string) file_get_contents(dirname(__DIR__) . '/templates/strategy_dry_run.js'),
+                 'shares(trade.quantity)') !== false);
+    s_drop($S2H);
+
+    echo "\n--- stage 2: an order goes to the demo account and nowhere else ---\n";
+
+    /* The stub again, this time answering the one path that takes a POST.
+       No test sends an order to Trading 212, demo or live. */
+    $s2_dir = sys_get_temp_dir() . '/smt212s2' . getmypid();
+    exec('rm -rf ' . escapeshellarg($s2_dir));
+    @mkdir($s2_dir, 0777, true);
+
+    $s2_port = 8372;
+    $s2_pid  = (int) trim((string) shell_exec(
+        'SM_STUB_DIR=' . escapeshellarg($s2_dir) . ' php -S 127.0.0.1:' . $s2_port . ' '
+        . escapeshellarg(dirname(__DIR__) . '/tools/t212_stub.php')
+        . ' > /dev/null 2>&1 & echo $!'));
+    usleep(900000);
+
+    $s2_base = 'http://127.0.0.1:' . $s2_port . '/api/v0';
+    $s2_key  = 'T212-DEMO-KEY-NOT-REAL-3c7d';
+    $s2_env  = ['SM_T212_ENV'           => 'demo',
+                'SM_T212_DEMO_API_KEY'  => $s2_key,
+                'SM_T212_DEMO_API_SECRET' => 'T212-DEMO-SECRET-NOT-REAL-8a1f',
+                'SM_T212_BASE_URL'      => $s2_base,
+                'SM_T212_DEMO_BASE_URL' => $s2_base,
+                'SM_T212_THROTTLE'      => '0',
+                'SM_T212_MAX_WAIT'      => '1'];
+
+    $s2_orders_sent = function () use ($s2_dir) {
+        return array_values(array_filter(explode("\n",
+               (string) @file_get_contents("$s2_dir/t212_orders"))));
+    };
+    $s2_reset = function () use ($s2_dir) {
+        @file_put_contents("$s2_dir/t212_orders", '');
+        @file_put_contents("$s2_dir/t212_requests", '');
+        @unlink("$s2_dir/pending.json");
+        @unlink("$s2_dir/t212_place");
+    };
+    $s2_write = function ($name, $content) use ($s2_dir) {
+        file_put_contents("$s2_dir/$name", $content);
+    };
+
+    /* One name, one order, so every check below is about the sending rather
+       than about which share was picked. */
+    $S2B = 'test_t212_send';
+    s_drop($S2B);
+    db()->exec("delete from broker_instruments");
+    db()->exec("delete from broker_positions");
+    db()->prepare("insert into broker_instruments (broker, broker_ticker, symbol, short_name,
+                                                   isin, currency, venue, status, matched_on, last_seen)
+                   values (?,?,?,?,?,'GBX','london','matched','short_name',?)")
+        ->execute([BROKER_T212, 'S201l_EQ', 'S201', 'S201', 'GB00S2010001', asof_date()]);
+
+    s_rules($S2B, ['holdings' => 1, 'rebalance' => 'monthly']);
+    s_reset($S2B, 250.00, 'Y', 'T212_DEMO');
+
+    $s2_order = function ($side = 'BUY', $quantity = 0.44, $symbol = 'S201') use ($S2B) {
+        db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+        db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,
+                          status,note,created_at)
+                       values (?,?,?,?,'XLON',?,?,'PENDING','rebalance',now())")
+            ->execute([$S2B . ':' . $symbol . ':' . $side, $S2B, asof_date(), $symbol,
+                       $side, $quantity]);
+        return $S2B . ':' . $symbol . ':' . $side;
+    };
+
+    /* The nightly run plans and sends nothing: a market order queued
+       overnight fills at whatever the open does. */
+    $s2_night_id = $s2_order('BUY', 0.44);
+    $s2_reset();
+    [$s2_night_out] = run_script('send_broker_orders.php', [$S2B],
+        ['SM_T212_ENV' => 'live-read', 'SM_T212_API_KEY' => 'x', 'SM_T212_API_SECRET' => 'y',
+         'SM_T212_BASE_URL' => $s2_base]);
+    check('with the environment on live-read nothing is sent at all',
+          count($s2_orders_sent()) === 0
+          && stripos($s2_night_out, 'only ever sent to the demo account') !== false,
+          $s2_night_out);
+    check('and the order is left exactly as it was',
+          scalar("select status from strategy_orders where client_order_id=?", [$s2_night_id])
+          === 'PENDING');
+
+    /* The guard is in the client as well as in the job, so a caller that
+       skipped the job cannot get round it. */
+    $s2_live_client = new T212Client(['env' => 'live-read']);
+    $s2_live_try = $s2_live_client->place_market_order('S201l_EQ', 0.44);
+    check('the client refuses to place an order outside the demo environment',
+          $s2_live_try['ok'] === false
+          && stripos($s2_live_try['message'], 'demo') !== false,
+          json_encode($s2_live_try));
+
+    /* And it refuses the live host however the environment is set. */
+    [$s2_host_out] = run_script('send_broker_orders.php', [$S2B],
+        ['SM_T212_ENV' => 'demo', 'SM_T212_DEMO_API_KEY' => $s2_key,
+         'SM_T212_DEMO_API_SECRET' => 'y', 'SM_T212_BASE_URL' => $s2_base,
+         'SM_T212_DEMO_BASE_URL' => 'https://live.trading212.com/api/v0',
+         'SM_T212_THROTTLE' => '0']);
+    check('and refuses the live host even when something points it there',
+          stripos($s2_host_out, 'demo account and nowhere else') !== false
+          && count($s2_orders_sent()) === 0,
+          $s2_host_out);
+    check('the order is still PENDING after a refusal, not lost',
+          scalar("select status from strategy_orders where client_order_id=?", [$s2_night_id])
+          === 'PENDING');
+
+    echo "\n--- stage 2: sending, and what comes back ---\n";
+
+    /* London has to be open. The suite passes --any-time, because a test
+       that only passes between eight and half past four is not a test. */
+    check('the market hours are read in London time, not the server\'s',
+          broker_market_open(strtotime('2026-11-17 12:00:00 Europe/London')) === true
+          && broker_market_open(strtotime('2026-11-17 05:00:00 Europe/London')) === false
+          && broker_market_open(strtotime('2026-11-17 19:00:00 Europe/London')) === false
+          && broker_market_open(strtotime('2026-11-15 12:00:00 Europe/London')) === false,
+          json_encode([broker_market_open(strtotime('2026-11-17 12:00:00 Europe/London')),
+                       broker_market_open(strtotime('2026-11-15 12:00:00 Europe/London'))]));
+
+    [$s2_shut_out] = run_script('send_broker_orders.php', [$S2B], $s2_env);
+    if (!broker_market_open()) {
+        check('and outside the session nothing is sent',
+              stripos($s2_shut_out, 'London is shut') !== false
+              && count($s2_orders_sent()) === 0,
+              $s2_shut_out);
+    }
+    else {
+        check('and inside the session the sending is attempted',
+              stripos($s2_shut_out, 'London is shut') === false, $s2_shut_out);
+    }
+
+    /* A buy, sent. */
+    $s2_buy_id = $s2_order('BUY', 0.44);
+    $s2_reset();
+    [$s2_buy_out, $s2_buy_rc] = run_script('send_broker_orders.php',
+                                           [$S2B, '--any-time'], $s2_env);
+    $s2_buy_row = rows("select * from strategy_orders where client_order_id=?", [$s2_buy_id]);
+
+    check('an order is sent to the demo account and marked SENT',
+          count($s2_buy_row) === 1 && $s2_buy_row[0]['status'] === 'SENT'
+          && $s2_buy_row[0]['broker_order_id'] !== null
+          && $s2_buy_row[0]['sent_at'] !== null,
+          'rc ' . $s2_buy_rc . ': ' . json_encode($s2_buy_row) . $s2_buy_out);
+    check('with the broker\'s own ticker and a positive quantity for a buy',
+          count($s2_orders_sent()) === 1
+          && strpos($s2_orders_sent()[0], '"ticker":"S201l_EQ"') !== false
+          && strpos($s2_orders_sent()[0], '"quantity":0.44') !== false,
+          implode("\n", $s2_orders_sent()));
+
+    /* A sell goes as a negative quantity, which is how Trading 212 says
+       which way round a trade goes. */
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,?,'XLON',?,?,now())
+                   on duplicate key update quantity=values(quantity)")
+        ->execute([$S2B, 'S201', 1.0, 37.195]);
+    $s2_sell_id = $s2_order('SELL', 0.44);
+    $s2_reset();
+    run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('a sell is sent as a negative quantity',
+          count($s2_orders_sent()) === 1
+          && strpos($s2_orders_sent()[0], '"quantity":-0.44') !== false,
+          implode("\n", $s2_orders_sent()));
+
+    /* The kill switch stops it, like everything else. */
+    $s2_kill = sys_get_temp_dir() . '/smt212stop' . getmypid();
+    @unlink($s2_kill);
+    file_put_contents($s2_kill, 'stop');
+    $s2_kill_id = $s2_order('BUY', 0.44);
+    $s2_reset();
+    [$s2_kill_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'],
+                                $s2_env + ['SM_KILL_SWITCH_FILE' => $s2_kill]);
+    check('the kill switch stops an order being sent',
+          count($s2_orders_sent()) === 0
+          && scalar("select status from strategy_orders where client_order_id=?",
+                    [$s2_kill_id]) === 'PENDING'
+          && stripos($s2_kill_out, 'kill switch') !== false,
+          $s2_kill_out);
+    @unlink($s2_kill);
+
+    /* A share the broker refuses on its quantity is remembered, so the next
+       plan sizes it in whole shares rather than being refused again. */
+    $s2_reject_id = $s2_order('BUY', 0.44);
+    $s2_reset();
+    $s2_write('t212_place', 'reject');
+    run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('a refusal is recorded against the order, with the broker\'s reason',
+          scalar("select status from strategy_orders where client_order_id=?",
+                 [$s2_reject_id]) === 'REJECTED'
+          && stripos((string) scalar("select note from strategy_orders where client_order_id=?",
+                                     [$s2_reject_id]), 'quantity') !== false,
+          (string) scalar("select note from strategy_orders where client_order_id=?",
+                          [$s2_reject_id]));
+    check('and the share is marked as dealing in whole shares only',
+          scalar("select whole_shares from broker_instruments where symbol='S201'") === 'Y');
+    db()->exec("update broker_instruments set whole_shares=null where symbol='S201'");
+    $s2_write('t212_place', 'ok');
+
+    echo "\n--- stage 2: an answer that never came back ---\n";
+
+    /* The case the whole SENT/UNKNOWN dance exists for. The order calls are
+       not idempotent: the same request sent twice can create two orders, so
+       a request whose answer never arrived must never be sent again blind. */
+    $s2_unknown_id = $s2_order('BUY', 0.44);
+    $s2_reset();
+    $s2_write('t212_place', 'slow');
+    run_script('send_broker_orders.php', [$S2B, '--any-time'],
+               $s2_env + ['SM_T212_TIMEOUT' => '1', 'SM_STUB_SLEEP' => '3']);
+    $s2_write('t212_place', 'ok');
+
+    $s2_unknown_row = rows("select * from strategy_orders where client_order_id=?",
+                           [$s2_unknown_id]);
+    check('an order whose answer never came back is left UNKNOWN',
+          count($s2_unknown_row) === 1 && $s2_unknown_row[0]['status'] === 'UNKNOWN'
+          && stripos((string) $s2_unknown_row[0]['note'], 'not known') !== false,
+          json_encode($s2_unknown_row));
+    check('and it was sent once, not twice',
+          count($s2_orders_sent()) === 1, implode("\n", $s2_orders_sent()));
+
+    /* Sending again sends nothing: an UNKNOWN order is not PENDING. */
+    $s2_reset();
+    run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('a later run does not send it again',
+          count($s2_orders_sent()) === 0
+          && scalar("select status from strategy_orders where client_order_id=?",
+                    [$s2_unknown_id]) === 'UNKNOWN',
+          implode("\n", $s2_orders_sent()));
+
+    /* It is resolved by asking the broker, not by guessing. One order at
+       the broker that could be it, and it is adopted. */
+    $s2_write('pending.json', json_encode([
+        ['id' => 'adopt-1', 'ticker' => 'S201l_EQ', 'quantity' => 0.44,
+         'status' => 'WORKING', 'dateCreated' => gmdate('c')],
+    ]));
+    [$s2_resolved] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('the broker is asked what became of it, and the answer is adopted',
+          scalar("select broker_order_id from strategy_orders where client_order_id=?",
+                 [$s2_unknown_id]) === 'adopt-1'
+          && scalar("select status from strategy_orders where client_order_id=?",
+                    [$s2_unknown_id]) === 'SENT',
+          json_encode($s2_resolved));
+
+    /* Two orders either of which could be ours is the case where a wrong
+       guess doubles a position. Nothing is guessed: the strategy halts. */
+    db()->prepare("update strategy_orders set status='UNKNOWN', broker_order_id=null
+                    where client_order_id=?")->execute([$s2_unknown_id]);
+    $s2_write('pending.json', json_encode([
+        ['id' => 'maybe-1', 'ticker' => 'S201l_EQ', 'quantity' => 0.44,
+         'status' => 'WORKING', 'dateCreated' => gmdate('c')],
+        ['id' => 'maybe-2', 'ticker' => 'S201l_EQ', 'quantity' => 0.44,
+         'status' => 'WORKING', 'dateCreated' => gmdate('c')],
+    ]));
+    [$s2_two] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('two orders that could both be ours halt the strategy rather than being guessed at',
+          stripos($s2_two, 'HALTED') !== false
+          && scalar("select halted from strategy_accounts where strategy=?", [$S2B]) === 'Y'
+          && stripos((string) scalar("select halt_reason from strategy_accounts where strategy=?",
+                                     [$S2B]), 'cannot tell which') !== false,
+          $s2_two);
+    check('and a halted strategy plans nothing at all',
+          count(strategy_plan_orders($S2B, asof_date())['orders']) === 0
+          && stripos(implode(' ', strategy_plan_orders($S2B, asof_date())['errors']),
+                     'halted') !== false);
+
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+        ->execute([$S2B]);
+    $s2_write('pending.json', json_encode([]));
+
+    echo "\n--- stage 2: a fill is the broker's figures, not ours ---\n";
+
+    /* The paper engine computes a fill from a close and its own cost model.
+       This does not: the quantity and the price are the broker's, because
+       they are what happened. */
+    $s2_fill_id = $s2_order('BUY', 0.44);
+    db()->prepare("update strategy_orders set status='SENT', broker=?, broker_order_id='fill-1',
+                     sent_at=now() where client_order_id=?")
+        ->execute([BROKER_T212, $s2_fill_id]);
+    db()->prepare("update strategy_accounts set cash=250 where strategy=?")->execute([$S2B]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+
+    $s2_write('orders.json', json_encode(['items' => [
+        ['id' => 'fill-1', 'ticker' => 'S201l_EQ', 'filledQuantity' => 0.44,
+         'fillPrice' => 3719.5, 'status' => 'FILLED', 'type' => 'MARKET',
+         'dateCreated' => gmdate('c'), 'dateExecuted' => gmdate('c')],
+    ], 'nextPagePath' => null]));
+
+    /* The price unit, settled the way the sync settles it: our close for
+       S201 is 3,719.5p, so a fill price of 3719.5 is pence. */
+    db()->prepare("insert into broker_sync_runs (broker, environment, started_at, finished_at,
+                                                 status, as_of_date, price_unit)
+                   values (?,'demo',now(),now(),'OK',?,'pence')")
+        ->execute([BROKER_T212, asof_date()]);
+
+    [$s2_filled] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    $s2_fill_row = rows("select * from strategy_orders where client_order_id=?", [$s2_fill_id]);
+
+    check('a filled order is written up from what the broker says it filled at',
+          count($s2_fill_row) === 1 && $s2_fill_row[0]['status'] === 'FILLED'
+          && abs((float) $s2_fill_row[0]['fill_price'] - 37.195) < 0.0001
+          && abs((float) $s2_fill_row[0]['quantity'] - 0.44) < 0.0001,
+          $s2_filled . json_encode($s2_fill_row));
+    check('with no commission, stamp duty on the buy, and no spread allowance',
+          (float) $s2_fill_row[0]['commission'] === 0.0
+          && abs((float) $s2_fill_row[0]['stamp_duty'] - (0.44 * 37.195 * 0.005)) < 0.0001
+          && (float) $s2_fill_row[0]['slippage'] === 0.0,
+          json_encode($s2_fill_row[0]));
+    check('the cash and the position move by the broker\'s figures',
+          abs((float) scalar("select cash from strategy_accounts where strategy=?", [$S2B])
+              - (250.0 - (0.44 * 37.195 * 1.005))) < 0.0001
+          && abs((float) scalar("select quantity from strategy_positions
+                                  where strategy=? and symbol='S201'", [$S2B]) - 0.44) < 0.0001,
+          json_encode([scalar("select cash from strategy_accounts where strategy=?", [$S2B]),
+                       scalar("select quantity from strategy_positions
+                                where strategy=? and symbol='S201'", [$S2B])]));
+    run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('and a second pass does not fill it twice',
+          abs((float) scalar("select quantity from strategy_positions
+                               where strategy=? and symbol='S201'", [$S2B]) - 0.44) < 0.0001
+          && abs((float) scalar("select cash from strategy_accounts where strategy=?", [$S2B])
+                 - (250.0 - (0.44 * 37.195 * 1.005))) < 0.0001,
+          json_encode([scalar("select quantity from strategy_positions
+                                where strategy=? and symbol='S201'", [$S2B]),
+                       scalar("select cash from strategy_accounts where strategy=?", [$S2B])]));
+
+    echo "\n--- stage 2: the two books have to agree ---\n";
+
+    /* A disagreement about what is held is a disagreement about what
+       everything is worth, and trading through one compounds it. */
+    db()->exec("delete from broker_positions");
+    db()->prepare("insert into broker_positions (broker, as_of_date, broker_ticker, symbol,
+                                                 quantity, price_unit, synced_at)
+                   values (?,?,?,?,?,'pence',now())")
+        ->execute([BROKER_T212, date('Y-m-d'), 'S201l_EQ', 'S201', 0.44]);
+
+    $s2_agree = broker_reconcile_positions($S2B);
+    check('the same book on both sides is not a difference',
+          count($s2_agree['differences']) === 0 && $s2_agree['halted'] === false
+          && scalar("select halted from strategy_accounts where strategy=?", [$S2B]) === 'N',
+          json_encode($s2_agree));
+
+    db()->prepare("update broker_positions set quantity=0.88 where symbol='S201'")->execute();
+    db()->prepare("delete from strategy_orders where strategy=? and status in ('SENT','UNKNOWN')")
+        ->execute([$S2B]);
+    $s2_differ = broker_reconcile_positions($S2B);
+    check('a difference halts the strategy and says what it is',
+          $s2_differ['halted'] === true
+          && scalar("select halted from strategy_accounts where strategy=?", [$S2B]) === 'Y'
+          && stripos((string) scalar("select halt_reason from strategy_accounts where strategy=?",
+                                     [$S2B]), 'disagree') !== false,
+          json_encode($s2_differ));
+    check('and a halted strategy sends nothing',
+          broker_send_orders($S2B, ['ignore_time' => true,
+                                    'client' => new T212Client(['env' => 'demo',
+                                                                'throttle' => 0])])['sent'] === 0);
+
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+        ->execute([$S2B]);
+
+    /* An order that has been sent and not yet filled explains a difference,
+       so it is not one. */
+    db()->prepare("update broker_positions set quantity=0.88 where symbol='S201'")->execute();
+    db()->prepare("insert into strategy_orders
+                     (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,
+                      status,broker,broker_order_id,note,created_at,sent_at)
+                   values (?,?,?,'S201','XLON','BUY',0.44,'SENT',?,'inflight-1','rebalance',now(),now())")
+        ->execute([$S2B . ':inflight', $S2B, asof_date(), BROKER_T212]);
+    $s2_inflight = broker_reconcile_positions($S2B);
+    check('a difference an order in flight explains is not a difference',
+          count($s2_inflight['differences']) === 0 && $s2_inflight['halted'] === false,
+          json_encode($s2_inflight));
+
+    /* Yesterday's answer is not compared at all: it would disagree with
+       anything that has traded since, which is not a disagreement. */
+    db()->exec("delete from broker_positions");
+    db()->prepare("insert into broker_positions (broker, as_of_date, broker_ticker, symbol,
+                                                 quantity, synced_at)
+                   values (?,?,?,?,?,now())")
+        ->execute([BROKER_T212, date('Y-m-d', strtotime('-1 day')), 'S201l_EQ', 'S201', 99.0]);
+    $s2_stale = broker_reconcile_positions($S2B);
+    check('a stale read is not compared and halts nothing',
+          $s2_stale['halted'] === false
+          && stripos(implode(' ', $s2_stale['differences']), 'not today') !== false,
+          json_encode($s2_stale));
+
+    if ($s2_pid > 0) { exec("kill $s2_pid 2>/dev/null"); }
+    exec('rm -rf ' . escapeshellarg($s2_dir));
+    s_drop($S2B);
+    s_drop($S2);
+    db()->exec("delete from broker_instruments");
+    db()->exec("delete from broker_positions");
+    db()->exec("delete from broker_sync_runs");
+    db()->exec("delete from stock_symbols where symbol like 'S2%'");
+    db()->exec("delete from historical_prices where symbol like 'S2%'");
 
     echo "\n--- every PHP file parses ---\n";
 
@@ -9481,12 +10145,12 @@
           strpos($st_tpl, 'strategy_display_name($card[\'strategy\'])') !== false);
 
     /* Eight lines of explanation, with the thing a reader must know - that
-       none of this is real - in the middle of it. */
+       no real money is at risk - in the middle of it. */
     check('the opening paragraph is two lines with the rest folded away',
           strpos($st_tpl, 'How this works') !== false
           && strpos($st_tpl, '<summary>How this works</summary>') !== false
-          && strpos($st_tpl, 'No real orders are ever placed') !== false
-          && strpos($st_tpl, 'No real orders are ever placed')
+          && strpos($st_tpl, 'No real money is ever at risk') !== false
+          && strpos($st_tpl, 'No real money is ever at risk')
              < strpos($st_tpl, 'How this works'));
 
     /* A row of dashes reads as a strategy that lost everything rather than
@@ -11215,8 +11879,12 @@ STUB
               strpos($sp_page, 'rebalance') !== false);
         check('the dealing costs paid are on the page',
               stripos($sp_page, 'Dealing costs paid') !== false);
-        check('it says in plain words that nothing real is traded',
-              stripos($sp_page, 'No real orders are ever placed') !== false);
+        check('it says in plain words that no real money is at risk',
+              stripos($sp_page, 'No real money is ever at risk') !== false);
+        /* And which of the two kinds of account each card is, because what
+           an order does depends on it. */
+        check('and each card says which mode it is in',
+              stripos($sp_page, 'PAPER') !== false);
         check('and names the benchmark, because equal weighted is a choice',
               stripos($sp_page, 'equal weighted') !== false
               && stripos($sp_page, 'leaves out the companies that have left the index') !== false,

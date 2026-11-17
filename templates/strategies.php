@@ -37,10 +37,12 @@
 	         ran to eight, and the thing a reader has to know - that none of
 	         this is real - was in the middle of it. */ ?>
 	<p class="sm-sub mb-1">
-		Paper strategies, run by the nightly job and filled at the next day's
-		close after dealing costs.
-		<strong>No real orders are ever placed</strong> and nothing here is
-		connected to a broker.
+		Strategies run by the nightly job. A <strong>PAPER</strong> one is filled
+		at the next day's close after dealing costs and never leaves this
+		database; a <strong>T212_DEMO</strong> one sends its orders to a Trading
+		212 practice account during the session.
+		<strong>No real money is ever at risk</strong>: nothing here can place an
+		order against the live account.
 	</p>
 	<?php /* A <details>, not a Bootstrap collapse: the browser does the work,
 	         so it opens with JavaScript off. */ ?>
@@ -112,8 +114,26 @@
 				<?php if ($card['enabled'] !== 'Y'): ?>
 					<?= status_badge_html('off') ?>
 				<?php endif ?>
-				<?= status_badge_html('paper', $card['mode']) ?>
+				<?php /* The mode, beside the name, because what an order on
+				         this card does depends on it: a PAPER order moves
+				         nothing but this database, and a T212_DEMO one goes
+				         to a practice account at Trading 212. Neither can
+				         touch real money. */ ?>
+				<?= status_badge_html($card['broker'] === null ? 'paper' : 'due',
+				                      $card['mode']) ?>
+				<?php if ($card['halted'] === 'Y'): ?>
+					<?= status_badge_html('halted', 'halted') ?>
+				<?php endif ?>
 			</h2>
+
+			<?php if ($card['halted'] === 'Y'): ?>
+			<div class="alert alert-warning py-2">
+				<strong>Stopped.</strong>
+				<?= e((string) $card['halt_reason']) ?>
+				This strategy places no orders until somebody has looked at it and
+				cleared the halt.
+			</div>
+			<?php endif ?>
 
 			<?php /* The rules as sentences. The page printed the values as
 			         stored - "below_ma200_2d", "6mnth" - which are an exit
@@ -264,7 +284,7 @@
 						<tr>
 							<td><a href="quote.php?symbol=<?= urlencode($holding['symbol']) ?>"><?= htmlspecialchars($holding['symbol']) ?></a></td>
 							<td><?= htmlspecialchars((string) $holding['name']) ?><?= $holding['stale'] ? ' <span class="badge bg-warning text-dark">not trading</span>' : '' ?></td>
-							<td class="sm-num"><?= e(fmt_quantity($holding['quantity'])) ?></td>
+							<td class="sm-num"><?= e(fmt_shares($holding['quantity'])) ?></td>
 							<td class="sm-num"><?= e(fmt_pounds($holding['avg_price'])) ?></td>
 							<td class="sm-num"><?= e(fmt_pounds($holding['price'])) ?></td>
 							<td class="sm-num"><?= s_money($holding['value'], 0) ?></td>
@@ -387,13 +407,24 @@
 								<td style="white-space: nowrap"><?= s_date($trade['fill_date'] === null ? $trade['as_of_date'] : $trade['fill_date']) ?></td>
 								<td><?= htmlspecialchars((string) $trade['side']) ?></td>
 								<td><a href="quote.php?symbol=<?= urlencode($trade['symbol']) ?>"><?= htmlspecialchars($trade['symbol']) ?></a></td>
-								<td class="sm-num"><?= e(fmt_quantity($trade['quantity'])) ?></td>
+								<td class="sm-num"><?= e(fmt_shares($trade['quantity'])) ?></td>
 								<td class="sm-num"><?= e(fmt_pounds($trade['fill_price'])) ?></td>
 								<td class="text-end"><?= $trade['status'] === 'FILLED'
 									? s_money((float) $trade['commission'] + (float) $trade['stamp_duty'] + (float) $trade['slippage'], 2)
 									: '&ndash;' ?></td>
 								<td><?= htmlspecialchars((string) $trade['note']) ?></td>
-								<td><?= htmlspecialchars((string) $trade['status']) ?></td>
+								<td>
+									<?= htmlspecialchars((string) $trade['status']) ?>
+									<?php /* DEMO on every order that went to Trading 212,
+									         so a line that left this database can never be
+									         mistaken for one that did not. */ ?>
+									<?php if (!empty($trade['broker'])): ?>
+										<?= status_badge_html('due', 'DEMO') ?>
+										<?php if ($trade['broker_order_id'] !== null): ?>
+										<small class="text-muted"><?= e((string) $trade['broker_order_id']) ?></small>
+										<?php endif ?>
+									<?php endif ?>
+								</td>
 							</tr>
 						<?php endforeach ?>
 						</tbody>

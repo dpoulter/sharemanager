@@ -153,6 +153,27 @@
 	 * The number alone is meaningless to a reader who has not been told the
 	 * scale, and the word alone throws away the strength. Both, always.
 	 */
+	/**
+	 * A number of shares, which may be a fraction.
+	 *
+	 * Whole numbers print as whole numbers - 750, not 750.00 - because that
+	 * is what a share count is nearly always. A Trading 212 account deals in
+	 * fractions, so 0.44 of a share has to print as 0.44 rather than as 0 or
+	 * as 0.440000, and the trailing zeros come off so a column of them reads.
+	 */
+	function fmt_shares($value, $dp = 4) {
+
+		if (view_blank($value)) { return VIEW_DASH; }
+
+		$number = (float) $value;
+		if (abs($number - round($number)) < 0.0000001) {
+			return number_format(round($number));
+		}
+
+		$text = number_format($number, $dp, '.', ',');
+		return rtrim(rtrim($text, '0'), '.');
+	}
+
 	function fmt_sentiment($value) {
 		if (view_blank($value)) { return VIEW_DASH . ' not scored'; }
 		$score = (float) $value;

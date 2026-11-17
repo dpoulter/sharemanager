@@ -55,6 +55,17 @@
 		return Number(value).toLocaleString("en-GB");
 	}
 
+	//A number of shares, which on a Trading 212 account may be a fraction:
+	//0.44 of a share has to read as 0.44 rather than as 0.
+	function shares(value) {
+		if (value === null || value === undefined) { return "–"; }
+		var number = Number(value);
+		if (Math.abs(number - Math.round(number)) < 0.0000001) {
+			return Math.round(number).toLocaleString("en-GB");
+		}
+		return number.toLocaleString("en-GB", { maximumFractionDigits: 4 });
+	}
+
 	function percent(value) {
 		if (value === null || value === undefined) { return "–"; }
 		return (Number(value) * 100).toFixed(1) + "%";
@@ -113,7 +124,7 @@
 			row.appendChild(share);
 
 			row.appendChild(element("td", null, trade.company || ""));
-			row.appendChild(element("td", "text-end", whole(trade.quantity)));
+			row.appendChild(element("td", "text-end", shares(trade.quantity)));
 			row.appendChild(element("td", "text-end", money(trade.price, 4)));
 			row.appendChild(element("td", "text-end", money(trade.value)));
 			row.appendChild(element("td", "text-end",
