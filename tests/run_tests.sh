@@ -97,6 +97,9 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/rns.sql" > /dev/null || exit 1
 echo "applying sql/strategy_rules.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_rules.sql" > /dev/null || exit 1
 
+echo "applying sql/strategy_rules_updated_at.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_rules_updated_at.sql" > /dev/null || exit 1
+
 echo "applying sql/strategy_hold_rank.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_hold_rank.sql" > /dev/null || exit 1
 
@@ -181,7 +184,8 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
   && php -d include_path="$INCLUDE_PATH" "$TESTS_DIR/seed.php" > /dev/null \
   && for migration in trend_screens ai_outlook fund_sectors report_currency \
                       shareholder_yield fmp_scores news trending_value rns \
-                      strategy_rules user_theme market_breadth statistics_indicator_index screen_last_run \
+                      strategy_rules strategy_rules_updated_at \
+                      user_theme market_breadth statistics_indicator_index screen_last_run \
                       strategy_hold_rank strategy_display_name \
                       strategy_backtest strategy_backtest_overrides strategy_prices \
                       broker broker_account_fields broker_mapping broker_trading \

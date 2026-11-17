@@ -213,12 +213,24 @@ through the session:
 
 ```
 0,10,20,30,40,50 8-16 * * 1-5 \
-  /usr/bin/php /var/www/sharemanager/includes/send_broker_orders.php \
+  /var/www/sharemanager/includes/broker_run.sh \
   >> /var/log/sharemanager-broker.log 2>&1
 ```
 
-It does three things in order: resolve what is already out there, reconcile
-the two books, then send what is still PENDING.
+Through the wrapper, not `php` directly. Cron sees no login shell, no profile
+and no php-fpm pool, so a line that runs the script itself gets none of
+`SM_T212_ENV`, the key or the database login - and the sender refuses without
+them, which is also what it does when the feature is switched off, so the
+failure is silent. `includes/broker_run.sh` sources `/etc/sharemanager.env`
+the way `refresh_all.sh` does, syncs, then sends.
+
+The sync in the wrapper is for the Broker page - the cash, the order history
+and the dividends - not for the sender, which reads the positions again
+itself after writing a fill up.
+
+The sender does three things in order: resolve what is already out there and
+re-read the positions if anything was written up, reconcile the two books,
+then send what is still PENDING.
 
 **An order's life.** `PENDING` (planned) → `SENT` (gone, with the time written
 *before* the call) → `FILLED`, `REJECTED` or `CANCELLED`. The order calls are
@@ -233,6 +245,15 @@ stops that strategy until a person clears it (`strategy_accounts.halted`). A
 disagreement about what is held is a disagreement about what everything is
 worth. An order in flight explains a difference, so it is not one, and a
 reconciliation against yesterday's read is not attempted at all.
+
+Neither is a fill the broker has not been asked about yet. Run 2 of the first
+build resolved three fills, wrote them into this application's book, and
+compared that book against a read of the broker's positions taken before the
+fills happened: "CMCX: this application holds 46.86, the broker holds 0" was a
+true statement about two different moments, and it halted the strategy. So the
+sender re-reads the positions after resolving anything, and a share whose fill
+is newer than the last read is reported as waiting to be read back rather than
+counted as a difference.
 
 **Limits**: the same 20% position, 50 orders and 50% turnover as the paper
 engine, the same kill switch file, plus `T212_MAX_RUN_VALUE` (GBP 1,000) as a

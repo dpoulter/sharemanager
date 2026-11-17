@@ -6,12 +6,14 @@
 	 *
 	 *   php includes/send_broker_orders.php [strategy] [--dry-run] [--any-time]
 	 *
-	 * From cron, every ten minutes through the session (the minute field is
-	 * written out rather than as a step, because a step in a block comment
-	 * ends the comment):
+	 * From cron, every ten minutes through the session, through the wrapper
+	 * and never through php directly: cron sees no profile and no php-fpm
+	 * pool, so SM_T212_ENV and the key would both be unset and this would
+	 * refuse every time it fired (the minute field is written out rather
+	 * than as a step, because a step in a block comment ends the comment):
 	 *
 	 *   0,10,20,30,40,50 8-16 * * 1-5 \
-	 *     /usr/bin/php /var/www/sharemanager/includes/send_broker_orders.php
+	 *     /var/www/sharemanager/includes/broker_run.sh
 	 *
 	 * DEMO ONLY. This refuses to run unless SM_T212_ENV=demo, and the order
 	 * call underneath it refuses any host but the demo one. Real money stays
@@ -21,7 +23,9 @@
 	 *
 	 *   1. resolve what is already out there - fills, refusals, and the
 	 *      orders whose answer never arrived - because sending more while
-	 *      the last lot is unaccounted for is how a position gets doubled;
+	 *      the last lot is unaccounted for is how a position gets doubled,
+	 *      and read the positions again if anything was written up, so the
+	 *      comparison below is against the book as it is now;
 	 *   2. reconcile the engine's book against the broker's, and halt the
 	 *      strategy if they disagree;
 	 *   3. send what is still PENDING.
@@ -113,8 +117,25 @@
 			continue;
 		}
 
+		/* 1b. Anything written up just now has to be read back before the
+		   two books can be compared. Run 2 of the first build resolved
+		   three fills and then reconciled against a read of the broker's
+		   positions taken before them: "CMCX: this application holds 46.86,
+		   the broker holds 0" was true of two different moments, and it
+		   halted the strategy for no reason.
+
+		   One call, not a whole sync: the positions are the only thing the
+		   comparison below reads. */
+		if ($resolved['filled'] > 0 || $resolved['adopted'] > 0) {
+			$reread = broker_sync(['client' => $client, 'exchange' => $exchange,
+			                       'only' => ['positions']]);
+			echo "  read the positions again after the fills: " . $reread['message'] . "\r\n";
+			foreach ($reread['problems'] as $problem) { echo "    ! " . $problem . "\r\n"; }
+		}
+
 		/* 2. Do the two sides agree about what is held? */
 		$check = broker_reconcile_positions($strategy);
+		foreach ($check['waiting'] as $waiting)       { echo "    . " . $waiting . "\r\n"; }
 		foreach ($check['differences'] as $difference) { echo "    ! " . $difference . "\r\n"; }
 		if ($check['halted']) {
 			echo "    HALTED: the broker and this application disagree about the book.\r\n";

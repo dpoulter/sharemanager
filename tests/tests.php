@@ -4455,6 +4455,14 @@
          'fillPrice' => 3719.5, 'status' => 'FILLED', 'type' => 'MARKET',
          'dateCreated' => gmdate('c'), 'dateExecuted' => gmdate('c')],
     ], 'nextPagePath' => null]));
+    /* And what the broker holds once it has filled. The sender reads the
+       positions again after writing a fill up - fix J - so the stub has to
+       answer with the book as it is afterwards, which is what a real
+       account would say. */
+    $s2_write('positions.json', json_encode([
+        ['ticker' => 'S201l_EQ', 'quantity' => 0.44, 'averagePrice' => 3719.5,
+         'currentPrice' => 3719.5],
+    ]));
 
     /* The price unit, settled the way the sync settles it: our close for
        S201 is 3,719.5p, so a fill price of 3719.5 is pence. */
@@ -4542,8 +4550,13 @@
           json_encode($s2_inflight));
 
     /* Yesterday's answer is not compared at all: it would disagree with
-       anything that has traded since, which is not a disagreement. */
+       anything that has traded since, which is not a disagreement.
+
+       The sync runs go too, not just the rows: a run that finished OK
+       counts as a read whether or not it found anything to write, so
+       leaving today's run behind would leave a read of today behind. */
     db()->exec("delete from broker_positions");
+    db()->exec("delete from broker_sync_runs");
     db()->prepare("insert into broker_positions (broker, as_of_date, broker_ticker, symbol,
                                                  quantity, synced_at)
                    values (?,?,?,?,?,now())")
@@ -4553,6 +4566,255 @@
           $s2_stale['halted'] === false
           && stripos(implode(' ', $s2_stale['differences']), 'not today') !== false,
           json_encode($s2_stale));
+
+    echo "\n--- fix J: a fill this run wrote up is not a disagreement ---\n";
+
+    /* Run 2 of the first build resolved three fills, wrote them into this
+       application's book, and then compared that book against the last
+       stored read of the broker's positions - which was taken before the
+       fills happened. "CMCX: this application holds 46.86, the broker holds
+       0" was a true statement about two different moments, and it halted
+       three strategies. Two things stop it: the sender reads the positions
+       again after resolving anything, and the reconciler does not compare a
+       share whose fill is newer than the last read. */
+
+    db()->exec("delete from broker_positions");
+    db()->exec("delete from broker_sync_runs");
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null, cash=250
+                    where strategy=?")->execute([$S2B]);
+
+    /* The broker was last read an hour ago, when it held nothing. */
+    $j_read = date('Y-m-d H:i:s', strtotime('-1 hour'));
+    db()->prepare("insert into broker_sync_runs (broker, environment, started_at, finished_at,
+                                                 status, as_of_date, price_unit, positions)
+                   values (?,'demo',?,?,'OK',?,'pence',0)")
+        ->execute([BROKER_T212, $j_read, $j_read, date('Y-m-d')]);
+
+    /* Half an hour ago it filled, and the fill was written up here. */
+    $j_fill = date('Y-m-d H:i:s', strtotime('-30 minutes'));
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'S201','XLON',0.44,37.195,?)")->execute([$S2B, $j_fill]);
+    db()->prepare("insert into strategy_orders
+                     (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,
+                      broker,broker_order_id,fill_date,fill_price,created_at,filled_at)
+                   values (?,?,?,'S201','XLON','BUY',0.44,'FILLED',?,'jfill-1',?,37.195,?,?)")
+        ->execute([$S2B . ':jfill', $S2B, asof_date(), BROKER_T212, date('Y-m-d'),
+                   $j_fill, $j_fill]);
+
+    $j_before = broker_reconcile_positions($S2B);
+    check('a fill newer than the last read of the broker is not a difference',
+          $j_before['halted'] === false && count($j_before['differences']) === 0
+          && count($j_before['waiting']) === 1,
+          json_encode($j_before));
+    check('and it says which share it is waiting to read back',
+          stripos(implode(' ', $j_before['waiting']), 'S201') !== false
+          && stripos(implode(' ', $j_before['waiting']), 'read') !== false,
+          json_encode($j_before['waiting']));
+    check('so the strategy is left alone',
+          scalar("select halted from strategy_accounts where strategy=?", [$S2B]) === 'N');
+
+    /* Once the broker has been asked again and still says nought, it is a
+       real difference and the strategy stops. The fix must not have turned
+       the check off. */
+    db()->prepare("insert into broker_positions (broker, as_of_date, broker_ticker, symbol,
+                                                 quantity, price_unit, synced_at)
+                   values (?,?,'S202l_EQ','S202',1.0,'pence',now())")
+        ->execute([BROKER_T212, date('Y-m-d')]);
+    $j_after = broker_reconcile_positions($S2B);
+    check('but once the broker has been asked again, a difference is a difference',
+          $j_after['halted'] === true && count($j_after['differences']) > 0
+          && stripos(implode(' ', $j_after['differences']), 'S201') !== false,
+          json_encode($j_after));
+
+    /* And when nothing says when the broker was last read, everything is
+       compared as before: a reconciliation that quietly stops comparing is
+       worse than one that stops the strategy. */
+    db()->exec("update broker_positions set synced_at=null");
+    db()->exec("update broker_sync_runs set finished_at=null");
+    $j_unknown = broker_reconcile_positions($S2B);
+    check('with no read time to go on, the fill is compared rather than excused',
+          $j_unknown['read_at'] === null && count($j_unknown['waiting']) === 0
+          && count($j_unknown['differences']) > 0,
+          json_encode($j_unknown));
+
+    db()->exec("delete from broker_positions");
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+        ->execute([$S2B]);
+
+    /* And the whole way through: an order that fills between the last sync
+       and the sender run. The run writes it up, reads the positions again,
+       finds the two books agree, and does not halt. */
+    db()->exec("delete from broker_sync_runs");
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+    db()->prepare("insert into broker_sync_runs (broker, environment, started_at, finished_at,
+                                                 status, as_of_date, price_unit, positions)
+                   values (?,'demo',?,?,'OK',?,'pence',0)")
+        ->execute([BROKER_T212, $j_read, $j_read, date('Y-m-d')]);
+
+    $j_id = $s2_order('BUY', 0.44);
+    db()->prepare("update strategy_orders set status='SENT', broker=?, broker_order_id='jfill-2',
+                     sent_at=? where client_order_id=?")
+        ->execute([BROKER_T212, $j_fill, $j_id]);
+    $s2_write('orders.json', json_encode(['items' => [
+        ['id' => 'jfill-2', 'ticker' => 'S201l_EQ', 'filledQuantity' => 0.44,
+         'fillPrice' => 3719.5, 'status' => 'FILLED', 'type' => 'MARKET',
+         'dateCreated' => gmdate('c'), 'dateExecuted' => gmdate('c')],
+    ], 'nextPagePath' => null]));
+    $s2_write('positions.json', json_encode([
+        ['ticker' => 'S201l_EQ', 'quantity' => 0.44, 'averagePrice' => 3719.5,
+         'currentPrice' => 3719.5],
+    ]));
+
+    @unlink("$s2_dir/t212_requests");
+    [$j_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+
+    check('a fill between the last sync and the run is written up without halting',
+          scalar("select status from strategy_orders where client_order_id=?", [$j_id]) === 'FILLED'
+          && scalar("select halted from strategy_accounts where strategy=?", [$S2B]) === 'N'
+          && stripos($j_out, 'HALTED') === false,
+          $j_out);
+    check('because the run read the positions again after the fill',
+          stripos($j_out, 'read the positions again') !== false, $j_out);
+    /* One call, not five. The re-read answers one question - what does the
+       broker hold now - and spending the summary, the order history and
+       the dividends against the rate limit every ten minutes to answer it
+       is how a sender runs out of calls on the day it has the most to do. */
+    $j_asked = [];
+    foreach (explode("\n", (string) @file_get_contents("$s2_dir/t212_requests")) as $j_line) {
+        if (trim($j_line) === '') { continue; }
+        foreach (['positions', 'account/summary', 'history/dividends'] as $j_path) {
+            if (strpos($j_line, $j_path) !== false) {
+                $j_asked[$j_path] = ($j_asked[$j_path] ?? 0) + 1;
+            }
+        }
+    }
+    check('and the re-read asked for the positions only, not a whole sync',
+          ($j_asked['positions'] ?? 0) === 1
+          && ($j_asked['account/summary'] ?? 0) === 0
+          && ($j_asked['history/dividends'] ?? 0) === 0,
+          json_encode($j_asked));
+
+    echo "\n--- fix K: a share the broker does not list ---\n";
+
+    /* OCI (Oakley Capital Investments) is in the FTSE 250 and has no
+       Trading 212 instrument. The universe has it, so a screen can pick it
+       and the nightly run can plan an order for it, and there is nothing to
+       send that order for. It has to be refused with the reason rather than
+       sent as something else or left PENDING for ever. */
+    db()->prepare("delete from broker_instruments where symbol='S203'")->execute();
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+    /* Both books empty, so this is a first build and the reconciliation
+       requirement lets the run through: what is under test here is the one
+       order, not the gate in front of it. */
+    db()->exec("delete from broker_positions");
+    db()->prepare("update strategy_accounts set cash=250, halted='N', halt_reason=null
+                    where strategy=?")->execute([$S2B]);
+
+    $k_client = function () use ($s2_base) {
+        return new T212Client(['env' => 'demo', 'throttle' => 0, 'base_url' => $s2_base]);
+    };
+    $k_order = function () use ($S2B) {
+        db()->prepare("delete from strategy_orders where client_order_id=?")
+            ->execute([$S2B . ':noinst']);
+        db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,
+                          status,created_at,note)
+                       values (?,?,?,'S203','XLON','BUY',1,'PENDING',now(),'rebalance')")
+            ->execute([$S2B . ':noinst', $S2B, asof_date()]);
+        return $S2B . ':noinst';
+    };
+
+    /* The dry run first, because that is where somebody would see it the
+       evening before - and because a dry run must write nothing at all. */
+    $k_id = $k_order();
+    $k_dry = broker_send_orders($S2B, ['ignore_time' => true, 'dry_run' => true,
+                                       'client' => $k_client()]);
+    check('a dry run says the broker lists no instrument for it',
+          stripos(implode(' ', $k_dry['lines']), 'no instrument') !== false
+          && stripos(implode(' ', $k_dry['lines']), 'S203') !== false,
+          json_encode([$k_dry['lines'], $k_dry['errors']]));
+    check('and leaves the order exactly as it was, because a dry run writes nothing',
+          scalar("select status from strategy_orders where client_order_id=?", [$k_id])
+          === 'PENDING'
+          && $k_dry['sent'] === 0 && $k_dry['rejected'] === 0,
+          json_encode([scalar("select status from strategy_orders where client_order_id=?",
+                              [$k_id]), $k_dry]));
+
+    /* The real run goes through the job, not through the function: placing
+       an order needs a key, and this process has none - the key lives in
+       the environment the script is run with. */
+    [$k_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('a real run refuses it, with the reason on the order',
+          scalar("select status from strategy_orders where client_order_id=?", [$k_id])
+          === 'REJECTED'
+          && stripos((string) scalar("select note from strategy_orders
+                                       where client_order_id=?", [$k_id]), 'no instrument') !== false,
+          $k_out . json_encode(rows("select status, note from strategy_orders
+                                      where client_order_id=?", [$k_id])));
+    check('and nothing was sent to the broker for it',
+          count($s2_orders_sent()) === 0, json_encode($s2_orders_sent()));
+    $k_unmatched = [];
+    foreach (broker_unmatched_symbols(BROKER_T212, 'XLON') as $k_row) {
+        $k_unmatched[] = (string) $k_row['symbol'];
+    }
+    check('and the broker page already lists it as one the broker does not have',
+          in_array('S203', $k_unmatched, true),
+          json_encode(array_slice($k_unmatched, 0, 8)));
+
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+
+    /* --- fix K: cron has to get the environment from somewhere -------- */
+
+    /* The README's crontab line ran php directly. Cron sees no login shell,
+       no profile and no php-fpm pool, so SM_T212_ENV and the key are both
+       unset and the sender refuses every time it fires - silently, because
+       refusing is also what it does when the feature is switched off. */
+    $k_run = dirname(__DIR__) . '/includes/broker_run.sh';
+    $k_wrapper = (string) @file_get_contents($k_run);
+    $k_readme  = (string) file_get_contents(dirname(__DIR__) . '/includes/README-broker.md');
+
+    check('there is a wrapper for the broker cron job', is_file($k_run) && $k_wrapper !== '');
+    check('and it is executable', is_file($k_run) && (fileperms($k_run) & 0111) !== 0,
+          is_file($k_run) ? substr(sprintf('%o', fileperms($k_run)), -4) : 'missing');
+    check('it loads the env file the way the nightly run does',
+          strpos($k_wrapper, '/etc/sharemanager.env') !== false
+          && strpos($k_wrapper, 'SM_ENV_FILE') !== false
+          && preg_match('/^\s*\.\s+"\$ENV_FILE"/m', $k_wrapper) === 1,
+          substr($k_wrapper, 0, 200));
+    check('and refuses to run without it rather than sending nothing in silence',
+          preg_match('/cannot read .*ENV_FILE/', $k_wrapper) === 1
+          && strpos($k_wrapper, 'exit 2') !== false);
+    check('it runs the sender, and the sync for the page',
+          strpos($k_wrapper, 'send_broker_orders.php') !== false
+          && strpos($k_wrapper, 'sync_broker.php') !== false);
+    check('the README\'s cron line goes through the wrapper, not php',
+          strpos($k_readme, 'includes/broker_run.sh') !== false
+          && preg_match('#\n\s*/usr/bin/php .*send_broker_orders\.php#', $k_readme) !== 1,
+          substr($k_readme, max(0, strpos($k_readme, '8-16')) - 80, 300));
+
+    /* --- fix K: strategy_rules.updated_at has a default --------------- */
+
+    /* "not null" with no default, so a plain insert of a new strategy - one
+       written by hand, or by anything that does not know to pass now() -
+       failed with "Field 'updated_at' doesn't have a default value". */
+    db()->prepare("delete from strategy_rules where strategy='test_plain_insert'")->execute();
+    $k_plain = true; $k_why = '';
+    try {
+        db()->exec("insert into strategy_rules (strategy, selection, score_indicator, holdings)
+                    values ('test_plain_insert', 'score', 'momentum_score', 15)");
+    } catch (Throwable $e) { $k_plain = false; $k_why = $e->getMessage(); }
+
+    check('a new strategy can be inserted without passing updated_at', $k_plain, $k_why);
+    check('and the server stamps it',
+          $k_plain && scalar("select updated_at from strategy_rules
+                               where strategy='test_plain_insert'") !== null,
+          (string) scalar("select updated_at from strategy_rules
+                            where strategy='test_plain_insert'"));
+    db()->prepare("delete from strategy_rules where strategy='test_plain_insert'")->execute();
 
     if ($s2_pid > 0) { exec("kill $s2_pid 2>/dev/null"); }
     exec('rm -rf ' . escapeshellarg($s2_dir));

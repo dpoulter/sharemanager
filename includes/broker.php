@@ -1036,12 +1036,26 @@
 	 *   instruments  true to refresh the instrument list whatever its age
 	 *   exchange     which of our exchanges to match against
 	 *   client       an injected client, for the suite
+	 *   only         read only these parts: any of instruments, summary,
+	 *                positions, orders, dividends. The sender uses
+	 *                ['positions'] to read the book again after writing a
+	 *                fill up, which is one request rather than five.
 	 */
 	function broker_sync($options = []) {
 
 		$broker   = BROKER_T212;
 		$exchange = isset($options["exchange"]) ? $options["exchange"] : default_exchange();
 		$as_of    = isset($options['as_of']) ? $options['as_of'] : date('Y-m-d');
+
+		/* Which parts of the account to read. Everything, unless a caller
+		   asks for less: re-reading the positions after a fill is one
+		   request, and spending five of them against the rate limit every
+		   ten minutes to answer one question is how a sender runs out of
+		   calls on the day it has the most to do. */
+		$only = isset($options['only']) ? array_values((array) $options['only']) : null;
+		$want = function ($what) use ($only) {
+			return $only === null || in_array($what, $only, true);
+		};
 
 		/* Two lists, and the difference between them decides the status.
 		   A PROBLEM is something that stops the data being right: a call
@@ -1055,7 +1069,7 @@
 		           'problems' => [], 'notices' => [], 'positions' => 0, 'cash' => null,
 		           'new_orders' => 0, 'new_dividends' => 0, 'instruments' => 0,
 		           'unmatched' => 0, 'price_unit' => null, 'requests' => 0,
-		           'as_of' => $as_of];
+		           'as_of' => $as_of, 'scope' => 'all'];
 
 		if (!broker_ready()) {
 			$result['message'] = "sql/broker.sql has not been applied, so there is"
@@ -1086,7 +1100,7 @@
 		$stale = $instruments_as_of === null
 		      || strtotime($instruments_as_of) < strtotime('-' . max(1, (int) T212_INSTRUMENT_DAYS) . ' day');
 
-		if (!empty($options['instruments']) || $stale) {
+		if ($want('instruments') && (!empty($options['instruments']) || $stale)) {
 
 			$answer = $client->get('instruments');
 
@@ -1133,8 +1147,10 @@
 		$map = broker_symbol_map($broker);
 
 		/* --- what the account is worth ----------------------------------- */
-		$summary = $client->get('summary');
-		if (!$summary['ok']) { $problems[] = "account summary: " . $summary['message']; }
+		$summary = $want('summary') ? $client->get('summary')
+		                            : ['ok' => true, 'skipped' => true, 'data' => []];
+		if (!empty($summary['skipped'])) { /* not asked for by this caller */ }
+		else if (!$summary['ok']) { $problems[] = "account summary: " . $summary['message']; }
 		else {
 			$data = is_array($summary['data']) ? $summary['data'] : [];
 
@@ -1169,8 +1185,10 @@
 		}
 
 		/* --- the positions ------------------------------------------------ */
-		$positions = $client->get('positions');
-		if (!$positions['ok']) { $problems[] = "positions: " . $positions['message']; }
+		$positions = $want('positions') ? $client->get('positions')
+		                                : ['ok' => true, 'skipped' => true, 'data' => []];
+		if (!empty($positions['skipped'])) { /* not asked for by this caller */ }
+		else if (!$positions['ok']) { $problems[] = "positions: " . $positions['message']; }
 		else {
 
 			$rows = is_array($positions['data']) ? $positions['data'] : [];
@@ -1346,7 +1364,8 @@
 		   a limit and the documentation describes no date filter, so none is
 		   invented: the rows are keyed on the broker's own ids and a re-run
 		   writes nothing new. */
-		$orders = $client->get_all('order_history');
+		$orders = $want('orders') ? $client->get_all('order_history')
+		                          : ['ok' => true, 'items' => []];
 		if (!$orders['ok']) { $problems[] = "order history: " . $orders['message']; }
 		foreach ($orders['items'] as $row) {
 
@@ -1396,7 +1415,8 @@
 			if ($new) { $result['new_orders']++; }
 		}
 
-		$dividends = $client->get_all('dividends');
+		$dividends = $want('dividends') ? $client->get_all('dividends')
+		                                : ['ok' => true, 'items' => []];
 		if (!$dividends['ok']) { $problems[] = "dividends: " . $dividends['message']; }
 		foreach ($dividends['items'] as $row) {
 
@@ -1458,10 +1478,18 @@
 		                     : ($result['positions'] > 0 || $result['cash'] !== null
 		                        ? 'PARTIAL' : 'FAILED');
 		$result['ok']        = $result['status'] !== 'FAILED';
+		/* A partial read says so. The page shows the last sync, and "read
+		   15 position(s), cash unknown" from the sender's one-call re-read
+		   would look like a sync that half failed. */
+		$result['scope'] = $only === null ? 'all' : implode(', ', $only);
+
 		$result['message']   = count($problems)
 		                     ? implode(' ', $problems)
-		                     : "read " . $result['positions'] . " position(s), cash "
-		                       . ($result['cash'] === null ? 'unknown' : $result['cash'])
+		                     : ($only === null ? '' : $result['scope'] . " only: ")
+		                       . "read " . $result['positions'] . " position(s)"
+		                       . ($want('summary')
+		                          ? ", cash " . ($result['cash'] === null ? 'unknown' : $result['cash'])
+		                          : "")
 		                       . (count($notices) ? '. ' . implode(' ', $notices) : '');
 
 		query("insert into broker_sync_runs

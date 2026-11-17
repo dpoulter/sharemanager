@@ -305,11 +305,28 @@
 				break;
 			}
 
+			/* A share the broker does not list at all. OCI (Oakley Capital
+			   Investments) is one: it is in the FTSE 250, so the universe
+			   has it and a screen can pick it, and Trading 212 has no
+			   instrument to send an order for.
+
+			   On a dry run this is said and nothing is written. It used to
+			   be refused in the database before the dry-run branch below,
+			   so asking what tonight would do marked the order REJECTED -
+			   a dry run that changes an order is not a dry run. */
 			$ticker = broker_ticker_for($order['symbol'], $mode['broker']);
 			if ($ticker === null) {
-				broker_order_status($order['client_order_id'], 'REJECTED',
-				    "no instrument at the broker for " . $order['symbol'] . ", so there is"
-				  . " nothing to send an order for");
+
+				$why = "no instrument at the broker for " . $order['symbol'] . ", so there is"
+				     . " nothing to send an order for";
+
+				if (!empty($options['dry_run'])) {
+					$say("skip " . $order['symbol'] . ": " . $why);
+					$out['skipped']++;
+					continue;
+				}
+
+				broker_order_status($order['client_order_id'], 'REJECTED', $why);
 				$out['rejected']++;
 				continue;
 			}
@@ -856,7 +873,8 @@
 	 */
 	function broker_reconcile_positions($strategy, $options = []) {
 
-		$out = ['checked' => 0, 'differences' => [], 'halted' => false, 'as_of' => null];
+		$out = ['checked' => 0, 'differences' => [], 'waiting' => [], 'halted' => false,
+		        'as_of' => null, 'read_at' => null];
 
 		$account = strategy_account($strategy);
 		if ($account === null) { return $out; }
@@ -864,14 +882,30 @@
 		$mode = strategy_mode_rules($account['mode']);
 		if ($mode['broker'] === null) { return $out; }
 
+		/* The read is the sync RUN as well as the rows it wrote. A broker
+		   that holds nothing writes no position rows, and "no rows" is not
+		   "nobody looked" - the same distinction broker_reconciliation_state()
+		   makes. Without it, an account that has just sold everything, or
+		   one whose first fill has not been read back yet, reads as never
+		   having been compared. */
 		$latest = query("select max(as_of_date) d from broker_positions where broker=?",
 		                $mode['broker']);
-		if (!count($latest) || $latest[0]['d'] === null) {
+		$out['as_of'] = (count($latest) && $latest[0]['d'] !== null)
+		              ? (string) $latest[0]['d'] : null;
+
+		$runs = query("select max(as_of_date) d from broker_sync_runs
+		                where broker=? and status='OK'", $mode['broker']);
+		$ran  = (count($runs) && $runs[0]['d'] !== null) ? (string) $runs[0]['d'] : null;
+
+		if ($out['as_of'] === null || ($ran !== null && $ran > $out['as_of'])) {
+			$out['as_of'] = $ran;
+		}
+
+		if ($out['as_of'] === null) {
 			$out['differences'][] = "the broker's positions have never been read, so there is"
 			                      . " nothing to compare against";
 			return $out;
 		}
-		$out['as_of'] = (string) $latest[0]['d'];
 
 		/* Only today's answer is worth comparing against: yesterday's would
 		   disagree with anything that has traded since, which is not a
@@ -902,6 +936,47 @@
 			$in_flight[(string) $row['symbol']] = true;
 		}
 
+		/* And neither is a fill the broker has not been asked about yet.
+		   Run 2 of the first build resolved three fills, wrote them into
+		   this application's book, and then compared that book against a
+		   read of the broker's positions taken before those fills had
+		   happened. Of course they disagreed: "CMCX: this application holds
+		   46.86, the broker holds 0" was a true statement about two
+		   different moments, and it halted the strategy.
+
+		   So: when the last read of the positions is older than the moment
+		   a share's fill was written up, that share is not compared. It is
+		   reported as waiting to be read back, and the next run - which
+		   re-reads the positions first - compares it properly. */
+		$read_at = null;
+		foreach ([query("select max(synced_at) t from broker_positions
+		                  where broker=? and as_of_date=?", $mode['broker'], $out['as_of']),
+		          query("select max(finished_at) t from broker_sync_runs
+		                  where broker=? and as_of_date=? and status in ('OK','PARTIAL')",
+		                $mode['broker'], $out['as_of'])] as $rows) {
+			if (count($rows) && $rows[0]['t'] !== null) {
+				$when = (string) $rows[0]['t'];
+				if ($read_at === null || strtotime($when) > strtotime($read_at)) { $read_at = $when; }
+			}
+		}
+		$out['read_at'] = $read_at;
+
+		/* When the read's own time is not known, everything is compared as
+		   before. Fail towards halting: a reconciliation that quietly stops
+		   comparing is worse than one that stops the strategy, because the
+		   second is visible and the first is not. */
+		$not_read_back = [];
+		if ($read_at !== null) {
+			foreach (query("select symbol, max(filled_at) t from strategy_orders
+			                 where strategy=? and status='FILLED' and filled_at is not null
+			                 group by symbol", $strategy) as $row) {
+				$when = (string) $row['t'];
+				if (strtotime($when) > strtotime($read_at)) {
+					$not_read_back[(string) $row['symbol']] = $when;
+				}
+			}
+		}
+
 		foreach (array_unique(array_merge(array_keys($ours), array_keys($theirs))) as $symbol) {
 
 			$out['checked']++;
@@ -911,6 +986,13 @@
 
 			if (abs($mine - $yours) < 0.00000001) { continue; }
 			if (isset($in_flight[$symbol])) { continue; }
+
+			if (isset($not_read_back[$symbol])) {
+				$out['waiting'][] = $symbol . ": filled at " . $not_read_back[$symbol]
+				                  . ", after the broker's positions were last read at "
+				                  . $read_at . ", so the two were not compared";
+				continue;
+			}
 
 			$out['differences'][] = $symbol . ": this application holds " . $mine
 			                      . ", the broker holds " . $yours;

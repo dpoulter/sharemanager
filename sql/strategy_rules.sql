@@ -52,7 +52,12 @@ create table if not exists strategy_rules (
   -- boundary.
   start_date      date,
   note            varchar(255),
+  -- When the rules last changed. Defaulted and kept by the server, so an
+  -- insert that does not know to pass now() is not rejected outright and an
+  -- edit through any path stamps itself. sql/strategy_rules_updated_at.sql
+  -- is the same change for a database created before this line.
   updated_at      datetime not null
+                  default current_timestamp on update current_timestamp
 );
 
 -- ---------------------------------------------------------------------------
