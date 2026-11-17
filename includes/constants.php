@@ -344,12 +344,17 @@
 
     //Whether the broker quotes prices in pounds or pence, for London shares.
     //
-    //"auto" works it out by comparing the broker's price for a share against
-    //our own close for the same share on the same day, which is the only
-    //honest answer until a real response has been seen: the API documentation
-    //does not say, and getting it wrong is a factor of 100 on every figure.
-    //Set it to pounds or pence once tools/t212_probe.php has settled it.
-    define("T212_PRICE_UNIT", strtolower(trim((string) (getenv("SM_T212_PRICE_UNIT") ?: "auto"))));
+    //PENCE, settled by the first nine fills on the practice account:
+    //currentPrice, averagePricePaid and a fill's price are all pence, and
+    //everything under walletImpact - netValue, totalCost, currentValue - is
+    //pounds. Getting this wrong is a factor of 100 on every figure.
+    //
+    //"auto" is still accepted and still works it out by comparing the
+    //broker's price for a share against our own close for the same share.
+    //With pounds or pence set, that comparison becomes a tripwire instead:
+    //a held share whose own close disagrees with the setting is reported as
+    //a problem, because one of the two is then wrong.
+    define("T212_PRICE_UNIT", strtolower(trim((string) (getenv("SM_T212_PRICE_UNIT") ?: "pence"))));
 
     //Multiplier on the per-endpoint minimum gap between requests. One means
     //the published limits, which is what a real host wants. Zero in the
@@ -387,6 +392,17 @@
     // How long an order may sit SENT before the next run goes looking for it
     // at the broker, and how long an UNKNOWN one is given to turn up before
     // it is written off as never having arrived.
+    // How long an order may be out and unaccounted for before the sender
+    // stops adding to it, and before it gives up and halts the strategy.
+    //
+    // A market order fills in ten to thirty seconds, so three minutes is
+    // already long. The first stage 2 run sent three more orders on each of
+    // three passes while the earlier ones still showed as working, which was
+    // harmless because every order was distinct and it was a first build -
+    // and is exactly how a position gets doubled on a day when it is not.
+    define("T212_SETTLE_SECONDS", (int) (getenv("SM_T212_SETTLE_AFTER") ?: 180));
+    define("T212_STUCK_SECONDS",  (int) (getenv("SM_T212_STUCK_AFTER")  ?: 1800));
+
     define("T212_POLL_AFTER_SECONDS",   (int) (getenv("SM_T212_POLL_AFTER") ?: 30));
     define("T212_UNKNOWN_AFTER_SECONDS",(int) (getenv("SM_T212_UNKNOWN_AFTER") ?: 900));
 

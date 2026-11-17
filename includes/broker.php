@@ -179,12 +179,26 @@
 			'summary_total'      => ['totalValue'],
 			'summary_currency'   => ['currency', 'currencyCode'],
 
-			'position_ticker'  => ['ticker', 'instrumentTicker', 'code', 'symbol'],
+			/* A position, as it really answers (17 Nov 2026):
+			     {"instrument":{"ticker","name","isin","currency"},
+			      "createdAt","quantity","quantityAvailableForTrading",
+			      "quantityInPies","currentPrice","averagePricePaid",
+			      "walletImpact":{"currency","totalCost","currentValue",
+			                      "unrealizedProfitLoss","fxImpact"}}
+
+			   The two halves are in different units and that is the whole
+			   trap: the PRICES are pence, and everything under walletImpact
+			   is pounds. A reader that took currentPrice for pounds would
+			   value a GBP 331 holding at GBP 33,100. */
+			'position_ticker'  => ['instrument.ticker', 'ticker', 'instrumentTicker'],
+			'position_isin'    => ['instrument.isin', 'isin'],
 			'position_quantity'=> ['quantity', 'qty', 'shares'],
-			'position_average' => ['averagePrice', 'average_price', 'avgPrice', 'averageEntryPrice'],
-			'position_current' => ['currentPrice', 'current_price', 'price', 'marketPrice'],
-			'position_value'   => ['value', 'marketValue', 'currentValue'],
-			'position_result'  => ['ppl', 'profitLoss', 'result', 'gain'],
+			'position_average' => ['averagePricePaid', 'averagePrice', 'avgPrice'],
+			'position_current' => ['currentPrice', 'current_price', 'marketPrice'],
+			'position_value'   => ['walletImpact.currentValue', 'value', 'marketValue'],
+			'position_cost'    => ['walletImpact.totalCost', 'totalCost'],
+			'position_result'  => ['walletImpact.unrealizedProfitLoss', 'ppl', 'profitLoss'],
+			'position_opened'  => ['createdAt', 'initialFillDate'],
 
 			/* An instrument, as it really answers: ticker, type,
 			   workingScheduleId, isin, currencyCode, name, shortName,
@@ -202,15 +216,38 @@
 			'instrument_ccy'    => ['currencyCode', 'currency'],
 			'instrument_type'   => ['type', 'instrumentType'],
 
-			'order_id'         => ['id', 'orderId', 'fillId', 'reference'],
-			'order_ticker'     => ['ticker', 'instrumentTicker', 'code', 'symbol'],
-			'order_quantity'   => ['filledQuantity', 'quantity', 'orderedQuantity'],
-			'order_price'      => ['fillPrice', 'filledPrice', 'averagePrice', 'limitPrice', 'price'],
-			'order_value'      => ['filledValue', 'fillCost', 'value'],
-			'order_status'     => ['status', 'state'],
-			'order_type'       => ['type', 'orderType'],
-			'order_placed'     => ['dateCreated', 'createdAt', 'dateCreatedUtc'],
-			'order_filled'     => ['dateExecuted', 'dateModified', 'fillDate', 'executedAt'],
+			/* An order. Two shapes, one map: the PENDING list is flat
+			     {"id","type","ticker","quantity","filledQuantity","status",
+			      "side","createdAt","instrument":{...}}
+			   and the HISTORY nests the order inside an envelope with its
+			   fill beside it:
+			     {"order":{"id","ticker","quantity","filledQuantity","status",
+			               "side","createdAt","instrument":{...}},
+			      "fill":{"id","quantity","price","filledAt",
+			              "walletImpact":{"netValue","fxRate","taxes":[...]}}}
+
+			   The nested path comes first in each list and the flat one
+			   second, so one reader handles both.
+
+			   price is pence; everything under walletImpact is pounds.
+			   netValue is the cash that actually moved, taxes and all. */
+			'order_id'         => ['order.id', 'id', 'orderId', 'reference'],
+			'order_ticker'     => ['order.ticker', 'ticker', 'order.instrument.ticker',
+			                       'instrument.ticker'],
+			'order_isin'       => ['order.instrument.isin', 'instrument.isin'],
+			/* Its own field, not the sign of the quantity: the history
+			   reports a sale as side SELL with a positive quantity, and
+			   reading the sign would have made every sale a purchase. */
+			'order_side'       => ['order.side', 'side'],
+			'order_quantity'   => ['order.filledQuantity', 'filledQuantity',
+			                       'fill.quantity', 'order.quantity', 'quantity'],
+			'order_price'      => ['fill.price', 'fillPrice', 'price'],
+			'order_value'      => ['fill.walletImpact.netValue', 'filledValue', 'value'],
+			'order_taxes'      => ['fill.walletImpact.taxes'],
+			'order_status'     => ['order.status', 'status', 'state'],
+			'order_type'       => ['order.type', 'type', 'orderType'],
+			'order_placed'     => ['order.createdAt', 'createdAt', 'dateCreated'],
+			'order_filled'     => ['fill.filledAt', 'filledAt', 'dateExecuted'],
 
 			'dividend_id'      => ['reference', 'id', 'dividendId'],
 			'dividend_ticker'  => ['ticker', 'instrumentTicker', 'code', 'symbol'],
@@ -222,6 +259,66 @@
 		];
 
 		return isset($map[$what]) ? $map[$what] : [];
+	}
+
+	/**
+	 * Which way round a trade went.
+	 *
+	 * Trading 212's own field, and only the sign of the quantity when there
+	 * is no field - which is how an order is SENT, and is not how the
+	 * history reports one: a sale comes back as side SELL with a positive
+	 * quantity, so reading the sign would make every sale a purchase, and a
+	 * purchase this application thought it had made.
+	 */
+	function broker_order_side($row) {
+
+		[$side] = broker_field($row, broker_fields('order_side'));
+
+		if ($side !== null) {
+			$side = strtoupper(trim((string) $side));
+			if (in_array($side, ['BUY', 'SELL'], true)) { return $side; }
+		}
+
+		$quantity = broker_number($row, broker_fields('order_quantity'));
+		return $quantity === null ? null : ($quantity < 0 ? 'SELL' : 'BUY');
+	}
+
+	/**
+	 * The tax a fill was charged, from the broker's own itemised list.
+	 *
+	 * walletImpact.taxes is a list of {name, quantity, currency}, with the
+	 * quantity negative because it left the account:
+	 *
+	 *   "taxes":[{"name":"STAMP_DUTY_RESERVE_TAX","quantity":-1.66,...}]
+	 *
+	 * Taken rather than worked out, because 0.5% of a purchase is not always
+	 * what is charged: B&M is Jersey registered, its list came back empty,
+	 * and a calculated figure would have invented GBP 1.65 of stamp duty on
+	 * it. An empty list means no tax, which is a fact and not a gap.
+	 *
+	 * Returns a positive number of pounds, or null when the response carried
+	 * no list at all - which is not the same as a list with nothing in it.
+	 */
+	function broker_taxes_paid($row) {
+
+		$raw = null;
+		foreach (broker_fields('order_taxes') as $path) {
+			$found = broker_path($row, $path);
+			if (is_array($found)) { $raw = $found; break; }
+		}
+		if ($raw === null) { return null; }
+
+		$total = 0.0;
+		foreach ($raw as $tax) {
+			if (!is_array($tax)) { continue; }
+			foreach (['quantity', 'amount', 'value'] as $field) {
+				if (isset($tax[$field]) && is_numeric($tax[$field])) {
+					$total += abs((float) $tax[$field]);
+					break;
+				}
+			}
+		}
+		return $total;
 	}
 
 	/* ---------------------------------------------------------------------
@@ -835,8 +932,8 @@
 		foreach ($positions as $position) {
 			query("replace into broker_positions
 			         (broker, as_of_date, broker_ticker, symbol, quantity, average_price,
-			          current_price, value, gain, price_unit, currency, synced_at)
-			       values (?,?,?,?,?,?,?,?,?,?,?,?)",
+			          current_price, value, cost, gain, price_unit, currency, synced_at)
+			       values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
 			      $broker, $as_of,
 			      mb_substr((string) $position['broker_ticker'], 0, 40),
 			      $position['symbol'] === null ? null : mb_substr((string) $position['symbol'], 0, 50),
@@ -844,6 +941,7 @@
 			      $position['average_price'] ?? null,
 			      $position['current_price'] ?? null,
 			      $position['value'] ?? null,
+			      $position['cost'] ?? null,
 			      $position['gain'] ?? null,
 			      $position['price_unit'] ?? null,
 			      isset($position['currency']) ? $position['currency'] : null,
@@ -868,9 +966,9 @@
 
 		query("replace into broker_orders
 		         (broker, broker_order_id, broker_ticker, symbol, side, quantity,
-		          fill_price, fill_value, status, order_type, placed_at, filled_at,
-		          price_unit, first_seen)
-		       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		          fill_price, fill_value, taxes, net_value, status, order_type,
+		          placed_at, filled_at, price_unit, first_seen)
+		       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		      $broker,
 		      mb_substr((string) $order['broker_order_id'], 0, 40),
 		      isset($order['broker_ticker']) ? mb_substr((string) $order['broker_ticker'], 0, 40) : null,
@@ -880,6 +978,8 @@
 		      $order['quantity'] ?? null,
 		      $order['fill_price'] ?? null,
 		      $order['fill_value'] ?? null,
+		      $order['taxes'] ?? null,
+		      $order['net_value'] ?? null,
 		      isset($order['status']) ? mb_substr((string) $order['status'], 0, 30) : null,
 		      isset($order['order_type']) ? mb_substr((string) $order['order_type'], 0, 30) : null,
 		      $order['placed_at'] ?? null,
@@ -1081,7 +1181,19 @@
 			foreach ($rows as $row) {
 
 				[$ticker] = broker_field($row, broker_fields('position_ticker'));
-				if ($ticker === null) { continue; }
+
+				/* A row this cannot read is a holding this cannot see. The
+				   first stage 2 sync stored nothing while the broker held
+				   nine shares and reported itself OK, because the ticker
+				   moved inside an instrument object and a row with no
+				   ticker was skipped in silence. */
+				if ($ticker === null) {
+					$problems[] = "a position carried none of the names this knows for a"
+					            . " ticker (" . implode(', ', broker_fields('position_ticker'))
+					            . "). It has: " . implode(', ', array_keys((array) $row));
+					continue;
+				}
+
 				$ticker = (string) $ticker;
 				$symbol = isset($map[$ticker]) ? $map[$ticker] : null;
 
@@ -1091,9 +1203,18 @@
 					'quantity'      => broker_number($row, broker_fields('position_quantity')),
 					'average'       => broker_number($row, broker_fields('position_average')),
 					'current'       => broker_number($row, broker_fields('position_current')),
+					/* Pounds already: walletImpact is the account's own
+					   money, not a price, so no unit question arises. */
 					'value'         => broker_number($row, broker_fields('position_value')),
+					'cost'          => broker_number($row, broker_fields('position_cost')),
 					'result'        => broker_number($row, broker_fields('position_result')),
 				];
+
+				if ($one['quantity'] === null) {
+					$problems[] = $ticker . ": the broker sent a position with no quantity this"
+					            . " could read (" . implode(', ', array_keys((array) $row)) . ")";
+				}
+
 				$parsed[] = $one;
 
 				/* The comparison that settles pounds against pence, gathered
@@ -1107,9 +1228,21 @@
 				}
 			}
 
+			/* The unit is known now - the practice account's first nine
+			   fills settled it - so the comparison is a tripwire rather
+			   than the decider: if a held share's own close says something
+			   other than the configured unit, one of the two is wrong and
+			   the page should say so. */
 			$unit = broker_price_unit($samples);
 			$result['price_unit'] = $unit['unit'];
 			if ($unit['unit'] === null && count($parsed)) { $problems[] = $unit['why']; }
+			else if ($unit['unit'] !== null && in_array(T212_PRICE_UNIT, ['pounds', 'pence'], true)
+			         && $unit['samples'] > 0 && $unit['unit'] !== T212_PRICE_UNIT) {
+				$problems[] = "the broker's prices look like " . $unit['unit'] . " against our own"
+				            . " closes, but SM_T212_PRICE_UNIT says " . T212_PRICE_UNIT
+				            . ". One of the two is wrong and every price here is out by a"
+				            . " hundred if it is this one.";
+			}
 
 			/* What each held line is quoted in, so a holding in a line that
 			   is not sterling is visible rather than read as pounds. */
@@ -1141,7 +1274,15 @@
 					$value = $current * (float) $row['quantity'];
 				}
 
+				/* The broker's own unrealised figure, which is the one the
+				   app shows beside it. Worked out here only if it did not
+				   send one, and from the cost it charged rather than from
+				   the average price, because the cost includes the stamp
+				   duty that was actually paid. */
 				$gain = $row['result'];
+				if ($gain === null && $value !== null && $row['cost'] !== null) {
+					$gain = $value - (float) $row['cost'];
+				}
 				if ($gain === null && $value !== null && $average !== null && $row['quantity'] !== null) {
 					$gain = $value - $average * (float) $row['quantity'];
 				}
@@ -1152,6 +1293,7 @@
 				            'average_price' => $average,
 				            'current_price' => $current,
 				            'value'         => $value,
+				            'cost'          => $row['cost'],
 				            'gain'          => $gain,
 				            'price_unit'    => $row_unit,
 				            'currency'      => isset($ccy[$row['broker_ticker']])
@@ -1176,6 +1318,18 @@
 
 			broker_store_positions($broker, $as_of, $store);
 			$result['positions'] = count($store);
+
+			/* The cross-check that would have caught the first stage 2 sync.
+			   It reported OK with nothing in broker_positions while the
+			   broker held nine shares, because every row was skipped in
+			   silence - and the summary it had just stored said the account
+			   had money invested. The two cannot both be right. */
+			if (count($store) === 0 && isset($values['invested'])
+			    && $values['invested'] !== null && (float) $values['invested'] > 0) {
+				$problems[] = "the account summary says " . round((float) $values['invested'], 2)
+				            . " is invested and the broker sent no positions this could read."
+				            . " One of the two is wrong, so nothing was stored for the holdings.";
+			}
 
 			$unknown = count(array_filter($store, function ($r) { return $r['symbol'] === null; }));
 			if ($unknown > 0) {
@@ -1206,16 +1360,22 @@
 			[$status]   = broker_field($row, broker_fields('order_status'));
 			[$type]     = broker_field($row, broker_fields('order_type'));
 
-			/* A sell is a negative quantity, which is how Trading 212 says
-			   which way round a trade went. Stored as a side and a positive
-			   number, because "-200 SELL" reads like two minus signs. */
-			$side = $quantity === null ? null : ($quantity < 0 ? 'SELL' : 'BUY');
+			/* The side is its own field. It used to be read from the sign of
+			   the quantity, which is how an order is SENT - and the history
+			   reports a sale as side SELL with a POSITIVE quantity, so every
+			   sale would have been written up as a purchase. */
+			$side = broker_order_side($row);
 
-			$value = broker_number($row, broker_fields('order_value'));
+			/* The cash that moved, taxes and all, and the tax itself. Both
+			   are the broker's own figures: the fill price times the
+			   quantity is the consideration, not what left the account. */
+			$net   = broker_number($row, broker_fields('order_value'));
+			$taxes = broker_taxes_paid($row);
+
 			$price_pounds = broker_to_pounds($price, $result['price_unit']);
-			if ($value === null && $price_pounds !== null && $quantity !== null) {
-				$value = abs($quantity) * $price_pounds;
-			}
+			$value = ($price_pounds !== null && $quantity !== null)
+			       ? abs($quantity) * $price_pounds : null;
+			if ($value === null && $net !== null) { $value = abs($net); }
 
 			$new = broker_store_order($broker, [
 				'broker_order_id' => (string) $id,
@@ -1225,6 +1385,8 @@
 				'quantity'        => $quantity === null ? null : abs($quantity),
 				'fill_price'      => $price_pounds,
 				'fill_value'      => $value === null ? null : abs($value),
+				'taxes'           => $taxes,
+				'net_value'       => $net === null ? null : abs($net),
 				'status'          => $status,
 				'order_type'      => $type,
 				'placed_at'       => broker_datetime($row, broker_fields('order_placed')),

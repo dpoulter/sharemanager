@@ -185,7 +185,11 @@
 			                 . " only ever sent to the demo account, so nothing was sent.";
 			return $out;
 		}
-		if (!$client->configured()) { $out['errors'][] = $client->why_not(); return $out; }
+
+		/* The key is checked where it is needed - just before the first
+		   order - rather than here, so that a dry run works on a host that
+		   has none. Seeing what tonight would do should not require being
+		   able to do it. */
 
 		if (empty($options['ignore_time']) && !broker_market_open()) {
 			$out['errors'][] = "London is shut. Orders are sent during the session only:"
@@ -193,11 +197,84 @@
 			return $out;
 		}
 
+		/* Nothing new goes out while something already sent is unaccounted
+		   for. A market order fills in ten to thirty seconds; one that is
+		   still unresolved minutes later is a question, and the answer to a
+		   question is not another order. */
+		$waiting = query("select client_order_id, status,
+		                         timestampdiff(second, coalesce(sent_at, created_at), now()) age
+		                    from strategy_orders
+		                   where strategy=? and status in ('SENT','UNKNOWN')
+		                   order by age desc", $strategy);
+
+		if (count($waiting)) {
+
+			$oldest = (int) $waiting[0]['age'];
+
+			if ($oldest >= (int) T212_STUCK_SECONDS) {
+				broker_halt_strategy($strategy,
+				    count($waiting) . " order(s) have been out for " . round($oldest / 60)
+				  . " minutes without being resolved, the oldest being "
+				  . $waiting[0]['client_order_id']);
+				$out['halted'] = true;
+				$out['errors'][] = "halted: an order has been unresolved for "
+				                 . round($oldest / 60) . " minutes";
+				return $out;
+			}
+
+			if ($oldest >= (int) T212_SETTLE_SECONDS) {
+				$out['errors'][] = count($waiting) . " order(s) sent earlier are still"
+				                 . " unresolved, the oldest " . round($oldest / 60)
+				                 . " minute(s) ago. Nothing more is sent until the broker"
+				                 . " has been asked what became of them.";
+				return $out;
+			}
+
+			$say(count($waiting) . " order(s) are still settling, which is normal for the"
+			     . " first " . (int) T212_SETTLE_SECONDS . " seconds");
+		}
+
+		/* And nothing goes out without the two books having been compared,
+		   unless there is nothing of ours to compare: a strategy that holds
+		   nothing and has never had a fill cannot disagree with anybody. */
+		$state = broker_reconciliation_state($strategy, $mode['broker']);
+		if (!$state['compared']) {
+			if (!$state['first_build']) {
+				$out['errors'][] = $state['why'] . ", so the two books could not be compared"
+				                 . " and nothing was sent.";
+				return $out;
+			}
+			$say($state['why'] . ", and this strategy holds nothing and has never had a"
+			     . " fill, so there is nothing to compare: sending the first build");
+			write_log("broker_orders", $strategy . ": first build, sending without a"
+			          . " reconciliation (" . $state['why'] . ")");
+		}
+		else {
+			/* Compared here rather than trusting the caller to have done it.
+			   includes/send_broker_orders.php reconciles before it calls
+			   this, and the guarantee should not depend on the order a
+			   caller happens to do things in. */
+			$check = broker_reconcile_positions($strategy);
+			if ($check['halted']) {
+				$out['halted'] = true;
+				$out['errors'][] = "the broker and this application disagree about what is"
+				                 . " held, so nothing was sent: "
+				                 . implode('; ', array_slice($check['differences'], 0, 3));
+				return $out;
+			}
+		}
+
 		$orders = query("select * from strategy_orders where strategy=? and status='PENDING'
 		                  order by case when side='SELL' then 0 else 1 end, created_at",
 		                $strategy);
 
 		if (!count($orders)) { $say("nothing to send"); return $out; }
+
+		/* Now the key matters: there is something to send. */
+		if (empty($options['dry_run']) && !$client->configured()) {
+			$out['errors'][] = $client->why_not();
+			return $out;
+		}
 
 		$cap = (float) T212_MAX_RUN_VALUE;
 
@@ -219,9 +296,12 @@
 			   wants to send four figures from a GBP 250 account is wrong
 			   about something, and the right answer is to stop. */
 			if (($out['value'] + $value) > $cap) {
-				$out['errors'][] = "stopping: this run would have sent "
+				$out['errors'][] = "stopping at the cap: this run would have sent "
 				                 . round($out['value'] + $value, 2) . ", over the "
-				                 . $cap . " cap for one run";
+				                 . $cap . " allowed in one run. "
+				                 . (count($orders) - $out['sent'] - $out['skipped']
+				                    - $out['rejected'])
+				                 . " order(s) are left for the next run.";
 				break;
 			}
 
@@ -240,7 +320,14 @@
 			             rtrim(rtrim(number_format($quantity, 8, '.', ''), '0'), '.'),
 			             $ticker, round($value, 2)));
 
-			if (!empty($options['dry_run'])) { $out['skipped']++; continue; }
+			if (!empty($options['dry_run'])) {
+				/* Counted against the cap as a real send would be, so a dry
+				   run shows what ONE run would do rather than listing every
+				   pending order as if all of them would go. */
+				$out['value'] += $value;
+				$out['skipped']++;
+				continue;
+			}
 
 			/* SENT, with the time, BEFORE the call. If this process dies in
 			   the next second the order is on the record as having been
@@ -375,10 +462,25 @@
 		if ($quantity <= 0 || $price <= 0) { return false; }
 
 		$consideration = $quantity * $price;
-		$stamp_duty    = $order['side'] === 'BUY' ? $consideration * STRATEGY_STAMP_DUTY_RATE : 0.0;
-		$total_cost    = $order['side'] === 'BUY'
-		               ? -($consideration + $stamp_duty)
-		               :  ($consideration);
+
+		/* The tax the broker charged and itemised, not half a per cent
+		   worked out here. B&M is Jersey registered and was charged nothing;
+		   a calculated figure would have invented GBP 1.65 of stamp duty on
+		   that fill and taken it out of the cash. Null means the response
+		   carried no list at all, which is the only case where working it
+		   out is better than nothing. */
+		$stamp_duty = isset($fill['taxes']) && $fill['taxes'] !== null
+		            ? (float) $fill['taxes']
+		            : ($order['side'] === 'BUY' ? $consideration * STRATEGY_STAMP_DUTY_RATE : 0.0);
+
+		/* And the cash that actually moved: netValue, taxes and all. The
+		   consideration is what the shares cost, which is not the same
+		   number and never was. */
+		$moved = isset($fill['net_value']) && $fill['net_value'] !== null
+		       ? abs((float) $fill['net_value'])
+		       : $consideration + ($order['side'] === 'BUY' ? $stamp_duty : -$stamp_duty);
+
+		$total_cost = $order['side'] === 'BUY' ? -$moved : $moved;
 
 		$positions = strategy_positions($order['strategy']);
 		$held = isset($positions[$order['symbol']])
@@ -453,9 +555,15 @@
 		$price    = broker_number($row, broker_fields('order_price'));
 		$date     = broker_datetime($row, broker_fields('order_filled'));
 
+		/* The money, from the broker rather than from arithmetic here: the
+		   tax it charged and the cash that moved. Both are pounds whatever
+		   the price is quoted in. */
 		$out = ['outcome' => 'working', 'status' => $status,
+		        'side' => broker_order_side($row),
 		        'quantity' => $quantity === null ? null : abs($quantity),
 		        'price' => broker_to_pounds($price, $unit === null ? T212_PRICE_UNIT : $unit),
+		        'taxes' => broker_taxes_paid($row),
+		        'net_value' => broker_number($row, broker_fields('order_value')),
 		        'date' => $date];
 
 		if (in_array($status, ['FILLED', 'EXECUTED', 'COMPLETED'], true)) { $out['outcome'] = 'filled'; }
@@ -537,10 +645,8 @@
 						[$row_ticker] = broker_field($row, broker_fields('order_ticker'));
 						if ((string) $row_ticker !== (string) $ticker) { continue; }
 
-						$quantity = broker_number($row, broker_fields('order_quantity'));
-						if ($quantity === null) { continue; }
-						$side = $quantity < 0 ? 'SELL' : 'BUY';
-						if ($side !== $order['side']) { continue; }
+						$side = broker_order_side($row);
+						if ($side === null || $side !== $order['side']) { continue; }
 
 						/* Ours only if it was created after we sent, which
 						   is what rules out last week's order in the same
@@ -606,8 +712,23 @@
 			$outcome = broker_order_outcome($row, broker_sync_price_unit());
 
 			if ($outcome['outcome'] === 'filled') {
+
+				/* The broker says which way round it went, and it must be
+				   the way this application sent it. A disagreement here is
+				   either the wrong order or a bug in the matching, and
+				   writing it up either way would move the book the wrong
+				   way. */
+				if ($outcome['side'] !== null && $outcome['side'] !== $order['side']) {
+					broker_halt_strategy($strategy,
+					    "the broker says " . $id . " was a " . $outcome['side']
+					  . " and this application sent it as a " . $order['side']);
+					$out['halted'] = true;
+					return $out;
+				}
+
 				if (broker_apply_fill($order['client_order_id'],
 				        ['quantity' => $outcome['quantity'], 'price' => $outcome['price'],
+				         'taxes' => $outcome['taxes'], 'net_value' => $outcome['net_value'],
 				         'date' => $outcome['date'], 'status' => $outcome['status']])) {
 					$out['filled']++;
 				}
@@ -659,6 +780,62 @@
 	/* ---------------------------------------------------------------------
 	   Reconciliation.
 	   --------------------------------------------------------------------- */
+
+	/**
+	 * Whether the two books can be compared at all, and whether there is
+	 * anything to compare.
+	 *
+	 * Asked before sending, because sending without having compared is
+	 * sending into the dark: the first stage 2 run sent fifteen orders'
+	 * worth of plan in three passes, each one reporting "the broker's
+	 * positions have never been read, so there is nothing to compare
+	 * against", and nobody would have known if the broker had held
+	 * something else entirely.
+	 *
+	 * A first build is the one exception, and it is a narrow one: this
+	 * strategy holds nothing and has never had a fill, so there is nothing
+	 * of its own that the two books could disagree about.
+	 *
+	 * This reads and decides nothing. broker_reconcile_positions() is what
+	 * halts.
+	 */
+	function broker_reconciliation_state($strategy, $broker = BROKER_T212) {
+
+		/* The read is the sync RUN, not the rows it wrote: a broker that
+		   holds nothing today writes no position rows, and "no rows" must
+		   not be mistaken for "nobody looked". A run that finished OK had
+		   its positions call answered - a positions failure makes it
+		   PARTIAL - so an OK run for today is a read, with or without rows
+		   behind it. */
+		$rows = query("select max(as_of_date) d from broker_positions where broker=?", $broker);
+		$as_of = (count($rows) && $rows[0]['d'] !== null) ? (string) $rows[0]['d'] : null;
+
+		$runs = query("select max(as_of_date) d from broker_sync_runs
+		                where broker=? and status='OK'", $broker);
+		$ran  = (count($runs) && $runs[0]['d'] !== null) ? (string) $runs[0]['d'] : null;
+
+		if ($as_of === null || ($ran !== null && $ran > $as_of)) { $as_of = $ran; }
+
+		$held = 0;
+		foreach (strategy_positions($strategy) as $position) {
+			if ((float) $position['quantity'] != 0.0) { $held++; }
+		}
+		$filled = query("select count(*) n from strategy_orders
+		                  where strategy=? and status='FILLED'", $strategy);
+		$filled = count($filled) ? (int) $filled[0]['n'] : 0;
+
+		$first_build = ($held === 0 && $filled === 0);
+
+		if ($as_of === date('Y-m-d')) {
+			return ['compared' => true, 'first_build' => $first_build, 'as_of' => $as_of,
+			        'why' => "compared against the broker's positions as at " . $as_of];
+		}
+
+		return ['compared' => false, 'first_build' => $first_build, 'as_of' => $as_of,
+		        'why' => $as_of === null
+		               ? "the broker's positions have never been read"
+		               : "the broker's positions were last read on " . $as_of . ", not today"];
+	}
 
 	/**
 	 * The engine's positions against the broker's.

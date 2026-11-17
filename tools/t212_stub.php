@@ -144,6 +144,12 @@ if ($call === 'summary') {
 }
 
 if ($call === 'positions') {
+    /* The real shape nests the instrument and the money:
+         {"instrument":{...},"quantity":...,"currentPrice":<pence>,
+          "averagePricePaid":<pence>,
+          "walletImpact":{"totalCost":<pounds>,"currentValue":<pounds>,
+                          "unrealizedProfitLoss":<pounds>}}
+       A test that wants holdings writes positions.json in that shape. */
     stub_answer(200, stub_json($dir, 'positions', []));
 }
 
@@ -210,17 +216,24 @@ if ($call === 'place') {
        until a test moves it into the history. */
     $pending = json_decode(stub_json($dir, 'pending', []), true);
     if (!is_array($pending)) { $pending = []; }
-    $pending[] = ['id' => $id,
-                  'ticker' => is_array($sent) ? ($sent['ticker'] ?? null) : null,
-                  'quantity' => is_array($sent) ? ($sent['quantity'] ?? null) : null,
-                  'status' => 'WORKING',
-                  'dateCreated' => gmdate('c')];
+    /* The shape the real pending list has: flat, with the instrument nested
+       beside it, a side of its own and a createdAt carrying an offset. */
+    $quantity = is_array($sent) ? ($sent['quantity'] ?? null) : null;
+    $ticker   = is_array($sent) ? ($sent['ticker'] ?? null) : null;
+    $placed   = ['id' => $id, 'strategy' => 'QUANTITY', 'type' => 'MARKET',
+                 'ticker' => $ticker,
+                 'quantity' => $quantity === null ? null : abs((float) $quantity),
+                 'filledQuantity' => 0, 'status' => 'NEW', 'currency' => 'GBP',
+                 'extendedHours' => false, 'initiatedFrom' => 'API',
+                 'side' => ($quantity !== null && $quantity < 0) ? 'SELL' : 'BUY',
+                 'createdAt' => date('c'),
+                 'instrument' => ['ticker' => $ticker, 'name' => 'Stub PLC',
+                                  'isin' => 'GB00STUB0001', 'currency' => 'GBX']];
+
+    $pending[] = $placed;
     @file_put_contents("$dir/pending.json", json_encode($pending));
 
-    stub_answer(200, json_encode(['id' => $id, 'status' => 'WORKING',
-                                  'ticker' => is_array($sent) ? ($sent['ticker'] ?? null) : null,
-                                  'quantity' => is_array($sent) ? ($sent['quantity'] ?? null) : null,
-                                  'dateCreated' => gmdate('c')]));
+    stub_answer(200, json_encode($placed));
 }
 
 /* The cursor-paged history. The second page exists only if the test wrote

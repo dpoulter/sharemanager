@@ -228,6 +228,7 @@
 					<th class="text-end">Quantity</th>
 					<th class="text-end">Average (&pound;)</th>
 					<th class="text-end">Price (&pound;)</th>
+					<th class="text-end">Cost</th>
 					<th class="text-end">Value</th>
 					<th class="text-end">Gain</th>
 				</tr>
@@ -251,6 +252,10 @@
 					<td class="sm-num"><?= e(fmt_quantity($position['quantity'])) ?></td>
 					<td class="sm-num"><?= b_money($position['average_price']) ?></td>
 					<td class="sm-num"><?= b_money($position['current_price']) ?></td>
+					<?php /* The broker's own cost and value, in pounds. The prices
+					         beside them are pence turned into pounds. */ ?>
+					<td class="sm-num"><?= array_key_exists('cost', $position)
+						? b_money($position['cost']) : e(VIEW_DASH) ?></td>
 					<td class="sm-num"><?= b_money($position['value']) ?></td>
 					<td class="sm-num"><?= $position['gain'] === null
 						? e(VIEW_DASH) : move_pounds_html($position['gain']) ?></td>
@@ -275,6 +280,8 @@
 					<th class="text-end">Quantity</th>
 					<th class="text-end">Price (&pound;)</th>
 					<th class="text-end">Value</th>
+					<th class="text-end">Tax</th>
+					<th class="text-end">Cash</th>
 					<th>Status</th>
 				</tr>
 			</thead>
@@ -291,6 +298,13 @@
 					<td class="sm-num"><?= e(fmt_quantity($order['quantity'])) ?></td>
 					<td class="sm-num"><?= b_money($order['fill_price']) ?></td>
 					<td class="sm-num"><?= b_money($order['fill_value']) ?></td>
+					<?php /* The stamp duty Trading 212 charged and itemised, and the
+					         cash that actually moved. The value beside them is what
+					         the shares cost, which is a different number. */ ?>
+					<td class="sm-num"><?= array_key_exists('taxes', $order)
+						? b_money($order['taxes']) : e(VIEW_DASH) ?></td>
+					<td class="sm-num"><?= array_key_exists('net_value', $order)
+						? b_money($order['net_value']) : e(VIEW_DASH) ?></td>
 					<td><small><?= e((string) $order['status']) ?></small></td>
 				</tr>
 			<?php endforeach ?>

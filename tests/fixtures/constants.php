@@ -118,7 +118,7 @@
     define("T212_MAX_WAIT", (int) (getenv("SM_T212_MAX_WAIT") ?: 60));
     define("T212_HISTORY_DAYS", (int) (getenv("SM_T212_HISTORY_DAYS") ?: 365));
     define("T212_INSTRUMENT_DAYS", (int) (getenv("SM_T212_INSTRUMENT_DAYS") ?: 7));
-    define("T212_PRICE_UNIT", strtolower(trim((string) (getenv("SM_T212_PRICE_UNIT") ?: "auto"))));
+    define("T212_PRICE_UNIT", strtolower(trim((string) (getenv("SM_T212_PRICE_UNIT") ?: "pence"))));
     define("T212_PROBE_DIR", getenv("SM_T212_PROBE_DIR") ?: sys_get_temp_dir());
     // Stage 2: what a Trading 212 account trades by.
     define("T212_MIN_ORDER_VALUE", (float) (getenv("SM_T212_MIN_ORDER") ?: 10.00));
@@ -127,6 +127,17 @@
     define("T212_MARKET_OPEN",  getenv("SM_T212_MARKET_OPEN")  ?: "08:00");
     define("T212_MARKET_SHUT",  getenv("SM_T212_MARKET_SHUT")  ?: "16:30");
     define("T212_MARKET_TZ",    getenv("SM_T212_MARKET_TZ")    ?: "Europe/London");
+    // How long an order may be out and unaccounted for before the sender
+    // stops adding to it, and before it gives up and halts the strategy.
+    //
+    // A market order fills in ten to thirty seconds, so three minutes is
+    // already long. The first stage 2 run sent three more orders on each of
+    // three passes while the earlier ones still showed as working, which was
+    // harmless because every order was distinct and it was a first build -
+    // and is exactly how a position gets doubled on a day when it is not.
+    define("T212_SETTLE_SECONDS", (int) (getenv("SM_T212_SETTLE_AFTER") ?: 180));
+    define("T212_STUCK_SECONDS",  (int) (getenv("SM_T212_STUCK_AFTER")  ?: 1800));
+
     define("T212_POLL_AFTER_SECONDS",    (int) (getenv("SM_T212_POLL_AFTER") ?: 30));
     define("T212_UNKNOWN_AFTER_SECONDS", (int) (getenv("SM_T212_UNKNOWN_AFTER") ?: 900));
     // Zero, so the suite does not wait out the published gaps between calls

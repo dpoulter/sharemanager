@@ -26,7 +26,8 @@ results.
 | `sql/broker.sql` | The tables. Safe to apply twice. |
 | `sql/broker_account_fields.sql` | The second migration: the account summary's real fields, the notices column, shortName. |
 | `sql/broker_mapping.sql` | The third: one instrument per share, enforced, and the venue and currency columns. |
-| `sql/broker_trading.sql` | The fourth: fractional quantities, where an order is, and whether a strategy is halted. **Run all four.** |
+| `sql/broker_trading.sql` | The fourth: fractional quantities, where an order is, and whether a strategy is halted. |
+| `sql/broker_fills.sql` | The fifth: the tax a fill was charged, the cash that moved, and what a holding cost. **Run all five.** |
 
 ## Configuration
 
@@ -163,9 +164,10 @@ could not tell apart made every run a failure.
 1. Dale puts the key and secret in `/etc/sharemanager.env` and the php-fpm
    pool, and sets `SM_T212_ENV=live-read`. Nobody else handles them.
 2. Back up the database, deploy, then run the migrations:
-   `sql/broker.sql`, `sql/broker_account_fields.sql`, `sql/broker_mapping.sql`.
-   The last one empties `broker_instruments`; the next sync rebuilds it,
-   which costs one request.
+   `sql/broker.sql`, `sql/broker_account_fields.sql`, `sql/broker_mapping.sql`,
+   `sql/broker_trading.sql`, `sql/broker_fills.sql`. `broker_mapping.sql`
+   empties `broker_instruments`; the next sync rebuilds it, which costs one
+   request.
 3. `php tools/t212_probe.php` and send the output back if anything in the
    responses has changed.
 4. `php includes/sync_broker.php --instruments`, then check the cash and the
@@ -236,21 +238,76 @@ reconciliation against yesterday's read is not attempted at all.
 engine, the same kill switch file, plus `T212_MAX_RUN_VALUE` (GBP 1,000) as a
 cap on what one run may send.
 
-### To find out on the demo account, before relying on it
+### Answered on the practice account, 17 November 2026
 
-The documentation gives no rule for any of these, so they are set to the
-careful answer and want confirming:
+The first nine orders went in and filled, which settled the open questions:
 
-- **whether a fractional `quantity` is accepted for London shares.** Their
-  sell example is -10.5, which implies yes, but it is not stated.
-- **how many decimal places.** `SM_T212_QUANTITY_DECIMALS` is 2. Rounding down
-  to fewer than allowed costs a little idle cash; rounding to more than allowed
-  gets the order refused.
-- **the smallest quantity, per instrument if it varies.** `maxOpenQuantity` is
-  the only quantity field the instruments list carries.
-- **whether any FTSE 350 share is whole-share only.** Nothing in the data says,
-  so it is learnt: an order refused for its quantity sets
-  `broker_instruments.whole_shares`, and that share is sized in whole shares
-  from then on.
+- **fractional quantities are accepted** for London shares, at **2 decimal
+  places** (`SM_T212_QUANTITY_DECIMALS`).
+- **market orders fill in 10 to 30 seconds** (`tradingMethod` OTC).
+- **prices are pence, account figures are pounds.** `currentPrice`,
+  `averagePricePaid` and a fill's `price` are pence; everything under
+  `walletImpact` - `netValue`, `totalCost`, `currentValue`,
+  `unrealizedProfitLoss` - is pounds. `SM_T212_PRICE_UNIT` is `pence` by
+  default now, and the comparison against our own closes has become a
+  tripwire: a held share that disagrees with the setting is a problem,
+  because one of the two is then wrong.
+- **stamp duty is charged and itemised**, and it is taken from the broker
+  rather than worked out: B&M is Jersey registered and was charged none, and
+  a calculated 0.5% would have invented GBP 1.65 of tax on that fill.
+- still unknown: **the smallest quantity**, and **whether any FTSE 350 share
+  is whole-share only**. Nothing in the data says, so it is learnt - an order
+  refused for its quantity sets `broker_instruments.whole_shares` and that
+  share is sized in whole shares from then on.
 
-Write the answers here when they are known.
+### The shapes they answer with
+
+The order history nests the order inside an envelope with its fill beside it:
+
+```
+{"items":[{"order":{"id","ticker","quantity","filledQuantity","status","side",
+                    "createdAt","instrument":{"ticker","name","isin","currency"}},
+           "fill":{"id","quantity","price","filledAt",
+                   "walletImpact":{"netValue","fxRate",
+                                   "taxes":[{"name","quantity",...}]}}}]}
+```
+
+Positions nest the instrument and the money:
+
+```
+[{"instrument":{"ticker","name","isin","currency"},"createdAt","quantity",
+  "currentPrice","averagePricePaid",
+  "walletImpact":{"totalCost","currentValue","unrealizedProfitLoss"}}]
+```
+
+Pending orders are flat, with the instrument nested beside them.
+
+Three things that cost a deploy each:
+
+- **the side is its own field.** The history reports a sale as `side: SELL`
+  with a *positive* quantity. Reading the sign - which is how an order is
+  sent - would make every sale a purchase.
+- **`netValue` is the cash that moved**, taxes and all. The fill price times
+  the quantity is the consideration, which is a different number.
+- **times carry an offset.** Pending orders and positions give `+02:00`;
+  history gives `Z`. Both are parsed; neither is assumed to be UTC.
+
+A position or history row this cannot read records a problem rather than
+being skipped, and the sync cross-checks itself: money invested with no
+positions stored is a problem, not an OK run. That is what the first stage 2
+sync did - it reported OK with nothing stored while the broker held nine
+shares.
+
+### The sender waits
+
+- Nothing new goes out while an order sent more than `T212_SETTLE_SECONDS`
+  (3 minutes) ago is still unresolved; past `T212_STUCK_SECONDS` (30 minutes)
+  the strategy halts. Orders sent seconds ago are settling, which is normal.
+- Nothing goes out unless the two books have been compared today, with one
+  exception: a strategy that holds nothing and has never had a fill has
+  nothing of its own to disagree about. A sync that finished OK counts as a
+  read whether or not it found anything - "no rows" is not "nobody looked".
+- The sender reconciles for itself rather than trusting the caller to have
+  done it first.
+- `--dry-run` applies the run cap, so it shows what **one** run would send
+  and how many orders are left over. It needs no key.

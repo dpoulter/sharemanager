@@ -2637,6 +2637,12 @@
     $bk_write = function ($name, $content) use ($bk_dir) {
         file_put_contents("$bk_dir/$name", $content);
     };
+
+    /* The price unit is settled - pence - so the comparison is normally a
+       tripwire rather than the decider. The checks that are about the
+       comparison itself ask for it with SM_T212_PRICE_UNIT=auto, which is
+       what that setting is for. */
+    $bk_env_auto = array_merge($bk_env, ['SM_T212_PRICE_UNIT' => 'auto']);
     $bk_remove = function ($name) use ($bk_dir) { @unlink("$bk_dir/$name"); };
     $bk_reset  = function () use ($bk_dir) { @file_put_contents("$bk_dir/t212_requests", ''); };
     $bk_asked  = function () use ($bk_dir) {
@@ -2805,7 +2811,7 @@
         ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 61.0,
          'currentPrice' => 64.0, 'ppl' => 160.0],
     ]));
-    run_script('sync_broker.php', [], $bk_env);
+    run_script('sync_broker.php', [], $bk_env_auto);
     $bk_odd = rows("select * from broker_positions where symbol='T6P'");
     check('a price that matches neither unit stores no price at all',
           count($bk_odd) === 1 && $bk_odd[0]['current_price'] === null
@@ -3140,7 +3146,7 @@
         ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 61.0,
          'currentPrice' => 64.0, 'ppl' => 160.0],
     ]));
-    run_script('sync_broker.php', [], $bk_env);
+    run_script('sync_broker.php', [], $bk_env_auto);
     check('an undecided price unit on a share that is held is still a problem',
           $bk_last_run()['status'] !== 'OK'
           && stripos((string) $bk_last_run()['problems'], 'price unit') !== false,
@@ -3179,6 +3185,242 @@
     check('and that the practice account is the only one orders can reach',
           stripos($bk_page_tpl, 'practice') !== false
           && stripos($bk_page_tpl, 'live account') !== false);
+
+    echo "\n--- stage 2: reading a real fill back ---\n";
+
+    /* The shapes the practice account really answered with on 17 November,
+       figures and all. The first nine fills could not be read at all: the
+       order history nests the order inside an envelope with its fill beside
+       it, and the reader was looking at the top level - the same mistake as
+       the account summary, in a place where it meant the strategy's book
+       and the broker's silently parted company. */
+    $gh_history = ['order' => ['id' => 58200052851, 'strategy' => 'QUANTITY',
+                               'type' => 'MARKET', 'ticker' => 'ASOSl_EQ',
+                               'quantity' => 66.63, 'filledQuantity' => 66.63,
+                               'status' => 'FILLED', 'currency' => 'GBP',
+                               'extendedHours' => false, 'initiatedFrom' => 'API',
+                               'side' => 'BUY', 'createdAt' => '2026-11-17T14:44:51.000Z',
+                               'instrument' => ['ticker' => 'ASOSl_EQ', 'name' => 'ASOS',
+                                                'isin' => 'GB0030927254', 'currency' => 'GBX']],
+                   'fill' => ['id' => 58200052921, 'quantity' => 66.63, 'price' => 499.5,
+                              'type' => 'TRADE', 'tradingMethod' => 'OTC',
+                              'filledAt' => '2026-11-17T14:45:19.000Z',
+                              'walletImpact' => ['currency' => 'GBP', 'netValue' => 334.48,
+                                                 'fxRate' => 100,
+                                                 'taxes' => [['name' => 'STAMP_DUTY_RESERVE_TAX',
+                                                              'quantity' => -1.66,
+                                                              'currency' => 'GBP',
+                                                              'chargedAt' => '2026-11-17T14:45:19.000Z']]]]];
+
+    check('the id, ticker and side are read out of the envelope',
+          (string) broker_field($gh_history, broker_fields('order_id'))[0] === '58200052851'
+          && (string) broker_field($gh_history, broker_fields('order_ticker'))[0] === 'ASOSl_EQ'
+          && broker_order_side($gh_history) === 'BUY',
+          json_encode([broker_field($gh_history, broker_fields('order_id'))[0],
+                       broker_field($gh_history, broker_fields('order_ticker'))[0],
+                       broker_order_side($gh_history)]));
+
+    $gh_out = broker_order_outcome($gh_history, 'pence');
+    check('it resolves as filled, 66.63 at GBP 4.995',
+          $gh_out['outcome'] === 'filled'
+          && abs($gh_out['quantity'] - 66.63) < 0.0001
+          && abs($gh_out['price'] - 4.995) < 0.000001,
+          json_encode($gh_out));
+    check('the stamp duty is the GBP 1.66 the broker charged, not a calculation',
+          abs($gh_out['taxes'] - 1.66) < 0.0001, json_encode($gh_out['taxes']));
+    check('and the cash that moved is the GBP 334.48 it took, not the consideration',
+          abs($gh_out['net_value'] - 334.48) < 0.0001
+          && abs((66.63 * 4.995) - 332.82) < 0.01,
+          json_encode([$gh_out['net_value'], round(66.63 * 4.995, 2)]));
+
+    /* Written up: the figures that land on the order and in the account. */
+    $GH = 'test_t212_fill';
+    s_drop($GH);
+    s_rules($GH, ['holdings' => 1]);
+    s_reset($GH, 5000.00, 'Y', 'T212_DEMO');
+    db()->prepare("insert into strategy_orders
+                     (client_order_id,strategy,as_of_date,symbol,exchange,broker,broker_order_id,
+                      side,quantity,status,note,created_at,sent_at)
+                   values (?,?,?,'AAA','XLON',?,'58200052851','BUY',66.63,'SENT','rebalance',now(),now())")
+        ->execute([$GH . ':AAA', $GH, asof_date(), BROKER_T212]);
+
+    broker_apply_fill($GH . ':AAA', ['quantity' => $gh_out['quantity'],
+                                     'price' => $gh_out['price'],
+                                     'taxes' => $gh_out['taxes'],
+                                     'net_value' => $gh_out['net_value'],
+                                     'date' => $gh_out['date'],
+                                     'status' => $gh_out['status']]);
+
+    $gh_row = rows("select * from strategy_orders where client_order_id=?", [$GH . ':AAA']);
+    check('the order is written up from the broker\'s own figures',
+          count($gh_row) === 1 && $gh_row[0]['status'] === 'FILLED'
+          && abs((float) $gh_row[0]['fill_price'] - 4.995) < 0.0001
+          && abs((float) $gh_row[0]['stamp_duty'] - 1.66) < 0.0001
+          && abs((float) $gh_row[0]['total_cost'] + 334.48) < 0.0001
+          && (float) $gh_row[0]['commission'] === 0.0
+          && (float) $gh_row[0]['slippage'] === 0.0,
+          json_encode($gh_row));
+    check('and the cash moved by what the broker took, taxes and all',
+          abs((float) scalar("select cash from strategy_accounts where strategy=?", [$GH])
+              - (5000.00 - 334.48)) < 0.0001,
+          scalar("select cash from strategy_accounts where strategy=?", [$GH]));
+
+    /* B&M is Jersey registered and was charged no stamp duty at all. A
+       calculated 0.5% would have invented GBP 1.65 of tax and taken it out
+       of the cash; an empty list is a fact, not a gap. */
+    $gh_bm = $gh_history;
+    $gh_bm['order']['id'] = 58200052999;
+    $gh_bm['order']['ticker'] = 'BMEl_EQ';
+    $gh_bm['order']['instrument']['isin'] = 'JE00BVSYJW51';
+    $gh_bm['fill']['walletImpact']['taxes'] = [];
+    $gh_bm['fill']['walletImpact']['netValue'] = 332.82;
+
+    $gh_bm_out = broker_order_outcome($gh_bm, 'pence');
+    check('a fill that was charged no tax is charged none here either',
+          $gh_bm_out['taxes'] === 0.0
+          && abs($gh_bm_out['net_value'] - 332.82) < 0.0001,
+          json_encode([$gh_bm_out['taxes'], $gh_bm_out['net_value']]));
+
+    db()->prepare("update strategy_accounts set cash=5000 where strategy=?")->execute([$GH]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$GH]);
+    db()->prepare("update strategy_orders set status='SENT', broker_order_id='58200052999',
+                     quantity=66.63, fill_price=null, stamp_duty=0, total_cost=null
+                    where client_order_id=?")->execute([$GH . ':AAA']);
+    broker_apply_fill($GH . ':AAA', ['quantity' => $gh_bm_out['quantity'],
+                                     'price' => $gh_bm_out['price'],
+                                     'taxes' => $gh_bm_out['taxes'],
+                                     'net_value' => $gh_bm_out['net_value'],
+                                     'date' => $gh_bm_out['date'],
+                                     'status' => $gh_bm_out['status']]);
+    check('and the account pays the consideration and nothing more',
+          abs((float) scalar("select stamp_duty from strategy_orders where client_order_id=?",
+                             [$GH . ':AAA'])) < 0.0001
+          && abs((float) scalar("select cash from strategy_accounts where strategy=?", [$GH])
+                 - (5000.00 - 332.82)) < 0.0001,
+          json_encode([scalar("select stamp_duty from strategy_orders where client_order_id=?",
+                              [$GH . ':AAA']),
+                       scalar("select cash from strategy_accounts where strategy=?", [$GH])]));
+
+    /* A sale comes back as side SELL with a POSITIVE quantity. Reading the
+       sign - which is how an order is sent - made every sale a purchase. */
+    $gh_sell = $gh_history;
+    $gh_sell['order']['side'] = 'SELL';
+    check('a sale is a sale even though its quantity is positive',
+          broker_order_side($gh_sell) === 'SELL'
+          && broker_number($gh_sell, broker_fields('order_quantity')) > 0,
+          json_encode([broker_order_side($gh_sell),
+                       broker_number($gh_sell, broker_fields('order_quantity'))]));
+
+    /* The pending list is flat and carries its own side, and its times come
+       with an offset rather than a Z. */
+    $gh_pending = ['id' => 58200052946, 'strategy' => 'QUANTITY', 'type' => 'MARKET',
+                   'ticker' => 'HFDl_EQ', 'quantity' => 130.51, 'filledQuantity' => 0,
+                   'status' => 'NEW', 'currency' => 'GBP', 'side' => 'BUY',
+                   'createdAt' => '2026-11-17T16:45:27.477+02:00',
+                   'instrument' => ['ticker' => 'HFDl_EQ', 'isin' => 'GB00BMVNY894',
+                                    'currency' => 'GBX']];
+    check('the flat pending shape reads with the same map',
+          (string) broker_field($gh_pending, broker_fields('order_id'))[0] === '58200052946'
+          && (string) broker_field($gh_pending, broker_fields('order_ticker'))[0] === 'HFDl_EQ'
+          && broker_order_side($gh_pending) === 'BUY'
+          && broker_order_outcome($gh_pending, 'pence')['outcome'] === 'working',
+          json_encode(broker_order_outcome($gh_pending, 'pence')));
+    check('and a time with an offset is that time, not that time in UTC',
+          broker_datetime($gh_pending, broker_fields('order_placed')) === '2026-11-17 14:45:27'
+          && broker_datetime($gh_history, broker_fields('order_placed')) === '2026-11-17 14:44:51',
+          json_encode([broker_datetime($gh_pending, broker_fields('order_placed')),
+                       broker_datetime($gh_history, broker_fields('order_placed'))]));
+
+    s_drop($GH);
+
+    echo "\n--- stage 2: reading the positions back ---\n";
+
+    /* The real position shape, with the instrument and the money nested and
+       the two halves in different units: prices in pence, everything under
+       walletImpact in pounds. */
+    db()->exec("delete from stock_symbols where symbol='EZJ'");
+    db()->exec("delete from historical_prices where symbol='EZJ'");
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                              sector,market,industry_group,industry)
+                   values ('EZJ','easyJet','easyJet','XLON','Y','Travel','Main','Travel','Airlines')")
+        ->execute();
+    db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                   values ('EZJ','XLON',?,689.5)")->execute([asof_date()]);
+    db()->exec("delete from broker_instruments");
+    db()->prepare("insert into broker_instruments (broker,broker_ticker,symbol,short_name,isin,
+                                                   currency,venue,status,matched_on,last_seen)
+                   values (?,?,?,?,?,'GBX','london','matched','short_name',?)")
+        ->execute([BROKER_T212, 'EZJl_EQ', 'EZJ', 'EZJ', 'GB00B7KR2P84', asof_date()]);
+
+    $bk_write('positions.json', json_encode([
+        ['instrument' => ['ticker' => 'EZJl_EQ', 'name' => 'easyJet',
+                          'isin' => 'GB00B7KR2P84', 'currency' => 'GBX'],
+         'createdAt' => '2026-11-17T16:44:59.747+02:00',
+         'quantity' => 48.01, 'quantityAvailableForTrading' => 48.01, 'quantityInPies' => 0,
+         'currentPrice' => 689.5, 'averagePricePaid' => 689.39991668,
+         'walletImpact' => ['currency' => 'GBP', 'totalCost' => 330.98,
+                            'currentValue' => 331.03, 'unrealizedProfitLoss' => 0.05,
+                            'fxImpact' => null]],
+    ]));
+    $bk_write('summary.json', json_encode(
+        ['id' => 52612242, 'currency' => 'GBP', 'totalValue' => 5000.00,
+         'cash' => ['availableToTrade' => 4669.02, 'reservedForOrders' => 0, 'inPies' => 0],
+         'investments' => ['currentValue' => 331.03, 'totalCost' => 330.98,
+                           'realizedProfitLoss' => 0, 'unrealizedProfitLoss' => 0.05]]));
+    db()->exec("delete from broker_positions");
+    run_script('sync_broker.php', [], $bk_env);
+
+    $gh_pos = rows("select * from broker_positions where symbol='EZJ'");
+    check('a nested position is read rather than skipped in silence',
+          count($gh_pos) === 1 && abs((float) $gh_pos[0]['quantity'] - 48.01) < 0.0001,
+          json_encode($gh_pos));
+    check('its prices are pence turned into pounds',
+          abs((float) $gh_pos[0]['current_price'] - 6.895) < 0.0001
+          && abs((float) $gh_pos[0]['average_price'] - 6.8939) < 0.0001,
+          json_encode([$gh_pos[0]['current_price'], $gh_pos[0]['average_price']]));
+    check('and its money is the broker\'s own pounds, not a multiplication',
+          abs((float) $gh_pos[0]['value'] - 331.03) < 0.0001
+          && abs((float) $gh_pos[0]['cost'] - 330.98) < 0.0001
+          && abs((float) $gh_pos[0]['gain'] - 0.05) < 0.0001,
+          json_encode($gh_pos));
+    check('the run is OK, because there is nothing wrong with it',
+          $bk_last_run()['status'] === 'OK',
+          json_encode([$bk_last_run()['status'], $bk_last_run()['problems']]));
+
+    /* And the cross-check that would have caught the first stage 2 sync:
+       money invested, no positions stored, and it called itself OK. */
+    $bk_write('positions.json', json_encode([]));
+    run_script('sync_broker.php', [], $bk_env);
+    check('money invested with no positions read is a problem, not an OK run',
+          $bk_last_run()['status'] !== 'OK'
+          && stripos((string) $bk_last_run()['problems'], 'invested') !== false,
+          json_encode([$bk_last_run()['status'], $bk_last_run()['problems']]));
+
+    /* A position whose ticker is somewhere this does not know about is a
+       holding this cannot see, which is also a problem rather than a skip. */
+    $bk_write('positions.json', json_encode([['somethingElse' => ['code' => 'EZJl_EQ'],
+                                              'qty' => 48.01]]));
+    run_script('sync_broker.php', [], $bk_env);
+    check('and so is a position shaped in a way this cannot read at all',
+          stripos((string) $bk_last_run()['problems'], 'none of the names') !== false,
+          (string) $bk_last_run()['problems']);
+
+    db()->exec("delete from stock_symbols where symbol='EZJ'");
+    db()->exec("delete from historical_prices where symbol='EZJ'");
+    db()->exec("delete from broker_positions");
+
+    /* Back to the 690p share the rest of this section works with, so the
+       probe below sees the account it expects. */
+    $bk_write('summary.json', json_encode($bk_real));
+    $bk_write('positions.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'quantity' => 200, 'averagePrice' => 6.10,
+         'currentPrice' => 6.90, 'ppl' => 160.0],
+    ]));
+    $bk_write('instruments.json', json_encode([
+        ['ticker' => 'T6Pl_EQ', 'shortName' => 'T6P', 'name' => 'Six Ninety PLC',
+         'currencyCode' => 'GBX', 'isin' => 'GB00T6P00001'],
+    ]));
+    run_script('sync_broker.php', ['--instruments'], $bk_env);
 
     echo "\n--- the broker connection: the probe ---\n";
 
@@ -3624,6 +3866,35 @@
     s_rules($S2B, ['holdings' => 1, 'rebalance' => 'monthly']);
     s_reset($S2B, 250.00, 'Y', 'T212_DEMO');
 
+    /* The two books have to have been compared before anything is sent, so
+       every case below starts from a broker read for today that agrees with
+       what the engine holds. That is the state a real run is in: the sync
+       runs before the sender. */
+    $s2_agreed = function ($quantity = 0.0) use ($S2B) {
+
+        db()->exec("delete from broker_positions");
+        db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+
+        if ($quantity > 0) {
+            db()->prepare("insert into broker_positions (broker, as_of_date, broker_ticker,
+                                                         symbol, quantity, price_unit, synced_at)
+                           values (?,?,?,?,?,'pence',now())")
+                ->execute([BROKER_T212, date('Y-m-d'), 'S201l_EQ', 'S201', $quantity]);
+            db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,
+                                                           avg_price,updated_at)
+                           values (?,'S201','XLON',?,37.195,now())")
+                ->execute([$S2B, $quantity]);
+        }
+
+        /* A sync that finished OK is the read, with or without rows behind
+           it: a broker that holds nothing today writes no position rows,
+           and "no rows" is not "nobody looked". */
+        db()->prepare("insert into broker_sync_runs (broker, environment, started_at,
+                                                     finished_at, status, as_of_date, positions)
+                       values (?,'demo',now(),now(),'OK',?,?)")
+            ->execute([BROKER_T212, date('Y-m-d'), $quantity > 0 ? 1 : 0]);
+    };
+
     $s2_order = function ($side = 'BUY', $quantity = 0.44, $symbol = 'S201') use ($S2B) {
         db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
         db()->prepare("insert into strategy_orders
@@ -3698,6 +3969,7 @@
     }
 
     /* A buy, sent. */
+    $s2_agreed(0.0);
     $s2_buy_id = $s2_order('BUY', 0.44);
     $s2_reset();
     [$s2_buy_out, $s2_buy_rc] = run_script('send_broker_orders.php',
@@ -3717,10 +3989,7 @@
 
     /* A sell goes as a negative quantity, which is how Trading 212 says
        which way round a trade goes. */
-    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
-                   values (?,?,'XLON',?,?,now())
-                   on duplicate key update quantity=values(quantity)")
-        ->execute([$S2B, 'S201', 1.0, 37.195]);
+    $s2_agreed(1.0);
     $s2_sell_id = $s2_order('SELL', 0.44);
     $s2_reset();
     run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
@@ -3733,6 +4002,7 @@
     $s2_kill = sys_get_temp_dir() . '/smt212stop' . getmypid();
     @unlink($s2_kill);
     file_put_contents($s2_kill, 'stop');
+    $s2_agreed(0.0);
     $s2_kill_id = $s2_order('BUY', 0.44);
     $s2_reset();
     [$s2_kill_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'],
@@ -3747,6 +4017,7 @@
 
     /* A share the broker refuses on its quantity is remembered, so the next
        plan sizes it in whole shares rather than being refused again. */
+    $s2_agreed(0.0);
     $s2_reject_id = $s2_order('BUY', 0.44);
     $s2_reset();
     $s2_write('t212_place', 'reject');
@@ -3768,6 +4039,7 @@
     /* The case the whole SENT/UNKNOWN dance exists for. The order calls are
        not idempotent: the same request sent twice can create two orders, so
        a request whose answer never arrived must never be sent again blind. */
+    $s2_agreed(0.0);
     $s2_unknown_id = $s2_order('BUY', 0.44);
     $s2_reset();
     $s2_write('t212_place', 'slow');
@@ -3832,6 +4104,170 @@
     db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
         ->execute([$S2B]);
     $s2_write('pending.json', json_encode([]));
+
+    echo "\n--- stage 2: one thing at a time ---\n";
+
+    /* The first live sender sent three more orders on each of three passes
+       while the earlier ones still showed as working, and every pass said
+       "the broker's positions have never been read, so there is nothing to
+       compare against". Harmless that day - the orders were distinct and it
+       was a first build - and exactly how a position gets doubled on a day
+       when they are not. */
+
+    /* An order sent a moment ago is settling, which is normal: a market
+       order fills in ten to thirty seconds. */
+    $s2_agreed(0.0);
+    $s2_settling = $s2_order('BUY', 0.44);
+    db()->prepare("update strategy_orders set status='SENT', broker=?, broker_order_id='settling-1',
+                     sent_at=now() where client_order_id=?")
+        ->execute([BROKER_T212, $s2_settling]);
+    db()->prepare("insert into strategy_orders
+                     (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,
+                      status,note,created_at)
+                   values (?,?,?,'S201','XLON','BUY',0.11,'PENDING','rebalance',now())")
+        ->execute([$S2B . ':second', $S2B, asof_date()]);
+
+    $s2_reset();
+    [$s2_settle_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('an order sent seconds ago does not stop the next one',
+          count($s2_orders_sent()) === 1
+          && stripos($s2_settle_out, 'still settling') !== false,
+          $s2_settle_out);
+
+    /* The same order, minutes old and still unresolved, does. */
+    db()->prepare("update strategy_orders set status='PENDING', broker_order_id=null, sent_at=null
+                    where client_order_id=?")->execute([$S2B . ':second']);
+    db()->prepare("update strategy_orders set sent_at=date_sub(now(), interval 10 minute)
+                    where client_order_id=?")->execute([$s2_settling]);
+
+    $s2_reset();
+    [$s2_wait_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('an order still unresolved ten minutes later stops the next one',
+          count($s2_orders_sent()) === 0
+          && stripos($s2_wait_out, 'still') !== false
+          && stripos($s2_wait_out, 'unresolved') !== false,
+          $s2_wait_out);
+    check('and the one that was waiting is still waiting, not lost',
+          scalar("select status from strategy_orders where client_order_id=?",
+                 [$S2B . ':second']) === 'PENDING');
+
+    /* Past the longer limit it is not a wait any more, it is a question
+       nobody is answering. */
+    db()->prepare("update strategy_orders set sent_at=date_sub(now(), interval 45 minute)
+                    where client_order_id=?")->execute([$s2_settling]);
+    $s2_reset();
+    [$s2_stuck_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('an order stuck for three quarters of an hour halts the strategy',
+          scalar("select halted from strategy_accounts where strategy=?", [$S2B]) === 'Y'
+          && stripos((string) scalar("select halt_reason from strategy_accounts where strategy=?",
+                                     [$S2B]), 'without being resolved') !== false
+          && count($s2_orders_sent()) === 0,
+          $s2_stuck_out);
+
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+        ->execute([$S2B]);
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+
+    echo "\n--- stage 2: nothing is sent into the dark ---\n";
+
+    /* Sending without having compared the two books is sending into the
+       dark. The one exception is a strategy that holds nothing and has
+       never had a fill: there is nothing of its own to disagree about. */
+    db()->exec("delete from broker_positions");
+    db()->exec("delete from broker_sync_runs");
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+
+    $s2_first_id = $s2_order('BUY', 0.44);
+    $s2_reset();
+    [$s2_first_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('a first build may go without a comparison, and says so',
+          count($s2_orders_sent()) === 1
+          && stripos($s2_first_out, 'nothing to compare') !== false,
+          $s2_first_out);
+
+    /* But a strategy that has traded may not. */
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'S201','XLON',0.44,37.195,now())
+                   on duplicate key update quantity=values(quantity)")->execute([$S2B]);
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+    $s2_dark_id = $s2_order('BUY', 0.11);
+    $s2_reset();
+    [$s2_dark_out] = run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('a strategy that holds something sends nothing until the books have been compared',
+          count($s2_orders_sent()) === 0
+          && stripos($s2_dark_out, 'could not be compared') !== false
+          && scalar("select status from strategy_orders where client_order_id=?",
+                    [$s2_dark_id]) === 'PENDING',
+          $s2_dark_out);
+
+    /* A sync that found nothing is still a read: "no rows" is not "nobody
+       looked", which is the difference between a quiet day and a blind one. */
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+    db()->prepare("insert into broker_sync_runs (broker, environment, started_at, finished_at,
+                                                 status, as_of_date, positions)
+                   values (?,'demo',now(),now(),'OK',?,0)")
+        ->execute([BROKER_T212, date('Y-m-d')]);
+    $s2_reset();
+    run_script('send_broker_orders.php', [$S2B, '--any-time'], $s2_env);
+    check('a sync that read an empty account counts as having compared them',
+          count($s2_orders_sent()) === 1, implode("\n", $s2_orders_sent()));
+
+    /* And a disagreement stops it at the sender, not only at the job that
+       calls the sender. */
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+    $s2_differ_id = $s2_order('BUY', 0.11);
+    db()->prepare("insert into broker_positions (broker, as_of_date, broker_ticker, symbol,
+                                                 quantity, price_unit, synced_at)
+                   values (?,?,?,?,?,'pence',now())")
+        ->execute([BROKER_T212, date('Y-m-d'), 'S201l_EQ', 'S201', 9.99]);
+    $s2_reset();
+    $s2_differ_out = broker_send_orders($S2B,
+        ['ignore_time' => true,
+         'client' => new T212Client(['env' => 'demo', 'throttle' => 0])]);
+    check('the sender refuses on a disagreement even when nobody reconciled first',
+          $s2_differ_out['sent'] === 0 && $s2_differ_out['halted'] === true
+          && count($s2_orders_sent()) === 0
+          && scalar("select halted from strategy_accounts where strategy=?", [$S2B]) === 'Y',
+          json_encode($s2_differ_out));
+
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+        ->execute([$S2B]);
+    db()->exec("delete from broker_positions");
+
+    echo "\n--- stage 2: a dry run shows one run's worth ---\n";
+
+    /* The dry run listed every pending order as if all of them would go,
+       which is not what a run does: the cap stops it. */
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$S2B]);
+    for ($s2_n = 1; $s2_n <= 6; $s2_n++) {
+        db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,
+                          status,note,created_at)
+                       values (?,?,?,'S201','XLON','BUY',?,'PENDING','rebalance',now())")
+            ->execute([$S2B . ':cap' . $s2_n, $S2B, asof_date(), 10.0]);
+    }
+
+    $s2_reset();
+    $s2_dry = broker_send_orders($S2B,
+        ['ignore_time' => true, 'dry_run' => true,
+         'client' => new T212Client(['env' => 'demo', 'throttle' => 0])]);
+
+    check('a dry run sends nothing at all',
+          count($s2_orders_sent()) === 0
+          && (int) scalar("select count(*) from strategy_orders
+                            where strategy=? and status<>'PENDING'", [$S2B]) === 0,
+          json_encode($s2_dry));
+    check('and stops at the cap, like a real run would',
+          $s2_dry['skipped'] < 6 && $s2_dry['value'] <= T212_MAX_RUN_VALUE
+          && count($s2_dry['errors']) === 1
+          && stripos($s2_dry['errors'][0], 'cap') !== false,
+          json_encode([$s2_dry['skipped'], $s2_dry['value'], $s2_dry['errors']]));
+    check('and says how many are left for the next one',
+          stripos($s2_dry['errors'][0], 'left for the next run') !== false,
+          $s2_dry['errors'][0]);
+
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$S2B]);
 
     echo "\n--- stage 2: a fill is the broker's figures, not ours ---\n";
 
