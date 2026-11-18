@@ -269,6 +269,10 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
     investable = (total - costs.commission * len(chosen)) / mult
     buys = sells = 0.0
     want = set(chosen)
+    events.append({"date": d, "symbol": "(all)", "event": "sizing", "investable": investable, "weight": weight,
+                   "account_value": total, "multiplier": mult, "holdings_wanted": n,
+                   "detail": f"account value {total:,.2f}, investable {investable:,.2f} "
+                             f"(= value less commission, over {mult:.4f}), weight {weight}, {len(chosen)} chosen of {n}"})
     for x in chosen:
         j = col[x]
         p = close[i, j]

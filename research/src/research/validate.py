@@ -107,6 +107,119 @@ def holdings_by_month(fills: pd.DataFrame) -> dict:
     return out
 
 
+def write_ours_orders(fills: pd.DataFrame, path: Path) -> Path:
+    """The engine's fills in the layout of n100_run9_orders.csv: date, symbol, side, quantity, price (pounds)."""
+    f = fills.copy()
+    f["symbol"] = f["symbol"].str.replace(r"\.L$", "", regex=True).str.replace("-", ".", regex=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f[["date", "symbol", "side", "quantity", "price"]].to_csv(path, index=False)
+    return path
+
+
+def n100_style_first_value(out: dict, d0, start_cash: float) -> dict:
+    """The first value the way the N100 writes it.
+
+    strategy_write_values runs after the night's fills, which in a backtest happen at once at the next
+    price: cash AFTER the first build (its costs and the price move to the next close taken out) plus
+    the holdings marked at the decision date's close. Our own series is the other way round: the
+    first date is still 100,000 and the build fills the next day. Neither is wrong; they are just not
+    the same number on the same date.
+    """
+    fills = out["result"].fills
+    first = fills[fills["date"] == fills["date"].min()] if len(fills) else fills
+    buys = first[first["side"] == "BUY"]
+    cost = float((buys["consideration"] + buys["stamp_duty"] + buys["spread"] + buys["commission"] + buys["ptm"]).sum())
+    close0 = out["market"].close.loc[d0]
+    held = float(sum(r.quantity * close0[r.symbol] for r in buys.itertuples()))
+    cash = start_cash - cost
+    return {"decision_date": str(d0.date()), "fill_date": str(first["date"].min().date()) if len(first) else None,
+            "cash_after_first_build": round(cash, 2), "holdings_at_decision_close": round(held, 2),
+            "value_as_the_n100_writes_it": round(cash + held, 2), "first_build_cost": round(cost, 2),
+            "fills": int(len(buys))}
+
+
+def day_one_analysis(out: dict, n100: pd.DataFrame, ours: pd.DataFrame, d0, start_cash: float) -> dict:
+    """The first build, share by share, to separate price differences from sizing differences.
+
+    For each share bought on day one by both: fill date, quantity and price on each side, and our
+    fill price over theirs (1.000 if the price basis and the fill day agree). Then, from the N100's
+    quantity and OUR decision-date price, the range of investable amounts that would produce it
+    (quantity = floor(weight x investable / price)). If one range fits all fifteen, the sizing base
+    differs by a single number and the implied cost multiplier says which (the N100's SLIPPAGE and
+    commission constants); if not, the prices or the weights differ and the ratios show where.
+    """
+    ev = next((e for e in out["result"].events if e["event"] == "sizing" and e["date"] == d0), None)
+    if ev is None:
+        return {"problem": "no sizing event on the first rebalance date"}
+    close0 = out["market"].close.loc[d0]
+    w = ev["weight"]
+
+    def first_buys(df):
+        d = df.copy()
+        d["date"] = pd.to_datetime(d["date"])
+        d = d[d["side"].astype(str).str.upper() == "BUY"]
+        return d[d["date"] == d["date"].min()].set_index("symbol")
+    a, b = first_buys(n100), first_buys(ours)
+    rows, lo, hi = [], 0.0, float("inf")
+    for s in sorted(set(a.index) & set(b.index)):
+        q = float(a.at[s, "quantity"])
+        p = float(close0.get(s, np.nan))
+        lo_s, hi_s = q * p / w, (q + 1) * p / w
+        if np.isfinite(p):
+            lo, hi = max(lo, lo_s), min(hi, hi_s)
+        rows.append({"symbol": s, "n100_date": str(a.at[s, "date"].date()), "ours_date": str(b.at[s, "date"].date()),
+                     "n100_qty": q, "ours_qty": float(b.at[s, "quantity"]),
+                     "n100_fill_price": round(float(a.at[s, "price"]), 4), "ours_fill_price": round(float(b.at[s, "price"]), 4),
+                     "our_price_over_theirs": round(float(b.at[s, "price"]) / float(a.at[s, "price"]), 4),
+                     "our_decision_price": None if not np.isfinite(p) else round(p, 4),
+                     "n100_implied_investable": None if not np.isfinite(p) else round((q + 0.5) * p / w, 2)})
+    consistent = lo <= hi
+    ratios = [r["our_price_over_theirs"] for r in rows]
+    res = {"decision_date": str(d0.date()), "weight": w, "our_investable": round(ev["investable"], 2),
+           "our_multiplier": round(ev["multiplier"], 5), "start_cash": start_cash,
+           "only_n100": sorted(set(a.index) - set(b.index)), "only_ours": sorted(set(b.index) - set(a.index)),
+           "fill_price_ratio_min_max": [min(ratios), max(ratios)] if ratios else None,
+           "shares": rows}
+    if consistent and np.isfinite(hi):
+        res["one_investable_fits_all"] = True
+        res["n100_investable_between"] = [round(lo, 2), round(hi, 2)]
+        res["n100_implied_multiplier_between"] = [round(start_cash / hi, 5), round(start_cash / lo, 5)]
+        res["reading"] = ("sizing base differs by one number: compare the implied multiplier with ours "
+                          f"({ev['multiplier']:.5f}); 1.0075 would be the 25 bp constant STRATEGY_SLIPPAGE_BPS, "
+                          "1.006 the 10 bp spread, and a commission shows as a lower investable")
+    else:
+        res["one_investable_fits_all"] = False
+        res["reading"] = ("no single investable reproduces all the N100's quantities from our decision prices: "
+                          "the decision prices or the weights differ. See the fill price ratios and the shares "
+                          "whose implied investable is far from the others")
+    return res
+
+
+def watch_shares(out: dict, n100: pd.DataFrame, ours: pd.DataFrame, shares: list[str], rebalances: int = 8) -> dict:
+    """Each share's fills on both sides and, at the first rebalances, our rank and whether either side held it."""
+    mk, scores = out["market"], out["scores"]
+    n, o = n100.copy(), ours.copy()
+    for df in (n, o):
+        df["date"] = pd.to_datetime(df["date"])
+        df["side"] = df["side"].astype(str).str.upper()
+        df["signed"] = np.where(df["side"] == "BUY", 1.0, -1.0) * df["quantity"].astype(float)
+    res = {}
+    for s in shares:
+        rows = []
+        for d in sorted(scores)[:rebalances]:
+            sc = scores[d].dropna().sort_values(ascending=False)
+            rank = int(list(sc.index).index(s)) + 1 if s in sc.index else None
+            rows.append({"date": str(d.date()), "our_rank": rank, "candidates": int(len(sc)),
+                         "we_hold": float(o[(o["symbol"] == s) & (o["date"] <= d)]["signed"].sum()),
+                         "n100_holds": float(n[(n["symbol"] == s) & (n["date"] <= d)]["signed"].sum())})
+        res[s] = {"our_fills": [(str(r.date.date()), r.side, float(r.quantity), round(float(r.price), 4))
+                                for r in o[o["symbol"] == s].itertuples()][:12],
+                  "n100_fills": [(str(r.date.date()), r.side, float(r.quantity), round(float(r.price), 4))
+                                 for r in n[n["symbol"] == s].itertuples()][:12],
+                  "at_first_rebalances": rows}
+    return res
+
+
 def positions_by_month(fills: pd.DataFrame) -> dict:
     """Period('M') -> {symbol: quantity} held at that month's end, from a list of fills."""
     f = fills.copy()
@@ -180,8 +293,14 @@ def statistics_check(ws: Workspace, out: dict, rebalance_date: str | None) -> di
     ours_ma = mk.ma200.iloc[i]
     from .signals.base import Context
     ctx = Context(mk, ws.f)
-    ours_6m = ctx.n100_return(d, 6) * 100
-    rows, screen_diff = [], []
+    ours_6m = ctx.n100_return(d, 6) * 100                 # the N100 stores per cent
+    common = [s for s in n.index if s in ours_close.index and pd.notna(ours_close[s]) and ours_close[s] > 0
+              and pd.notna(n.at[s, "close_price"]) and n.at[s, "close_price"] > 0]
+    ratio = pd.Series({s: n.at[s, "close_price"] / ours_close[s] for s in common})
+    # The N100 stores London prices in pence and ours are in pounds, so the ratio is about 100; the
+    # baseline is whatever the bulk of the shares agree on, and only departures from it are gaps.
+    base = float(ratio.median()) if len(ratio) else 100.0
+    rows, screen_diff, unit_mismatch = [], [], []
     for s in n.index:
         if s not in ours_close.index:
             rows.append({"symbol": s, "problem": "no prices in our data"})
@@ -189,18 +308,45 @@ def statistics_check(ws: Workspace, out: dict, rebalance_date: str | None) -> di
         nc, nm = n.at[s, "close_price"], n.at[s, "ma200"]
         n_above = bool(pd.notna(nc) and pd.notna(nm) and nc > nm)
         o_above = bool(pd.notna(ours_close[s]) and pd.notna(ours_ma[s]) and ours_close[s] > ours_ma[s])
+        if s in ratio.index and not 0.999 < ratio[s] / base < 1.001:
+            k = ratio[s] / base
+            unit_mismatch.append({"symbol": s, "n100_close": float(nc), "our_close_pounds": round(float(ours_close[s]), 4),
+                                  "ratio_to_baseline": round(float(k), 4),
+                                  "reading": ("a x100 unit difference between the N100's series and ours" if 90 < k < 110 or 0.009 < k < 0.011
+                                              else "values differ")})
         if n_above != o_above:
-            screen_diff.append({"symbol": s, "n100_close": nc, "n100_ma200": nm, "our_close": None if pd.isna(ours_close[s]) else round(float(ours_close[s]), 4),
-                                "our_ma200": None if pd.isna(ours_ma[s]) else round(float(ours_ma[s]), 4),
-                                "n100_above": n_above, "our_above": o_above,
-                                "n100_has_ma200": bool(pd.notna(nm))})
-        for name, ours_v, theirs in (("close_price", ours_close[s], nc), ("ma200", ours_ma[s], nm),
-                                     ("6mnth", ours_6m.get(s, np.nan), n.at[s, "6mnth"] if "6mnth" in n else np.nan)):
-            if pd.notna(ours_v) and pd.notna(theirs) and abs(ours_v / theirs - 1) > 0.001 and theirs != 0:
-                rows.append({"symbol": s, "indicator": name, "n100": float(theirs), "ours": round(float(ours_v), 4)})
+            screen_diff.append({"symbol": s, "n100_close": float(nc), "n100_ma200": None if pd.isna(nm) else float(nm),
+                                "our_close_pounds": None if pd.isna(ours_close[s]) else round(float(ours_close[s]), 4),
+                                "our_ma200_pounds": None if pd.isna(ours_ma[s]) else round(float(ours_ma[s]), 4),
+                                "n100_above": n_above, "our_above": o_above, "n100_has_ma200": bool(pd.notna(nm)),
+                                "n100_close_over_ma200": None if pd.isna(nm) or nm == 0 else round(float(nc / nm), 4),
+                                "our_close_over_ma200": None if pd.isna(ours_ma[s]) or ours_ma[s] == 0 else round(float(ours_close[s] / ours_ma[s]), 4),
+                                "our_price_unit_steps": price_unit_steps(mk.close[s])[:6] if s in mk.close.columns else []})
+        # Only real gaps: the N100's value, scaled to our units by the baseline, against ours.
+        for name, ours_v, theirs, scale in (("close_price", ours_close[s], nc, base), ("ma200", ours_ma[s], nm, base),
+                                            ("6mnth", ours_6m.get(s, np.nan), n.at[s, "6mnth"] if "6mnth" in n else np.nan, 1.0)):
+            if pd.notna(ours_v) and pd.notna(theirs) and theirs != 0 and ours_v != 0:
+                k = (theirs / scale) / ours_v
+                if abs(k - 1) > 0.001 and not any(u["symbol"] == s for u in unit_mismatch):
+                    rows.append({"symbol": s, "indicator": name, "n100": float(theirs), "ours": round(float(ours_v), 4),
+                                 "n100_over_ours_after_units": round(float(k), 4)})
     only_n100 = sorted(set(n.index) - set(ours_close.dropna().index))
-    return {"file": p.name, "shares_in_file": int(len(n)), "screen_membership_differs": screen_diff,
-            "values_over_0.1pct_apart": rows[:60], "n100_only_symbols": only_n100[:30]}
+    return {"file": p.name, "shares_in_file": int(len(n)), "unit_baseline_n100_over_ours": round(base, 4),
+            "screen_membership_differs": screen_diff, "unit_mismatches": unit_mismatch[:40],
+            "real_gaps_over_0.1pct (units normalised)": rows[:60], "n100_only_symbols": only_n100[:30]}
+
+
+def price_unit_steps(close: pd.Series) -> list[dict]:
+    """One-day steps of 70 to 140 times (or the inverse) in a price series: the signature of a unit
+    change (pence read as pounds, or the reverse), or a share consolidation that was not adjusted."""
+    from .clean import _is_step
+    s = close.dropna()
+    if len(s) < 2:
+        return []
+    r = (s.to_numpy()[1:] / s.to_numpy()[:-1])
+    hit = np.where(_is_step(r))[0]
+    return [{"date": str(s.index[k + 1].date()), "ratio": round(float(r[k]), 3),
+             "before": round(float(s.iloc[k]), 4), "after": round(float(s.iloc[k + 1]), 4)} for k in hit]
 
 
 def explain_month(ws: Workspace, out: dict, month, ours: set, theirs: set, held_before: set, listed: set) -> dict:
@@ -286,6 +432,10 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
               "ours_total_return": rec["total_return"], "ours_fills": rec["fills"],
               "ours_costs": rec["costs_paid"],
               "report": str(out.get("report"))}
+    ours_path = write_ours_orders(out["result"].fills, ws.cfg.data_dir / "validation" / "run9_ours_orders.csv")
+    report["ours_orders_file"] = str(ours_path)
+    d0 = min(out["scores"])
+    report["first_value_the_n100_way"] = n100_style_first_value(out, d0, float(raw["start_cash"]))
     if values_csv:
         v = pd.read_csv(values_csv, parse_dates=["date"]).sort_values("date")
         # From the starting cash, not the first row: the N100's first value
@@ -293,6 +443,8 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
         # and its stated +104.43% is 204,432.69 over 100,000.
         theirs = float(v["total"].iloc[-1] / float(raw["start_cash"]) - 1)
         report["n100_first_value"] = float(v["total"].iloc[0])
+        report["first_value_gap_the_n100_way"] = round(
+            report["first_value_the_n100_way"]["value_as_the_n100_writes_it"] - float(v["total"].iloc[0]), 2)
         report["ours_first_value"] = float(out["result"].values["total"].iloc[0])
         report["n100_total_return"] = theirs
         report["return_gap_pp"] = 100 * (rec["total_return"] - theirs)
@@ -346,8 +498,20 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
 
         first_set = next((mm for mm in hm if h_n100.get(mm, set()) != h_ours.get(mm, set())), None)
         first_pos = next((mm for mm in hm if mm not in same_q), None)
+        report["first_value_check"] = ("matches" if abs(report.get("first_value_gap_the_n100_way", 1e9)) < 5
+                                       else "differs: see first_month_quantities_differ.day_one")
         first = first_set if first_set is not None else first_pos
         report["first_month_positions_differ"] = None if first_pos is None else str(first_pos)
+        if first_pos is not None:
+            qd = [{"symbol": s, "n100": q_n100.get(first_pos, {}).get(s), "ours": q_ours.get(first_pos, {}).get(s)}
+                  for s in sorted(set(q_n100.get(first_pos, {})) | set(q_ours.get(first_pos, {})))
+                  if not np.isclose(q_n100.get(first_pos, {}).get(s, 0.0), q_ours.get(first_pos, {}).get(s, 0.0), atol=0.5)]
+            report["first_month_quantities_differ"] = {
+                "month": str(first_pos), "shares_that_differ": len(qd), "quantities": qd,
+                "fills_side_by_side": fills_side_by_side(o_f, ours_f, first_pos),
+                "engine_decisions": engine_decisions(out["result"].events, first_pos, {r["symbol"] for r in qd}),
+                "day_one": day_one_analysis(out, o_f, ours_f, d0, float(raw["start_cash"]))
+                if first_pos == min(h_ours) else "not the first month"}
         if first is not None:
             held_before = h_ours.get(first - 1, set())
             report["first_month_holdings_differ"] = explain_month(
@@ -364,5 +528,8 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
                                               | {r["symbol"] for r in report["first_month_holdings_differ"]["quantities"]}))
             report["first_month_holdings_differ"]["n100_statistics_check"] = statistics_check(
                 ws, out, report["first_month_holdings_differ"]["rebalance_date"])
+        fm = report.get("first_month_holdings_differ", {})
+        report["watch_shares"] = watch_shares(out, o_f, ours_f, sorted({"HFD.L", "KNOS.L", "IHP.L"}
+                                                                       | set(fm.get("only_ours", [])) | set(fm.get("only_n100", []))))
     report["passed"] = bool(report.get("return_ok", False) and report.get("fills_ok", False))
     return report

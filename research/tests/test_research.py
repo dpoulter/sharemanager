@@ -585,3 +585,86 @@ def test_validate_reports_sells_positions_and_fills_side_by_side(cfg, tmp_path):
     rep2 = run9(ws, lst, orders, values, **kw)
     chk = rep2["first_month_holdings_differ"]["n100_statistics_check"]
     assert any(r["symbol"] == s for r in chk["screen_membership_differs"]) or chk["values_over_0.1pct_apart"]
+
+
+# ---------------------------------------------------------------- AD: day one, units, our orders file
+def _run9_out(cfg, tmp_path):
+    from research.validate import RUN9, run9
+    ws, m = _ws_with_dividends(cfg)
+    lst = tmp_path / "n100.tsv"
+    lst.write_text("symbol\tis_fund\tsector\n" + "".join(f"{s[:-2]}\tN\tX, Y\n" for s in m.close.columns))
+    kw = dict(start="2025-02-03", end="2025-09-30")
+    rep = run9(ws, lst, None, None, **kw)
+    spec = spec_from_dict({**RUN9, "universe": f"list:{cfg.data_dir / 'validation' / 'run9_universe_no_funds.csv'}"})
+    out = ws.run(spec, kind="engine_validation", start=kw["start"], end=kw["end"], write_report=False)
+    return ws, m, lst, kw, rep, out
+
+
+def test_our_orders_file_and_the_first_value_the_n100_way(cfg, tmp_path):
+    ws, m, lst, kw, rep, out = _run9_out(cfg, tmp_path)
+    f = pd.read_csv(cfg.data_dir / "validation" / "run9_ours_orders.csv")
+    assert list(f.columns) == ["date", "symbol", "side", "quantity", "price"]
+    assert not f["symbol"].str.endswith(".L").any() and len(f) == rep["ours_fills"]
+    fv = rep["first_value_the_n100_way"]
+    assert fv["fills"] == 6 and fv["value_as_the_n100_writes_it"] < 100_000       # the build's costs are already out
+    assert fv["value_as_the_n100_writes_it"] == pytest.approx(
+        fv["cash_after_first_build"] + fv["holdings_at_decision_close"], abs=0.01)
+    assert out["result"].values["total"].iloc[0] == 100_000                      # ours is still whole on that date
+
+
+def test_day_one_analysis_fits_one_investable_when_only_the_sizing_base_differs(cfg, tmp_path):
+    from research.validate import day_one_analysis
+    ws, m, lst, kw, rep, out = _run9_out(cfg, tmp_path)
+    d0 = min(out["scores"])
+    ours = out["result"].fills
+    # The N100 sizes from a slightly different base (multiplier 1.0075 instead of 1.006): same shares, fewer of each.
+    ev = next(e for e in out["result"].events if e["event"] == "sizing" and e["date"] == d0)
+    n100 = ours.copy()
+    close0 = out["market"].close.loc[d0]
+    inv = 100_000 / 1.0075
+    n100["quantity"] = [float(np.floor(ev["weight"] * inv / close0[s])) if side == "BUY" else q
+                        for s, side, q in zip(n100["symbol"], n100["side"], n100["quantity"])]
+    res = day_one_analysis(out, n100, ours, d0, 100_000.0)
+    assert res["one_investable_fits_all"] is True
+    lo, hi = res["n100_implied_multiplier_between"]
+    assert lo <= 1.0075 <= hi and res["our_multiplier"] == pytest.approx(ev["multiplier"])
+    # One share's quantity off by a lot: no single investable fits.
+    bad = n100.copy()
+    i0 = bad.index[bad["side"] == "BUY"][0]
+    bad.loc[i0, "quantity"] *= 1.3
+    res2 = day_one_analysis(out, bad, ours, d0, 100_000.0)
+    assert res2["one_investable_fits_all"] is False
+    assert res2["fill_price_ratio_min_max"] == [1.0, 1.0]
+
+
+def test_price_unit_steps_and_statistics_units_normalised(cfg, tmp_path):
+    from research.validate import price_unit_steps, run9
+    s = pd.Series([3.0, 3.1, 3.05, 305.0, 306.0, 310.0], index=pd.bdate_range("2024-01-01", periods=6))
+    steps = price_unit_steps(s)
+    assert len(steps) == 1 and steps[0]["date"] == "2024-01-04" and steps[0]["ratio"] > 90
+    ws, m, lst, kw, rep, out = _run9_out(cfg, tmp_path)
+    first = min(out["scores"])
+    orders = tmp_path / "orders.csv"
+    fills = out["result"].fills.copy()
+    bad = fills.copy()
+    bad.loc[bad.index[bad["side"] == "BUY"][0], "quantity"] += 25
+    bad[["date", "symbol", "side", "quantity", "price"]].to_csv(orders, index=False)
+    values = tmp_path / "values.csv"
+    out["result"].values["total"].rename("total").reset_index().to_csv(values, index=False)
+    rep1 = run9(ws, lst, orders, values, **kw)
+    d = rep1["first_month_holdings_differ"]["rebalance_date"]
+    syms = list(m.close.columns)
+    stats = pd.DataFrame({"symbol": [x[:-2] for x in syms], "close_price": [m.close[x].loc[:d].iloc[-1] * 100 for x in syms],
+                          "ma200": [m.ma200[x].loc[:d].iloc[-1] * 100 for x in syms],
+                          "6mnth": 5.0})                          # the N100 stores pence; ours are pounds
+    odd = syms[1][:-2]
+    stats.loc[stats["symbol"] == odd, ["close_price", "ma200"]] /= 100          # one series in pounds, not pence
+    stats.to_csv(cfg.data_dir / "validation" / f"n100_stats_{d}.csv", index=False)
+    chk = run9(ws, lst, orders, values, **kw)["first_month_holdings_differ"]["n100_statistics_check"]
+    assert chk["unit_baseline_n100_over_ours"] == pytest.approx(100.0, rel=1e-3)
+    assert [u["symbol"] for u in chk["unit_mismatches"]] == [syms[1]]
+    assert "x100" in chk["unit_mismatches"][0]["reading"]
+    assert not chk["screen_membership_differs"]                  # the unit mix-up does not change close vs ma200 here
+    qd = rep1["first_month_quantities_differ"]
+    assert qd["month"] and qd["shares_that_differ"] == 1 and qd["day_one"]["one_investable_fits_all"] is False
+    assert "HFD.L" in rep1["watch_shares"]
