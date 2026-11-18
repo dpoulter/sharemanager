@@ -244,6 +244,43 @@
 	}
 
 	/* ---------------------------------------------------------------------
+	   Assets.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * A local stylesheet or script URL, with the file's own timestamp on it.
+	 *
+	 * The page was deployed and the browser went on using the stylesheet it
+	 * already had. /css/app.css never changes its name, so a browser that
+	 * has it has no reason to ask again, and a deploy that changes the CSS
+	 * or the JavaScript shows the old one - which is what made a correct
+	 * two-column page look like the old centred one for a day, and cost a
+	 * round of "it is stale on the server" when it was not.
+	 *
+	 * The modification time of the file in public/ is the version: it
+	 * changes exactly when the file does, needs nothing kept in step by
+	 * hand, and a deploy that copies the file changes it by copying.
+	 *
+	 * The path is the URL path, from the document root ("/css/app.css").
+	 * A file that is not there gets no version rather than a guess: on a
+	 * fresh clone public/css and public/js are empty until
+	 * tools/fetch_assets.sh has run, and a page should still render.
+	 */
+	function asset_url($path) {
+
+		$path = '/' . ltrim((string) $path, '/');
+		$file = dirname(__DIR__) . '/public' . $path;
+
+		/* Read rather than trusted: open_basedir, a missing file and a
+		   deploy mid-request all come back false, and none of them is a
+		   reason to fail to draw the page. */
+		$stamp = @filemtime($file);
+
+		return htmlspecialchars($stamp === false ? $path : $path . '?v=' . $stamp,
+		                        ENT_QUOTES, 'UTF-8');
+	}
+
+	/* ---------------------------------------------------------------------
 	   Colour.
 	   --------------------------------------------------------------------- */
 

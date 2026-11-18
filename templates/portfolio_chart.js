@@ -36,9 +36,12 @@
 	   a black card. Read at build time from the custom properties app.css
 	   sets; the fallbacks are the values the charts used to carry. */
 	function token(name, fallback) {
-		var value = getComputedStyle(document.documentElement).getPropertyValue(name);
-		value = (value || "").trim();
-		return value === "" ? fallback : value;
+		/* Through smChartColour() in scripts.js, which asks the browser
+		   what the token resolves to. The value app.css writes is
+		   light-dark(...), which this library cannot parse: it threw
+		   inside createChart and the chart drew nothing. */
+		return (typeof smChartColour === "function")
+			? smChartColour(name, fallback) : fallback;
 	}
 
 

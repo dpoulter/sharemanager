@@ -63,23 +63,23 @@ $sm_user = function_exists("view_username") ? view_username() : "";
              bootstrap.css and bootstrap-theme.min.css used to be loaded here
              too. The theme is Bootstrap 3 and does not exist for 5, and the
              unminified copy was the same framework a second time. -->
-        <link rel="stylesheet" href="/css/bootstrap.min.css">
+        <link rel="stylesheet" href="<?= asset_url('/css/bootstrap.min.css') ?>">
         <!-- styles1.css was loaded here. On the server it is the placeholder
              comment tools/fetch_assets.sh writes, not a stylesheet: there is
              no real one anywhere, so every page was fetching an empty file. -->
-        <link rel="stylesheet" href="/css/fontawesome.min.css">
+        <link rel="stylesheet" href="<?= asset_url('/css/fontawesome.min.css') ?>">
         <!-- typeahead.js ships no stylesheet, so the navbar suggestion list has
              none unless this is loaded. See templates/typeahead.css. -->
-        <link rel="stylesheet" href="/css/typeahead.css">
+        <link rel="stylesheet" href="<?= asset_url('/css/typeahead.css') ?>">
         <!-- This application's own stylesheet, last so it decides. Built from
              templates/app.css by tools/fetch_assets.sh. -->
-        <link rel="stylesheet" href="/css/app.css">
+        <link rel="stylesheet" href="<?= asset_url('/css/app.css') ?>">
 
-        <script src="/js/jquery-3.3.1.min.js"></script>
-        <script src="/js/bootstrap.bundle.min.js"></script>
-        <script src="/js/bloodhound.min.js"></script>
-        <script src="/js/typeahead.jquery.js"></script>
-        <script src="/js/scripts.js"></script>
+        <script src="<?= asset_url('/js/jquery-3.3.1.min.js') ?>"></script>
+        <script src="<?= asset_url('/js/bootstrap.bundle.min.js') ?>"></script>
+        <script src="<?= asset_url('/js/bloodhound.min.js') ?>"></script>
+        <script src="<?= asset_url('/js/typeahead.jquery.js') ?>"></script>
+        <script src="<?= asset_url('/js/scripts.js') ?>"></script>
 
         <?php if (isset($title)): ?>
             <title>Share Portfolio Manager <?= htmlspecialchars($title) ?></title>

@@ -90,6 +90,23 @@
 	   and the batch being approved. */
 	define("STRATEGY_MODE_T212_LIVE", "T212_LIVE");
 
+	/* A replay of a Trading 212 strategy: its dealing rules, and no broker.
+	 *
+	 * A backtest of the practice strategy used to run as a paper account,
+	 * so it replayed whole shares, GBP 5.95 a deal and a GBP 250 minimum -
+	 * none of which the practice account pays - and the figures it produced
+	 * were a different strategy's. Copying T212_DEMO onto the backtest
+	 * account instead would be worse: the engine would leave its orders
+	 * PENDING for a broker to fill, the selection would be narrowed to the
+	 * instruments Trading 212 lists, and an account the sender might one
+	 * day pick up would exist for every run.
+	 *
+	 * So the dealing rules without the broker: no commission, fractions,
+	 * the Trading 212 minimum, filled here from stored prices like any
+	 * paper account. Only backtest accounts are given it - see
+	 * strategy_backtest_mode(). */
+	define("STRATEGY_MODE_PAPER_T212", "PAPER_T212");
+
 	/* The figures a Trading 212 account trades by - the minimum order, the
 	   quantity precision, the per-run cap, the session times - are in
 	   constants.php beside the rest of the broker's settings, because the
@@ -127,6 +144,23 @@
 			];
 		}
 
+		if ($mode === STRATEGY_MODE_PAPER_T212) {
+			return [
+				'mode'          => STRATEGY_MODE_PAPER_T212,
+				/* No broker: nothing sends its orders and nothing waits
+				   for a fill from anywhere but the stored prices. */
+				'broker'        => null,
+				'demo'          => false,
+				'live'          => false,
+				'environment'   => null,
+				'minimum_order' => T212_MIN_ORDER_VALUE,
+				'fractional'    => true,
+				'decimals'      => max(0, min(8, (int) T212_QUANTITY_DECIMALS)),
+				'commission'    => 0.0,
+				'words'         => 'replay, Trading 212 costs',
+			];
+		}
+
 		if ($mode === STRATEGY_MODE_T212_DEMO) {
 			return [
 				'mode'          => STRATEGY_MODE_T212_DEMO,
@@ -159,8 +193,24 @@
 	/** Whether a mode is one this application knows how to run. */
 	function strategy_mode_known($mode) {
 		return in_array(strtoupper(trim((string) $mode)),
-		                [STRATEGY_MODE_PAPER, STRATEGY_MODE_T212_DEMO,
-		                 STRATEGY_MODE_T212_LIVE], true);
+		                [STRATEGY_MODE_PAPER, STRATEGY_MODE_PAPER_T212,
+		                 STRATEGY_MODE_T212_DEMO, STRATEGY_MODE_T212_LIVE], true);
+	}
+
+	/**
+	 * The mode a replay of this strategy deals under.
+	 *
+	 * A backtest answers "what would these rules have done", and the costs
+	 * are part of the rules: fifteen names of GBP 16.67 are possible for
+	 * the practice account and refused for the paper one, so replaying
+	 * either under the other's dealing rules answers about a strategy
+	 * nobody runs. The broker is not part of it - see
+	 * STRATEGY_MODE_PAPER_T212.
+	 */
+	function strategy_backtest_mode($mode) {
+		$rules = strategy_mode_rules($mode);
+		return ($rules['broker'] === null)
+		     ? STRATEGY_MODE_PAPER : STRATEGY_MODE_PAPER_T212;
 	}
 
 	/** Whether a mode deals with real money. */
@@ -956,7 +1006,17 @@
 	function strategy_resume_pending($strategy) {
 
 		$account=strategy_account($strategy);
-		if ($account===null||$account['mode']!=='PAPER'){
+		if ($account===null){
+			return ['resumed'=>0,'failed'=>0,'halted'=>true];
+		}
+
+		/* Any account this database fills for, which is the paper account
+		   and a replay of a broker one (STRATEGY_MODE_PAPER_T212): the
+		   question is whether a pending order could have reached a broker,
+		   and for those two it could not. An account with a broker is a
+		   different matter entirely - see the comment above. */
+		$mode=strategy_mode_rules($account['mode']);
+		if ($mode['broker']!==null){
 			return ['resumed'=>0,'failed'=>0,'halted'=>true];
 		}
 
@@ -1217,6 +1277,10 @@
 		if ($mode===STRATEGY_MODE_T212_LIVE){ return 'Live'; }
 		if ($mode===STRATEGY_MODE_T212_DEMO){ return 'Practice'; }
 		if ($mode===STRATEGY_MODE_PAPER){ return 'Paper'; }
+		/* A backtest account only, and those are never listed as
+		   strategies - but a name is cheaper than an "Unknown" in front of
+		   somebody reading a log. */
+		if ($mode===STRATEGY_MODE_PAPER_T212){ return 'Replay'; }
 
 		return 'Unknown';
 	}
@@ -3701,6 +3765,14 @@
 			return $report;
 		}
 
+		/* The account's own dealing rules. The popup used to price every
+		   plan as a paper account: whole shares and GBP 5.95 a deal, in
+		   front of a practice account that deals in hundredths and pays no
+		   commission. The quantities it showed were not the quantities
+		   tonight would use, and on a live account that would be a
+		   rehearsal of a different order. */
+		$mode=strategy_mode_rules($account['mode']);
+
 		$night=strategy_run_night($strategy,$as_of,true,$exchange);
 
 		$report['rebalance']=$night['rebalance'];
@@ -3731,9 +3803,10 @@
 		$account_value=strategy_account_value($strategy,$as_of);
 
 		$add=function($symbol,$side,$quantity,$price,$reason_code,$held,$held_weight,$target_weight)
-		     use (&$report,$companies) {
+		     use (&$report,$companies,$mode) {
 
-			$quantity=(int)$quantity;
+			//Rounded the way this account deals, not always to a whole share.
+			$quantity=strategy_round_quantity($quantity,$mode);
 
 			/* The price is rounded to the four places the table shows, and
 			   the value and the costs are worked out FROM that rounded
@@ -3747,7 +3820,7 @@
 			   fill happens at the next close, so every figure in this table
 			   is an estimate of a different number anyway. */
 			$price=($price===null) ? null : round((float)$price,4);
-			$costs=($price===null) ? null : strategy_costs($side,$quantity,$price);
+			$costs=($price===null) ? null : strategy_costs($side,$quantity,$price,$mode['mode']);
 
 			$report['trades'][]=[
 				'side'=>$side,
@@ -3762,7 +3835,7 @@
 					'slippage'=>round($costs['slippage'],2),
 					'total'=>round($costs['commission']+$costs['stamp_duty']+$costs['slippage'],2),
 				],
-				'held'=>(int)$held,
+				'held'=>(float)$held,
 				'weight_now'=>($held_weight===null) ? null : round($held_weight,4),
 				'weight_target'=>($target_weight===null) ? null : round($target_weight,4),
 				'reason_code'=>$reason_code,
@@ -3781,7 +3854,8 @@
 
 			$exited[$exit['symbol']]=true;
 			$price=strategy_price_asof($exit['symbol'],$exit['exchange'],$as_of);
-			$held=(int)$exit['quantity'];
+			//Float: a practice account holds 10.5 shares, and (int) sells ten.
+			$held=(float)$exit['quantity'];
 
 			$add($exit['symbol'],'SELL',$held,$price,$exit['reason'],$held,
 			     ($account_value!==null&&$account_value>0&&$price!==null)
@@ -3818,17 +3892,20 @@
 
 			if ($trade['value']===null){ continue; }
 
+			/* Compared as the quantities they are. A practice account
+			   holds hundredths of a share, and whole-number comparisons
+			   counted a holding of 0.44 as nothing held. */
 			if ($trade['side']==='BUY'){
 				$buy_count++;
 				$bought += $trade['value'];
 				$cash_after -= $trade['value']+$trade['costs']['total'];
-				if ((int)$trade['held']===0){ $holdings_after++; }
+				if ((float)$trade['held']<=0){ $holdings_after++; }
 			}
 			else {
 				$sell_count++;
 				$sold += $trade['value'];
 				$cash_after += $trade['value']-$trade['costs']['total'];
-				if ((int)$trade['quantity']>=(int)$trade['held']){ $holdings_after--; }
+				if ((float)$trade['quantity']>=(float)$trade['held']-0.00000001){ $holdings_after--; }
 			}
 
 			$commission += $trade['costs']['commission'];

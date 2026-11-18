@@ -393,24 +393,41 @@
 	   a result. What keeps the nightly run away from it is the reserved
 	   prefix: strategy_strategies() skips every bt_ name, and so does the
 	   strategy page's list of disabled accounts. */
+	/* The dealing rules of the account being replayed, without its broker.
+	   A replay of the practice strategy used to deal as a paper account -
+	   whole shares, GBP 5.95 a trade, a GBP 250 minimum - none of which
+	   the practice account pays, so the figures were a different
+	   strategy's: GBP 250 cannot hold fifteen names in whole shares, and
+	   every rebalance paid commission the real account would not have.
+	   strategy_backtest_mode() maps a broker account onto
+	   STRATEGY_MODE_PAPER_T212, which is those dealing rules and no
+	   broker, so the replay still fills from stored prices and nothing can
+	   send one of its orders anywhere. */
+	$bt_mode=strategy_backtest_mode($account_before===null
+	                                ? STRATEGY_MODE_PAPER : $account_before['mode']);
+
 	query("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at,note)
-	       values (?,?,?,'PAPER','Y',?,?)",
+	       values (?,?,?,?,'Y',?,?)",
 	      $bt,STRATEGY_BACKTEST_CASH,
 	      $account_before===null ? 'GBP' : $account_before['currency'],
+	      $bt_mode,
 	      date('Y-m-d H:i:s'),
 	      'Backtest of '.$strategy.' from '.$from.' to '.$to);
+
+	echo "  dealing as: ".strategy_mode_rules($bt_mode)['words']."\r\n";
 
 	/* What this run paid to deal, recorded with it, field by field. Two
 	   runs of the same rules a month apart can be two different
 	   experiments - the cost settings moved between them - and until now
-	   the only thing that said so was the return. The backtest account is
-	   a paper one, so these are the paper mode's settings as they stand
-	   tonight: GBP 5.95 commission, which is the old model. The text is
-	   recorded rather than the model's name because the spread and the
-	   minimum can move inside a model. */
+	   the only thing that said so was the return. The settings are the
+	   ones this run actually dealt under, which are the replayed
+	   account's: a replay of the practice strategy records no commission,
+	   and that is what makes it the run that matches the live settings on
+	   the page. The text is recorded rather than the model's name because
+	   the spread and the minimum can move inside a model. */
 	if (backtest_has_cost_settings()){
 		query("update strategy_backtest_runs set cost_settings=? where run_id=?",
-		      strategy_backtest_costs_now(STRATEGY_MODE_PAPER)['text'],$run_id);
+		      strategy_backtest_costs_now($bt_mode)['text'],$run_id);
 	}
 
 	/* $rules already carries the overrides, so the copy the engine reads

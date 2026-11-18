@@ -109,8 +109,8 @@
 		         when there is nothing to draw and the line below says why. */ ?>
 		<div id="portfolio-chart" class="sm-chart"></div>
 		<small id="portfolio-chart-status" class="text-body-secondary d-block mt-1"></small>
-		<script src="/js/lightweight-charts.standalone.production.js"></script>
-		<script src="/js/portfolio_chart.js"></script>
+		<script src="<?= asset_url('/js/lightweight-charts.standalone.production.js') ?>"></script>
+		<script src="<?= asset_url('/js/portfolio_chart.js') ?>"></script>
 	</div>
 </div>
 

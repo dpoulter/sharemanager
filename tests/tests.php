@@ -1726,6 +1726,7 @@
           strpos((string) file_get_contents(dirname(__DIR__) . '/templates/strategy_dry_run.js'),
                  'report.skipped') !== false);
 
+
     /* An empty instrument list is "nobody has asked the broker what it
        lists", not "the broker lists nothing". Reading it as the second
        would have a practice account select nothing the night after the
@@ -1741,6 +1742,92 @@
     db()->exec("delete from stock_symbols where symbol like 'MI%'");
     db()->exec("delete from statistics where symbol like 'MI%'");
     db()->exec("delete from broker_instruments where symbol like 'MI%'");
+
+    echo "\n--- the dry run prices the plan the way the account deals ---\n";
+
+    /* The popup priced every plan as a paper account: whole shares and
+       GBP 5.95 a deal, in front of a practice account that deals in
+       hundredths and pays no commission. So the quantities it showed were
+       not the quantities tonight would use, and the costs under them were
+       money that account does not pay - a rehearsal of a different order,
+       which on a live account is worse than no rehearsal.
+
+       Six names at a sixth of the account each, so nothing is refused by
+       the position limit, and prices that divide into neither account's
+       cash evenly. */
+    $DR = 'test_dry_run_mode';
+    $dr_asof = asof_date();
+    $dr_symbols = ['DR1','DR2','DR3','DR4','DR5','DR6'];
+
+    foreach (['historical_prices','stock_symbols','statistics'] as $dr_table) {
+        db()->exec("delete from $dr_table where symbol like 'DR%'");
+    }
+    foreach ($dr_symbols as $dr_i => $dr_sym) {
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                                  sector,market,industry_group,industry)
+                       values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','X')")
+            ->execute([$dr_sym, 'Dry run ' . $dr_sym, 'Dry run ' . $dr_sym]);
+        /* Pence, as historical_prices holds them: GBP 20.37 and up. */
+        db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                       values (?,'XLON',?,?)")->execute([$dr_sym, $dr_asof, 2037 + $dr_i * 111]);
+        s_stat($dr_sym, 'dr_score', $dr_asof, 60 - $dr_i);
+    }
+
+    s_drop($DR);
+    s_rules($DR, ['selection'=>'score','score_indicator'=>'dr_score','rank_by'=>'dr_score',
+                  'holdings'=>6]);
+
+    s_reset($DR, 100000, 'Y', 'PAPER');
+    $dr_paper = strategy_dry_run($DR, $dr_asof, 'XLON');
+
+    s_reset($DR, 5000, 'Y', 'T212_DEMO');
+    $dr_demo = strategy_dry_run($DR, $dr_asof, 'XLON');
+
+    $dr_count = function ($report) {
+        $out = ['trades'=>count($report['trades']), 'commission'=>0.0, 'fractions'=>0];
+        foreach ($report['trades'] as $trade) {
+            $out['commission'] += (float) $trade['costs']['commission'];
+            if (abs($trade['quantity'] - floor($trade['quantity'])) > 0.0000001) {
+                $out['fractions']++;
+            }
+        }
+        return $out;
+    };
+    $dr_p = $dr_count($dr_paper);
+    $dr_d = $dr_count($dr_demo);
+
+    check('the dry run plans something to price, on both accounts',
+          $dr_p['trades'] === 6 && $dr_d['trades'] === 6,
+          json_encode([$dr_p, $dr_d, $dr_paper['errors'], $dr_demo['errors']]));
+    check('a paper plan is priced in whole shares at GBP 5.95 a deal',
+          $dr_p['fractions'] === 0
+          && abs($dr_p['commission'] - STRATEGY_COMMISSION * $dr_p['trades']) < 0.005,
+          json_encode($dr_p));
+    check('and a practice plan in fractions of a share, with no commission',
+          $dr_d['fractions'] > 0 && $dr_d['commission'] == 0.0,
+          json_encode([$dr_d, array_column($dr_demo['trades'], 'quantity')]));
+    /* The figures the popup shows are the ones tonight would use: the same
+       quantities the engine planned, not a second rounding of them. */
+    $dr_planned = [];
+    foreach (strategy_run_night($DR, $dr_asof, true, 'XLON')['orders'] as $dr_order) {
+        $dr_planned[(string) $dr_order['symbol']] = (float) $dr_order['quantity'];
+    }
+    $dr_differs = [];
+    foreach ($dr_demo['trades'] as $dr_trade) {
+        $dr_symbol = (string) $dr_trade['symbol'];
+        if (!array_key_exists($dr_symbol, $dr_planned)
+            || abs($dr_planned[$dr_symbol] - (float) $dr_trade['quantity']) > 0.0000001) {
+            $dr_differs[] = $dr_symbol . ': ' . $dr_trade['quantity']
+                          . ' vs ' . ($dr_planned[$dr_symbol] ?? 'not planned');
+        }
+    }
+    check('and they are the quantities the engine planned, to the share',
+          count($dr_differs) === 0, implode(', ', $dr_differs));
+
+    s_drop($DR);
+    foreach (['historical_prices','stock_symbols','statistics'] as $dr_table) {
+        db()->exec("delete from $dr_table where symbol like 'DR%'");
+    }
 
     echo "\n--- strategies: the night after the first build ---\n";
 
@@ -2472,6 +2559,95 @@
           substr($bt_keep_out, -200));
     check('and each run is its own account, so two runs can be compared',
           (string)$bt_keep[0]['account'] !== (string)$bt_run[0]['account']);
+
+    /* A replay deals the way the account it replays deals.
+    
+       The backtest account was always a paper one, so a backtest of the
+       practice strategy replayed whole shares, GBP 5.95 a deal and a
+       GBP 250 minimum - none of which that account pays. The figures it
+       produced were a different strategy's, and no run could ever be the
+       one that "matches live settings" for a practice account. It takes
+       the dealing rules now, and not the broker: a replay still fills from
+       stored prices, and nothing can send one of its orders anywhere. */
+    $BTD = 'test_backtest_practice';
+    s_drop($BTD);
+    db()->exec("delete from strategy_backtest_runs where strategy='$BTD'");
+    s_rules($BTD, ['selection'=>'screen','screen_id'=>$bt_screen,'score_indicator'=>null,
+                   'rank_by'=>null,'holdings'=>5,'rebalance'=>'weekly',
+                   'exit_rules'=>'below_ma200_2d']);
+    s_reset($BTD, 100000, 'Y', 'T212_DEMO');
+
+    [$btd_out, $btd_rc] = run_script('backtest_strategy.php', [$BTD, $bf_from, $bf_to, '--keep']);
+    $btd_run = rows("select * from strategy_backtest_runs where strategy=? order by run_id desc limit 1",
+                    [$BTD]);
+    $btd_account = count($btd_run) ? (string)$btd_run[0]['account'] : '';
+
+    check('a replay of a practice strategy runs through the same engine',
+          count($btd_run) === 1 && $btd_run[0]['status'] === 'DONE'
+          && (int)$btd_run[0]['fills'] > 0,
+          substr($btd_out, -400));
+    check('on an account with the practice dealing rules and no broker',
+          (string)scalar("select mode from strategy_accounts where strategy=?", [$btd_account])
+            === STRATEGY_MODE_PAPER_T212
+          && strategy_mode_rules(STRATEGY_MODE_PAPER_T212)['broker'] === null,
+          (string)scalar("select mode from strategy_accounts where strategy=?", [$btd_account]));
+    check('so it paid no commission, where the paper replay pays GBP 5.95 a deal',
+          (float)scalar("select ifnull(sum(commission),0) from strategy_orders where strategy=?",
+                        [$btd_account]) == 0.0
+          && (float)scalar("select ifnull(sum(commission),0) from strategy_orders where strategy=?",
+                           [(string)$bt_keep[0]['account']]) > 0,
+          json_encode([scalar("select ifnull(sum(commission),0) from strategy_orders where strategy=?",
+                              [$btd_account]),
+                       scalar("select ifnull(sum(commission),0) from strategy_orders where strategy=?",
+                              [(string)$bt_keep[0]['account']])]));
+    check('and dealt in fractions of a share, which is the point of the practice account',
+          (int)scalar("select count(*) from strategy_orders
+                        where strategy=? and quantity<>floor(quantity)", [$btd_account]) > 0,
+          (string)scalar("select group_concat(quantity) from strategy_orders where strategy=?",
+                         [$btd_account]));
+    /* Filled here, from stored prices. A broker mode on the account would
+       have left every order PENDING for a sender that never runs. */
+    check('its orders filled from stored prices rather than waiting for a broker',
+          (int)scalar("select count(*) from strategy_orders where strategy=? and status='FILLED'",
+                      [$btd_account]) > 0
+          && (int)scalar("select count(*) from strategy_orders
+                           where strategy=? and (status<>'FILLED' or broker is not null
+                                                 or broker_order_id is not null)",
+                         [$btd_account]) === 0,
+          (string)scalar("select group_concat(distinct status) from strategy_orders where strategy=?",
+                         [$btd_account]));
+    check('the model it dealt under is recorded against the run',
+          strpos((string)$btd_run[0]['cost_settings'], 'commission=0.00') === 0,
+          (string)$btd_run[0]['cost_settings']);
+    /* And that is what makes it the run the page marks: the live account
+       pays no commission, and now so does its replay. */
+    $btd_rows = strategy_backtest_rows($BTD, 10);
+    check('so the page can mark it as matching the live settings',
+          count($btd_rows) > 0 && $btd_rows[0]['matches_live'] === true
+          && stripos((string)$btd_rows[0]['label'], 'Trading 212 costs') !== false,
+          count($btd_rows) ? json_encode([$btd_rows[0]['label'], $btd_rows[0]['matches_live']]) : 'none');
+
+    db()->exec("delete from strategy_backtest_runs where strategy='$BTD'");
+    foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values',
+              'strategy_rules','strategy_accounts'] as $btd_table) {
+        db()->prepare("delete from $btd_table where strategy=?")->execute([$btd_account]);
+    }
+    s_drop($BTD);
+
+    check('a replay of a paper strategy still deals as a paper account',
+          strategy_backtest_mode(STRATEGY_MODE_PAPER) === STRATEGY_MODE_PAPER
+          && strategy_backtest_mode(STRATEGY_MODE_T212_DEMO) === STRATEGY_MODE_PAPER_T212
+          && strategy_backtest_mode(STRATEGY_MODE_T212_LIVE) === STRATEGY_MODE_PAPER_T212,
+          json_encode([strategy_backtest_mode(STRATEGY_MODE_PAPER),
+                       strategy_backtest_mode(STRATEGY_MODE_T212_DEMO),
+                       strategy_backtest_mode(STRATEGY_MODE_T212_LIVE)]));
+    check('and the replay mode is the practice rules with nothing to send to',
+          strategy_mode_rules(STRATEGY_MODE_PAPER_T212)['commission'] === 0.0
+          && strategy_mode_rules(STRATEGY_MODE_PAPER_T212)['fractional'] === true
+          && strategy_mode_rules(STRATEGY_MODE_PAPER_T212)['minimum_order'] == T212_MIN_ORDER_VALUE
+          && strategy_mode_rules(STRATEGY_MODE_PAPER_T212)['broker'] === null
+          && strategy_mode_rules(STRATEGY_MODE_PAPER_T212)['live'] === false,
+          json_encode(strategy_mode_rules(STRATEGY_MODE_PAPER_T212)));
 
     echo "\n--- strategies: a backtest that would need hindsight is refused ---\n";
 
@@ -12561,6 +12737,49 @@
           > strpos(preg_replace('/<!--.*?-->/s', '',
                  (string) file_get_contents(dirname(__DIR__) . '/templates/header.php')), 'bootstrap.min.css'));
 
+    /* Every local stylesheet and script carries the file's own timestamp.
+       Without one, /css/app.css never changes its name, so a browser that
+       has it has no reason to ask again: a deploy that changed the CSS or
+       the JavaScript went on showing the old one, and a hard refresh did
+       not always clear it either. That is what made a correct two-column
+       page look like the old centred one for a day. */
+    $av_bare = [];
+    foreach (glob(dirname(__DIR__) . '/templates/*.php') as $av_file) {
+        $av_text = (string) file_get_contents($av_file);
+        if (preg_match_all('#(?:href|src)="(/(?:css|js)/[^"]*)"#', $av_text, $av_hits)) {
+            foreach ($av_hits[1] as $av_url) { $av_bare[] = basename($av_file) . ': ' . $av_url; }
+        }
+    }
+    check('no page writes a local stylesheet or script URL without a version',
+          count($av_bare) === 0, implode(' | ', $av_bare));
+
+    check('a file that is not there gets no version rather than a guess',
+          asset_url('/css/no-such-file.css') === '/css/no-such-file.css',
+          asset_url('/css/no-such-file.css'));
+
+    $av_probe = dirname(__DIR__) . '/public/css/app.css';
+    if (!file_exists($av_probe)) {
+        echo "  \033[33mSKIP\033[0m  the version is the file's own timestamp"
+             . " (run tools/fetch_assets.sh first)\n";
+    }
+    else {
+        $av_was = filemtime($av_probe);
+        check('the version on a local asset is that file\'s modification time',
+              asset_url('/css/app.css') === '/css/app.css?v=' . $av_was,
+              asset_url('/css/app.css'));
+        /* The whole point: it changes when the file does, with nothing
+           kept in step by hand. */
+        $av_before = asset_url('/css/app.css');
+        @touch($av_probe, $av_was + 60);
+        clearstatcache(true, $av_probe);
+        $av_after = asset_url('/css/app.css');
+        @touch($av_probe, $av_was);
+        clearstatcache(true, $av_probe);
+        check('and it changes when the file changes, so a deploy is a new URL',
+              $av_before !== $av_after && asset_url('/css/app.css') === $av_before,
+              $av_before . ' -> ' . $av_after);
+    }
+
     $sf_stray = [];
     foreach (glob(dirname(__DIR__) . '/{includes,public,templates}/*~', GLOB_BRACE) as $sf_file) {
         $sf_stray[] = basename($sf_file);
@@ -13927,6 +14146,12 @@ STUB
               substr($sp_page, max(0, strpos($sp_page, '105,000') - 400), 600));
         check('and the benchmark over the same period, not over all of history',
               strpos($sp_page, '+2.0%') !== false);
+        /* And the level it measured, rather than a dash in the one row
+           that has a level: the return beside it is worked out from
+           these two numbers. */
+        check('the benchmark row shows the level it moved between',
+              strpos($sp_page, '100 → 102') !== false,
+              substr($sp_page, max(0, strpos($sp_page, 'FTSE 350 (equal weighted)')), 400));
         check('the summary links at the strategy rather than at the page',
               strpos($sp_page, 's=' . urlencode($sp)) !== false);
         check('the holding is listed with its weight and a link to the quote page',
@@ -13984,6 +14209,60 @@ STUB
               strpos($sp_page, 'id="strategy-chart-data"') !== false
               && strpos($sp_page, 'lightweight-charts.standalone.production.js') !== false,
               substr($sp_page, max(0, strpos($sp_page, 'strategy-chart')), 300));
+
+        /* And whether anything is drawn, which only a browser knows. Every
+           chart in the application drew nothing from the day app.css wrote
+           its tokens with light-dark(): the library cannot parse
+           "light-dark(#333333, #c7cbd1)", threw from inside createChart,
+           and left the heading, the two toggles and an empty box with no
+           message - on a page that returned 200 with every figure on it.
+
+           Skipped unless node, Playwright and the vendored library are
+           there: public/js is in .gitignore and filled by
+           tools/fetch_assets.sh. */
+        $chart_js = dirname(__DIR__) . '/tests/chart_browser.js';
+        $chart_assets = [dirname(__DIR__) . '/public/js/lightweight-charts.standalone.production.js',
+                         dirname(__DIR__) . '/public/js/scripts.js'];
+        $chart_missing = array_values(array_filter($chart_assets, fn($f) => !file_exists($f)));
+
+        $chart_pw = [];
+        exec('command -v node >/dev/null 2>&1 && node -e "require(\'playwright\')" 2>&1 || echo NO_PLAYWRIGHT',
+             $chart_pw, $chart_rc);
+
+        if (in_array('NO_PLAYWRIGHT', $chart_pw, true) || $chart_rc !== 0) {
+            echo "  \033[33mSKIP\033[0m  the charts in a browser (node or playwright not installed)\n";
+        }
+        elseif ($chart_missing) {
+            echo "  \033[33mSKIP\033[0m  the charts in a browser (run tools/fetch_assets.sh first; missing "
+                 . implode(', ', array_map('basename', $chart_missing)) . ")\n";
+        }
+        else {
+            /* The served copies are what the browser loads, and
+               fetch_assets.sh made them from templates/ at some earlier
+               point: refresh them rather than testing what an older run
+               left behind. */
+            foreach (['scripts.js', 'strategy_chart.js', 'chart.js', 'portfolio_chart.js'] as $chart_copy) {
+                @copy(dirname(__DIR__) . '/templates/' . $chart_copy,
+                      dirname(__DIR__) . '/public/js/' . $chart_copy);
+            }
+            @copy(dirname(__DIR__) . '/templates/app.css', dirname(__DIR__) . '/public/css/app.css');
+
+            $chart_out = [];
+            exec('node ' . escapeshellarg($chart_js) . ' ' . escapeshellarg($base)
+                 . ' tester testpass 2>&1', $chart_out);
+            foreach ($chart_out as $chart_line) {
+                if (strpos($chart_line, 'PASS ') === 0) { check(substr($chart_line, 5), true); }
+                elseif (strpos($chart_line, 'FAIL ') === 0) {
+                    $chart_parts = explode(': ', substr($chart_line, 5), 2);
+                    check($chart_parts[0], false, $chart_parts[1] ?? '');
+                }
+            }
+            if (!array_filter($chart_out, fn($l) => strpos($l, 'PASS ') === 0
+                                                 || strpos($l, 'FAIL ') === 0)) {
+                check('the chart browser run produced results', false,
+                      implode(' | ', array_slice($chart_out, 0, 4)));
+            }
+        }
 
         /* A backtest of the same rules belongs on the page under the live
            card, labelled so nobody reads a replay as a record of trading. */
@@ -14344,6 +14623,28 @@ STUB
            three. */
         check('the dashboard links straight at a strategy',
               strpos((string) $curl("$base/index.php"), 'strategies.php?s=') !== false);
+
+        /* The versioned asset URLs, as served. A version that 404s is
+           worse than no version at all. */
+        $av_served = [];
+        foreach (['index.php', 'strategies.php', 'quote.php?symbol=AAA', 'performance.php']
+                 as $av_url) {
+            $av_html = (string) $curl("$base/$av_url");
+            preg_match_all('#(?:href|src)="(/(?:css|js)/[^"]*)"#', $av_html, $av_hits);
+            foreach ($av_hits[1] as $av_asset) {
+                if (!preg_match('/\?v=\d+$/', $av_asset)) { $av_served[] = $av_url . ': ' . $av_asset; }
+            }
+            if ($av_url === 'strategies.php') { $av_one = $av_hits[1][0] ?? null; }
+        }
+        check('every local stylesheet and script on every page is served with a version',
+              count($av_served) === 0, implode(' | ', $av_served));
+        if ($av_one !== null) {
+            $av_code = trim((string) shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 30 -b '
+                            . escapeshellarg($jar) . ' '
+                            . escapeshellarg("$base" . $av_one) . ' 2>/dev/null'));
+            check('and the versioned URL still answers with the file',
+                  $av_code === '200', $av_one . ' -> ' . $av_code);
+        }
 
         /* The broker page says which account it is reading. "Broker" over a
            page of figures does not say whether they are the practice

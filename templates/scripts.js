@@ -17,6 +17,49 @@
  * detached element and drops it.
  */
 
+/* A CSS colour from the page's own tokens, resolved to something a chart
+ * library can parse.
+ *
+ * app.css writes every token with light-dark(), so the page follows the
+ * machine with one value instead of two blocks. getPropertyValue() hands
+ * back what is written - "light-dark(#333333, #c7cbd1)" - and TradingView
+ * Lightweight Charts throws "Cannot parse color" on it. The throw happened
+ * inside createChart, so every chart in the application drew nothing at
+ * all from the day the tokens went modern: the Strategies page showed its
+ * heading, its two toggles and an empty box with no message.
+ *
+ * The browser knows what the token means, so it is asked: the var is set as
+ * the colour of a hidden element and the computed colour read back, which
+ * is a plain rgb() whatever function produced it. A token the stylesheet
+ * does not define, or a value the browser leaves unresolved, gives the
+ * caller's fallback rather than something the chart cannot read.
+ */
+function smChartColour(name, fallback) {
+
+    var raw = '';
+    try { raw = (getComputedStyle(document.documentElement).getPropertyValue(name) || '').trim(); }
+    catch (e) { raw = ''; }
+
+    if (raw === '') { return fallback; }
+
+    var value = '';
+    try {
+        var probe = document.createElement('span');
+        probe.style.display = 'none';
+        probe.style.color = 'var(' + name + ')';
+        (document.body || document.documentElement).appendChild(probe);
+        value = (getComputedStyle(probe).color || '').trim();
+        probe.parentNode.removeChild(probe);
+    }
+    catch (e) { value = ''; }
+
+    if (value.indexOf('rgb') === 0) { return value; }
+
+    /* Unresolved. A plain colour can go as it is; a function this browser
+       understood and this did not cannot. */
+    return raw.indexOf('(') === -1 ? raw : fallback;
+}
+
 function killMe(el){
     return el.parentNode.removeChild(el);
 }

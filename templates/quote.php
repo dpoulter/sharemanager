@@ -159,8 +159,8 @@ $price_ccy = ($head['price'] === null) ? null : fmt_pence($head['price']);
 				<?php /* After the container, so the script finds it. Only on this
 				         page: a charting library on every page is a download
 				         nobody else needs. */ ?>
-				<script src="/js/lightweight-charts.standalone.production.js"></script>
-				<script src="/js/chart.js"></script>
+				<script src="<?= asset_url('/js/lightweight-charts.standalone.production.js') ?>"></script>
+				<script src="<?= asset_url('/js/chart.js') ?>"></script>
 			</div>
 		</div>
 

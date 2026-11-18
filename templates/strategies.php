@@ -344,11 +344,29 @@
 					<?php /* Ten dashes said nothing. Until the benchmark has two
 					         nights there is no return to show, so the row says when
 					         there will be one. */ ?>
+					<?php
+						/* The level itself, from the first night to the latest:
+						   a dash in the Value column of the one row that has a
+						   level says nothing, and "100 -> 98.6" is the figure
+						   the return beside it was worked out from. */
+						$bench_level = function ($value) {
+							$number = number_format((float) $value, 1);
+							return substr($number, -2) === '.0' ? substr($number, 0, -2) : $number;
+						};
+						$bench_value = VIEW_DASH;
+						if (count($benchmark) === 1) {
+							$bench_value = $bench_level($benchmark[0]['total']);
+						}
+						elseif (count($benchmark) > 1) {
+							$bench_value = $bench_level($benchmark[0]['total']) . ' → '
+							             . $bench_level($benchmark[count($benchmark) - 1]['total']);
+						}
+					?>
 					<tr class="sm-total-row text-body-secondary">
 						<td data-label="Strategy">FTSE 350 (equal weighted)</td>
 						<td data-label="Status">benchmark</td>
 						<td><?= e(VIEW_DASH) ?></td>
-						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
+						<td class="sm-num" data-label="Value"><?= e($bench_value) ?></td>
 						<?php if ($bench_return === null): ?>
 						<td colspan="7" class="text-body-secondary" data-label="Return"><small>
 							<?php if (count($benchmark)): ?>
@@ -406,8 +424,8 @@
 						<script type="application/json" id="strategy-chart-data"><?=
 							json_encode($chart, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)
 						?></script>
-						<script src="/js/lightweight-charts.standalone.production.js"></script>
-						<script src="/js/strategy_chart.js"></script>
+						<script src="<?= asset_url('/js/lightweight-charts.standalone.production.js') ?>"></script>
+						<script src="<?= asset_url('/js/strategy_chart.js') ?>"></script>
 					<?php endif ?>
 				</div>
 			</div>
@@ -1176,4 +1194,4 @@
 		</div>
 	</div>
 
-	<script src="/js/strategy_dry_run.js"></script>
+	<script src="<?= asset_url('/js/strategy_dry_run.js') ?>"></script>
