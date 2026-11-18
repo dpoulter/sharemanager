@@ -67,12 +67,26 @@ def cmd_fetch(cfg, a):
 
 
 def cmd_universe(cfg, a):
+    from .lse import build_status, cap_check, write_report
     from .store import load_market
-    from .universe import build_universe, compare_with_live
+    from .universe import build_universe, compare_with_live, rebuild_dates
     u = cfg["universe"]
+    include_aim = bool(u["include_aim"] or a.aim)
     m = load_market(cfg.data_dir)
-    uni = build_universe(m, u["size"], u["large_size"], u["start"], u["include_aim"] or a.aim)
+    months = pd.DatetimeIndex([pd.Timestamp(d.year, d.month, 1) for d in rebuild_dates(m.dates, u["start"])])
+    elig, rep = build_status(cfg.data_dir, m.master.reset_index().rename(columns={"index": "symbol"}),
+                             m.market_cap, months, include_aim)
+    uni = build_universe(m, u["size"], u["large_size"], u["start"], include_aim, eligible=elig)
     uni.to_parquet(cfg.data_dir / "universe.parquet")
+    last = uni[uni["date"] == uni["date"].max()]
+    rep["universe_basis_latest"] = last["basis"].value_counts().to_dict()
+    rep["universe_members_latest_not_in_lse_lists"] = sorted(last.loc[last["basis"] == "ISIN fallback", "symbol"])
+    gaps = cap_check(uni, cfg.data_dir)
+    if len(gaps):
+        gaps.to_csv(cfg.data_dir / "lse_cap_gaps.csv", index=False)
+    rep["cap_gaps_over_25pct"] = {"rows": int(len(gaps)),
+                                  "latest": gaps[gaps["date"] == gaps["date"].max()].to_dict("records") if len(gaps) else []}
+    log.info("LSE report: %s", write_report(cfg.data_dir, rep))
     from .checks import write_data_report
     log.info("data report (with universe-only counts): %s", write_data_report(m, cfg.data_dir))
     per = uni.groupby("date").size()
@@ -80,9 +94,42 @@ def cmd_universe(cfg, a):
           f"members per rebuild {per.min()} to {per.max()}")
     if a.live:
         c = compare_with_live(uni, Path(a.live))
-        (cfg.data_dir / "universe_overlap.json").write_text(json.dumps(c, indent=1))
-        print(f"latest rebuild {c['date']}: {c['both']} of the live {c['live']} are in it "
+        c["why_missing"] = explain_missing(cfg, m, c["only_live"], uni)
+        (cfg.data_dir / "universe_overlap.json").write_text(json.dumps(c, indent=1, default=str))
+        print(f"latest rebuild {c['date']}: {c['both']} of the live {c['live']} non-fund shares are in it "
               f"({c['overlap_pct']}%); only rebuilt {len(c['only_rebuilt'])}, only live {len(c['only_live'])}")
+        for s, why in c["why_missing"].items():
+            print(f"  missing {s}: {why}")
+
+
+def explain_missing(cfg, m, symbols, uni) -> dict:
+    """Why each live share is not in the latest rebuild."""
+    st_path = cfg.data_dir / "lse_status.parquet"
+    st = pd.read_parquet(st_path) if st_path.exists() else pd.DataFrame()
+    d = uni["date"].max()
+    month = pd.Timestamp(d.year, d.month, 1)
+    out = {}
+    for s in symbols:
+        if s not in m.master.index:
+            out[s] = "not in the FMP master"
+            continue
+        r = m.master.loc[s]
+        if not bool(r.get("included", True)):
+            out[s] = f"excluded: {r.get('exclude_reason')}"
+            continue
+        if s not in m.close.columns or pd.isna(m.close[s].loc[:d].iloc[-5:]).all():
+            out[s] = "no price on the rebuild date"
+            continue
+        row = st[(st["symbol"] == s) & (st["month"] == month)] if len(st) else st
+        if len(row):
+            x = row.iloc[0]
+            if not bool(x["eligible"]):
+                out[s] = (f"LSE status: market {x['market']}, country {x['country']}, "
+                          f"{x['overseas_rule']}{', FMP cap over 3x LSE' if x.get('inflated_cap') else ''}")
+                continue
+        cap = m.market_cap[s].loc[:d].dropna()
+        out[s] = f"ranked below 350 (market cap {cap.iloc[-1]:,.0f})" if len(cap) else "no market cap"
+    return out
 
 
 def cmd_run(cfg, a):

@@ -45,12 +45,9 @@ RUN9 = {
 
 def universe_list(path: Path, out: Path) -> Path:
     """The N100 list without its funds, written as a one-column CSV the engine reads."""
-    df = pd.read_csv(path, sep=None, engine="python", dtype=str)
-    df.columns = [c.strip().lower() for c in df.columns]
-    if "is_fund" in df:
-        df = df[df["is_fund"].fillna("N").str.strip().str.upper() != "Y"]
+    from .universe import read_symbol_list
     out.parent.mkdir(parents=True, exist_ok=True)
-    df[["symbol"]].to_csv(out, index=False)
+    read_symbol_list(path)[["symbol"]].to_csv(out, index=False)
     return out
 
 

@@ -100,9 +100,9 @@ class Workspace:
         if which == "ftse250":
             return u[u["rank"] > large]
         if which.startswith("list:"):
-            syms = pd.read_csv(Path(which[5:]).expanduser())
-            col = "symbol" if "symbol" in syms.columns else syms.columns[0]
-            return fixed_universe(self.m, syms[col].astype(str).tolist(), self.cfg["universe"]["start"], large)
+            from .universe import read_symbol_list
+            syms = read_symbol_list(Path(which[5:]).expanduser())
+            return fixed_universe(self.m, syms["symbol"].tolist(), self.cfg["universe"]["start"], large)
         raise ValueError(f"unknown universe {which!r}")
 
     def run(self, spec: Spec, period: str = "dev", final: bool = False, kind: str = "research",

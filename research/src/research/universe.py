@@ -25,12 +25,20 @@ def rebuild_dates(dates: pd.DatetimeIndex, start) -> pd.DatetimeIndex:
 
 
 def build_universe(m: Market, size: int = 350, large: int = 100, start="2007-01-01",
-                   include_aim: bool = False, stale_days: int = 10) -> pd.DataFrame:
-    """date, symbol, rank, tier ('large' top 100 or 'mid' the rest), market_cap, is_aim."""
+                   include_aim: bool = False, stale_days: int = 10,
+                   eligible: pd.DataFrame | None = None) -> pd.DataFrame:
+    """date, symbol, rank, tier ('large' top 100 or 'mid' the rest), market_cap, is_aim, basis.
+
+    `eligible` is month x symbol from the LSE issuer lists (lse.build_status):
+    Main Market, and home-incorporated or premium-listed. A symbol with no
+    LSE status that month falls back to the ISIN rule and the AIM flag.
+    """
+    from .lse import isin_fallback
     master = m.master
     ok = master.get("included", pd.Series(True, index=master.index)).fillna(False).astype(bool)
     aim = master.get("is_aim", pd.Series(False, index=master.index)).fillna(False).astype(bool)
-    if not include_aim:
+    fallback = isin_fallback(master, include_aim)
+    if eligible is None and not include_aim:
         ok &= ~aim
     cols = [c for c in m.close.columns if ok.get(c, False)]
     close = m.close[cols]
@@ -39,10 +47,20 @@ def build_universe(m: Market, size: int = 350, large: int = 100, start="2007-01-
     rows = []
     for d in rebuild_dates(m.dates, start):
         c = cap.loc[d].where(priced.loc[d])
-        c = c[c > 0].dropna().sort_values(ascending=False).head(size)
+        c = c[c > 0].dropna()
+        basis = pd.Series("no LSE lists", index=c.index)
+        if eligible is not None:
+            month = pd.Timestamp(d.year, d.month, 1)
+            e = eligible.loc[month].reindex(c.index) if month in eligible.index else pd.Series(np.nan, index=c.index)
+            fb = fallback.reindex(c.index).fillna(True)
+            keep = e.where(e.notna(), fb).astype(bool)
+            basis = pd.Series(np.where(e.notna(), "LSE list", "ISIN fallback"), index=c.index)
+            c = c[keep]
+        c = c.sort_values(ascending=False).head(size)
         for r, (sym, v) in enumerate(c.items(), 1):
-            rows.append((d, sym, r, "large" if r <= large else "mid", float(v), bool(aim.get(sym, False))))
-    return pd.DataFrame(rows, columns=["date", "symbol", "rank", "tier", "market_cap", "is_aim"])
+            rows.append((d, sym, r, "large" if r <= large else "mid", float(v), bool(aim.get(sym, False)),
+                         basis.get(sym)))
+    return pd.DataFrame(rows, columns=["date", "symbol", "rank", "tier", "market_cap", "is_aim", "basis"])
 
 
 def fixed_universe(m: Market, symbols: list[str], start, large: int = 100) -> pd.DataFrame:
@@ -52,7 +70,7 @@ def fixed_universe(m: Market, symbols: list[str], start, large: int = 100) -> pd
     large and mid as they would.
     """
     rows = []
-    symbols = [s if s.endswith(".L") else s + ".L" for s in symbols]
+    symbols = [to_fmp(s) for s in symbols]
     symbols = [s for s in symbols if s in m.close.columns]
     cap = m.market_cap.reindex(columns=symbols).ffill()
     for d in rebuild_dates(m.dates, start):
@@ -78,10 +96,35 @@ def membership(universe: pd.DataFrame, dates: pd.DatetimeIndex) -> tuple[pd.Data
     return member, large
 
 
+def to_fmp(sym: str) -> str:
+    """N100 / LSE code -> FMP's: BT.A -> BT-A.L, VOD -> VOD.L."""
+    s = str(sym).strip().upper()
+    if s.endswith(".L"):
+        s = s[:-2]
+    return s.replace(".", "-") + ".L"
+
+
+def read_symbol_list(path: Path, drop_funds: bool = True) -> pd.DataFrame:
+    """A list of symbols from the N100: tab- or comma-separated, with or without is_fund.
+
+    A file ending .tsv, or whose first line has a tab, is read as tab-separated
+    (sector names hold commas, so sniffing would guess wrong).
+    """
+    path = Path(path)
+    first = path.read_text(errors="replace").splitlines()[:1]
+    sep = "\t" if path.suffix.lower() == ".tsv" or (first and "\t" in first[0]) else ","
+    df = pd.read_csv(path, sep=sep, dtype=str)
+    df.columns = [c.strip().lower() for c in df.columns]
+    col = "symbol" if "symbol" in df.columns else df.columns[0]
+    out = pd.DataFrame({"symbol": df[col].map(to_fmp)})
+    out["is_fund"] = df["is_fund"].fillna("N").str.strip().str.upper().eq("Y") if "is_fund" in df else False
+    if drop_funds:
+        out = out[~out["is_fund"]]
+    return out.reset_index(drop=True)
+
+
 def compare_with_live(universe: pd.DataFrame, live_csv: Path) -> dict:
-    live = pd.read_csv(live_csv)
-    col = "symbol" if "symbol" in live.columns else live.columns[0]
-    live_set = {s if str(s).endswith(".L") else f"{s}.L" for s in live[col].astype(str).str.strip()}
+    live_set = set(read_symbol_list(live_csv)["symbol"])
     last = universe[universe["date"] == universe["date"].max()]
     ours = set(last["symbol"])
     return {"date": str(last["date"].max())[:10], "rebuilt": len(ours), "live": len(live_set),

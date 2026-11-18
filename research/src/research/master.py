@@ -163,12 +163,20 @@ def refine_master(data: Path) -> pd.DataFrame:
     counts = {}
     counts["bond-like price series"] = add(m["symbol"].map(bond).fillna(False).astype(bool), "price series looks like a bond")
     isin = m.get("isin", pd.Series(index=m.index, dtype=object)).astype("string").str.strip().str.upper()
-    cc = isin.str[:2]
-    overseas = cc.notna() & (isin.str.len() >= 12) & ~cc.isin(list(HOME_ISIN))
+    valid = isin.str.match(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$").fillna(False).astype(bool)
+    cc = isin.str[:2].where(valid)
+    overseas = (valid & ~cc.isin(list(HOME_ISIN)).fillna(False)).astype(bool)
     m["isin_country"] = cc
+    m["overseas_isin"] = overseas
     overseas_by_prefix = cc[overseas & m["exclude_reason"].isna()].value_counts().to_dict()
-    for code in overseas_by_prefix:
-        add(overseas & (cc == code), f"overseas company (ISIN {code})")
+    # With the LSE issuer lists, the universe decides month by month (lse.py):
+    # an overseas company with a premium (ESCC) listing is in, a secondary
+    # listing is out, and ISIN country alone cannot tell the two apart. Only
+    # without the lists does ISIN country exclude here.
+    use_lse = (data / "reference" / "lse_issuer_lists").exists()
+    if not use_lse:
+        for code in overseas_by_prefix:
+            add(overseas & (cc == code).fillna(False).astype(bool), f"overseas company (ISIN {code})")
 
     # One line per company.
     m["base"] = m["symbol"].map(base_ticker)
@@ -186,12 +194,28 @@ def refine_master(data: Path) -> pd.DataFrame:
                 second += 1
     counts["second share class"] = second
 
+    # Two London lines of one company under different codes (INVP.L and
+    # INVR.L, both "Investec plc"): one line per normalised name too.
+    from .lse import norm_name
+    m["norm"] = m["name"].map(norm_name)
+    alive = m[m["exclude_reason"].isna() & (m["norm"] != "")]
+    dup = 0
+    for name, g in alive.groupby("norm"):
+        if len(g) < 2 or g["delisted_date"].notna().any():
+            continue
+        keep = g.sort_values("traded", ascending=False)["symbol"].iloc[0]
+        for sym in g["symbol"]:
+            if sym != keep:
+                m.loc[m["symbol"] == sym, "exclude_reason"] = f"second line of the same company (kept {keep})"
+                dup += 1
+    counts["second line, same name"] = dup
+
     aim_isins, aim_ticks, aim_file = load_aim(data)
-    if aim_file:
+    if aim_file and not use_lse:
         tick = m["symbol"].str.replace(r"\.L$", "", regex=True).str.upper()
         m["is_aim"] = m["is_aim"].fillna(False).astype(bool) | isin.isin(list(aim_isins)).fillna(False) | tick.isin(aim_ticks)
     m["included"] = m["exclude_reason"].isna()
-    m = m.drop(columns=["base"])
+    m = m.drop(columns=["base", "norm"])
     m.to_parquet(mp)
 
     summary = {
@@ -204,8 +228,10 @@ def refine_master(data: Path) -> pd.DataFrame:
         "profile_currency_not_quote": sorted(m.loc[m["included"] & m["currency"].notna()
                                                     & ~m["currency"].isin(list(PENCE | {"GBP"}))
                                                     & (m["quote_currency"] == "GBp"), "symbol"].tolist()),
-        "aim_file": aim_file, "aim_marked": int(m["is_aim"].fillna(False).sum()),
-        "aim_caveat": "The AIM file lists companies on AIM today; dead AIM companies are not marked.",
+        "lse_issuer_lists": bool(use_lse),
+        "aim_file": None if use_lse else aim_file, "aim_marked": int(m["is_aim"].fillna(False).sum()),
+        "aim_caveat": ("AIM and listing status come from the LSE issuer lists, month by month (lse_report.json)."
+                       if use_lse else "The AIM file lists companies on AIM today; dead AIM companies are not marked."),
     }
     (data / "master_report.json").write_text(json.dumps(summary, indent=1, default=str))
     log.info("master: %d kept of %d; %s", summary["kept"], summary["symbols"], counts)
