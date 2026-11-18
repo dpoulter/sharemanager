@@ -373,6 +373,20 @@ function skip(why) {
 			deviceScaleFactor: 1,
 		});
 		const laptopPage = await laptop.newPage();
+
+		/* Nothing a page loads may come from anywhere but this site. The
+		   typeface is the reason this is checked: a stylesheet that asks
+		   fonts.googleapis.com for Inter tells Google which pages a
+		   private site serves, and the page sits in a fallback face until
+		   the request comes back. */
+		const offSite = new Set();
+		laptopPage.on('request', request => {
+			const url = request.url();
+			if (!url.startsWith(BASE) && !url.startsWith('data:') && !url.startsWith('blob:')) {
+				offSite.add(url.split('?')[0]);
+			}
+		});
+
 		await laptopPage.goto(`${BASE}/login.php`, { waitUntil: 'domcontentloaded' });
 		await laptopPage.fill('input[name=username]', 'tester');
 		await laptopPage.fill('input[name=password]', 'testpass');
@@ -457,6 +471,24 @@ function skip(why) {
 		});
 		check('and it is on the screen without scrolling', statusOnScreen === true,
 		      String(statusOnScreen));
+
+		/* Every page the laptop context visited, which is the login page,
+		   the three strategies views and the quote page below. */
+		await laptopPage.goto(`${BASE}/quote.php?symbol=AAA`, { waitUntil: 'networkidle' });
+		await laptopPage.waitForTimeout(500);
+		check('no page asks anybody but this site for anything',
+		      offSite.size === 0, Array.from(offSite).join(' | '));
+
+		/* And the typeface is one of the things it serves. */
+		const fontUsed = await laptopPage.evaluate(async () => {
+			const loaded = [];
+			document.fonts.forEach(face => loaded.push(face.family));
+			return { families: Array.from(new Set(loaded)),
+			         body: getComputedStyle(document.body).fontFamily };
+		});
+		check('the pages are set in the typeface the house style asks for',
+		      /Inter/.test(fontUsed.body) && fontUsed.families.indexOf('Inter') !== -1,
+		      JSON.stringify(fontUsed));
 
 		await laptop.close();
 

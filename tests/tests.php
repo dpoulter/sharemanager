@@ -7320,13 +7320,14 @@
        against 1,350.6p, 74.8% below" - where it used to show a bare 341 in
        a red badge. */
     $pv_quote = (string)file_get_contents(dirname(__DIR__) . '/templates/quote.php');
-    check('the quote page labels the sector figure an implied price',
-          strpos($pv_quote, "Implied price at ") !== false
-          && strpos($pv_quote, "'sector'") !== false);
-    check('the quote page labels the industry figure an implied price',
-          strpos($pv_quote, "Implied price at ") !== false
-          && strpos($pv_quote, 'industry') !== false);
-    check('and the card says it in a sentence, not as a bare number',
+    check('the report says what the industry\'s ratios imply, as a price and a gap',
+          strpos($pv_quote, 'Priced like its industry it would be') !== false
+          && strpos($pv_quote, 'the close') !== false,
+          substr($pv_quote, max(0, strpos($pv_quote, 'Priced like') - 100), 300));
+    check('and the Company view says the same for the sector, in words',
+          strpos($pv_quote, "['the sector', \$valuation]") !== false
+          && strpos($pv_quote, "['the industry', \$industry_valuation]") !== false);
+    check('and neither is a bare number in a badge',
           strpos((string)file_get_contents($INCLUDES . '/quote_view.php'),
                  "'Implied price '") !== false);
 
@@ -7507,12 +7508,14 @@
 
     /* The two columns are labelled, so the page says which median is which. */
     $mn_quote = (string)file_get_contents(dirname(__DIR__) . '/templates/quote.php');
-    check('the whole-group columns say "median"',
-          strpos($mn_quote, 'Sector median') !== false
-          && strpos($mn_quote, 'Market median') !== false);
-    check('the peer columns say the share is left out of them',
-          substr_count($mn_quote, 'peer median (excl. this share)') === 2,
-          substr_count($mn_quote, 'peer median (excl. this share)') . ' occurrences');
+    check('the whole-group columns say which median they are',
+          substr_count($mn_quote, 'title="Sector median"') === 2
+          && substr_count($mn_quote, 'title="Market median"') === 2,
+          substr_count($mn_quote, 'title="Sector median"') . ' sector, '
+          . substr_count($mn_quote, 'title="Market median"') . ' market');
+    check('and the peer medians say the share is left out of them',
+          strpos($mn_quote, 'leaves this share out') !== false,
+          substr($mn_quote, max(0, strpos($mn_quote, 'leaves this share out') - 150), 300));
 
     echo "\n--- the as of date is the last trading day, not yesterday ---\n";
 
@@ -11653,17 +11656,23 @@
     check('the Back link is gone; the browser and the navbar do that',
           preg_match('/>\s*Back\s*</', $qt) !== 1
           && strpos($qt, 'history.go(-1)') === false);
-    /* Announcements were inside a tab nobody had a reason to open. */
-    check('recent announcements are above the tabs, not inside one',
+    /* Announcements are on the report itself rather than in a tab nobody
+       had a reason to open, and the five tabs that are left are views of
+       their own rather than panes hidden in the page: each has an address,
+       so one can be bookmarked and a link can point at it. */
+    check('recent announcements are on the report, not behind a tab',
           strpos($qt, 'Recent announcements') !== false
-          && strpos($qt, 'Recent announcements') < strpos($qt, 'quoteTabs'));
-    check('the tabs offered are Profile, News and Ratios',
-          substr_count($qt, 'data-bs-toggle="tab"') === 3
-          && strpos($qt, 'href="#profile"') !== false
-          && strpos($qt, 'href="#news"') !== false
-          && strpos($qt, 'href="#statistics"') !== false);
-    check('the scores use the one scale, not four colour schemes of their own',
-          substr_count($qt, 'score_badge_html') >= 4
+          && strpos($qt, 'qp-news') !== false);
+    check('the views are addresses rather than panes hidden in the page',
+          strpos($qt, 'data-bs-toggle="tab"') === false
+          && strpos($qt, "\$q_link(\$tab_key)") !== false
+          && strpos((string) file_get_contents(dirname(__DIR__) . '/public/quote.php'),
+                    "\$_GET['tab']") !== false);
+    check('and they are the ones the brief asks for, plus Company',
+          preg_match_all("/'(report|announcements|outlook|strategies|company)' => '/",
+                         (string) file_get_contents(dirname(__DIR__) . '/public/quote.php')) === 5);
+    check('the scores are bars on one scale, not four colour schemes of their own',
+          substr_count($qt, 'view_bar_row_html') >= 4
           && strpos($qt, 'text-bg-warning') === false
           && strpos($qt, 'text-bg-info') === false);
     /* The chart axis was printing the library's default - 1350.60 - beside a
@@ -12703,8 +12712,9 @@
     check('the functions behind them are still there to come back to',
           function_exists('income_statement') && function_exists('ratings')
           && function_exists('get_value_statistics'));
-    check('the three tabs that do open are untouched',
-          substr_count($dp_tpl, 'data-bs-toggle="tab"') === 3);
+    check('and the views that do open are the report page\'s own, not Bootstrap panes',
+          substr_count($dp_tpl, 'data-bs-toggle="tab"') === 0
+          && strpos($dp_tpl, 'sm-tabs') !== false);
 
     echo "\n--- the transactions page can be pointed at this year ---\n";
 
@@ -13946,12 +13956,23 @@
            not on the page any more: their pane had nothing to open it, so
            seven queries a page were paying for markup nobody could see. */
         $q = (string)$curl("$base/quote.php?symbol=AAA&page=quote_form.php");
-        foreach (['Business summary' => 'profile',
-                  'Price valuation' => 'valuation',
+        foreach (['Momentum' => 'momentum panel',
+                  'Value' => 'value panel',
+                  'Quality' => 'quality panel',
                   'Financial health' => 'health scores',
+                  'Growth and returns' => 'growth panel',
                   'Recent announcements' => 'announcements'] as $needle => $what) {
             check("the quote page renders the $what", stripos($q, $needle) !== false);
         }
+        /* And the Company view keeps what the old Profile and Ratios tabs
+           held, which the report has no panel for. */
+        $q_company = (string)$curl("$base/quote.php?symbol=AAA&tab=company");
+        check('the Company view renders the profile',
+              stripos($q_company, 'Business summary') !== false
+              && stripos($q_company, 'Shares in issue') !== false);
+        check('and both peer valuations',
+              stripos($q_company, 'Priced like the sector') !== false
+              && stripos($q_company, 'Priced like the industry') !== false);
         check('the quote page is substantial, not a stub', strlen($q) > 20000,
               strlen($q) . ' bytes');
 
@@ -13966,18 +13987,243 @@
         $fund_page = (string)$curl("$base/quote.php?symbol=LLL&page=quote_form.php");
         db()->exec("update stock_symbols set sector='Sector 2' where symbol='LLL'");
 
-        check('a fund page says it is not scored, where the badges would be',
-              substr_count($fund_page, 'Not scored: investment fund') === 2,
-              substr_count($fund_page, 'Not scored: investment fund') . ' occurrences');
-        check('a fund page shows no value, quality or ShareRank badge',
+        check('a fund page says it is not scored, where the bars would be',
+              stripos($fund_page, 'not scored for an investment fund') !== false
+              && stripos($fund_page, 'ShareRank needs them') !== false,
+              substr($fund_page, max(0, stripos($fund_page, 'investment fund') - 200), 400));
+        check('a fund page offers no value, quality or ShareRank score',
               strpos($fund_page, '#ValueModal') === false
               && strpos($fund_page, '#QualityModal') === false
-              && strpos($fund_page, 'ShareRank') === false);
-        /* Momentum is still scored, so that badge stays. */
+              && strpos($fund_page, 'sm-scorebox-total">ShareRank') === false);
+        check('and says its ratios describe a wrapper rather than a business',
+              stripos($fund_page, 'describe a wrapper rather than a business') !== false);
+        /* Momentum is still scored, so that bar stays. */
         check('a fund page still shows its momentum score',
               strpos($fund_page, '#MomentumModal') !== false);
         check('the fund page is a real page, not an error', strlen($fund_page) > 20000,
               strlen($fund_page) . ' bytes');
+
+        /* ---------------- the quote page as a one-screen report ----------------
+
+           Rolls-Royce's own figures at the 17 Nov 2026 close, which is what
+           the mockup Dale approved was drawn from, under a test symbol. The
+           page is checked against them rather than against itself: a report
+           that renders is not the same as a report that is right, and every
+           figure below was read off the mockup. */
+
+        $rr       = 'RRT';
+        $rr_asof  = (string) scalar("select date(max(job_date)) from jobs
+                                      where job_name='get_statistics_asof'");
+        $rr_close = (string) scalar("select max(date) from historical_prices where exchange='XLON'");
+        $rr_prev  = (string) scalar("select max(date) from historical_prices
+                                      where exchange='XLON' and date<?", [$rr_close]);
+
+        foreach (['historical_prices', 'statistics', 'stock_symbols', 'stock_info'] as $rr_table) {
+            db()->prepare("delete from $rr_table where symbol=?")->execute([$rr]);
+        }
+        db()->exec("delete from statistics where symbol like 'RRU%'");
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,
+                                                  market,industry_group,industry)
+                       values (?,'Rolls Test Holdings','Rolls Test Holdings','XLON','Y',
+                               'Industrials','FTSE 100','Aerospace & Defense','Aerospace')")
+            ->execute([$rr]);
+
+        /* The closes: today, yesterday, a month ago, and the two ends of the
+           year. 1,326.6 after 1,337.4 is -10.8p and -0.8%. */
+        $rr_price = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                                   values (?,'XLON',?,?)");
+        $rr_price->execute([$rr, $rr_close, 1326.6]);
+        $rr_price->execute([$rr, $rr_prev, 1337.4]);
+        $rr_price->execute([$rr, date('Y-m-d', strtotime($rr_close . ' -40 day')), 1350.8]);
+        $rr_price->execute([$rr, date('Y-m-d', strtotime($rr_close . ' -120 day')), 1570.4]);
+        $rr_price->execute([$rr, date('Y-m-d', strtotime($rr_close . ' -300 day')), 1029.0]);
+
+        /* The statistics, at the date the nightly job last wrote. The rank is
+           the share's place in the index and the percentile is what the dot
+           and the bar are drawn from. */
+        $rr_stat = db()->prepare("insert into statistics (symbol,exchange,date,indicator,value,
+                                                          stat_rank,percentile)
+                                  values (?,'XLON',?,?,?,?,?)");
+        foreach ([['3mnth', -15.2, 316, 10], ['6mnth', 14.6, 106, 70], ['12mnth', 21.2, 108, 69],
+                  ['ma50', 1372.0, null, null], ['ma200', 1339.8, null, null],
+                  ['close_price', 1326.6, null, null],
+                  ['pe', 36.9, 304, 13], ['piotroski_score', 7, 133, 62],
+                  ['altman_z', 3.08, 143, 59],
+                  ['momentum_score', 49, null, null], ['value_score', 4, null, null],
+                  ['quality_score', 82, null, null], ['overall_score', 35, null, null]]
+                 as [$rr_name, $rr_value, $rr_rank, $rr_pct]) {
+            $rr_stat->execute([$rr, $rr_asof, $rr_name, $rr_value, $rr_rank, $rr_pct]);
+        }
+
+        /* "316 of 350" is a rank out of however many shares the index had
+           that night, which is a fact about the day rather than a constant.
+           The suite's own fixtures have already ranked a few shares on this
+           date, so the universe is topped up to 350 rather than filled from
+           nothing. */
+        foreach (['3mnth', '6mnth', '12mnth'] as $rr_name) {
+            $rr_have = (int) scalar("select count(*) from statistics
+                                      where exchange='XLON' and indicator=? and date=?
+                                        and value is not null", [$rr_name, $rr_asof]);
+            for ($rr_i = $rr_have; $rr_i < 350; $rr_i++) {
+                $rr_stat->execute([sprintf('RRU%s%03d', substr($rr_name, 0, 1), $rr_i),
+                                   $rr_asof, $rr_name, $rr_i + 1, $rr_i + 1, 50]);
+            }
+        }
+
+        /* share_lookup() only returns an indicator that has both a sector
+           and a market median stored for the same date, because the page
+           shows the share against both. */
+        db()->prepare("delete from statistic_averages where indicator='pe' and date=?")
+            ->execute([$rr_asof]);
+        $rr_avg = db()->prepare("insert into statistic_averages (date,category,indicator,type,value,
+                                                                 sector,industry,exchange)
+                                 values (?,?,'pe','MEDIAN',?,?,null,'XLON')");
+        $rr_avg->execute([$rr_asof, 'MARKET', 13.7, null]);
+        $rr_avg->execute([$rr_asof, 'SECTOR', 31.7, 'Industrials']);
+
+        /* The P/E has to be in the Value category for the page to ask for
+           it. Whatever the row was before is put back at the end rather
+           than assumed: other sections of this suite own that row too. */
+        $rr_pe_before = rows("select * from screen_indicators where name='pe'");
+        db()->exec("delete from screen_indicators where name='pe'");
+        db()->exec("insert into screen_indicators (name,provider_field,description,enabled,
+                                                   order_number,category)
+                    values ('pe','Valuation.TrailingPE','P/E','Y',1,12)");
+
+        $rr_page = (string) $curl("$base/quote.php?symbol=$rr");
+
+        check('the header carries the close and what it did on the day',
+              strpos($rr_page, '1,326.6p') !== false && strpos($rr_page, '-0.8%') !== false
+              && strpos($rr_page, '-10.8p') !== false,
+              substr($rr_page, max(0, strpos($rr_page, 'sm-price')), 400));
+        check('and the year it has traded in, with the close placed in it',
+              strpos($rr_page, '1,029.0p to 1,570.4p') !== false
+              && strpos($rr_page, 'left: 55.0%') !== false,
+              substr($rr_page, max(0, strpos($rr_page, '52 weeks')), 400));
+        check('the tags say which index, which industry, and that nobody holds it',
+              strpos($rr_page, '>FTSE 100<') !== false
+              && strpos($rr_page, '>Aerospace &amp; Defense<') !== false
+              && strpos($rr_page, '>Not held<') !== false,
+              substr($rr_page, max(0, strpos($rr_page, 'sm-tags')), 500));
+
+        /* The policy, checked in code. This is the rule that decides whether
+           a holding is sold, so it is the one figure on the page that must
+           never be a language model's opinion. */
+        check('the policy strip says the trend rule is broken, by how much and against what',
+              strpos($rr_page, 'fails the trend rule') !== false
+              && strpos($rr_page, '1.0% below') !== false
+              && strpos($rr_page, '1,339.8p') !== false
+              && strpos($rr_page, 'sm-alert-ok') === false,
+              substr($rr_page, max(0, strpos($rr_page, 'Your policy')), 300));
+
+        check('the momentum rows are the returns, with the rank in the index',
+              strpos($rr_page, '-15.2%') !== false && strpos($rr_page, '+14.6%') !== false
+              && strpos($rr_page, '+21.2%') !== false
+              && strpos($rr_page, '316 of 350') !== false
+              && strpos($rr_page, '106 of 350') !== false
+              && strpos($rr_page, '108 of 350') !== false,
+              substr($rr_page, max(0, strpos($rr_page, 'Price change')), 900));
+        check('and the close against the two averages, with the level of each',
+              strpos($rr_page, '-3.3%') !== false && strpos($rr_page, '1,372.0p') !== false
+              && strpos($rr_page, '-1.0%') !== false,
+              substr($rr_page, max(0, strpos($rr_page, 'Close against')), 700));
+        check('a figure below its average carries the bad-news dot, above the good one',
+              strpos($rr_page, 'sm-dot-neg') !== false && strpos($rr_page, 'sm-dot-pos') !== false);
+
+        check('the value row shows the share against its sector and the market',
+              preg_match('/P\/E.{0,400}36\.9.{0,200}31\.7.{0,200}13\.7/s', $rr_page) === 1,
+              substr($rr_page, max(0, strpos($rr_page, 'Cheapness')), 600));
+
+        /* The two scales: the marker is where the figure is on the track it
+           is drawn against, not where the figure is on a 0 to 100 one. */
+        check('the Piotroski marker is at 7 of 9 and the Altman one at 3.08 of 5',
+              strpos($rr_page, 'left: 77.8%') !== false
+              && strpos($rr_page, 'left: 61.6%') !== false,
+              substr($rr_page, max(0, strpos($rr_page, 'Financial health')), 900));
+
+        /* The policy strip, the other three ways round. */
+        db()->prepare("update statistics set value=1300 where symbol=? and indicator='ma200'")
+            ->execute([$rr]);
+        $rr_above = (string) $curl("$base/quote.php?symbol=$rr");
+        check('a close above the average passes the rule, and says so in green',
+              strpos($rr_above, 'passes the trend rule') !== false
+              && strpos($rr_above, 'sm-alert-ok') !== false,
+              substr($rr_above, max(0, strpos($rr_above, 'Your policy')), 300));
+
+        db()->prepare("update statistics set value=1326.6 where symbol=? and indicator='ma200'")
+            ->execute([$rr]);
+        $rr_on = (string) $curl("$base/quote.php?symbol=$rr");
+        check('a close exactly on the average has not broken it',
+              strpos($rr_on, 'passes the trend rule') !== false
+              && strpos($rr_on, '0.0% above') !== false,
+              substr($rr_on, max(0, strpos($rr_on, 'Your policy')), 300));
+
+        db()->prepare("delete from statistics where symbol=? and indicator='ma200'")->execute([$rr]);
+        $rr_young = (string) $curl("$base/quote.php?symbol=$rr");
+        check('and a share with no 200-day average is not judged against one',
+              stripos($rr_young, 'Your policy') === false
+              && stripos($rr_young, 'Fatal error') === false
+              && strpos($rr_young, 'qp-momentum') !== false,
+              substr($rr_young, max(0, strpos($rr_young, 'sm-tabs')), 200));
+        $rr_stat->execute([$rr, $rr_asof, 'ma200', 1339.8, null, null]);
+
+        /* Held, and by what. */
+        db()->prepare("delete from strategy_positions where symbol=?")->execute([$rr]);
+        db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                       values ('trend_following',?,'XLON',100,13.0,now())")->execute([$rr]);
+        $rr_held = (string) $curl("$base/quote.php?symbol=$rr");
+        check('a share a strategy holds says so, and the tag leads to the strategy',
+              strpos($rr_held, 'Held by ' . strategy_display_name('trend_following')) !== false
+              && strpos($rr_held, 'strategies.php?s=trend_following') !== false
+              && strpos($rr_held, '>Not held<') === false,
+              substr($rr_held, max(0, strpos($rr_held, 'sm-tags')), 500));
+        db()->prepare("delete from strategy_positions where symbol=?")->execute([$rr]);
+
+        /* A share with nothing: no logo, no announcements, no outlook, no
+           ratios. Every panel still renders, with dashes where the figures
+           would be, and none of them collapses or disappears. */
+        $rr_bare = 'RRB';
+        foreach (['historical_prices', 'statistics', 'stock_symbols', 'stock_info'] as $rr_table) {
+            db()->prepare("delete from $rr_table where symbol=?")->execute([$rr_bare]);
+        }
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market)
+                       values (?,'Bare Test PLC','Bare Test PLC','XLON','Y','Industrials','FTSE 250')")
+            ->execute([$rr_bare]);
+        $rr_price->execute([$rr_bare, $rr_close, 100.0]);
+        $rr_bare_page = (string) $curl("$base/quote.php?symbol=$rr_bare");
+        $rr_panels = ['qp-chart', 'qp-momentum', 'qp-health', 'qp-growth', 'qp-value',
+                      'qp-quality', 'qp-news', 'qp-outlook'];
+        $rr_missing_panels = [];
+        foreach ($rr_panels as $rr_panel) {
+            if (strpos($rr_bare_page, $rr_panel) === false) { $rr_missing_panels[] = $rr_panel; }
+        }
+        check('a share with no figures at all still renders every panel',
+              count($rr_missing_panels) === 0 && stripos($rr_bare_page, 'Fatal error') === false
+              && stripos($rr_bare_page, 'Warning:') === false
+              && stripos($rr_bare_page, 'Notice:') === false,
+              implode(', ', $rr_missing_panels) . ' '
+              . substr($rr_bare_page, max(0, stripos($rr_bare_page, 'Warning:') - 100), 250));
+        check('and prints the dash rather than a zero where a figure is missing',
+              substr_count($rr_bare_page, VIEW_DASH) > 10,
+              (string) substr_count($rr_bare_page, VIEW_DASH));
+        check('with no logo it draws the code rather than an empty box',
+              strpos($rr_bare_page, '>RRB</div>') !== false,
+              substr($rr_bare_page, max(0, strpos($rr_bare_page, 'sm-logo-box')), 200));
+
+        foreach (['historical_prices', 'statistics', 'stock_symbols', 'stock_info'] as $rr_table) {
+            db()->prepare("delete from $rr_table where symbol=?")->execute([$rr_table === 'statistics' ? $rr : $rr]);
+            db()->prepare("delete from $rr_table where symbol=?")->execute([$rr_bare]);
+        }
+        db()->exec("delete from statistics where symbol like 'RRU%'");
+        db()->prepare("delete from statistic_averages where indicator='pe' and date=?")
+            ->execute([$rr_asof]);
+        db()->exec("delete from screen_indicators where name='pe'");
+        if (count($rr_pe_before)) {
+            $rr_cols = array_keys($rr_pe_before[0]);
+            db()->prepare("insert into screen_indicators (`" . implode('`,`', $rr_cols) . "`) values ("
+                          . implode(',', array_fill(0, count($rr_cols), '?')) . ")")
+                ->execute(array_values($rr_pe_before[0]));
+        }
 
         /* The chart on the quote page is an <img> pointing at stockgraph.php,
            which required the jpgraph library unconditionally. jpgraph is not
@@ -14131,10 +14377,19 @@ STUB
                   && stripos($probe_out, 'Fatal error') === false,
                   trim(substr($probe_out, 0, 200)));
         }
-        check('the news tab renders rather than being commented out',
-              strpos($q, 'id="news"') !== false
-              && preg_match('/id="news".{0,600}(No regulatory announcements|<table|<a href=)/s', $q) === 1,
-              substr($q, max(0, strpos($q, 'id="news"')), 300));
+        /* The announcements view is a page of its own now, so it is asked
+           for rather than looked for in the markup of another one. */
+        $q_news = (string)$curl("$base/quote.php?symbol=AAA&tab=announcements");
+        check('the announcements view renders every stored announcement',
+              stripos($q_news, 'Every stored announcement') !== false
+              && (stripos($q_news, 'No regulatory announcements') !== false
+                  || strpos($q_news, '<table') !== false)
+              && stripos($q_news, 'Fatal error') === false,
+              substr($q_news, max(0, stripos($q_news, 'Every stored announcement')), 300));
+        /* And an address nobody typed lands on the report rather than on
+           an empty page. */
+        check('an unknown view falls back to the report',
+              strpos((string)$curl("$base/quote.php?symbol=AAA&tab=nonsense"), 'qp-chart') !== false);
 
         /* ---------------- a screen's results and its CSV ---------------- */
 
@@ -16209,7 +16464,10 @@ STUB
               && strpos($ch_page, 'id="price-chart-fallback"') !== false);
         check('and a browser with no JavaScript is told why',
               strpos($ch_page, '<noscript>') !== false);
-        foreach (['30','91','182','365','1825'] as $ch_span) {
+        /* 1M, 6M, 1Y, 5Y: the four ranges the house style asks for in the
+           panel title. The 3M button went with them - four buttons in a
+           title row is what fits beside "Price, one year". */
+        foreach (['30','182','365','1825'] as $ch_span) {
             check("there is a $ch_span day timespan button",
                   strpos($ch_page, 'data-chart-span="' . $ch_span . '"') !== false);
         }

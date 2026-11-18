@@ -4,6 +4,9 @@
     require("../includes/config.php");
     require_once("../includes/rns.php");
     require_once("../includes/quote_view.php");
+    /* For the Strategies view and the "held by" tags: which strategies
+       hold this share, under the names the Strategies page gives them. */
+    require_once("../includes/strategy_functions.php");
 
 	
 	// if form was submitted
@@ -160,6 +163,39 @@
 			$price_book = quote_indicator_value($quote, 'price_book_ratio');
 			$div_yield  = quote_indicator_value($quote, 'div_yield');
 
+			/* ---- the one-screen report, 18 Nov 2026 ----
+
+			   The panels are assembled in includes/quote_view.php so the
+			   template is markup: what the price has done and where it
+			   stands, the policy rules that can be checked for this share,
+			   who holds it, and the three tables of measures against their
+			   sector and the market. */
+			$momentum     = quote_momentum($symbol, $head);
+			$policy       = quote_policy($head, $momentum);
+			$held         = quote_held_by($symbol, $_SESSION['id'] ?? null);
+			$value_rows   = quote_panel_rows($quote, quote_value_wanted());
+			$quality_rows = quote_panel_rows($quote, quote_quality_wanted());
+			$growth_rows  = quote_panel_rows($quote, quote_growth_wanted());
+
+			/* Which of the page's views is open. Each is its own address,
+			   so a view can be bookmarked and a link can point at one -
+			   and the report, which is the page, is the default for
+			   anything unknown. Accounts is not offered until the yearly
+			   figures are loaded: a tab that opens an empty panel is a tab
+			   nobody clicks twice. */
+			$tabs = ['report' => 'Report', 'announcements' => 'Announcements',
+			         'outlook' => 'Outlook', 'strategies' => 'Strategies',
+			         /* Company keeps what the old Profile and Ratios tabs
+			            held - the business summary, the company's own
+			            facts, both peer valuations and every measure the
+			            nightly job stores, including the categories the
+			            report has no panel for. The brief's tab list does
+			            not have it; dropping the content silently is worse
+			            than one more tab. */
+			         'company' => 'Company'];
+			$tab  = isset($_GET['tab']) ? strtolower(trim((string) $_GET['tab'])) : 'report';
+			if (!isset($tabs[$tab])) { $tab = 'report'; }
+
 
 			//render form
 			write_log("quote.php","Start render form");
@@ -173,7 +209,10 @@
 			         "timespan"=>$timespan, "type"=>$type,
 			         "scores"=>$scores, "valueranks"=>$valueranks, "momentumranks"=>$momentumranks,
 			         "qualityranks"=>$qualityranks, "announcements"=>$announcements,
-			         "health_scores"=>$health_scores, "currency_note"=>$currency_note];
+			         "health_scores"=>$health_scores, "currency_note"=>$currency_note,
+			         "momentum"=>$momentum, "policy"=>$policy, "held"=>$held,
+			         "value_rows"=>$value_rows, "quality_rows"=>$quality_rows,
+			         "growth_rows"=>$growth_rows, "tabs"=>$tabs, "tab"=>$tab];
 
 			/* screen_id used to pick between two copies of this list that
 			   differed in one key. The Back button it fed is gone - the

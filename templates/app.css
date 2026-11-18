@@ -904,7 +904,10 @@ li a,
 	color: var(--sm-muted);
 	font-size: 11.5px;
 	font-weight: 600;
-	white-space: nowrap;
+	/* Headings wrap. "Cheapness, 0 to 100" over a 374px column is two
+	   lines of heading or a heading with its end cut off, and the figures
+	   under it still never wrap because .sm-num says so. */
+	white-space: normal;
 }
 
 /* A figure that is not the share's own: the sector and market medians it is
@@ -1286,3 +1289,225 @@ li a,
 .text-muted {
 	color: var(--sm-muted) !important;
 }
+
+/* ===========================================================================
+   The quote page: one company on one screen.
+
+   A header panel, then three columns - the chart and what has been said on
+   the left, the price's own behaviour in the middle, the valuation on the
+   right. The widths are 1.45 : 1 : 1, which is what fits a 640px chart
+   beside two tables of four columns at 1,360px.
+   =========================================================================== */
+
+.sm-cols {
+	display: grid;
+	grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 1fr);
+	gap: 14px;
+	align-items: start;
+}
+
+.sm-col {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	min-width: 0;
+}
+
+/* The header: who it is, the facts, the scores. */
+.sm-head {
+	display: flex;
+	gap: 24px;
+	padding: 14px 16px;
+	align-items: stretch;
+	flex-wrap: wrap;
+}
+
+.sm-head-who {
+	display: flex;
+	gap: 14px;
+	flex: 1.5;
+	min-width: 0;
+}
+
+.sm-head-name {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+}
+
+/* The logo, or a dark square with the code in it where the provider has
+   none: a grey box with the company name written across it, which is what
+   the page used to draw, says only that something is missing. */
+.sm-logo-box {
+	width: 52px;
+	height: 52px;
+	border-radius: 6px;
+	background: var(--sm-nav);
+	color: #ffffff;
+	font-weight: 700;
+	font-size: 17px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	overflow: hidden;
+}
+
+.sm-logo-box img {
+	max-width: 100%;
+	max-height: 100%;
+	object-fit: contain;
+}
+
+.sm-price-line {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.sm-price {
+	font-size: 24px;
+	font-weight: 700;
+}
+
+.sm-price-move {
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.sm-tags {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+/* The key facts, against a rule rather than in a box: they are the same
+   kind of thing as the price beside them. */
+.sm-facts {
+	flex: 1;
+	min-width: 200px;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 8px;
+	border-left: 1px solid var(--sm-rule-soft);
+	padding-left: 20px;
+}
+
+.sm-fact {
+	display: flex;
+	justify-content: space-between;
+	gap: 10px;
+}
+
+.sm-head .sm-scorebox {
+	flex: 1;
+	min-width: 220px;
+}
+
+/* The 52-week range: where the close sits between the two ends. */
+.sm-range {
+	position: relative;
+	height: 6px;
+	border-radius: 3px;
+	background: var(--sm-rule-soft);
+	margin: 5px 0 0;
+}
+
+.sm-range-mark {
+	position: absolute;
+	top: -3px;
+	width: 3px;
+	height: 12px;
+	border-radius: 1px;
+	background: var(--sm-ink);
+}
+
+/* The implied-price sentence under the Value table, and anything else that
+   is a sentence rather than a row. */
+.sm-strip-note {
+	padding: 8px 12px;
+	border-top: 1px solid var(--sm-rule-soft);
+	background: var(--sm-band);
+	color: var(--sm-ink-2);
+}
+
+.sm-strip-note-alert {
+	background: var(--sm-alert-bg);
+	border-top-color: var(--sm-alert-rule);
+	color: var(--sm-alert-ink);
+}
+
+/* The chart's own legend: three lines and the level each is at. */
+.sm-legend {
+	display: flex;
+	gap: 16px;
+	margin-top: 8px;
+	flex-wrap: wrap;
+	color: var(--sm-ink-2);
+	font-size: 12px;
+}
+
+.sm-legend-mark {
+	display: inline-block;
+	width: 14px;
+	height: 2px;
+	vertical-align: middle;
+}
+
+/* Below 900px there are no columns. The panels are laid out in the order a
+   reader wants them on a phone rather than in the order the desktop grid
+   puts them: the chart, then what the price has done, then what it is
+   worth, and the long reading last. display: contents takes the three
+   column boxes out of the way so the panels themselves are the grid's
+   children and can be ordered. */
+@media (max-width: 900px) {
+
+	.sm-cols {
+		grid-template-columns: 1fr;
+	}
+
+	.sm-col {
+		display: contents;
+	}
+
+	.qp-chart    { order: 1; }
+	.qp-momentum { order: 2; }
+	.qp-value    { order: 3; }
+	.qp-quality  { order: 4; }
+	.qp-health   { order: 5; }
+	.qp-growth   { order: 6; }
+	.qp-outlook  { order: 7; }
+	.qp-news     { order: 8; }
+	.qp-summary  { order: 9; }
+
+	.sm-head {
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.sm-facts {
+		border-left: 0;
+		border-top: 1px solid var(--sm-rule-soft);
+		padding-left: 0;
+		padding-top: 12px;
+	}
+}
+
+/* A browser without display: contents - or with it disabled for a grid -
+   still gets three stacked columns rather than a mess. */
+@supports not (display: contents) {
+	@media (max-width: 900px) {
+		.sm-col { display: flex; }
+	}
+}
+
+/* Cells that carry something other than a figure: a dot, a bar, the number
+   beside a bar. Widths so the columns line up down the table rather than
+   each row deciding for itself. */
+.sm-data .sm-dot-cell  { width: 14px; padding-left: 0; }
+.sm-data .sm-bar-cell  { width: 28%; }
+.sm-data .sm-bar-number { width: 34px; }
+.sm-nowrap { white-space: nowrap; }
