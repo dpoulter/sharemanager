@@ -29,13 +29,21 @@
     $synced = null;
     if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["sync"])) {
 
-        $result = broker_sync(['exchange' => $exchange,
-                               'instruments' => isset($_POST["instruments"])]);
-
-        $_SESSION["broker_sync"] = ['status'  => $result['status'],
-                                    'message' => $result['message'],
-                                    'problems' => $result['problems'],
-                                    'ran'     => $result['ran']];
+        /* Every account that is switched on, the way the nightly job does
+           it: a Sync now that read one of two would leave the page half
+           refreshed and give no sign of which half. */
+        $synced_all = [];
+        foreach (t212_environments_to_read() as $environment) {
+            $result = broker_sync(['exchange' => $exchange,
+                                   'environment' => $environment,
+                                   'instruments' => isset($_POST["instruments"])]);
+            $synced_all[] = ['label'   => $result['label'],
+                             'status'  => $result['status'],
+                             'message' => $result['message'],
+                             'problems' => $result['problems'],
+                             'ran'     => $result['ran']];
+        }
+        $_SESSION["broker_sync"] = $synced_all;
         redirect("broker.php");
     }
 
@@ -44,21 +52,40 @@
         unset($_SESSION["broker_sync"]);
     }
 
-    $status = broker_status();
+    /* One block per account, because two are read now and a position in
+       the practice account is not a position in the live one. An account
+       that has never been read still gets a block, saying so: "no rows" and
+       "switched off" are different states and the page has to tell them
+       apart. */
+    $accounts = [];
+    foreach (['demo', 'live'] as $label) {
+
+        $environment = ($label === 'demo') ? 'demo' : 'live-read';
+
+        $accounts[] = [
+            "label"      => $label,
+            "words"      => t212_label_words($label),
+            "on"         => t212_environment_on($environment),
+            "status"     => broker_status(new T212Client(['env' => $environment])),
+            "run"        => broker_ready() ? broker_last_run(BROKER_T212, $label) : null,
+            "values"     => broker_latest_values(BROKER_T212, $label),
+            "positions"  => broker_latest_positions(BROKER_T212, $label),
+            "orders"     => broker_recent_orders(BROKER_T212, 20, $label),
+            "dividends"  => broker_recent_dividends(BROKER_T212, 20, $label),
+            "unmatched"  => broker_ready()
+                          ? broker_unmatched_symbols(BROKER_T212, $exchange, $label) : [],
+            "ambiguous"  => broker_ready() ? broker_ambiguous_instruments(BROKER_T212, $label) : [],
+        ];
+    }
 
     /* Everything below reads tables. With the connection off, or before the
        first sync, they are empty and the page says what to do about it
        rather than showing nothing. */
     render("broker.php", [
         "title"      => "Broker",
-        "status"     => $status,
+        "accounts"   => $accounts,
         "synced"     => $synced,
-        "values"     => broker_latest_values(),
-        "positions"  => broker_latest_positions(),
-        "orders"     => broker_recent_orders(BROKER_T212, 20),
-        "dividends"  => broker_recent_dividends(BROKER_T212, 20),
-        "unmatched"  => broker_ready() ? broker_unmatched_symbols(BROKER_T212, $exchange) : [],
-        "ambiguous"  => broker_ready() ? broker_ambiguous_instruments() : [],
+        "live_orders_on" => T212_LIVE_ORDERS_ON,
     ]);
 
 ?>

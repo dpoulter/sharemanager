@@ -37,8 +37,8 @@
 	 *   ok=false and a sentence a person can act on, so one broker call
 	 *   cannot take the nightly run or a page down with it;
 	 *
-	 *   nothing is requested unless the environment says to. With
-	 *   SM_T212_ENV=off, or a missing key, no socket is opened at all;
+	 *   nothing is requested unless the environment is switched on. With
+	 *   its switch off, or a missing key, no socket is opened at all;
 	 *
 	 *   the published rate limits are respected before the fact, by waiting
 	 *   between calls, as well as after it. A 429 waits for the reset the
@@ -47,6 +47,71 @@
 	 */
 
 	require_once("constants.php");
+
+	/* ---------------------------------------------------------------------
+	   The environments, and which of them are switched on.
+
+	   There are three: the practice account (demo), the live account read
+	   with a read-only key (live-read), and the live account with the key
+	   that can trade (live-orders). They are independent, because the
+	   practice twin has to keep running beside the live account rather than
+	   stop the day it is switched on.
+	   --------------------------------------------------------------------- */
+
+	/** The environments this application knows, in the order it reads them. */
+	function t212_environments() { return ['demo', 'live-read', 'live-orders']; }
+
+	/** Whether one of them is switched on. */
+	function t212_environment_on($env) {
+
+		switch (strtolower(trim((string) $env))) {
+			case 'demo':        return (bool) T212_DEMO_ON;
+			case 'live-read':   return (bool) T212_LIVE_READ_ON;
+			case 'live-orders': return (bool) T212_LIVE_ORDERS_ON;
+		}
+		return false;
+	}
+
+	/**
+	 * The environments to READ, in order. Never live-orders: that key is for
+	 * sending and nothing else, and a sync that used it would be a sync
+	 * holding a credential it has no business holding.
+	 */
+	function t212_environments_to_read() {
+
+		$out = [];
+		if (T212_DEMO_ON)      { $out[] = 'demo'; }
+		if (T212_LIVE_READ_ON) { $out[] = 'live-read'; }
+		return $out;
+	}
+
+	/**
+	 * Which ACCOUNT an environment is: demo or live.
+	 *
+	 * Every broker row carries this, because two accounts are read now and
+	 * a position in one is not a position in the other.
+	 */
+	function t212_env_label($env) {
+		return strtolower(trim((string) $env)) === 'demo' ? 'demo' : 'live';
+	}
+
+	/** The account label in words, for a page. */
+	function t212_label_words($label) {
+		return ((string) $label === 'demo') ? 'Practice account' : 'Live account';
+	}
+
+	/**
+	 * The environment an unnamed client gets: the first one switched on.
+	 *
+	 * Only for callers that predate there being two. Everything that stores
+	 * a row names its environment, because a row has to say which account
+	 * it came from.
+	 */
+	function t212_default_environment() {
+
+		$reading = t212_environments_to_read();
+		return count($reading) ? $reading[0] : 'off';
+	}
 
 	/**
 	 * Whatever this is, with the credentials taken out of it.
@@ -60,7 +125,11 @@
 		$text = (string) $text;
 
 		foreach ([T212_API_KEY, T212_API_SECRET,
-		          T212_DEMO_API_KEY, T212_DEMO_API_SECRET] as $secret) {
+		          T212_DEMO_API_KEY, T212_DEMO_API_SECRET,
+		          /* The one that can move real money is masked first in
+		             spirit and listed here in fact: a key that reaches a log
+		             is a key that has to be replaced. */
+		          T212_LIVE_ORDERS_API_KEY, T212_LIVE_ORDERS_API_SECRET] as $secret) {
 			$secret = (string) $secret;
 			if (strlen($secret) >= 4) { $text = str_replace($secret, '[redacted]', $text); }
 		}
@@ -122,14 +191,31 @@
 		 */
 		public function __construct($options = []) {
 
+			/* Which account this client is for. There is no default any
+			   more: a client is built for one environment, and the caller
+			   says which, because two of them now run beside each other.
+			   An unnamed one takes the first that is switched on, so the
+			   old single-environment callers keep working. */
 			$this->env = isset($options['env'])
 			           ? strtolower(trim((string) $options['env']))
-			           : (defined('T212_ENV') ? T212_ENV : 'off');
+			           : t212_default_environment();
 
 			if ($this->env === 'demo') {
 				$this->key    = (string) T212_DEMO_API_KEY;
 				$this->secret = (string) T212_DEMO_API_SECRET;
 				$this->base   = T212_DEMO_BASE_URL;
+			}
+			else if ($this->env === 'live-orders') {
+				/* The one credential in this application that can move real
+				   money, and it is handed out here only because the caller
+				   asked for this environment by name. Asking for it is not
+				   enough to use it: T212Client has no write path for it at
+				   all - see includes/broker_live.php, which is the only
+				   file that sends to the live account and checks six
+				   conditions before it opens a socket. */
+				$this->key    = (string) T212_LIVE_ORDERS_API_KEY;
+				$this->secret = (string) T212_LIVE_ORDERS_API_SECRET;
+				$this->base   = T212_LIVE_BASE_URL;
 			}
 			else {
 				$this->key    = (string) T212_API_KEY;
@@ -172,11 +258,22 @@
 		public function rate_limit()  { return $this->rate; }
 
 		/** Whether this environment is one that reads the live account. */
-		public function is_live() { return $this->env === 'live-read'; }
+		public function is_live() {
+			return in_array($this->env, ['live-read', 'live-orders'], true);
+		}
+
+		/**
+		 * Which ACCOUNT this environment is, for the tables and the page.
+		 *
+		 * Two environments read the live account - the read-only key and
+		 * the one that can trade - and a row stored by either came from the
+		 * same account, so both are labelled "live".
+		 */
+		public function label() { return t212_env_label($this->env); }
 
 		/** Whether anything can be asked for at all. */
 		public function configured() {
-			return in_array($this->env, ['live-read', 'demo'], true)
+			return t212_environment_on($this->env)
 			    && trim($this->key) !== '' && trim($this->secret) !== '';
 		}
 
@@ -188,16 +285,24 @@
 		 */
 		public function why_not() {
 
-			if ($this->env === 'off')  { return "The broker connection is off (SM_T212_ENV=off)."; }
-			if (!in_array($this->env, ['live-read', 'demo'], true)) {
-				return "SM_T212_ENV is '" . $this->env . "', which is not one of off,"
-				     . " live-read or demo, so nothing is connected.";
+			$switches = ['demo'        => 'SM_T212_DEMO',
+			             'live-read'   => 'SM_T212_LIVE_READ',
+			             'live-orders' => 'SM_T212_LIVE_ORDERS'];
+
+			if (!isset($switches[$this->env])) {
+				return "'" . $this->env . "' is not an environment this knows:"
+				     . " they are demo, live-read and live-orders.";
+			}
+			if (!t212_environment_on($this->env)) {
+				return "The " . $this->env . " connection is off ("
+				     . $switches[$this->env] . " is not on).";
 			}
 			if (trim($this->key) === '' || trim($this->secret) === '') {
-				return "No " . ($this->env === 'demo' ? "demo " : "")
-				     . "key is configured, so there is nothing to ask with."
-				     . " Set SM_T212_" . ($this->env === 'demo' ? "DEMO_" : "")
-				     . "API_KEY and _API_SECRET in the server environment.";
+				$prefix = ['demo' => 'SM_T212_DEMO_', 'live-read' => 'SM_T212_',
+				           'live-orders' => 'SM_T212_LIVE_ORDERS_'];
+				return "No " . $this->env . " key is configured, so there is nothing to"
+				     . " ask with. Set " . $prefix[$this->env] . "API_KEY and "
+				     . $prefix[$this->env] . "API_SECRET in the server environment.";
 			}
 			return "";
 		}
@@ -319,11 +424,16 @@
 		 */
 		public function place_market_order($ticker, $quantity) {
 
-			/* Lock one: the environment. */
+			/* Lock one: the environment. This method sends to the practice
+			   account and to nothing else, whatever else is switched on.
+			   The live account has its own function, in its own file, with
+			   its own key and six conditions in front of it - see
+			   includes/broker_live.php. Two paths, so neither can be made
+			   into the other by a parameter. */
 			if ($this->env !== 'demo') {
 				return $this->failure('refused', 0,
-				       "an order can only be placed against the demo account, and"
-				     . " SM_T212_ENV is '" . $this->env . "'.");
+				       "an order can only be placed against the demo account through"
+				     . " this client, and this one is '" . $this->env . "'.");
 			}
 			if (!$this->configured()) {
 				return $this->failure('not_configured', 0, $this->why_not());

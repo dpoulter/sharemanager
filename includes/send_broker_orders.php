@@ -100,6 +100,18 @@
 		$mode = strategy_mode_rules($account['mode']);
 		if ($mode['broker'] === null) { continue; }
 
+		/* A live account is not this job's to send. It plans with
+		   everything else and its orders wait for the live path, which is
+		   armed and approved rather than scheduled. Said rather than
+		   skipped in silence: an order sitting unsent is a thing somebody
+		   should be able to find the reason for. */
+		if ($mode['mode'] !== STRATEGY_MODE_T212_DEMO) {
+			echo "\r\n--- " . $strategy . " (" . $mode['words'] . ") ---\r\n";
+			echo "  not this job's to send: a live account's orders go out only when"
+			   . " the account is armed and the batch approved.\r\n";
+			continue;
+		}
+
 		echo "\r\n--- " . $strategy . " (" . $mode['words'] . ") ---\r\n";
 
 		/* 1. What became of what has already gone. */

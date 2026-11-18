@@ -145,6 +145,10 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_trading.sql" > /dev/null || exit 1
 echo "applying sql/broker_fills.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_fills.sql" > /dev/null || exit 1
 
+# After every broker table exists: it adds a column to five of them.
+echo "applying sql/broker_environment.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_environment.sql" > /dev/null || exit 1
+
 # After sql/report_currency.sql, which adds the column this one sits after.
 echo "applying sql/strategy_prices.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_prices.sql" > /dev/null || exit 1
@@ -193,7 +197,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       strategy_backtest strategy_backtest_overrides strategy_backtest_costs \
                       strategy_prices \
                       broker broker_account_fields broker_mapping broker_trading \
-                      broker_fills; do
+                      broker_fills broker_environment; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
      done
 

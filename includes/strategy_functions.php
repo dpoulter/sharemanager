@@ -84,6 +84,11 @@
 
 	define("STRATEGY_MODE_PAPER",     "PAPER");
 	define("STRATEGY_MODE_T212_DEMO", "T212_DEMO");
+	/* Real money, in Dale's Trading 212 Invest account, and nothing about
+	   the mode alone lets an order out: see includes/broker_live.php for
+	   the conditions, which include the account being armed from the page
+	   and the batch being approved. */
+	define("STRATEGY_MODE_T212_LIVE", "T212_LIVE");
 
 	/* The figures a Trading 212 account trades by - the minimum order, the
 	   quantity precision, the per-run cap, the session times - are in
@@ -102,11 +107,33 @@
 
 		$mode = strtoupper(trim((string) $mode));
 
+		if ($mode === STRATEGY_MODE_T212_LIVE) {
+			/* The same dealing rules as the practice account, because it is
+			   the same broker and the same instruments. What differs is
+			   everything around the order: the environment it is sent to,
+			   the caps in constants.php, and the arming and approval that
+			   have to be in place before anything is sent at all. */
+			return [
+				'mode'          => STRATEGY_MODE_T212_LIVE,
+				'broker'        => BROKER_T212,
+				'demo'          => false,
+				'live'          => true,
+				'environment'   => 'live',
+				'minimum_order' => T212_MIN_ORDER_VALUE,
+				'fractional'    => true,
+				'decimals'      => max(0, min(8, (int) T212_QUANTITY_DECIMALS)),
+				'commission'    => 0.0,
+				'words'         => 'Trading 212 live',
+			];
+		}
+
 		if ($mode === STRATEGY_MODE_T212_DEMO) {
 			return [
 				'mode'          => STRATEGY_MODE_T212_DEMO,
 				'broker'        => BROKER_T212,
 				'demo'          => true,
+				'live'          => false,
+				'environment'   => 'demo',
 				'minimum_order' => T212_MIN_ORDER_VALUE,
 				'fractional'    => true,
 				'decimals'      => max(0, min(8, (int) T212_QUANTITY_DECIMALS)),
@@ -119,6 +146,8 @@
 			'mode'          => STRATEGY_MODE_PAPER,
 			'broker'        => null,
 			'demo'          => false,
+			'live'          => false,
+			'environment'   => null,
 			'minimum_order' => STRATEGY_MIN_ORDER_VALUE,
 			'fractional'    => false,
 			'decimals'      => 0,
@@ -130,7 +159,13 @@
 	/** Whether a mode is one this application knows how to run. */
 	function strategy_mode_known($mode) {
 		return in_array(strtoupper(trim((string) $mode)),
-		                [STRATEGY_MODE_PAPER, STRATEGY_MODE_T212_DEMO], true);
+		                [STRATEGY_MODE_PAPER, STRATEGY_MODE_T212_DEMO,
+		                 STRATEGY_MODE_T212_LIVE], true);
+	}
+
+	/** Whether a mode deals with real money. */
+	function strategy_mode_is_live($mode) {
+		return strtoupper(trim((string) $mode)) === STRATEGY_MODE_T212_LIVE;
 	}
 
 	/**
@@ -1179,6 +1214,7 @@
 
 		$mode=strtoupper(trim((string)$mode));
 
+		if ($mode===STRATEGY_MODE_T212_LIVE){ return 'Live'; }
 		if ($mode===STRATEGY_MODE_T212_DEMO){ return 'Practice'; }
 		if ($mode===STRATEGY_MODE_PAPER){ return 'Paper'; }
 

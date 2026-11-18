@@ -103,11 +103,26 @@
     // where a test wants the request, the paging and the error paths
     // exercised rather than skipped; no test talks to Trading 212.
     define("BROKER_T212", "t212");
-    define("T212_ENV", strtolower(trim((string) (getenv("SM_T212_ENV") ?: "off"))));
+    define("T212_ENV", strtolower(trim((string) (getenv("SM_T212_ENV") ?: ""))));
+    if (!function_exists('t212_switch')) {
+        function t212_switch($name, $default = false) {
+            $value = getenv($name);
+            if ($value === false || trim((string) $value) === '') { return $default; }
+            return strtolower(trim((string) $value)) === 'on';
+        }
+    }
+    define("T212_ENV_LEGACY", in_array(T212_ENV, ['demo', 'live-read'], true));
+    define("T212_DEMO_ON",      t212_switch("SM_T212_DEMO",      T212_ENV === 'demo'));
+    define("T212_LIVE_READ_ON", t212_switch("SM_T212_LIVE_READ", T212_ENV === 'live-read'));
+    /* Off unless the test says otherwise, and the suite asserts that off
+       means no POST reaches the live host whatever else is set. */
+    define("T212_LIVE_ORDERS_ON", t212_switch("SM_T212_LIVE_ORDERS", false));
     define("T212_API_KEY",    getenv("SM_T212_API_KEY") ?: "");
     define("T212_API_SECRET", getenv("SM_T212_API_SECRET") ?: "");
     define("T212_DEMO_API_KEY",    getenv("SM_T212_DEMO_API_KEY") ?: "");
     define("T212_DEMO_API_SECRET", getenv("SM_T212_DEMO_API_SECRET") ?: "");
+    define("T212_LIVE_ORDERS_API_KEY",    getenv("SM_T212_LIVE_ORDERS_API_KEY") ?: "");
+    define("T212_LIVE_ORDERS_API_SECRET", getenv("SM_T212_LIVE_ORDERS_API_SECRET") ?: "");
     define("T212_LIVE_BASE_URL", "https://live.trading212.com/api/v0");
     define("T212_DEMO_BASE_URL", "https://demo.trading212.com/api/v0");
     define("T212_BASE_URL", getenv("SM_T212_BASE_URL") ?: "");

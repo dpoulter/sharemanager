@@ -89,10 +89,11 @@
 	}
 
 	/** The broker's ticker for one of our shares, or null if it has none. */
-	function broker_ticker_for($symbol, $broker = BROKER_T212) {
+	function broker_ticker_for($symbol, $broker = BROKER_T212, $environment = 'demo') {
 
 		$rows = query("select broker_ticker from broker_instruments
-		                where broker=? and symbol=? and status='matched'", $broker, $symbol);
+		                where broker=? and environment=? and symbol=? and status='matched'",
+		              $broker, $environment, $symbol);
 		return count($rows) ? (string) $rows[0]['broker_ticker'] : null;
 	}
 
@@ -184,6 +185,22 @@
 			return $out;
 		}
 
+		/* This path sends to the PRACTICE account and to nothing else.
+		   A live account is planned by the nightly run like any other and
+		   its orders wait here: sending them needs the live path, which is
+		   a different function with a different key and six conditions in
+		   front of it. Checked on the MODE rather than on the client,
+		   because a client built from the default environment while the
+		   practice switch is on would be a demo client - and sending a
+		   live account's orders to the practice account is not a smaller
+		   mistake than sending them to the live one. */
+		if ($mode['mode'] !== STRATEGY_MODE_T212_DEMO) {
+			$out['errors'][] = $strategy . " is a " . $mode['words'] . " account."
+			                 . " This sender only ever sends to the practice account,"
+			                 . " so its orders are planned and left waiting.";
+			return $out;
+		}
+
 		$client = isset($options['client']) ? $options['client'] : new T212Client();
 
 		if ($client->environment() !== 'demo') {
@@ -243,7 +260,7 @@
 		/* And nothing goes out without the two books having been compared,
 		   unless there is nothing of ours to compare: a strategy that holds
 		   nothing and has never had a fill cannot disagree with anybody. */
-		$state = broker_reconciliation_state($strategy, $mode['broker']);
+		$state = broker_reconciliation_state($strategy, $mode['broker'], $mode['environment']);
 		if (!$state['compared']) {
 			if (!$state['first_build']) {
 				$out['errors'][] = $state['why'] . ", so the two books could not be compared"
@@ -320,7 +337,7 @@
 			   be refused in the database before the dry-run branch below,
 			   so asking what tonight would do marked the order REJECTED -
 			   a dry run that changes an order is not a dry run. */
-			$ticker = broker_ticker_for($order['symbol'], $mode['broker']);
+			$ticker = broker_ticker_for($order['symbol'], $mode['broker'], $mode['environment']);
 			if ($ticker === null) {
 
 				$why = "no instrument at the broker for " . $order['symbol'] . ", so there is"
@@ -409,7 +426,8 @@
 			   again. */
 			if (preg_match('~quantity|fraction|decimal|lot size|whole~i', (string) $answer['message'])) {
 				query("update broker_instruments set whole_shares='Y'
-				        where broker=? and symbol=?", $mode['broker'], $order['symbol']);
+				        where broker=? and environment=? and symbol=?",
+				      $mode['broker'], $mode['environment'], $order['symbol']);
 				$say($order['symbol'] . " does not deal in fractions; it will be sized in"
 				     . " whole shares from now on");
 			}
@@ -656,7 +674,8 @@
 
 				if (!$complete) { $out['working']++; continue; }
 
-				$ticker = broker_ticker_for($order['symbol'], $mode['broker']);
+				$ticker = broker_ticker_for($order['symbol'], $mode['broker'],
+				                            $mode['environment']);
 				$since  = $order['sent_at'] === null
 				        ? strtotime((string) $order['created_at'])
 				        : strtotime((string) $order['sent_at']);
@@ -732,7 +751,8 @@
 
 			if (isset($book['pending'][$id])) { $out['working']++; continue; }
 
-			$outcome = broker_order_outcome($row, broker_sync_price_unit());
+			$outcome = broker_order_outcome($row,
+			                 broker_sync_price_unit($mode['broker'], $mode['environment']));
 
 			if ($outcome['outcome'] === 'filled') {
 
@@ -789,13 +809,17 @@
 	 * which leaves a fill unwritten rather than written at a hundred times
 	 * the price.
 	 */
-	function broker_sync_price_unit($broker = BROKER_T212) {
+	function broker_sync_price_unit($broker = BROKER_T212, $environment = null) {
 
 		if (in_array(T212_PRICE_UNIT, ['pounds', 'pence'], true)) { return T212_PRICE_UNIT; }
 
-		$rows = query("select price_unit from broker_sync_runs
+		$rows = ($environment === null)
+		      ? query("select price_unit from broker_sync_runs
 		                where broker=? and price_unit is not null
-		                order by run_id desc limit 1", $broker);
+		                order by run_id desc limit 1", $broker)
+		      : query("select price_unit from broker_sync_runs
+		                where broker=? and environment=? and price_unit is not null
+		                order by run_id desc limit 1", $broker, $environment);
 
 		return count($rows) ? (string) $rows[0]['price_unit'] : null;
 	}
@@ -861,12 +885,15 @@
 		}
 
 		$values = query("select cash, as_of_date from broker_account_values
-		                  where broker=? order by as_of_date desc limit 1", $mode['broker']);
+		                  where broker=? and environment=?
+		                  order by as_of_date desc limit 1",
+		                $mode['broker'], $mode['environment']);
 		if (count($values)) { $out['their_cash'] = $values[0]['cash'] === null
 		                                         ? null : (float) $values[0]['cash']; }
 
 		$runs = query("select status, finished_at, as_of_date from broker_sync_runs
-		                where broker=? order by run_id desc limit 1", $mode['broker']);
+		                where broker=? and environment=?
+		                order by run_id desc limit 1", $mode['broker'], $mode['environment']);
 		if (count($runs)) { $out['sync'] = $runs[0]; }
 
 		return $out;
@@ -895,7 +922,7 @@
 	 * This reads and decides nothing. broker_reconcile_positions() is what
 	 * halts.
 	 */
-	function broker_reconciliation_state($strategy, $broker = BROKER_T212) {
+	function broker_reconciliation_state($strategy, $broker = BROKER_T212, $environment = 'demo') {
 
 		/* The read is the sync RUN, not the rows it wrote: a broker that
 		   holds nothing today writes no position rows, and "no rows" must
@@ -903,11 +930,13 @@
 		   its positions call answered - a positions failure makes it
 		   PARTIAL - so an OK run for today is a read, with or without rows
 		   behind it. */
-		$rows = query("select max(as_of_date) d from broker_positions where broker=?", $broker);
+		$rows = query("select max(as_of_date) d from broker_positions
+		                where broker=? and environment=?", $broker, $environment);
 		$as_of = (count($rows) && $rows[0]['d'] !== null) ? (string) $rows[0]['d'] : null;
 
 		$runs = query("select max(as_of_date) d from broker_sync_runs
-		                where broker=? and status='OK'", $broker);
+		                where broker=? and environment=? and status='OK'",
+		              $broker, $environment);
 		$ran  = (count($runs) && $runs[0]['d'] !== null) ? (string) $runs[0]['d'] : null;
 
 		if ($as_of === null || ($ran !== null && $ran > $as_of)) { $as_of = $ran; }
@@ -971,13 +1000,15 @@
 		   makes. Without it, an account that has just sold everything, or
 		   one whose first fill has not been read back yet, reads as never
 		   having been compared. */
-		$latest = query("select max(as_of_date) d from broker_positions where broker=?",
-		                $mode['broker']);
+		$latest = query("select max(as_of_date) d from broker_positions
+		                  where broker=? and environment=?",
+		                $mode['broker'], $mode['environment']);
 		$out['as_of'] = (count($latest) && $latest[0]['d'] !== null)
 		              ? (string) $latest[0]['d'] : null;
 
 		$runs = query("select max(as_of_date) d from broker_sync_runs
-		                where broker=? and status='OK'", $mode['broker']);
+		                where broker=? and environment=? and status='OK'",
+		              $mode['broker'], $mode['environment']);
 		$ran  = (count($runs) && $runs[0]['d'] !== null) ? (string) $runs[0]['d'] : null;
 
 		if ($out['as_of'] === null || ($ran !== null && $ran > $out['as_of'])) {
@@ -1001,8 +1032,9 @@
 
 		$theirs = [];
 		foreach (query("select symbol, quantity from broker_positions
-		                 where broker=? and as_of_date=? and symbol is not null",
-		               $mode['broker'], $out['as_of']) as $row) {
+		                 where broker=? and environment=? and as_of_date=?
+		                   and symbol is not null",
+		               $mode['broker'], $mode['environment'], $out['as_of']) as $row) {
 			$theirs[(string) $row['symbol']] = (float) $row['quantity'];
 		}
 
@@ -1033,10 +1065,12 @@
 		   re-reads the positions first - compares it properly. */
 		$read_at = null;
 		foreach ([query("select max(synced_at) t from broker_positions
-		                  where broker=? and as_of_date=?", $mode['broker'], $out['as_of']),
+		                  where broker=? and environment=? and as_of_date=?",
+		                $mode['broker'], $mode['environment'], $out['as_of']),
 		          query("select max(finished_at) t from broker_sync_runs
-		                  where broker=? and as_of_date=? and status in ('OK','PARTIAL')",
-		                $mode['broker'], $out['as_of'])] as $rows) {
+		                  where broker=? and environment=? and as_of_date=?
+		                    and status in ('OK','PARTIAL')",
+		                $mode['broker'], $mode['environment'], $out['as_of'])] as $rows) {
 			if (count($rows) && $rows[0]['t'] !== null) {
 				$when = (string) $rows[0]['t'];
 				if ($read_at === null || strtotime($when) > strtotime($read_at)) { $read_at = $when; }

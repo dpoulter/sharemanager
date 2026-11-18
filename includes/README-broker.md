@@ -206,6 +206,46 @@ next rebalance, and an order that rounds to nothing or falls under the minimum
 is recorded with its reason rather than vanishing. The 2-point drift band
 stays: without it a small account would trade pennies at every rebalance.
 
+## Which account, and what can reach it
+
+Three switches, read independently, so the practice twin keeps running
+beside the live account instead of stopping the day it is read:
+
+```
+SM_T212_DEMO=on          read and trade the PRACTICE account
+SM_T212_LIVE_READ=on     read the LIVE account with the read-only key
+SM_T212_LIVE_ORDERS=on   send orders to the LIVE account
+```
+
+`SM_T212_LIVE_ORDERS` is off unless it is exactly `on`, takes a key of its
+own (`SM_T212_LIVE_ORDERS_API_KEY` and `_SECRET`), and is **not enough on
+its own**: a live order also needs the strategy armed from its own page by
+a logged-in user and the batch approved. None of that lives in the
+environment.
+
+`SM_T212_ENV` is still read for one release and mapped onto the first two.
+It can never switch live orders on - it never could, and a variable that
+used to mean "read the live account" must not come to mean "trade it". The
+sync says in its output when it has been mapped.
+
+Every row in every `broker_*` table carries an `environment` of `demo` or
+`live`, because two accounts are read now and a position in one is not a
+position in the other. The instrument mapping is per account as well: an
+instrument the practice account lists is not evidence about the live one.
+
+**What cannot happen today.** There is no code in this application that
+sends an order to the live account. `T212Client::place_market_order()`
+refuses any environment but `demo` and uses the demo host constant; the
+sending job and `broker_send_orders()` both refuse any account whose mode
+is not `T212_DEMO`, checked on the mode rather than on the client - a
+client built from the default environment while the practice switch is on
+is a demo client, and sending a live account's orders to the practice
+account is not a smaller mistake than sending them to the live one.
+
+A `T212_LIVE` account therefore plans its orders with everything else and
+they wait. The suite asserts this, and those checks stay when the live
+path is built.
+
 **When things happen.** The nightly run plans and sends nothing: a market order
 queued overnight fills at whatever the open does, which is not the price
 anything was decided at. `includes/send_broker_orders.php` sends, from cron

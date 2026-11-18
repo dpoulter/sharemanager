@@ -1506,6 +1506,144 @@
                         where symbol='BBB' and exchange='XLON' and date>?", [$gone_after])
             === count($gone_rows));
 
+    echo "\n--- live: two accounts, and nothing that can send to one of them ---\n";
+
+    /* Stage A of the live-orders brief. The live mode exists, a live
+       account plans, and NOTHING in this application can send an order to
+       the live account - because the function that would do it does not
+       exist yet. These checks are what say so, and they stay afterwards:
+       the ones about the practice sender hold whatever is built later. */
+
+    /* The switches are independent: SM_T212_ENV named one environment, so
+       reading the live account stopped the practice twin. */
+    check('the three switches are read separately',
+          function_exists('t212_environment_on') && function_exists('t212_environments_to_read'),
+          'missing');
+    check('and an environment is on only when its switch says "on"',
+          t212_switch('SM_T212_NOT_SET_ANYWHERE', false) === false
+          && t212_switch('SM_T212_NOT_SET_ANYWHERE', true) === true);
+
+    /* Two environments read the live account - the read-only key and the
+       one that can trade - and a row stored by either came from the same
+       account. */
+    check('both live environments are labelled as the live account',
+          t212_env_label('live-read') === 'live'
+          && t212_env_label('live-orders') === 'live'
+          && t212_env_label('demo') === 'demo');
+    check('and the label is the words the page prints',
+          t212_label_words('live') === 'Live account'
+          && t212_label_words('demo') === 'Practice account');
+
+    /* The sync never holds the key that can trade. */
+    check('the reading environments are the practice and read-only live ones',
+          !in_array('live-orders', t212_environments_to_read(), true),
+          json_encode(t212_environments_to_read()));
+
+    /* Every broker table says which account its rows came from. */
+    foreach (['broker_account_values', 'broker_positions', 'broker_orders',
+              'broker_dividends', 'broker_instruments'] as $la_table) {
+        check("$la_table says which account a row came from",
+              (int) scalar("select count(*) from information_schema.columns
+                             where table_schema=database() and table_name=?
+                               and column_name='environment'", [$la_table]) === 1);
+    }
+    check('and one share has one instrument per account, not per broker',
+          (int) scalar("select count(*) from information_schema.statistics
+                         where table_schema=database() and table_name='broker_instruments'
+                           and index_name='broker_env_symbol'") > 0);
+
+    /* The mapping is per account: an instrument the practice account lists
+       is not evidence that the live account lists it. */
+    db()->exec("delete from broker_instruments where symbol='LV1'");
+    db()->prepare("insert into broker_instruments (broker,environment,broker_ticker,symbol,
+                                                   status,last_seen)
+                   values (?,'demo','LV1l_EQ','LV1','matched',?)")
+        ->execute([BROKER_T212, asof_date()]);
+    check('a mapping in the practice account is not a mapping in the live one',
+          broker_ticker_for('LV1', BROKER_T212, 'demo') === 'LV1l_EQ'
+          && broker_ticker_for('LV1', BROKER_T212, 'live') === null);
+    db()->exec("delete from broker_instruments where symbol='LV1'");
+
+    /* And the one that matters: a live account is planned and never sent.
+       The practice sender refuses it on the MODE, not on the client - a
+       client built from the default environment while the practice switch
+       is on is a demo client, and sending a live account's orders to the
+       practice account is not a smaller mistake than sending them to the
+       live one. */
+    $LV = 'test_live_account';
+    s_drop($LV);
+    s_rules($LV, ['holdings' => 3]);
+    s_reset($LV, 250.00, 'Y', 'T212_LIVE');
+
+    check('a live account is a mode this application knows how to plan',
+          strategy_mode_known('T212_LIVE')
+          && strategy_mode_rules('T212_LIVE')['broker'] === BROKER_T212
+          && strategy_mode_rules('T212_LIVE')['environment'] === 'live');
+    check('and the page calls it Live',
+          strategy_mode_name('T212_LIVE') === 'Live');
+
+    db()->prepare("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,
+                                                exchange,side,quantity,status,created_at,note)
+                   values (?,?,?,'AAA','XLON','BUY',1,'PENDING',now(),'rebalance')")
+        ->execute([$LV . ':1', $LV, asof_date()]);
+
+    $lv_send = broker_send_orders($LV, ['ignore_time' => true]);
+    check('the practice sender refuses to send a live account\'s orders',
+          $lv_send['sent'] === 0
+          && stripos(implode(' ', $lv_send['errors']), 'only ever sends to the practice') !== false,
+          json_encode($lv_send));
+    check('and leaves the order exactly where it was',
+          scalar("select status from strategy_orders where client_order_id=?", [$LV . ':1'])
+          === 'PENDING');
+
+    [$lv_job_out] = run_script('send_broker_orders.php', [$LV, '--any-time'],
+        ['SM_T212_DEMO' => 'on', 'SM_T212_DEMO_API_KEY' => 'x',
+         'SM_T212_DEMO_API_SECRET' => 'y']);
+    check('and the sending job says why it is leaving it alone',
+          stripos($lv_job_out, 'armed') !== false
+          && scalar("select status from strategy_orders where client_order_id=?", [$LV . ':1'])
+             === 'PENDING',
+          $lv_job_out);
+
+    /* No file in this application sends anything to the live host. The
+       check is on the code rather than on a run: a POST that only happens
+       when six conditions line up is a POST no test can be sure it has
+       stopped by running. */
+    $lv_sources = [];
+    foreach (glob(dirname(__DIR__) . '/includes/*.php') as $lv_file) {
+        $lv_sources[basename($lv_file)] = (string) file_get_contents($lv_file);
+    }
+    $lv_writers = [];
+    foreach ($lv_sources as $lv_name => $lv_text) {
+        if (strpos($lv_text, 'T212_LIVE_BASE_URL') === false) { continue; }
+        /* The client names the live host to READ with the read-only key.
+           A writer is a file that also posts. */
+        if (preg_match('~CURLOPT_POST(FIELDS)?\s*=>~', $lv_text)
+            || stripos($lv_text, "'POST'") !== false) { $lv_writers[] = $lv_name; }
+    }
+    /* constants.php defines it; the client is the only thing that uses it.
+       When the live order path is built it will be a third name on this
+       list, and the check becomes "and that file checks the six
+       conditions" rather than "nobody names it". */
+    $lv_names = array_values(array_filter(array_keys($lv_sources), function ($f) use ($lv_sources) {
+        return strpos($lv_sources[$f], 'T212_LIVE_BASE_URL') !== false;
+    }));
+    sort($lv_names);
+    check('the live host is named by the constant that defines it and the client',
+          $lv_names === ['constants.php', 't212_client.php'], json_encode($lv_names));
+    check('and the only order path in it is the practice one',
+          substr_count($lv_sources['t212_client.php'], 'function place_market_order') === 1
+          && strpos($lv_sources['t212_client.php'],
+                    "an order can only be placed against the demo account") !== false);
+
+    /* The key that could trade is not even configured in the suite, and
+       the sync never asks for it. */
+    check('no key with Orders - Execute is configured here',
+          trim((string) T212_LIVE_ORDERS_API_KEY) === ''
+          && T212_LIVE_ORDERS_ON === false);
+
+    s_drop($LV);
+
     echo "\n--- fix M: a share the broker does not list is not selected ---\n";
 
     /* OCI (Oakley Capital Investments) is in the FTSE 250, so the universe
@@ -2906,12 +3044,14 @@
          'isin' => null, 'currency' => null, 'venue' => 'london', 'name' => null,
          'status' => 'ambiguous', 'matched_on' => null,
          'note' => 'a pair that was settled a deploy ago'],
-    ], '2026-11-16');
+    ], '2026-11-16', 'live');
 
     check('a stale mapping is there to be replaced',
           (int) scalar("select count(*) from broker_instruments") === 2);
 
-    broker_store_instruments(BROKER_T212, $bk_dupes['rows'], asof_date());
+    /* Into the live account's mapping, which is the one this block's
+       fixture adds its duplicate to: the unique key is per account now. */
+    broker_store_instruments(BROKER_T212, $bk_dupes['rows'], asof_date(), 'live');
 
     check('a refresh replaces the mapping rather than adding to it',
           (int) scalar("select count(*) from broker_instruments where broker_ticker='ASC_US_EQ'") === 0
@@ -2927,8 +3067,8 @@
     $bk_second = false;
     try {
         db()->prepare("insert into broker_instruments
-                         (broker, broker_ticker, symbol, status, last_seen)
-                       values (?,?,?,'matched',?)")
+                         (broker, environment, broker_ticker, symbol, status, last_seen)
+                       values (?,'live',?,?,'matched',?)")
             ->execute([BROKER_T212, 'ANOTHERl_EQ', 'ASC', asof_date()]);
         $bk_second = true;
     }
@@ -3519,7 +3659,11 @@
 
     /* The page keeps the two apart as well, or the distinction is only in
        the database. */
-    $bk_page_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/broker.php');
+    /* Two files now: the page, and the block it draws once per account.
+       Two accounts are read, so the markup that shows one of them is
+       written once and included twice rather than copied. */
+    $bk_page_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/broker.php')
+                 . php_strip_whitespace(dirname(__DIR__) . '/templates/broker_account.php');
     check('the page shows what the sync could not do and what it noticed, separately',
           strpos($bk_page_tpl, "['run']['problems']") !== false
           && strpos($bk_page_tpl, "['run']['notices']") !== false
@@ -3702,9 +3846,13 @@
     db()->prepare("insert into historical_prices (symbol,exchange,date,price)
                    values ('EZJ','XLON',?,689.5)")->execute([asof_date()]);
     db()->exec("delete from broker_instruments");
-    db()->prepare("insert into broker_instruments (broker,broker_ticker,symbol,short_name,isin,
-                                                   currency,venue,status,matched_on,last_seen)
-                   values (?,?,?,?,?,'GBX','london','matched','short_name',?)")
+    /* environment 'live', because $bk_env reads the live account with the
+       read-only key: an instrument mapped in the practice account is not
+       evidence about the live one, and the mapping is per account now. */
+    db()->prepare("insert into broker_instruments (broker,environment,broker_ticker,symbol,
+                                                   short_name,isin,currency,venue,status,
+                                                   matched_on,last_seen)
+                   values (?,'live',?,?,?,?,'GBX','london','matched','short_name',?)")
         ->execute([BROKER_T212, 'EZJl_EQ', 'EZJ', 'EZJ', 'GB00B7KR2P84', asof_date()]);
 
     $bk_write('positions.json', json_encode([
@@ -3980,7 +4128,17 @@
           json_encode($s2_demo));
     check('an unknown mode is not run at all rather than treated as one of them',
           strategy_mode_known('PAPER') && strategy_mode_known('T212_DEMO')
-          && !strategy_mode_known('T212_LIVE') && !strategy_mode_known(''));
+          && strategy_mode_known('T212_LIVE')
+          && !strategy_mode_known('T212_ISA') && !strategy_mode_known(''));
+    /* And the live one is the only mode that deals with real money. */
+    check('only the live mode says it is live',
+          strategy_mode_is_live('T212_LIVE') === true
+          && strategy_mode_is_live('T212_DEMO') === false
+          && strategy_mode_is_live('PAPER') === false);
+    check('and each mode names the account its rows belong to',
+          strategy_mode_rules('T212_DEMO')['environment'] === 'demo'
+          && strategy_mode_rules('T212_LIVE')['environment'] === 'live'
+          && strategy_mode_rules('PAPER')['environment'] === null);
 
     /* Down, always: an order must never cost more than the target it was
        sized from. The cash left over sits idle until the next rebalance,

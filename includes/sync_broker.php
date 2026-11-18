@@ -41,24 +41,76 @@
 	$_SESSION["exchange"] = $exchange;
 	$options['exchange'] = $exchange;
 
-	$result = broker_sync($options);
+	/* Each account that is switched on, in turn. The practice account and
+	   the live one are read independently now, so turning the live read on
+	   no longer stops the practice twin - and every row either of them
+	   writes says which account it came from.
 
-	if (!$result['ran']) {
-		/* Off, or not configured, or the migration has not been applied. Said
-		   once, plainly, and not as an error: nothing is wrong. */
-		echo "sync_broker: " . $result['message'] . "\r\n";
-		exit($result['ok'] ? 0 : 1);
+	   One failing does not stop the other: a 403 on the live key is a
+	   permission to go and change, not a reason to lose tonight's practice
+	   positions. */
+	$environments = t212_environments_to_read();
+
+	if (!count($environments)) {
+
+		/* A typo in the old variable is not read as one of the three. It
+		   used to be the only way to pick an environment, so a host that
+		   still sets it to something misspelt gets told, rather than
+		   quietly syncing nothing and looking switched off. */
+		if (T212_ENV !== '' && !T212_ENV_LEGACY) {
+			echo "sync_broker: SM_T212_ENV is '" . T212_ENV . "', which is not one of"
+			   . " demo or live-read, so nothing is connected. It is the old"
+			   . " single-environment setting in any case: use SM_T212_DEMO and"
+			   . " SM_T212_LIVE_READ.\r\n";
+			exit(0);
+		}
+
+		/* Off is the normal state of a host nobody has given a key to. */
+		echo "sync_broker: no account is switched on (SM_T212_DEMO and"
+		   . " SM_T212_LIVE_READ are both off), so nothing was read.\r\n";
+		exit(0);
 	}
 
-	echo "sync_broker: status=" . $result['status']
-	   . " positions=" . $result['positions']
-	   . " cash=" . ($result['cash'] === null ? '-' : $result['cash'])
-	   . " new orders=" . $result['new_orders']
-	   . " new dividends=" . $result['new_dividends']
-	   . " price unit=" . ($result['price_unit'] === null ? 'unknown' : $result['price_unit'])
-	   . " unmatched symbols=" . $result['unmatched']
-	   . " requests=" . $result['requests'] . "\r\n";
+	if (T212_ENV_LEGACY) {
+		/* For one release. A host whose php-fpm pool or env file still has
+		   the old variable keeps working, and says what was assumed rather
+		   than quietly reading one account instead of two. */
+		echo "sync_broker: SM_T212_ENV='" . T212_ENV . "' is the old single-environment"
+		   . " setting. Read as " . implode(" and ", $environments) . "."
+		   . " Set SM_T212_DEMO and SM_T212_LIVE_READ instead.\r\n";
+		write_log("sync_broker", "SM_T212_ENV=" . T212_ENV . " mapped onto "
+		          . implode(",", $environments));
+	}
 
-	foreach ($result['problems'] as $problem) { echo "  ! " . $problem . "\r\n"; }
+	$failed = false;
 
-	exit($result['status'] === 'FAILED' ? 1 : 0);
+	foreach ($environments as $environment) {
+
+		$result = broker_sync(array_merge($options, ['environment' => $environment]));
+
+		echo "\r\n--- " . t212_label_words($result['label'])
+		   . " (" . $environment . ") ---\r\n";
+
+		if (!$result['ran']) {
+			/* Not configured, or the migration has not been applied. Said
+			   plainly, and not as an error: nothing is wrong. */
+			echo "  " . $result['message'] . "\r\n";
+			if (!$result['ok']) { $failed = true; }
+			continue;
+		}
+
+		echo "  status=" . $result['status']
+		   . " positions=" . $result['positions']
+		   . " cash=" . ($result['cash'] === null ? '-' : $result['cash'])
+		   . " new orders=" . $result['new_orders']
+		   . " new dividends=" . $result['new_dividends']
+		   . " price unit=" . ($result['price_unit'] === null ? 'unknown' : $result['price_unit'])
+		   . " unmatched symbols=" . $result['unmatched']
+		   . " requests=" . $result['requests'] . "\r\n";
+
+		foreach ($result['problems'] as $problem) { echo "  ! " . $problem . "\r\n"; }
+
+		if ($result['status'] === 'FAILED') { $failed = true; }
+	}
+
+	exit($failed ? 1 : 0);

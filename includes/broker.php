@@ -672,18 +672,19 @@
 	 * A mapping is a photograph of somebody else's list, not a ledger. The
 	 * right way to refresh one is to take a new photograph.
 	 */
-	function broker_store_instruments($broker, array $rows, $as_of = null) {
+	function broker_store_instruments($broker, array $rows, $as_of = null, $environment = 'demo') {
 
 		$as_of = $as_of === null ? date('Y-m-d') : $as_of;
 
-		query("delete from broker_instruments where broker=?", $broker);
+		query("delete from broker_instruments where broker=? and environment=?",
+		      $broker, $environment);
 
 		foreach ($rows as $row) {
 			query("replace into broker_instruments
-			         (broker, broker_ticker, symbol, short_name, isin, currency, venue,
-			          name, status, matched_on, note, last_seen)
-			       values (?,?,?,?,?,?,?,?,?,?,?,?)",
-			      $broker,
+			         (broker, environment, broker_ticker, symbol, short_name, isin,
+			          currency, venue, name, status, matched_on, note, last_seen)
+			       values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			      $broker, $environment,
 			      mb_substr((string) $row['broker_ticker'], 0, 40),
 			      $row['symbol'] === null ? null : mb_substr((string) $row['symbol'], 0, 50),
 			      (!isset($row['short_name']) || $row['short_name'] === null)
@@ -701,21 +702,23 @@
 	}
 
 	/** ticker => symbol, for the instruments that matched one of ours. */
-	function broker_symbol_map($broker = BROKER_T212) {
+	function broker_symbol_map($broker = BROKER_T212, $environment = 'demo') {
 
 		$out = [];
 		foreach (query("select broker_ticker, symbol from broker_instruments
-		                 where broker=? and status='matched' and symbol is not null",
-		               $broker) as $row) {
+		                 where broker=? and environment=? and status='matched'
+		                   and symbol is not null",
+		               $broker, $environment) as $row) {
 			$out[(string) $row['broker_ticker']] = (string) $row['symbol'];
 		}
 		return $out;
 	}
 
 	/** When the instrument list was last refreshed, or null. */
-	function broker_instruments_as_of($broker = BROKER_T212) {
+	function broker_instruments_as_of($broker = BROKER_T212, $environment = 'demo') {
 
-		$rows = query("select max(last_seen) d from broker_instruments where broker=?", $broker);
+		$rows = query("select max(last_seen) d from broker_instruments
+		                where broker=? and environment=?", $broker, $environment);
 		return (count($rows) && $rows[0]['d'] !== null) ? (string) $rows[0]['d'] : null;
 	}
 
@@ -726,16 +729,17 @@
 	 * broker connection cannot see: not an error, but the reason a holding
 	 * would be missing if one were opened in it.
 	 */
-	function broker_unmatched_symbols($broker = BROKER_T212, $exchange = null) {
+	function broker_unmatched_symbols($broker = BROKER_T212, $exchange = null, $environment = 'demo') {
 
 		$exchange = $exchange === null ? default_exchange() : $exchange;
 
 		return query("select s.symbol, s.name from stock_symbols s
 		               where s.enabled='Y' and s.exchange=?
 		                 and not exists (select 1 from broker_instruments i
-		                                  where i.broker=? and i.status='matched'
+		                                  where i.broker=? and i.environment=?
+		                                    and i.status='matched'
 		                                    and i.symbol=s.symbol)
-		               order by s.symbol", $exchange, $broker);
+		               order by s.symbol", $exchange, $broker, $environment);
 	}
 
 	/**
@@ -768,13 +772,14 @@
 	}
 
 	/** The instruments that fitted more than one thing, with the reason. */
-	function broker_ambiguous_instruments($broker = BROKER_T212) {
+	function broker_ambiguous_instruments($broker = BROKER_T212, $environment = 'demo') {
 		/* With their ISIN and currency, which the first version threw away:
 		   the next question anybody asks about an ambiguous pair is which
 		   of them is the London line, and the answer was not on the row. */
 		return query("select broker_ticker, short_name, isin, currency, note, last_seen
 		                from broker_instruments
-		               where broker=? and status='ambiguous' order by broker_ticker", $broker);
+		               where broker=? and environment=? and status='ambiguous'
+		               order by broker_ticker", $broker, $environment);
 	}
 
 	/* ---------------------------------------------------------------------
@@ -903,13 +908,13 @@
 	   --------------------------------------------------------------------- */
 
 	/** What the account is worth. One row a day; a second sync replaces it. */
-	function broker_store_account_value($broker, $as_of, array $values) {
+	function broker_store_account_value($broker, $as_of, array $values, $environment = 'demo') {
 
 		query("replace into broker_account_values
-		         (broker, as_of_date, cash, reserved, in_pies, invested, invested_cost,
-		          realised, unrealised, total, currency, synced_at)
-		       values (?,?,?,?,?,?,?,?,?,?,?,?)",
-		      $broker, $as_of,
+		         (broker, environment, as_of_date, cash, reserved, in_pies, invested,
+		          invested_cost, realised, unrealised, total, currency, synced_at)
+		       values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		      $broker, $environment, $as_of,
 		      $values['cash'] ?? null, $values['reserved'] ?? null, $values['in_pies'] ?? null,
 		      $values['invested'] ?? null, $values['invested_cost'] ?? null,
 		      $values['realised'] ?? null, $values['unrealised'] ?? null,
@@ -925,16 +930,18 @@
 	 * from the broker's answer, and leaving yesterday's row in today's set
 	 * would show a holding that no longer exists.
 	 */
-	function broker_store_positions($broker, $as_of, array $positions) {
+	function broker_store_positions($broker, $as_of, array $positions, $environment = 'demo') {
 
-		query("delete from broker_positions where broker=? and as_of_date=?", $broker, $as_of);
+		query("delete from broker_positions where broker=? and environment=? and as_of_date=?",
+		      $broker, $environment, $as_of);
 
 		foreach ($positions as $position) {
 			query("replace into broker_positions
-			         (broker, as_of_date, broker_ticker, symbol, quantity, average_price,
-			          current_price, value, cost, gain, price_unit, currency, synced_at)
-			       values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-			      $broker, $as_of,
+			         (broker, environment, as_of_date, broker_ticker, symbol, quantity,
+			          average_price, current_price, value, cost, gain, price_unit,
+			          currency, synced_at)
+			       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			      $broker, $environment, $as_of,
 			      mb_substr((string) $position['broker_ticker'], 0, 40),
 			      $position['symbol'] === null ? null : mb_substr((string) $position['symbol'], 0, 50),
 			      $position['quantity'] ?? null,
@@ -957,19 +964,19 @@
 	 * order read twice is one order. The figures are updated all the same -
 	 * an order read while it was filling has a price when it is read again.
 	 */
-	function broker_store_order($broker, array $order) {
+	function broker_store_order($broker, array $order, $environment = 'demo') {
 
 		$existing = query("select first_seen f from broker_orders
-		                    where broker=? and broker_order_id=?",
-		                  $broker, (string) $order['broker_order_id']);
+		                    where broker=? and environment=? and broker_order_id=?",
+		                  $broker, $environment, (string) $order['broker_order_id']);
 		$is_new = !count($existing);
 
 		query("replace into broker_orders
-		         (broker, broker_order_id, broker_ticker, symbol, side, quantity,
-		          fill_price, fill_value, taxes, net_value, status, order_type,
-		          placed_at, filled_at, price_unit, first_seen)
-		       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		      $broker,
+		         (broker, environment, broker_order_id, broker_ticker, symbol, side,
+		          quantity, fill_price, fill_value, taxes, net_value, status,
+		          order_type, placed_at, filled_at, price_unit, first_seen)
+		       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		      $broker, $environment,
 		      mb_substr((string) $order['broker_order_id'], 0, 40),
 		      isset($order['broker_ticker']) ? mb_substr((string) $order['broker_ticker'], 0, 40) : null,
 		      isset($order['symbol']) && $order['symbol'] !== null
@@ -991,18 +998,18 @@
 	}
 
 	/** One dividend from the history. Returns true if it was new. */
-	function broker_store_dividend($broker, array $dividend) {
+	function broker_store_dividend($broker, array $dividend, $environment = 'demo') {
 
 		$existing = query("select first_seen f from broker_dividends
-		                    where broker=? and broker_dividend_id=?",
-		                  $broker, (string) $dividend['broker_dividend_id']);
+		                    where broker=? and environment=? and broker_dividend_id=?",
+		                  $broker, $environment, (string) $dividend['broker_dividend_id']);
 		$is_new = !count($existing);
 
 		query("replace into broker_dividends
-		         (broker, broker_dividend_id, broker_ticker, symbol, amount,
-		          amount_per_share, quantity, paid_on, dividend_type, first_seen)
-		       values (?,?,?,?,?,?,?,?,?,?)",
-		      $broker,
+		         (broker, environment, broker_dividend_id, broker_ticker, symbol,
+		          amount, amount_per_share, quantity, paid_on, dividend_type, first_seen)
+		       values (?,?,?,?,?,?,?,?,?,?,?)",
+		      $broker, $environment,
 		      mb_substr((string) $dividend['broker_dividend_id'], 0, 40),
 		      isset($dividend['broker_ticker']) ? mb_substr((string) $dividend['broker_ticker'], 0, 40) : null,
 		      isset($dividend['symbol']) && $dividend['symbol'] !== null
@@ -1057,6 +1064,14 @@
 			return $only === null || in_array($what, $only, true);
 		};
 
+		/* Which account this run reads, and the label every row it writes
+		   carries. Two accounts are read now - the practice one and the
+		   live one - and a position in one is not a position in the other,
+		   so nothing is stored without saying which it came from. */
+		$environment = isset($options['environment'])
+		             ? strtolower(trim((string) $options['environment']))
+		             : null;
+
 		/* Two lists, and the difference between them decides the status.
 		   A PROBLEM is something that stops the data being right: a call
 		   that failed, a field this application needed and could not read,
@@ -1069,7 +1084,9 @@
 		           'problems' => [], 'notices' => [], 'positions' => 0, 'cash' => null,
 		           'new_orders' => 0, 'new_dividends' => 0, 'instruments' => 0,
 		           'unmatched' => 0, 'price_unit' => null, 'requests' => 0,
-		           'as_of' => $as_of, 'scope' => 'all'];
+		           'as_of' => $as_of, 'scope' => 'all',
+		           'environment' => $environment === null ? '' : $environment,
+		           'label' => 'demo'];
 
 		if (!broker_ready()) {
 			$result['message'] = "sql/broker.sql has not been applied, so there is"
@@ -1078,7 +1095,17 @@
 			return $result;
 		}
 
-		$client = isset($options['client']) ? $options['client'] : new T212Client();
+		$client = isset($options['client']) ? $options['client']
+		        : new T212Client($environment === null ? [] : ['env' => $environment]);
+
+		/* Named $env_label, not $label: the summary's own field check
+		   loops over a $label a hundred lines below, and a row stored with
+		   "total value" in its environment column is a row nobody can
+		   find. The suite caught it, because the column is ten characters
+		   wide; one character wider and it would have gone out. */
+		$env_label = $client->label();
+		$result['environment'] = $client->environment();
+		$result['label']       = $env_label;
 
 		/* Off is the normal state of a host nobody has configured. It is not
 		   an error, it writes nothing, and above all it opens no socket. */
@@ -1096,7 +1123,7 @@
 		/* --- the instrument list, weekly ---------------------------------
 		   One request per 50 seconds and a large answer, for something that
 		   changes when a company lists or leaves. */
-		$instruments_as_of = broker_instruments_as_of($broker);
+		$instruments_as_of = broker_instruments_as_of($broker, $env_label);
 		$stale = $instruments_as_of === null
 		      || strtotime($instruments_as_of) < strtotime('-' . max(1, (int) T212_INSTRUMENT_DAYS) . ' day');
 
@@ -1108,7 +1135,7 @@
 			else {
 				$rows = is_array($answer['data']) ? $answer['data'] : [];
 				$matched = broker_match_instruments($rows, $exchange);
-				broker_store_instruments($broker, $matched['rows'], $as_of);
+				broker_store_instruments($broker, $matched['rows'], $as_of, $env_label);
 				$result['instruments'] = $matched['matched'];
 
 				/* Belt and braces over the unique key: if a share ever ends
@@ -1144,7 +1171,7 @@
 			}
 		}
 
-		$map = broker_symbol_map($broker);
+		$map = broker_symbol_map($broker, $env_label);
 
 		/* --- what the account is worth ----------------------------------- */
 		$summary = $want('summary') ? $client->get('summary')
@@ -1180,7 +1207,7 @@
 
 			/* Stored whatever was missing: three figures out of four beats
 			   none, and the problem above says which one is not there. */
-			broker_store_account_value($broker, $as_of, $values);
+			broker_store_account_value($broker, $as_of, $values, $env_label);
 			$result['cash'] = $values['cash'];
 		}
 
@@ -1334,7 +1361,7 @@
 				           . " is in that currency rather than pounds: " . implode(', ', $foreign);
 			}
 
-			broker_store_positions($broker, $as_of, $store);
+			broker_store_positions($broker, $as_of, $store, $env_label);
 			$result['positions'] = count($store);
 
 			/* The cross-check that would have caught the first stage 2 sync.
@@ -1411,7 +1438,7 @@
 				'placed_at'       => broker_datetime($row, broker_fields('order_placed')),
 				'filled_at'       => broker_datetime($row, broker_fields('order_filled')),
 				'price_unit'      => $result['price_unit'],
-			]);
+			], $env_label);
 			if ($new) { $result['new_orders']++; }
 		}
 
@@ -1455,7 +1482,7 @@
 				'quantity'           => $quantity,
 				'paid_on'            => broker_datetime($row, broker_fields('dividend_paid')),
 				'dividend_type'      => $type,
-			]);
+			], $env_label);
 			if ($new) { $result['new_dividends']++; }
 		}
 
@@ -1466,7 +1493,7 @@
 		$problems = array_map('t212_mask', $problems);
 		$notices  = array_map('t212_mask', $notices);
 
-		$result['unmatched'] = count(broker_unmatched_symbols($broker, $exchange));
+		$result['unmatched'] = count(broker_unmatched_symbols($broker, $exchange, $env_label));
 		$result['requests']  = $client->requests();
 		$result['problems']  = $problems;
 		$result['notices']   = $notices;
@@ -1497,7 +1524,7 @@
 		          price_unit, positions, cash, new_orders, new_dividends, instruments,
 		          unmatched, requests, problems, notices)
 		       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		      $broker, $client->environment(), $started, date('Y-m-d H:i:s'),
+		      $broker, $env_label, $started, date('Y-m-d H:i:s'),
 		      $result['status'], $as_of, $result['price_unit'], $result['positions'],
 		      $result['cash'], $result['new_orders'], $result['new_dividends'],
 		      $result['instruments'], $result['unmatched'], $result['requests'],
@@ -1526,11 +1553,17 @@
 	   --------------------------------------------------------------------- */
 
 	/** The most recent sync attempt, successful or not. */
-	function broker_last_run($broker = BROKER_T212) {
+	function broker_last_run($broker = BROKER_T212, $environment = null) {
 
 		if (!broker_ready()) { return null; }
-		$rows = query("select * from broker_sync_runs where broker=?
-		                order by run_id desc limit 1", $broker);
+
+		/* The last run of one account, or of either where the caller does
+		   not care. */
+		$rows = ($environment === null)
+		      ? query("select * from broker_sync_runs where broker=?
+		                order by run_id desc limit 1", $broker)
+		      : query("select * from broker_sync_runs where broker=? and environment=?
+		                order by run_id desc limit 1", $broker, $environment);
 		return count($rows) ? $rows[0] : null;
 	}
 
@@ -1538,10 +1571,13 @@
 	function broker_status($client = null) {
 
 		$client = $client === null ? new T212Client() : $client;
-		$run    = broker_last_run();
+		$label  = $client->label();
+		$run    = broker_last_run(BROKER_T212, $label);
 
 		return [
 			'environment' => $client->environment(),
+			'label'       => $label,
+			'words'       => t212_label_words($label),
 			'configured'  => $client->configured(),
 			'live'        => $client->is_live(),
 			'why_not'     => $client->why_not(),
@@ -1552,25 +1588,27 @@
 			   that is a thing somebody has to go and change in Trading 212
 			   rather than something the next run will fix. */
 			'forbidden'   => $run !== null && stripos((string) $run['problems'], '(403)') !== false,
-			'instruments_as_of' => broker_ready() ? broker_instruments_as_of() : null,
+			'instruments_as_of' => broker_ready()
+			                     ? broker_instruments_as_of(BROKER_T212, $label) : null,
 		];
 	}
 
 	/** The latest figures for the account. */
-	function broker_latest_values($broker = BROKER_T212) {
+	function broker_latest_values($broker = BROKER_T212, $environment = 'demo') {
 
 		if (!broker_ready()) { return null; }
-		$rows = query("select * from broker_account_values where broker=?
-		                order by as_of_date desc limit 1", $broker);
+		$rows = query("select * from broker_account_values where broker=? and environment=?
+		                order by as_of_date desc limit 1", $broker, $environment);
 		return count($rows) ? $rows[0] : null;
 	}
 
 	/** The latest positions, with our own name for the share where we know it. */
-	function broker_latest_positions($broker = BROKER_T212) {
+	function broker_latest_positions($broker = BROKER_T212, $environment = 'demo') {
 
 		if (!broker_ready()) { return []; }
 
-		$rows = query("select max(as_of_date) d from broker_positions where broker=?", $broker);
+		$rows = query("select max(as_of_date) d from broker_positions
+		                where broker=? and environment=?", $broker, $environment);
 		if (!count($rows) || $rows[0]['d'] === null) { return []; }
 
 		/* matched_on comes from the instrument row rather than the position:
@@ -1581,24 +1619,27 @@
 		                from broker_positions p
 		                left join stock_symbols s on s.symbol=p.symbol and s.enabled='Y'
 		                left join broker_instruments i on i.broker=p.broker
+		                     and i.environment=p.environment
 		                     and i.broker_ticker=p.broker_ticker
-		               where p.broker=? and p.as_of_date=?
-		               order by p.value desc, p.broker_ticker", $broker, (string) $rows[0]['d']);
+		               where p.broker=? and p.environment=? and p.as_of_date=?
+		               order by p.value desc, p.broker_ticker",
+		             $broker, $environment, (string) $rows[0]['d']);
 	}
 
-	function broker_recent_orders($broker = BROKER_T212, $limit = 20) {
+	function broker_recent_orders($broker = BROKER_T212, $limit = 20, $environment = 'demo') {
 		if (!broker_ready()) { return []; }
 		$limit = max(1, min(200, (int) $limit));
-		return query("select * from broker_orders where broker=?
+		return query("select * from broker_orders where broker=? and environment=?
 		               order by coalesce(filled_at, placed_at) desc, broker_order_id desc
-		               limit " . $limit, $broker);
+		               limit " . $limit, $broker, $environment);
 	}
 
-	function broker_recent_dividends($broker = BROKER_T212, $limit = 20) {
+	function broker_recent_dividends($broker = BROKER_T212, $limit = 20, $environment = 'demo') {
 		if (!broker_ready()) { return []; }
 		$limit = max(1, min(200, (int) $limit));
-		return query("select * from broker_dividends where broker=?
-		               order by paid_on desc, broker_dividend_id desc limit " . $limit, $broker);
+		return query("select * from broker_dividends where broker=? and environment=?
+		               order by paid_on desc, broker_dividend_id desc limit " . $limit,
+		             $broker, $environment);
 	}
 
 /* No closing tag: see the note at the end of constants.php. */

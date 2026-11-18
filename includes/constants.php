@@ -283,9 +283,52 @@
     //a row beside it rather than a migration.
     define("BROKER_T212", "t212");
 
-    //off | live-read | demo. Anything else is treated as off and said so, not
-    //guessed at: a typo must not pick an environment.
-    define("T212_ENV", strtolower(trim((string) (getenv("SM_T212_ENV") ?: "off"))));
+    //--- the three switches -------------------------------------------------
+    //
+    // SM_T212_ENV named ONE environment, so the application talked to one
+    // account at a time and the practice twin stopped the moment the live
+    // account was read. These are independent, so both run at once:
+    //
+    //     SM_T212_DEMO=on         read and trade the practice account
+    //     SM_T212_LIVE_READ=on    read the live account (read-only key)
+    //     SM_T212_LIVE_ORDERS=on  send orders to the LIVE account
+    //
+    // SM_T212_LIVE_ORDERS is off unless it is exactly "on", and off means
+    // the live order function refuses before it looks at anything else. It
+    // takes a key of its own, which is the only key in this application with
+    // Orders - Execute on the real account: the read-only live key cannot
+    // place an order even if something tried.
+    //
+    // A real order also needs the account armed and the batch approved - see
+    // includes/README-broker.md. The switch is the first lock, not the only
+    // one, and none of the others live in the environment.
+    define("T212_ENV", strtolower(trim((string) (getenv("SM_T212_ENV") ?: ""))));
+
+    //"on" and nothing else. A typo must not switch something on.
+    //
+    //Guarded, because this file is required plainly rather than once in one
+    //place and a second include must not turn a warning about a redefined
+    //constant into a fatal about a redeclared function.
+    if (!function_exists('t212_switch')) {
+        function t212_switch($name, $default = false) {
+            $value = getenv($name);
+            if ($value === false || trim((string) $value) === '') { return $default; }
+            return strtolower(trim((string) $value)) === 'on';
+        }
+    }
+
+    /* SM_T212_ENV is still read, for one release, and mapped onto the
+       switches: a host that has not been reconfigured keeps working and the
+       log says what was assumed. It can never switch live orders on - it
+       never could, and a variable that used to mean "read the live account"
+       must not come to mean "trade it". */
+    define("T212_ENV_LEGACY", in_array(T212_ENV, ['demo', 'live-read'], true));
+
+    define("T212_DEMO_ON",
+           t212_switch("SM_T212_DEMO", T212_ENV === 'demo'));
+    define("T212_LIVE_READ_ON",
+           t212_switch("SM_T212_LIVE_READ", T212_ENV === 'live-read'));
+    define("T212_LIVE_ORDERS_ON", t212_switch("SM_T212_LIVE_ORDERS", false));
 
     //The live, read-only key. Basic auth: base64(key:secret).
     define("T212_API_KEY",    getenv("SM_T212_API_KEY") ?: "");
@@ -295,6 +338,13 @@
     //key is not accepted by the live API and the other way round.
     define("T212_DEMO_API_KEY",    getenv("SM_T212_DEMO_API_KEY") ?: "");
     define("T212_DEMO_API_SECRET", getenv("SM_T212_DEMO_API_SECRET") ?: "");
+
+    //The live key with Orders - Execute. A THIRD credential, not the
+    //read-only one with a permission added: the read-only key stays
+    //read-only, so the sync cannot place an order however it is called, and
+    //this one is only ever handed to the one function that sends.
+    define("T212_LIVE_ORDERS_API_KEY",    getenv("SM_T212_LIVE_ORDERS_API_KEY") ?: "");
+    define("T212_LIVE_ORDERS_API_SECRET", getenv("SM_T212_LIVE_ORDERS_API_SECRET") ?: "");
 
     //The two hosts, which are constants rather than configuration so that no
     //value of any environment variable can point a request at the live host
