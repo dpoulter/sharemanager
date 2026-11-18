@@ -1,0 +1,119 @@
+"""Load the Parquet files into the wide panels the engine and signals use.
+
+Everything the engine sees is in pounds. FMP quotes London lines in GBp
+(pence); a few lines are quoted in GBP, USD or EUR. The raw close is kept in
+its own unit too, because the brief's pounds/pence rule and minimum order
+sizes work on it.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+PENCE = {"GBp", "GBX", "GBx"}
+
+
+@dataclass
+class Market:
+    """Prices and caps as date x symbol frames, plus the symbol master."""
+    close: pd.DataFrame           # raw close, pounds
+    adj: pd.DataFrame             # dividend-adjusted close, pounds-equivalent
+    market_cap: pd.DataFrame      # pounds
+    master: pd.DataFrame          # indexed by symbol
+    statements: pd.DataFrame = field(default_factory=pd.DataFrame)
+    fx: pd.DataFrame = field(default_factory=pd.DataFrame)   # date x currency, GBP per unit
+    last_price: pd.Series = field(default_factory=pd.Series)  # symbol -> last date with a price
+    gone: pd.Series = field(default_factory=pd.Series)        # symbol -> True if it stopped trading
+
+    @property
+    def dates(self) -> pd.DatetimeIndex:
+        return self.close.index
+
+    def fx_rate(self, currency: str, date) -> float:
+        if not currency or currency in ("GBP",) or currency in PENCE:
+            return 1.0 / 100 if currency in PENCE else 1.0
+        if self.fx.empty or currency not in self.fx.columns:
+            return np.nan
+        s = self.fx[currency].loc[:date].dropna()
+        return float(s.iloc[-1]) if len(s) else np.nan
+
+
+def to_pounds_factor(master: pd.DataFrame, fx: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
+    """date x symbol multiplier from the quote unit to pounds."""
+    cur = master["currency"].fillna("GBp")
+    out = pd.DataFrame(1.0, index=dates, columns=master.index)
+    pence = cur[cur.isin(PENCE)].index
+    out[pence] = 0.01
+    for c in sorted(set(cur) - PENCE - {"GBP"}):
+        cols = cur[cur == c].index
+        if not fx.empty and c in fx.columns:
+            rate = fx[c].reindex(dates).ffill()
+            out[cols] = np.repeat(rate.to_numpy()[:, None], len(cols), axis=1)
+        else:
+            out[cols] = np.nan
+    return out
+
+
+def load_market(data: Path, symbols: list[str] | None = None) -> Market:
+    data = Path(data)
+    master = pd.read_parquet(data / "symbols.parquet").set_index("symbol")
+    prices = pd.read_parquet(data / "prices.parquet")
+    if symbols is not None:
+        prices = prices[prices["symbol"].isin(symbols)]
+    prices["date"] = pd.to_datetime(prices["date"])
+    prices = prices.drop_duplicates(["symbol", "date"], keep="last")
+    close = prices.pivot(index="date", columns="symbol", values="close").sort_index()
+    adj = prices.pivot(index="date", columns="symbol", values="adj_close").sort_index()
+    adj = adj.where(adj.notna(), close)
+
+    fx = pd.DataFrame()
+    if (data / "fx.parquet").exists():
+        f = pd.read_parquet(data / "fx.parquet")
+        if len(f):
+            f["date"] = pd.to_datetime(f["date"])
+            fx = f.pivot(index="date", columns="currency", values="gbp_per_unit").sort_index()
+    master = master.reindex(master.index.union(close.columns))
+    factor = to_pounds_factor(master.loc[close.columns], fx, close.index)
+    close = close * factor
+    adj = adj * factor
+
+    mcap = pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
+    if (data / "market_cap.parquet").exists():
+        m = pd.read_parquet(data / "market_cap.parquet")
+        m["date"] = pd.to_datetime(m["date"])
+        m = m[m["symbol"].isin(close.columns)].drop_duplicates(["symbol", "date"], keep="last")
+        mcap = m.pivot(index="date", columns="symbol", values="market_cap").reindex(index=close.index, columns=close.columns)
+        # FMP's cap is in the major unit of the quote currency.
+        cur = master.loc[close.columns, "currency"].fillna("GBp")
+        major = cur.replace({"GBp": "GBP", "GBX": "GBP", "GBx": "GBP"})
+        cap_factor = to_pounds_factor(pd.DataFrame({"currency": major}), fx, close.index)
+        mcap = mcap * cap_factor
+
+    statements = pd.DataFrame()
+    if (data / "statements.parquet").exists():
+        statements = pd.read_parquet(data / "statements.parquet")
+
+    return finish_market(Market(close=close, adj=adj, market_cap=mcap, master=master,
+                                statements=statements, fx=fx))
+
+
+def finish_market(m: Market, end_slack_sessions: int = 10) -> Market:
+    """Work out each symbol's last price and whether it has stopped trading."""
+    last = m.close.apply(lambda s: s.last_valid_index())
+    m.last_price = last
+    end = m.close.index[-1] if len(m.close.index) else None
+    pos = {d: i for i, d in enumerate(m.close.index)}
+    delisted = m.master.get("delisted_date", pd.Series(index=m.master.index, dtype=object))
+    gone = {}
+    for sym, d in last.items():
+        if d is None or pd.isna(d):
+            gone[sym] = False
+            continue
+        flagged = sym in delisted.index and pd.notna(delisted.get(sym))
+        stale = end is not None and (pos[end] - pos[d]) >= end_slack_sessions
+        gone[sym] = bool(flagged or stale)
+    m.gone = pd.Series(gone, dtype=bool)
+    return m

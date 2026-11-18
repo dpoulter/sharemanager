@@ -1,0 +1,292 @@
+"""The portfolio simulation.
+
+The same rules as the N100 engine (includes/strategy_functions.php):
+
+- decide on the close of the rebalance date, fill at the next trading day's
+  close;
+- equal weight at one over the number of HOLDINGS, floored to six decimals,
+  so a thin selection holds cash rather than concentrating;
+- sized against the account value less the costs of buying it, rounded down;
+- an optional buffer: a holding is kept while it ranks inside `hold_rank`;
+- a 2% drift band: a holding near its target weight is left alone;
+- orders under the minimum are skipped;
+- an optional turnover cap that refuses a whole rebalance rather than
+  trimming it (min(buys, sells) / value, the first build exempt);
+- an optional exit between rebalances: closed below the 200-day average on
+  two consecutive closes, sold at the next close, cash held to the next
+  rebalance;
+- a company that stops trading leaves at its last price on its last day
+  (taken over or failed alike), and the cash is held until the next
+  rebalance.
+
+Returns use the dividend-adjusted close; share counts, minimum orders and
+costs use the raw close in pounds. A position is held as "units" of the
+adjusted series, so its value tracks total return, and is converted back to
+shares at the raw close whenever it is traded.
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+
+import numpy as np
+import pandas as pd
+
+from .costs import Costs
+from .store import Market
+
+WEIGHT_DECIMALS = 1_000_000
+
+
+@dataclass
+class Rules:
+    holdings: int | str = 15          # an int, or "quintile" / "decile" of the universe
+    rebalance: str = "monthly"        # monthly | weekly | quarterly
+    hold_rank: int | None = None
+    exit_ma200: bool = False
+    drift_band: float = 0.02
+    max_turnover: float | None = None
+    start_cash: float = 100_000.0
+
+    def n_holdings(self, universe_size: int) -> int:
+        if isinstance(self.holdings, str):
+            frac = {"quintile": 5, "decile": 10, "tercile": 3}[self.holdings]
+            return max(1, math.ceil(universe_size / frac))
+        return int(self.holdings)
+
+
+@dataclass
+class Result:
+    values: pd.DataFrame                 # date: cash, holdings_value, total, holdings
+    fills: pd.DataFrame                  # one row per fill
+    pnl: pd.Series                       # profit per symbol, pounds
+    refusals: int = 0
+    skipped: int = 0
+    notes: list[str] = field(default_factory=list)
+
+
+def rebalance_flags(dates: pd.DatetimeIndex, how: str) -> np.ndarray:
+    s = pd.Series(np.arange(len(dates)), index=dates)
+    if how == "monthly":
+        key = [dates.year, dates.month]
+    elif how == "weekly":
+        iso = dates.isocalendar()
+        key = [iso.year.to_numpy(), iso.week.to_numpy()]
+    elif how == "quarterly":
+        key = [dates.year, dates.quarter]
+    elif how == "daily":
+        return np.ones(len(dates), dtype=bool)
+    else:
+        raise ValueError(f"unknown rebalance {how!r}")
+    first = s.groupby(key).transform("min").to_numpy()
+    return first == np.arange(len(dates))
+
+
+def ma200_below_twice(adj: pd.DataFrame) -> pd.DataFrame:
+    """True where the close is below its 200-day average today and the previous close."""
+    ma = adj.rolling(200, min_periods=200).mean()
+    below = (adj < ma) & ma.notna()
+    return below & below.shift(1, fill_value=False)
+
+
+def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
+             rules: Rules, costs: Costs, start, end, exit_flags: pd.DataFrame | None = None) -> Result:
+    """Run one portfolio.
+
+    `scores` maps each rebalance date (Timestamp) to a Series of scores per
+    symbol, higher is better, NaN meaning not eligible. Only symbols that
+    are universe members and priced on the date are ranked.
+    """
+    dates = m.dates[(m.dates >= pd.Timestamp(start)) & (m.dates <= pd.Timestamp(end))]
+    if len(dates) < 2:
+        raise ValueError("period has fewer than two trading days")
+    syms = list(m.close.columns)
+    col = {s: i for i, s in enumerate(syms)}
+    adj = m.adj.loc[dates].ffill(limit=10).to_numpy()
+    close = m.close.loc[dates].ffill(limit=10).to_numpy()
+    traded_today = m.close.loc[dates].notna().to_numpy()
+    lg = large.reindex(index=dates, columns=syms).fillna(False).to_numpy()
+    aim = m.master.reindex(syms).get("is_aim", pd.Series(False, index=syms)).fillna(False).astype(bool).to_numpy()
+    last_day = np.full(len(syms), -1)
+    pos_of = {d: i for i, d in enumerate(dates)}
+    for s, d in m.last_price.items():
+        if s in col and m.gone.get(s, False) and d in pos_of:
+            last_day[col[s]] = pos_of[d]
+    ex = exit_flags.reindex(index=dates, columns=syms).fillna(False).to_numpy() if exit_flags is not None else None
+    rebal = rebalance_flags(dates, rules.rebalance)
+    rebal[0] = True     # the first build is always due
+
+    cash = float(rules.start_cash)
+    units = np.zeros(len(syms))
+    flows = np.zeros(len(syms))      # cash paid out (negative) and received per symbol
+    pending: list[tuple[int, str, float, str]] = []   # (col, side, shares, reason)
+    fills = []
+    values = []
+    refusals = skipped = 0
+    built = False
+
+    def value_at(i):
+        held = units > 0
+        return cash + float(np.nansum(units[held] * adj[i, held]))
+
+    def shares_held(j, i):
+        return units[j] * adj[i, j] / close[i, j] if units[j] > 0 and close[i, j] > 0 else 0.0
+
+    def round_down(q):
+        if costs.decimals <= 0:
+            return float(math.floor(q + 1e-9))
+        f = 10 ** costs.decimals
+        return math.floor(q * f + 1e-9) / f
+
+    for i, d in enumerate(dates):
+        # 1. Yesterday's orders fill at today's close: sells first, so a
+        #    rebalance's buys can use their cash.
+        if pending:
+            for j, side, q, reason in sorted(pending, key=lambda o: o[1] != "SELL"):
+                p = close[i, j]
+                if not (p > 0) or not np.isfinite(p):
+                    continue
+                if side == "SELL":
+                    have = shares_held(j, i)
+                    q = have if reason != "rebalance" else min(q, have)
+                    if q <= 0:
+                        continue
+                    c = costs.sell(q, p, lg[i, j], aim[j])
+                    units[j] -= units[j] * (q / have) if have > 0 else units[j]
+                    if units[j] < 1e-12 or q >= have - 1e-9:
+                        units[j] = 0.0
+                else:
+                    c = costs.buy(q, p, lg[i, j], aim[j])
+                    if -c["cash"] > cash:
+                        # Not enough cash at the fill price: buy what it pays for.
+                        unit_cost = p * (1 + costs.stamp(aim[j]) + costs.spread(lg[i, j]))
+                        q = round_down(max(0.0, (cash - costs.commission - costs.ptm(cash)) / unit_cost))
+                        if q <= 0 or q * p < costs.minimum_order:
+                            skipped += 1
+                            continue
+                        c = costs.buy(q, p, lg[i, j], aim[j])
+                    units[j] += q * p / adj[i, j]
+                cash += c["cash"]
+                flows[j] += c["cash"]
+                fills.append((d, syms[j], side, q, p, c["consideration"], c["stamp_duty"],
+                              c["spread"], c["commission"], c["ptm"], reason))
+            pending = []
+            built = True
+
+        # 2. A company on its last day leaves at today's close.
+        gone_today = np.where((last_day == i) & (units > 0))[0]
+        for j in gone_today:
+            p = close[i, j]
+            q = shares_held(j, i)
+            c = costs.sell(q, p, lg[i, j], aim[j])
+            cash += c["cash"]
+            flows[j] += c["cash"]
+            units[j] = 0.0
+            fills.append((d, syms[j], "SELL", q, p, c["consideration"], 0.0, c["spread"],
+                          c["commission"], c["ptm"], "delisted"))
+
+        total = value_at(i)
+        values.append((d, cash, total - cash, total, int((units > 0).sum())))
+        if i == len(dates) - 1:
+            break
+
+        # 3. Rebalance, decided on today's close.
+        if rebal[i]:
+            plan, refused, n_skip = _plan(i, d, scores.get(d), member, syms, col, units, adj, close,
+                                          traded_today, lg, aim, total, rules, costs, round_down,
+                                          shares_held, first_build=not built and not (units > 0).any())
+            refusals += refused
+            skipped += n_skip
+            pending = plan
+            continue
+
+        # 4. Exits between rebalances.
+        if ex is not None:
+            for j in np.where((units > 0) & ex[i])[0]:
+                pending.append((j, "SELL", shares_held(j, i), "below_ma200_2d"))
+
+    vals = pd.DataFrame(values, columns=["date", "cash", "holdings_value", "total", "holdings"]).set_index("date")
+    f = pd.DataFrame(fills, columns=["date", "symbol", "side", "quantity", "price", "consideration",
+                                     "stamp_duty", "spread", "commission", "ptm", "reason"])
+    last = len(dates) - 1
+    final_value = np.where(units > 0, units * np.nan_to_num(adj[last]), 0.0)
+    pnl = pd.Series(flows + final_value, index=syms)
+    pnl = pnl[(flows != 0) | (final_value != 0)]
+    return Result(values=vals, fills=f, pnl=pnl, refusals=refusals, skipped=skipped)
+
+
+def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, total, rules, costs,
+          round_down, shares_held, first_build):
+    """Orders for one rebalance. Returns (orders, refused, skipped)."""
+    orders, skipped = [], 0
+    if score is None:
+        score = pd.Series(dtype=float)
+    mem = member.loc[d] if d in member.index else pd.Series(dtype=bool)
+    universe = [s for s in mem.index[mem.to_numpy()] if s in col]
+    n = rules.n_holdings(len(universe))
+    s = score.reindex(universe)
+    ok = s.notna() & np.array([traded[i, col[x]] and close[i, col[x]] > 0 for x in s.index], dtype=bool)
+    # Highest score first, ties broken by symbol, as the N100 orders by value then symbol.
+    cand = s[ok]
+    ranked = pd.Series(cand.values, index=cand.index).iloc[
+        np.lexsort((np.array(cand.index, dtype=str), -cand.to_numpy(dtype=float)))]
+    depth = n if rules.hold_rank is None else max(n, int(rules.hold_rank))
+    top = list(ranked.index[:depth])
+    if rules.hold_rank is None:
+        chosen = top[:n]
+    else:
+        held = {syms[j] for j in np.where(units > 0)[0]}
+        keeping = [x for x in top if x in held][:n]
+        chosen = keeping + [x for x in top if x not in held][: n - len(keeping)]
+
+    weight = math.floor((1.0 / n) * WEIGHT_DECIMALS) / WEIGHT_DECIMALS if n else 0.0
+    mult = 1 + costs.stamp_duty + max(costs.spread(True), costs.spread(False))
+    investable = (total - costs.commission * len(chosen)) / mult
+    buys = sells = 0.0
+    want = set(chosen)
+    for x in chosen:
+        j = col[x]
+        p = close[i, j]
+        target = round_down(weight * investable / p)
+        held = shares_held(j, i)
+        if held > 0 and abs(held * p / total - weight) <= rules.drift_band:
+            continue
+        delta = target - held
+        value = abs(delta) * p
+        if delta == 0:
+            continue
+        if value < costs.minimum_order:
+            skipped += 1
+            continue
+        if delta > 0:
+            orders.append((j, "BUY", delta, "rebalance"))
+            buys += value
+        else:
+            orders.append((j, "SELL", -delta, "rebalance"))
+            sells += value
+    for j in np.where(units > 0)[0]:
+        if syms[j] not in want:
+            q = shares_held(j, i)
+            orders.append((j, "SELL", q, "no_longer_selected"))
+            sells += q * close[i, j] if close[i, j] > 0 else 0
+    if (rules.max_turnover is not None and not first_build and total > 0
+            and min(buys, sells) / total > rules.max_turnover):
+        return [], 1, skipped
+    return orders, 0, skipped
+
+
+def benchmarks(m: Market, member: pd.DataFrame, start, end) -> pd.DataFrame:
+    """Equal-weight and cap-weighted universe, total return, rebased to 1."""
+    dates = m.dates[(m.dates >= pd.Timestamp(start)) & (m.dates <= pd.Timestamp(end))]
+    adj = m.adj.reindex(columns=member.columns).loc[dates]
+    ret = adj.ffill(limit=10).pct_change(fill_method=None)
+    mem = member.reindex(dates).shift(1, fill_value=False).astype(bool)
+    r = ret.where(mem)
+    # A company that stopped trading contributes its last return and then nothing.
+    ew = r.mean(axis=1).fillna(0.0)
+    cap = m.market_cap.reindex(index=dates, columns=member.columns).ffill(limit=10).shift(1)
+    w = cap.where(mem & r.notna())
+    cw = (r * w).sum(axis=1) / w.sum(axis=1)
+    cw = cw.fillna(0.0)
+    ew.iloc[0] = cw.iloc[0] = 0.0
+    return pd.DataFrame({"equal_weight": (1 + ew).cumprod(), "cap_weight": (1 + cw).cumprod()})

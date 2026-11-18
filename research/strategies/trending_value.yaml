@@ -1,0 +1,13 @@
+# As live on the N100 (sql/trending_value.sql): cheapest tenth on six value
+# measures, positive six-month return, best 15 by it, monthly, no exits.
+name: trending_value
+family: trending_value
+signals: {trending_value: 1}
+holdings: 15
+rebalance: monthly
+hold_rank: null
+exit: null
+universe: ftse350
+drift_band: 0.02
+max_turnover: 0.5
+start_cash: 100000

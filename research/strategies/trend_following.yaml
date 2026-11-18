@@ -1,0 +1,14 @@
+# As live on the N100 (sql/strategy_rules.sql): above the 200-day average,
+# best six-month return, 15 holdings, monthly, sell on two closes below the
+# average. Trading 212 costs.
+name: trend_following
+family: trend_following
+signals: {trend_following: 1}
+holdings: 15
+rebalance: monthly
+hold_rank: 30
+exit: below_ma200_2d
+universe: ftse350
+drift_band: 0.02
+max_turnover: 0.5
+start_cash: 100000
