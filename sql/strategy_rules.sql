@@ -100,8 +100,9 @@ insert into strategy_rules (strategy, selection, screen_id, rank_by, holdings,
                             rebalance, exit_rules, exclude_funds, updated_at, note)
 select 'trending_value', 'screen',
        (select id from screen where name = 'Trending Value'),
-       null, 15, 'monthly', '', 'Y', now(),
-       'Monthly. No exits between rebalances: the screen is the whole signal.'
+       '6mnth', 15, 'monthly', '', 'Y', now(),
+       'Monthly, ranked by the six month return. No exits between rebalances:'
+       ' the screen is the whole signal.'
  where not exists (select 1 from strategy_rules where strategy = 'trending_value')
    and exists (select 1 from screen where name = 'Trending Value');
 
@@ -126,45 +127,57 @@ select 'trending_value', 'screen',
 --   includes/backfill_trend_statistics.php.
 insert into strategy_accounts (strategy, cash, currency, mode, enabled, created_at, note)
 select 'trend_following', 100000, 'GBP', 'PAPER', 'Y', now(),
-       'Paper. Above the 200 day average, weekly.'
+       'Paper. Above the 200 day average, monthly.'
  where not exists (select 1 from strategy_accounts where strategy = 'trend_following');
 
 insert into strategy_rules (strategy, selection, screen_id, rank_by, holdings,
                             rebalance, exit_rules, exclude_funds, updated_at, note)
 select 'trend_following', 'screen',
        (select id from screen where name = 'Trend following (200-day)'),
-       '6mnth', 15, 'weekly', 'below_ma200_2d', 'Y', now(),
-       'Weekly. Best six month return of what is above its 200 day average.'
+       '6mnth', 15, 'monthly', 'below_ma200_2d', 'Y', now(),
+       'Monthly. Best six month return of what is above its 200 day average.'
  where not exists (select 1 from strategy_rules where strategy = 'trend_following')
    and exists (select 1 from screen where name = 'Trend following (200-day)');
 
--- Converge both rows on the intended configuration, so a re-run after
--- somebody has experimented puts them back. screen_id is set from the name
--- here as well: a database where the screen was created after this migration
--- first ran would otherwise keep a null.
-update strategy_rules
-   set selection = 'screen',
-       screen_id = ifnull((select id from screen where name = 'Trending Value'), screen_id),
-       score_indicator = null,
-       rank_by = null,
-       holdings = 15,
-       rebalance = 'monthly',
-       exit_rules = '',
-       exclude_funds = 'Y',
-       updated_at = now()
- where strategy = 'trending_value';
+-- ---------------------------------------------------------------------------
+-- What this file does NOT do any more.
+-- ---------------------------------------------------------------------------
+--
+-- It used to converge both rows on the values above, on every run, so that
+-- a strategy somebody had experimented on went back to what the file said.
+-- That is a trap for whoever deploys. Dale decided on 16 Nov 2026 that both
+-- strategies rebalance monthly, rank by 6mnth and hold to rank 30 and 26;
+-- this file was in the 17 Nov deploy, was re-run as deploys re-run
+-- migrations, and set trend_following back to weekly and trending_value's
+-- rank_by back to null. Nothing ran in the minute before it was put back by
+-- hand, which is the only reason it cost nothing.
+--
+-- A migration that silently reverts a live decision is worse than one that
+-- does nothing, because the person who deploys has no reason to look. So:
+-- the inserts above seed a database that has no row, and the only thing
+-- touched on a row that already exists is a screen_id that is null, which is
+-- a value nobody chose.
+--
+-- Changing a live strategy's rules is a decision, and a decision belongs in
+-- an update written for that decision - a new file, run once, saying what it
+-- changes and why - not in a file that runs again every time anybody
+-- deploys.
 
 update strategy_rules
-   set selection = 'screen',
-       screen_id = ifnull((select id from screen where name = 'Trend following (200-day)'), screen_id),
-       score_indicator = null,
-       rank_by = '6mnth',
-       holdings = 15,
-       rebalance = 'weekly',
-       exit_rules = 'below_ma200_2d',
-       exclude_funds = 'Y',
+   set screen_id = (select id from screen where name = 'Trending Value'),
        updated_at = now()
- where strategy = 'trend_following';
+ where strategy = 'trending_value'
+   and selection = 'screen'
+   and screen_id is null
+   and exists (select 1 from screen where name = 'Trending Value');
+
+update strategy_rules
+   set screen_id = (select id from screen where name = 'Trend following (200-day)'),
+       updated_at = now()
+ where strategy = 'trend_following'
+   and selection = 'screen'
+   and screen_id is null
+   and exists (select 1 from screen where name = 'Trend following (200-day)');
 
 -- ---------------------------------------------------------------------------
 -- The account that was never used.

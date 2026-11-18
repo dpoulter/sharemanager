@@ -219,13 +219,18 @@ select 'Trending Value',
 -- of whatever was scored tonight", and a count that changes with the universe
 -- would change the screen without anybody editing it. Revisit if the universe
 -- moves much - 350 shares less 94 funds is where 26 comes from.
+-- The guard is "a top_n on the value score exists", not "one with 26 in it".
+-- Matching the operand means that a 26 somebody has changed to 30 is not
+-- found, a second criterion is inserted, screen_build links that one too,
+-- and the screen quietly applies both cuts. A re-runnable migration must
+-- leave an edited value alone, not add a competitor to it.
 insert into screen_criteria (indicator_id, description, operator, first_operand, second_operand)
 select si.indicator_id, 'The cheapest 26 on the value score', 'top_n', '26', null
   from screen_indicators si
  where si.name = 'value_score'
    and not exists (select 1 from screen_criteria sc
                     where sc.indicator_id = si.indicator_id
-                      and sc.operator = 'top_n' and sc.first_operand = '26');
+                      and sc.operator = 'top_n');
 
 insert into screen_criteria (indicator_id, description, operator, first_operand, second_operand)
 select si.indicator_id, 'Six month momentum is positive', '>', '0', null
@@ -241,7 +246,7 @@ select si.indicator_id, 'The best 15 on six month momentum', 'top_n', '15', null
  where si.name = '6mnth'
    and not exists (select 1 from screen_criteria sc
                     where sc.indicator_id = si.indicator_id
-                      and sc.operator = 'top_n' and sc.first_operand = '15');
+                      and sc.operator = 'top_n');
 
 -- ---------------------------------------------------------------------------
 -- Which criteria belong to the screen.
@@ -252,14 +257,18 @@ select si.indicator_id, 'The best 15 on six month momentum', 'top_n', '15', null
 -- "which comes first", and build_screen() orders on criteria_id, so the order
 -- the rows were created in is the order they run in.
 
+-- Whichever top_n on the value score exists, and only if the screen has no
+-- top_n on it already: the operand is somebody's to change.
 insert into screen_build (screen_id, criteria_id)
-select s.id, sc.id
+select s.id, min(sc.id)
   from screen s, screen_criteria sc, screen_indicators si
  where s.name = 'Trending Value'
    and si.name = 'value_score' and sc.indicator_id = si.indicator_id
-   and sc.operator = 'top_n' and sc.first_operand = '26'
-   and not exists (select 1 from screen_build sb
-                    where sb.screen_id = s.id and sb.criteria_id = sc.id);
+   and sc.operator = 'top_n'
+   and not exists (select 1 from screen_build sb, screen_criteria sc2
+                    where sb.screen_id = s.id and sb.criteria_id = sc2.id
+                      and sc2.indicator_id = si.indicator_id and sc2.operator = 'top_n')
+ group by s.id;
 
 insert into screen_build (screen_id, criteria_id)
 select s.id, sc.id
@@ -271,13 +280,15 @@ select s.id, sc.id
                     where sb.screen_id = s.id and sb.criteria_id = sc.id);
 
 insert into screen_build (screen_id, criteria_id)
-select s.id, sc.id
+select s.id, min(sc.id)
   from screen s, screen_criteria sc, screen_indicators si
  where s.name = 'Trending Value'
    and si.name = '6mnth' and sc.indicator_id = si.indicator_id
-   and sc.operator = 'top_n' and sc.first_operand = '15'
-   and not exists (select 1 from screen_build sb
-                    where sb.screen_id = s.id and sb.criteria_id = sc.id);
+   and sc.operator = 'top_n'
+   and not exists (select 1 from screen_build sb, screen_criteria sc2
+                    where sb.screen_id = s.id and sb.criteria_id = sc2.id
+                      and sc2.indicator_id = si.indicator_id and sc2.operator = 'top_n')
+ group by s.id;
 
 -- ---------------------------------------------------------------------------
 -- What the run did.

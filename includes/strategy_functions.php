@@ -997,6 +997,63 @@
 	 * this code is on the server and the tables are not. The nightly job
 	 * says so and does nothing rather than dying on an unknown table.
 	 */
+	/**
+	 * Whether the broker lists an instrument for a share, if it can be asked.
+	 *
+	 * Asked by the selection, which runs in the nightly job and knows
+	 * nothing else about the broker, so the lookup is here rather than a
+	 * require of broker_orders.php: the engine must not depend on the
+	 * broker layer to plan a paper account.
+	 *
+	 * Returns true when there is no mapping table to ask. An answer of
+	 * "cannot say" has to be "do not stop the share", or a database without
+	 * sql/broker_mapping.sql would select nothing at all.
+	 */
+	function strategy_broker_lists($symbol,$broker) {
+
+		static $ready=null;
+
+		if ($broker===null||trim((string)$broker)===''){ return true; }
+
+		if ($ready===null){
+			$rows=query("select count(*) n from information_schema.tables
+			              where table_schema=database() and table_name='broker_instruments'");
+			$ready=(count($rows)&&(int)$rows[0]['n']===1);
+		}
+		if (!$ready){ return true; }
+
+		$rows=query("select count(*) n from broker_instruments
+		              where broker=? and symbol=? and status='matched'",$broker,$symbol);
+
+		return count($rows)&&(int)$rows[0]['n']>0;
+	}
+
+	/**
+	 * Whether the broker's instrument list has been read at all.
+	 *
+	 * An empty table is "nobody has asked Trading 212 what it lists", not
+	 * "Trading 212 lists nothing". Reading it as the second would have a
+	 * practice account select nothing on the night after the mapping was
+	 * cleared, which is a silent way to stop trading.
+	 *
+	 * Asked once per selection rather than per candidate, and not cached
+	 * between calls: the answer changes when a sync runs, and a stale yes
+	 * is how a holding disappears.
+	 */
+	function strategy_broker_list_read($broker) {
+
+		if ($broker===null||trim((string)$broker)===''){ return false; }
+
+		$exists=query("select count(*) n from information_schema.tables
+		                where table_schema=database() and table_name='broker_instruments'");
+		if (!count($exists)||(int)$exists[0]['n']!==1){ return false; }
+
+		$rows=query("select count(*) n from broker_instruments
+		              where broker=? and status='matched'",$broker);
+
+		return count($rows)&&(int)$rows[0]['n']>0;
+	}
+
 	function strategy_rules_ready() {
 
 		static $ready=null;
@@ -1853,7 +1910,7 @@
 	 */
 	function strategy_select_symbols($rules,$as_of,$exchange=null) {
 
-		$out=['symbols'=>[],'errors'=>[]];
+		$out=['symbols'=>[],'errors'=>[],'skipped'=>[]];
 
 		if ($rules===null){ $out['errors'][]="no rules row"; return $out; }
 
@@ -1902,6 +1959,16 @@
 		   the same argument applies to buying one: the strategy is about
 		   operating companies. Momentum is a different matter, which is why
 		   this is a rule per strategy rather than a rule here. */
+		/* Which broker this account deals through, if any. Asked once
+		   rather than per candidate. */
+		$account=strategy_account($rules['strategy']);
+		$broker=($account===null||!strategy_mode_known($account['mode'])) ? null
+		      : strategy_mode_rules($account['mode'])['broker'];
+
+		/* Only worth asking per share if the broker has been asked what it
+		   lists at all. */
+		if ($broker!==null&&!strategy_broker_list_read($broker)){ $broker=null; }
+
 		$kept=[];
 		foreach ($candidates as $candidate) {
 
@@ -1917,6 +1984,24 @@
 			   executor would refuse it anyway; dropping it here means the
 			   strategy holds the next name down instead of one fewer. */
 			if (strategy_price_asof($symbol,$exchange,$as_of)===null){ continue; }
+
+			/* And on an account that deals through a broker, a share the
+			   broker does not list at all. OCI (Oakley Capital
+			   Investments) is one: it is in the FTSE 250, so the universe
+			   has it and the screen can pick it, and Trading 212 has no
+			   instrument to send an order for.
+
+			   Dropped here rather than refused by the sender, for the same
+			   reason an unpriceable share is: the next name down takes the
+			   slot instead of the strategy holding fourteen names and the
+			   fifteenth slot's cash sitting idle for a month. A paper
+			   account has no broker and is not affected. */
+			if (!strategy_broker_lists($symbol,$broker)){
+				$out['skipped'][]=['symbol'=>$symbol,
+				                   'reason'=>'the broker lists no instrument for it, so an'
+				                            .' order could not be sent'];
+				continue;
+			}
 
 			$kept[]=['symbol'=>$symbol];
 		}
@@ -1996,7 +2081,7 @@
 	 */
 	function strategy_write_targets($strategy,$as_of,$dry_run=false,$exchange=null) {
 
-		$result=['targets'=>[],'weight'=>0.0,'errors'=>[]];
+		$result=['targets'=>[],'weight'=>0.0,'errors'=>[],'skipped'=>[]];
 
 		$exchange=($exchange===null) ? session_exchange() : $exchange;
 		$as_of=substr((string)$as_of,0,10);
@@ -2006,6 +2091,9 @@
 
 		$selection=strategy_select_symbols($rules,$as_of,$exchange);
 		$result['errors']=$selection['errors'];
+		/* The names the selection dropped and why, so the reason reaches
+		   the page rather than only the engine. */
+		$result['skipped']=isset($selection['skipped']) ? $selection['skipped'] : [];
 		if (!count($selection['symbols'])){ return $result; }
 
 		/* Rounded DOWN to the six decimal places strategy_targets.target_weight
@@ -2422,7 +2510,7 @@
 
 		$night=['strategy'=>$strategy,'as_of'=>substr((string)$as_of,0,10),
 		        'dry_run'=>$dry_run,'rebalance'=>false,'exits'=>[],
-		        'targets'=>[],'lines'=>[],'errors'=>[],'orders'=>[],
+		        'targets'=>[],'not_selected'=>[],'lines'=>[],'errors'=>[],'orders'=>[],
 		        'filled'=>0,'rejected'=>0,'skipped'=>0,'pending'=>0,
 		        'account_value'=>null];
 
@@ -2502,6 +2590,20 @@
 				$written=strategy_write_targets($strategy,$as_of,$dry_run,$exchange);
 				$night['targets']=$written['targets'];
 				foreach ($written['errors'] as $error) { $night['errors'][]=$error; }
+
+				/* A name the selection would have picked and could not.
+				   Said on the run, kept on the record, and shown by the
+				   dry run: a share quietly missing from a book of fifteen
+				   is indistinguishable from a bug. */
+				$night['not_selected']=isset($written['skipped']) ? $written['skipped'] : [];
+				foreach ($night['not_selected'] as $missed) {
+					$night['lines'][]="skip ".$missed['symbol'].": ".$missed['reason'];
+					if (!$dry_run){
+						write_log("strategy",$strategy." did not select ".$missed['symbol']
+						          .": ".$missed['reason']);
+					}
+				}
+
 				//A dry run has not written them, so the plan has to be told.
 				if ($dry_run){ $targets=$written['targets']; }
 			}
@@ -3346,6 +3448,7 @@
 			'next_rebalance'=>strategy_next_rebalance($rules,$as_of),
 			'errors'=>[],
 			'trades'=>[],
+			'skipped'=>[],
 			'totals'=>[],
 			'currency'=>($account===null) ? 'GBP' : (string)$account['currency'],
 		];
@@ -3359,6 +3462,9 @@
 
 		$report['rebalance']=$night['rebalance'];
 		$report['lines']=$night['lines'];
+		/* The names the selection could not take, with the reason. A book
+		   of fourteen where the rules say fifteen has to say why. */
+		$report['skipped']=isset($night['not_selected']) ? $night['not_selected'] : [];
 
 		/* "No targets for tonight" is the normal state of a monthly
 		   strategy on the other thirty nights of the month, not something

@@ -23,9 +23,23 @@ set @sql := if(@have = 0,
                'select 1');
 prepare stmt from @sql; execute stmt; deallocate prepare stmt;
 
--- Left null for both live strategies: Jarvis is running the backtests that
--- decide what it should be, with the --hold-rank override, before anything
--- here changes.
+-- Seeded with what the backtests decided, and only where nobody has chosen
+-- something else. Dale settled on 30 for trend_following and 26 for
+-- trending_value on 16 Nov 2026 - 26 being the size of the Trending Value
+-- screen's value cut, so a holding is kept while it is still one of the
+-- cheapest 26.
+--
+-- "where hold_rank is null" is the whole safety of this. A buffer is a
+-- decision, and a migration that runs again on every deploy must never
+-- overwrite one: sql/strategy_rules.sql used to converge the rules on every
+-- run and put trend_following back to weekly on the 17 Nov deploy, which is
+-- the mistake this line exists not to repeat.
+
+update strategy_rules set hold_rank = 30, updated_at = now()
+ where strategy = 'trend_following' and hold_rank is null;
+
+update strategy_rules set hold_rank = 26, updated_at = now()
+ where strategy = 'trending_value' and hold_rank is null;
 
 select strategy, holdings, hold_rank, rebalance, rank_by from strategy_rules
  order by strategy;

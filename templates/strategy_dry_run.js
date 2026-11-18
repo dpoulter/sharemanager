@@ -215,6 +215,16 @@
 			body.appendChild(alertBox("danger", error));
 		});
 
+		/* A name the selection wanted and could not take: a share the
+		   broker does not list. The next one down takes the slot, so the
+		   book is still full - but a reader comparing the screen with the
+		   holdings would otherwise find a name missing and no reason. */
+		(report.skipped || []).forEach(function (missed) {
+			body.appendChild(alertBox("warning",
+				String(missed.symbol || "") + " was not selected: "
+				+ String(missed.reason || "")));
+		});
+
 		if (!report.trades || !report.trades.length) {
 			body.appendChild(alertBox("secondary", "No trades tonight."));
 			return;

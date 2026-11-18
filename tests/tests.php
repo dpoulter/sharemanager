@@ -118,7 +118,14 @@
         $sql = (string) file_get_contents(dirname(__DIR__) . '/sql/' . $name);
         foreach (explode(';', preg_replace('/^\s*--.*$/m', '', $sql)) as $stmt) {
             $stmt = trim($stmt);
-            if ($stmt !== '' && stripos($stmt, 'select') !== 0) { db()->exec($stmt); }
+            if ($stmt === '' || stripos($stmt, 'select') === 0) { continue; }
+            /* query() rather than exec(), and the cursor closed after it: a
+               migration that decides what to do with "prepare stmt from
+               @sql; execute stmt" runs 'select 1' when there is nothing to
+               do, and an unbuffered result set left behind by that kills
+               the next statement. */
+            $run = db()->query($stmt);
+            if ($run instanceof PDOStatement) { $run->closeCursor(); }
         }
     }
 
@@ -614,8 +621,11 @@
           $tv_rules !== null
           && scalar("select name from screen where id=?", [$tv_rules['screen_id']]) === 'Trending Value',
           var_export($tv_rules['screen_id'] ?? null, true));
-    check('Trend following is weekly, ranked by the six month return, and has the 200-day exit',
-          $tf_rules !== null && $tf_rules['rebalance'] === 'weekly'
+    /* Monthly, not weekly. Weekly was the first configuration and the one
+       sql/strategy_rules.sql seeded; Dale decided on monthly for both on
+       16 Nov 2026, and the file seeds that now. */
+    check('Trend following is monthly, ranked by the six month return, and has the 200-day exit',
+          $tf_rules !== null && $tf_rules['rebalance'] === 'monthly'
           && $tf_rules['rank_by'] === '6mnth'
           && $tf_rules['exit_list'] === ['below_ma200_2d'],
           json_encode($tf_rules));
@@ -658,17 +668,104 @@
     check('and no mode anywhere names the live account',
           (int)scalar("select count(*) from strategy_accounts where mode like '%LIVE%'") === 0);
 
-    /* The migration is re-runnable and converges: a strategy somebody has
-       experimented on goes back to what the file says. */
-    db()->exec("update strategy_rules set holdings=3, rebalance='daily', exit_rules='nonsense'
+    /* The migration is re-runnable and leaves a live decision alone.
+       It used to converge both rows on the values in the file on every
+       run. Deploys re-run migrations, so the 17 Nov deploy put
+       trend_following back to weekly and trending_value's rank_by back to
+       null, an hour after Dale had decided otherwise. Nothing ran in the
+       minute before Jarvis put them back by hand, which is the only
+       reason it cost nothing.
+
+       The seeded values are Dale's decision of 16 Nov 2026: both monthly,
+       both ranked by the six month return, hold ranks of 30 and 26. */
+    $seed_before = [strategy_rules('trend_following'), strategy_rules('trending_value')];
+    apply_migration('strategy_rules.sql');
+    apply_migration('strategy_hold_rank.sql');
+    $seed_after = [strategy_rules('trend_following'), strategy_rules('trending_value')];
+
+    $seed_same = true;
+    foreach ([0, 1] as $seed_i) {
+        foreach (['selection','screen_id','score_indicator','rank_by','holdings',
+                  'hold_rank','rebalance','exit_rules','exclude_funds'] as $seed_field) {
+            if ((string) $seed_before[$seed_i][$seed_field]
+                !== (string) $seed_after[$seed_i][$seed_field]) { $seed_same = false; }
+        }
+    }
+    check('re-running the seed against a database that holds the settings changes nothing',
+          $seed_same, json_encode([$seed_before, $seed_after]));
+
+    $tf_rules = strategy_rules('trend_following');
+    $tv_rules = strategy_rules('trending_value');
+    check('and the settings it seeds are the ones that were decided',
+          $tf_rules['rebalance'] === 'monthly' && $tf_rules['rank_by'] === '6mnth'
+          && (int) $tf_rules['hold_rank'] === 30 && (int) $tf_rules['holdings'] === 15
+          && $tf_rules['exit_rules'] === 'below_ma200_2d',
+          json_encode($tf_rules));
+    check('for both of them',
+          $tv_rules['rebalance'] === 'monthly' && $tv_rules['rank_by'] === '6mnth'
+          && (int) $tv_rules['hold_rank'] === 26 && (int) $tv_rules['holdings'] === 15,
+          json_encode($tv_rules));
+
+    /* And a strategy somebody has edited stays edited. This is the whole
+       point: a migration that reverts a live decision is worse than one
+       that does nothing, because whoever deploys has no reason to look. */
+    db()->exec("update strategy_rules set holdings=3, rebalance='daily',
+                       exit_rules='nonsense', hold_rank=7, rank_by=null
                  where strategy='trend_following'");
     apply_migration('strategy_rules.sql');
-    $tf_rules = strategy_rules('trend_following');
-    check('re-running the migration puts an edited strategy back',
-          (int)$tf_rules['holdings'] === 15 && $tf_rules['rebalance'] === 'weekly'
-          && $tf_rules['exit_rules'] === 'below_ma200_2d'
-          && $tf_rules['rank_by'] === '6mnth',
-          json_encode($tf_rules));
+    apply_migration('strategy_hold_rank.sql');
+    $tf_edited = strategy_rules('trend_following');
+    check('re-running the migration leaves an edited strategy exactly as it was',
+          (int) $tf_edited['holdings'] === 3 && $tf_edited['rebalance'] === 'daily'
+          && $tf_edited['exit_rules'] === 'nonsense' && (int) $tf_edited['hold_rank'] === 7
+          && $tf_edited['rank_by'] === null,
+          json_encode($tf_edited));
+
+    /* A screen_id nobody chose is still filled in, because null is not a
+       decision: a database where the screen was created after this
+       migration first ran would otherwise never link the two. */
+    db()->exec("update strategy_rules set screen_id=null where strategy='trend_following'");
+    apply_migration('strategy_rules.sql');
+    check('but a null screen_id is filled in from the screen\'s name',
+          (int) strategy_rules('trend_following')['screen_id'] > 0,
+          json_encode(strategy_rules('trend_following')));
+
+    /* Put Dale's settings back for everything below. */
+    db()->exec("update strategy_rules set holdings=15, rebalance='monthly',
+                       exit_rules='below_ma200_2d', hold_rank=30, rank_by='6mnth'
+                 where strategy='trend_following'");
+
+    /* The screen's own value cut, which is where 26 comes from. A re-run
+       must not add a second top_n beside one somebody has changed: both
+       would then apply, and the screen would quietly cut twice. */
+    $tv_cut = rows("select sc.first_operand, sc.operator from screen s, screen_build sb,
+                           screen_criteria sc, screen_indicators si
+                     where sb.screen_id=s.id and sb.criteria_id=sc.id
+                       and sc.indicator_id=si.indicator_id
+                       and s.name='Trending Value' and si.name='value_score'
+                       and sc.operator='top_n'");
+    check('the Trending Value screen cuts to the cheapest 26 on the value score',
+          count($tv_cut) === 1 && (string) $tv_cut[0]['first_operand'] === '26',
+          json_encode($tv_cut));
+
+    db()->exec("update screen_criteria sc, screen_indicators si
+                   set sc.first_operand='30'
+                 where sc.indicator_id=si.indicator_id and si.name='value_score'
+                   and sc.operator='top_n'");
+    apply_migration('trending_value.sql');
+    $tv_cut = rows("select sc.first_operand from screen s, screen_build sb,
+                           screen_criteria sc, screen_indicators si
+                     where sb.screen_id=s.id and sb.criteria_id=sc.id
+                       and sc.indicator_id=si.indicator_id
+                       and s.name='Trending Value' and si.name='value_score'
+                       and sc.operator='top_n'");
+    check('and a cut somebody has changed is left alone, not doubled up',
+          count($tv_cut) === 1 && (string) $tv_cut[0]['first_operand'] === '30',
+          json_encode($tv_cut));
+    db()->exec("update screen_criteria sc, screen_indicators si
+                   set sc.first_operand='26'
+                 where sc.indicator_id=si.indicator_id and si.name='value_score'
+                   and sc.operator='top_n'");
 
     /* ------------------------------------------------------------------ */
 
@@ -1408,6 +1505,104 @@
           (int)scalar("select count(*) from historical_prices
                         where symbol='BBB' and exchange='XLON' and date>?", [$gone_after])
             === count($gone_rows));
+
+    echo "\n--- fix M: a share the broker does not list is not selected ---\n";
+
+    /* OCI (Oakley Capital Investments) is in the FTSE 250, so the universe
+       has it and a screen can pick it, and Trading 212 has no instrument
+       to send an order for. The sender refuses such an order with the
+       reason, but by then the plan has spent a slot on it overnight and
+       the cash sits idle for a month. Dropped at selection, the next name
+       down takes the slot and the book is still full.
+
+       Six symbols, ranked by a score written straight in, so "the next by
+       rank" is exact rather than whatever the data happens to give. */
+    $MI = 'test_missing_instrument';
+    $mi_asof = asof_date();
+    $mi_symbols = ['MI1','MI2','MI3','MI4','MI5','MI6'];
+
+    db()->exec("delete from historical_prices where symbol like 'MI%'");
+    db()->exec("delete from stock_symbols where symbol like 'MI%'");
+    db()->exec("delete from statistics where symbol like 'MI%'");
+    db()->exec("delete from broker_instruments where symbol like 'MI%'");
+
+    foreach ($mi_symbols as $mi_i => $mi_sym) {
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                                  sector,market,industry_group,industry)
+                       values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','X')")
+            ->execute([$mi_sym, 'Missing ' . $mi_sym, 'Missing ' . $mi_sym]);
+        db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                       values (?,'XLON',?,?)")->execute([$mi_sym, $mi_asof, 2000 + $mi_i * 100]);
+        s_stat($mi_sym, 'mi_score', $mi_asof, 60 - $mi_i * 10);
+    }
+
+    /* Every one of them listed at the broker except MI2, which is ranked
+       second and would otherwise be in a book of three. */
+    foreach ($mi_symbols as $mi_sym) {
+        if ($mi_sym === 'MI2') { continue; }
+        db()->prepare("insert into broker_instruments (broker,broker_ticker,symbol,status,last_seen)
+                       values (?,?,?,'matched',?)")
+            ->execute([BROKER_T212, $mi_sym . 'l_EQ', $mi_sym, $mi_asof]);
+    }
+
+    s_drop($MI);
+    s_rules($MI, ['selection'=>'score','score_indicator'=>'mi_score','rank_by'=>'mi_score',
+                  'holdings'=>3]);
+
+    s_reset($MI, 100000, 'Y', 'PAPER');
+    $mi_paper = strategy_select_symbols(strategy_rules($MI), $mi_asof, 'XLON');
+    check('a paper account picks the top three, broker or no broker',
+          $mi_paper['symbols'] === ['MI1','MI2','MI3'], json_encode($mi_paper['symbols']));
+    check('and nothing is skipped for it',
+          count($mi_paper['skipped']) === 0, json_encode($mi_paper['skipped']));
+
+    s_reset($MI, 5000, 'Y', 'T212_DEMO');
+    $mi_demo = strategy_select_symbols(strategy_rules($MI), $mi_asof, 'XLON');
+    check('a broker account leaves out the one the broker does not list',
+          !in_array('MI2', $mi_demo['symbols'], true), json_encode($mi_demo['symbols']));
+    check('and takes the next by rank, so the slot is not left as idle cash',
+          $mi_demo['symbols'] === ['MI1','MI3','MI4'], json_encode($mi_demo['symbols']));
+    check('with the reason recorded against the share',
+          count($mi_demo['skipped']) === 1
+          && $mi_demo['skipped'][0]['symbol'] === 'MI2'
+          && stripos($mi_demo['skipped'][0]['reason'], 'no instrument') !== false,
+          json_encode($mi_demo['skipped']));
+
+    /* The reason reaches the page: strategy_write_targets() carries it,
+       the night carries it, and the dry run hands it to the popup. */
+    $mi_written = strategy_write_targets($MI, $mi_asof, true, 'XLON');
+    check('the targets step carries the reason out with it',
+          count($mi_written['skipped']) === 1
+          && $mi_written['skipped'][0]['symbol'] === 'MI2',
+          json_encode($mi_written['skipped']));
+    check('and the targets themselves are the three that can be traded',
+          count($mi_written['targets']) === 3,
+          json_encode(array_column($mi_written['targets'], 'symbol')));
+
+    $mi_dry = strategy_dry_run($MI, $mi_asof, 'XLON');
+    check('and the dry run says so where somebody can read it',
+          isset($mi_dry['skipped']) && count($mi_dry['skipped']) === 1
+          && $mi_dry['skipped'][0]['symbol'] === 'MI2',
+          json_encode($mi_dry['skipped'] ?? null));
+    check('the popup draws it',
+          strpos((string) file_get_contents(dirname(__DIR__) . '/templates/strategy_dry_run.js'),
+                 'report.skipped') !== false);
+
+    /* An empty instrument list is "nobody has asked the broker what it
+       lists", not "the broker lists nothing". Reading it as the second
+       would have a practice account select nothing the night after the
+       mapping was cleared. */
+    db()->exec("delete from broker_instruments");
+    $mi_none = strategy_select_symbols(strategy_rules($MI), $mi_asof, 'XLON');
+    check('with no instrument list read at all, nothing is skipped',
+          $mi_none['symbols'] === ['MI1','MI2','MI3'] && count($mi_none['skipped']) === 0,
+          json_encode([$mi_none['symbols'], $mi_none['skipped']]));
+
+    s_drop($MI);
+    db()->exec("delete from historical_prices where symbol like 'MI%'");
+    db()->exec("delete from stock_symbols where symbol like 'MI%'");
+    db()->exec("delete from statistics where symbol like 'MI%'");
+    db()->exec("delete from broker_instruments where symbol like 'MI%'");
 
     echo "\n--- strategies: the night after the first build ---\n";
 
@@ -12432,8 +12627,33 @@
     check('the migration adds the column only if it is missing',
           stripos($hr_mig, 'information_schema.columns') !== false
           && stripos($hr_mig, 'hold_rank') !== false);
-    check('and leaves both live strategies without a buffer for now',
-          stripos($hr_mig, 'update strategy_rules set hold_rank') === false);
+    /* It seeds the buffers Dale decided on - 30 and 26 - and only where
+       nobody has chosen one. "where hold_rank is null" is the whole safety
+       of it: sql/strategy_rules.sql used to converge the rules on every
+       run and put trend_following back to weekly on the 17 Nov deploy,
+       and a migration that runs again on every deploy must never
+       overwrite a decision. */
+    check('the migration seeds the buffers that were decided',
+          stripos($hr_mig, 'hold_rank = 30') !== false
+          && stripos($hr_mig, 'hold_rank = 26') !== false);
+    /* Counted over the statements, not the file: the comment above them
+       says "where hold_rank is null" too, and a check that counts the
+       prose is a check that passes when somebody deletes the guard and
+       leaves the paragraph. */
+    $hr_sql = strtolower(preg_replace('/^\s*--.*$/m', '', $hr_mig));
+    $hr_guarded = true;
+    foreach (explode(';', $hr_sql) as $hr_stmt) {
+        if (strpos($hr_stmt, 'update strategy_rules set hold_rank') === false) { continue; }
+        if (strpos($hr_stmt, 'hold_rank is null') === false) { $hr_guarded = false; }
+    }
+    check('and only where nobody has chosen one',
+          $hr_guarded && substr_count($hr_sql, 'update strategy_rules set hold_rank') === 2,
+          $hr_sql);
+    check('and the live strategies have them',
+          (int) strategy_rules('trend_following')['hold_rank'] === 30
+          && (int) strategy_rules('trending_value')['hold_rank'] === 26,
+          json_encode([strategy_rules('trend_following')['hold_rank'],
+                       strategy_rules('trending_value')['hold_rank']]));
 
     s_drop($HR);
     foreach ($hr_universe as $hr_symbol) {
