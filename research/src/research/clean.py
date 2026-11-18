@@ -63,52 +63,86 @@ def clean_prices(data: Path) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- market caps 100x out
 STEP_LO, STEP_HI = 70.0, 140.0
+CAP_CEILING = 500e9            # no UK company is worth more than this: a rescale that gets there is wrong
+MULTIPLY_FLOOR = 1e6           # a segment already above 1m is not 100x too small
 
 
-def cap_step_factors(cap: np.ndarray) -> np.ndarray:
-    """Multipliers that line every segment of one cap series up with its latest level.
+def _is_step(r: np.ndarray) -> np.ndarray:
+    return ((r >= STEP_LO) & (r <= STEP_HI)) | ((r >= 1 / STEP_HI) & (r <= 1 / STEP_LO))
 
-    A one-day ratio between 70 and 140 (or its inverse) is pence read as pounds,
-    not a market move. Walking back from the latest value, each such step
-    rescales everything before it by 100, so the latest level is taken as right.
+
+def cap_step_factors(cap: np.ndarray) -> tuple[np.ndarray, list[dict]]:
+    """Multipliers (1, 100 or 0.01) per row, and the rescales that were refused.
+
+    A one-day ratio of 70 to 140, or its inverse, splits the series into
+    segments (pence read as pounds changes the level by 100 at one step).
+    Each segment is then put at whichever of x1, x100, x0.01 lands its median
+    nearest the median of the whole series, so the anchor is the symbol's
+    own typical level, not its last value (which anchoring on a tail broke:
+    a few good series came out hundreds of trillions).
+
+    Refused, and left as they were: a x100 on a segment whose median is
+    already above 1m, and any rescale that would take a value above 500bn.
     """
     f = np.ones(len(cap))
+    rejected: list[dict] = []
     idx = np.where(np.isfinite(cap) & (cap > 0))[0]
     if len(idx) < 2:
-        return f
+        return f, rejected
     v = cap[idx]
-    r = v[1:] / v[:-1]                       # ratio at each step, later / earlier
-    step = np.ones(len(v))
-    up = (r >= STEP_LO) & (r <= STEP_HI)     # earlier 100x too small
-    down = (r >= 1 / STEP_HI) & (r <= 1 / STEP_LO)   # earlier 100x too big
-    step[1:][up] = 100.0
-    step[1:][down] = 0.01
-    # factor for position k = product of steps after k
-    cum = np.cumprod(step[::-1])[::-1]
-    fk = np.r_[cum[1:], 1.0]
-    f[idx] = fk
-    return f
+    steps = np.where(_is_step(v[1:] / v[:-1]))[0] + 1
+    if len(steps) == 0:
+        return f, rejected
+    bounds = np.r_[0, steps, len(v)]
+    anchor = float(np.median(v))
+    for lo, hi in zip(bounds[:-1], bounds[1:]):
+        seg = v[lo:hi]
+        med = float(np.median(seg))
+        best = min((1.0, 100.0, 0.01), key=lambda k: (abs(np.log(med * k / anchor)), k != 1.0))
+        if best == 1.0:
+            continue
+        reason = None
+        if best == 100.0 and med > MULTIPLY_FLOOR:
+            reason = f"would multiply a segment whose median {med:,.0f} is already above {MULTIPLY_FLOOR:,.0f}"
+        elif float(seg.max()) * best > CAP_CEILING:
+            reason = f"would give a cap of {seg.max() * best:,.0f}, above {CAP_CEILING:,.0f}"
+        if reason:
+            rejected.append({"first_row": int(idx[lo]), "last_row": int(idx[hi - 1]), "factor": best,
+                             "segment_median": med, "segment_max": float(seg.max()), "reason": reason})
+            continue
+        f[idx[lo:hi]] = best
+    return f, rejected
 
 
-def fix_cap_steps(caps: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """caps: symbol, date, market_cap. Returns the corrected frame and one row per rescaled run."""
+def fix_cap_steps(caps: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """caps: symbol, date, market_cap. Returns the corrected frame, one row per rescaled
+    symbol, and one row per refused rescale (to be listed in the data report)."""
     caps = caps.sort_values(["symbol", "date"]).reset_index(drop=True)
     out = caps["market_cap"].to_numpy(dtype=float).copy()
-    log_rows = []
+    done, refused = [], []
     for sym, g in caps.groupby("symbol", sort=False):
         ix = g.index.to_numpy()
-        f = cap_step_factors(out[ix])
+        f, rej = fix_cap_steps_one(out[ix])
+        dates = g["date"].to_numpy()
+        for r in rej:
+            refused.append({"symbol": sym, "from": pd.Timestamp(dates[r["first_row"]]),
+                            "to": pd.Timestamp(dates[r["last_row"]]), "factor": r["factor"],
+                            "segment_median": r["segment_median"], "segment_max": r["segment_max"],
+                            "reason": r["reason"]})
         if (f != 1).any():
             changed = f != 1
             before = out[ix][changed]
             out[ix] = out[ix] * f
-            dates = g["date"].to_numpy()[changed]
-            log_rows.append({"symbol": sym, "rows": int(changed.sum()), "from": pd.Timestamp(dates.min()),
-                             "to": pd.Timestamp(dates.max()), "factor_min": float(f[changed].min()),
-                             "factor_max": float(f[changed].max()),
-                             "largest_before": float(np.nanmax(before)),
-                             "largest_after": float(np.nanmax(out[ix][changed])),
-                             "correction": float(np.nanmax(np.abs(before - out[ix][changed])))})
+            done.append({"symbol": sym, "rows": int(changed.sum()),
+                         "from": pd.Timestamp(dates[changed].min()), "to": pd.Timestamp(dates[changed].max()),
+                         "factor_min": float(f[changed].min()), "factor_max": float(f[changed].max()),
+                         "largest_before": float(np.nanmax(before)),
+                         "largest_after": float(np.nanmax(out[ix][changed])),
+                         "correction": float(np.nanmax(np.abs(before - out[ix][changed])))})
     fixed = caps.copy()
     fixed["market_cap"] = out
-    return fixed, pd.DataFrame(log_rows)
+    return fixed, pd.DataFrame(done), pd.DataFrame(refused)
+
+
+def fix_cap_steps_one(cap: np.ndarray) -> tuple[np.ndarray, list[dict]]:
+    return cap_step_factors(cap)

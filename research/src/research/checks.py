@@ -118,6 +118,12 @@ def cap_rescale_section(data: Path, member) -> list[str]:
                 "The 20 largest corrections:", "",
                 md(r.sort_values("correction", ascending=False).head(20)[
                     ["symbol", "rows", "from", "to", "largest_before", "largest_after"]], index=False), ""]
+    rp = data / "cap_rescale_refused.parquet"
+    rf = pd.read_parquet(rp) if rp.exists() else pd.DataFrame()
+    out += [f"Rescales refused (a x100 on a segment already above 1m, or a result above 500bn; "
+            f"the segment is left as it was): {len(rf)} in {rf['symbol'].nunique() if len(rf) else 0} symbols.", ""]
+    if len(rf):
+        out += [md(rf.sort_values("segment_max", ascending=False).head(60), index=False), ""]
     q = data / "cap_lse_corrections.parquet"
     c = pd.read_parquet(q) if q.exists() else pd.DataFrame()
     out += [f"LSE check (FMP still 50 to 200 times the LSE's cap in a month, divided by 100): "

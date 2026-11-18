@@ -466,3 +466,31 @@ def test_validate_reports_identical_months_and_passes_on_itself(cfg, tmp_path):
     diff = rep2["first_month_holdings_differ"]
     assert "NOTOURS.L" in diff["only_n100"] and len(diff["only_ours"]) == 1
     assert {r["symbol"] for r in diff["shares"]} == set(diff["only_n100"]) | set(diff["only_ours"])
+
+
+# ---------------------------------------------------------------- AB: the N100's 6-month return
+def test_six_month_return_is_the_n100s_calendar_definition():
+    """First price ON OR AFTER date-6M to last price ON OR BEFORE the date, each share's own prices."""
+    dates = pd.bdate_range("2022-05-02", "2022-11-30")
+    n = len(dates)
+    base = pd.Timestamp("2022-11-01") - pd.DateOffset(months=6)          # Sat 1 May 2022: first price is Mon 2 May
+    flat = [100.0] * n
+    a = [100.0 + i for i in range(n)]                                   # rising every day
+    gap = list(a)
+    gap[0] = np.nan; gap[1] = np.nan                                    # no price on the first two days
+    short = [np.nan] * 100 + [50.0] * (n - 100)                         # listed part-way through the window
+    stale = [100.0] * 40 + [np.nan] * (n - 40)                          # stopped trading; last price long ago
+    m = make_market({"FLAT.L": flat, "RISE.L": a, "GAP.L": gap, "SHORT.L": short, "STALE.L": stale},
+                    start="2022-05-02")
+    ctx = Context(m, Fundamentals(pd.DataFrame()))
+    d = pd.Timestamp("2022-11-01")
+    det = ctx.n100_return_detail(d)
+    i = ctx.pos(d)
+    assert det.at["RISE.L", "start"] == "2022-05-02" and det.at["RISE.L", "end"] == "2022-11-01"
+    assert det.at["RISE.L", "ret"] == pytest.approx(a[i] / a[0] - 1)
+    assert det.at["GAP.L", "start"] == "2022-05-04"                     # the first price on or AFTER the base date
+    assert det.at["GAP.L", "ret"] == pytest.approx(a[i] / a[2] - 1)
+    assert det.at["SHORT.L", "start"] == str(dates[100].date())         # the return over the history it has
+    assert det.at["FLAT.L", "ret"] == 0
+    assert det.at["STALE.L", "end"] == str(dates[39].date())            # last price on or before, however old
+    assert ctx.n100_return(d).notna().sum() == 5

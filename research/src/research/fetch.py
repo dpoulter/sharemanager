@@ -441,11 +441,12 @@ def consolidate(data: Path) -> None:
         # so nothing downstream sees a cap 100 times too big.
         from .clean import fix_cap_steps
         m["date"] = pd.to_datetime(m["date"])
-        m, rescaled = fix_cap_steps(m[["symbol", "date", "market_cap"]])
+        m, rescaled, refused = fix_cap_steps(m[["symbol", "date", "market_cap"]])
         rescaled.to_parquet(data / "cap_rescaled.parquet")
+        refused.to_parquet(data / "cap_rescale_refused.parquet")
         if len(rescaled):
-            log.info("market cap: %d symbols, %d rows rescaled by 100 (pence read as pounds)",
-                     len(rescaled), int(rescaled["rows"].sum()))
+            log.info("market cap: %d symbols, %d rows rescaled by 100 (pence read as pounds); %d rescales refused",
+                     len(rescaled), int(rescaled["rows"].sum()), len(refused))
         m.to_parquet(data / "market_cap.parquet")
     d = gather("dividends")
     if len(d):

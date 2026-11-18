@@ -167,7 +167,7 @@ class UnreadableWorkbook(RuntimeError):
     pass
 
 
-def read_issuer_lists(folder: Path, today: dt.date | None = None) -> tuple[pd.DataFrame, dict]:
+def read_issuer_lists(folder: Path, today: dt.date | None = None, dedupe: bool = True) -> tuple[pd.DataFrame, dict]:
     """All months in one frame, and the columns each year had.
 
     The year of a month sheet comes from, in order: the sheet name ("Jan 25"),
@@ -241,6 +241,8 @@ def read_issuer_lists(folder: Path, today: dt.date | None = None) -> tuple[pd.Da
     allm["norm"] = allm["company"].map(norm_name)
     # Two companies in one month with the same name but for PLC/LTD (Investec
     # plc and Investec Ltd): tell them apart by keeping the legal form.
+    if not dedupe:
+        return allm, info
     clash = allm.duplicated(["month", "norm"], keep=False)
     allm.loc[clash, "norm"] = allm.loc[clash, "company"].map(lambda x: norm_name(x, keep_form=True))
     # One row per company and month. Where one name has two rows (Investec plc
@@ -286,6 +288,7 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
     syms_out, doubles = [], {}
     for row in issuers.itertuples(index=False):
         cand = by_norm.get(row.norm)
+        exact = bool(cand)
         if not cand and row.norm:
             toks = row.norm.split()
             hits = [n for n in by_first.get(toks[0], [])
@@ -293,30 +296,37 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
             loose = sorted({s for n in hits for s in by_norm[n]})
             cand = loose if len(loose) == 1 else None
         if not cand:
-            syms_out.append(None)
+            syms_out.append([None])
             continue
-        if len(cand) > 1:
+        if len(cand) > 1 and exact:
+            # Several FMP lines carry exactly this name (INVP.L and INVR.L are both "Investec plc"):
+            # they are one company, so the LSE row belongs to each of them. Which one counts in the
+            # universe is decided month by month there (home ISIN, then the line trading, then traded
+            # value), not by guessing here, which kept the wrong line.
+            doubles.setdefault(row.company, sorted(cand))
+            syms_out.append(sorted(cand))
+        elif len(cand) > 1:
             pick = None
             lse_cap = getattr(row, "cap_m", np.nan)
-            if cap_at is not None and pd.notna(lse_cap) and row.month in cap_at.index:
+            if cap_at is not None and pd.notna(lse_cap) and row.month in cap_at.index and lse_cap > 0:
                 gaps = {s: abs(cap_at.at[row.month, s] / (lse_cap * 1e6) - 1)
-                        for s in cand if s in cap_at.columns and pd.notna(cap_at.at[row.month, s])
-                        and lse_cap > 0}
+                        for s in cand if s in cap_at.columns and pd.notna(cap_at.at[row.month, s])}
                 close = [s for s, g in gaps.items() if g <= 0.2]
                 if len(close) == 1:
                     pick = close[0]
             if pick is None:
                 doubles.setdefault(row.company, sorted(cand))
                 pick = sorted(cand)[0]
-            syms_out.append(pick)
+            syms_out.append([pick])
         else:
-            syms_out.append(cand[0])
+            syms_out.append([cand[0]])
     out = issuers.copy()
     out["symbol"] = syms_out
+    out = out.explode("symbol").reset_index(drop=True)
     rate = out.assign(y=out["month"].dt.year, hit=out["symbol"].notna()) \
         .loc[lambda d: d["market"].isin(["MAIN MARKET", "AIM"])].groupby("y")["hit"].mean().round(3).to_dict()
     return out, {"match_rate_by_year": {int(k): float(v) for k, v in rate.items()},
-                 "names_matching_two_lines": doubles}
+                 "names_matching_two_lines (all matched; the universe picks one)": doubles}
 
 
 def _is_premium(cat) -> bool:
@@ -454,6 +464,10 @@ def build_status(data: Path, master: pd.DataFrame, caps_wide: pd.DataFrame | Non
         st.loc[st["symbol"] == r.symbol, "eligible"] = r.decision == "in"
         st.loc[st["symbol"] == r.symbol, "override"] = f"{r.decision}: {r.reason}"
     elig = st.pivot(index="month", columns="symbol", values="eligible").reindex(months)
+    # An override is the whole answer for that share, every month, matched or not: a share the
+    # lists never matched had no rows for it to change.
+    for r in ov.itertuples(index=False):
+        elig[r.symbol] = r.decision == "in"
     st.to_parquet(Path(data) / "lse_status.parquet")
     rep.update({
         "files_columns_by_year": cols,

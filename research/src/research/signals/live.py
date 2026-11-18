@@ -21,8 +21,10 @@ VALUE_TOP_FRACTION = 0.10     # the N100 screen takes the cheapest 26 of ~256 no
 
 
 def six_month_return(ctx: Context, date) -> pd.Series:
-    """As calc_momentum(): last close against the close six calendar months before."""
-    return ctx.adj_at(date) / ctx.adj_months_back(date, 6) - 1
+    """The N100's 6mnth, exactly (Context.n100_return_detail): six CALENDAR months, from
+    the first price on or after (date - 6 months) to the last price on or before the date.
+    Not 126 trading days, and not the last price on or before the start date."""
+    return ctx.n100_return(date, 6)
 
 
 @signal("six_month")

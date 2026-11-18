@@ -218,6 +218,34 @@ def cmd_signals(cfg, a):
     print(f"\nwritten to {out}\nDevelopment rows are survivorship-biased.")
 
 
+def cmd_lse_rows(cfg, a):
+    """Every row of the LSE issuer lists for a name, before any de-duplication, with how it matched."""
+    from .lse import norm_name, read_issuer_lists
+    folder = cfg.data_dir / "reference" / "lse_issuer_lists"
+    df, _ = read_issuer_lists(folder, dedupe=False)
+    key = norm_name(a.text) or a.text.upper()
+    hit = df[df["company"].str.upper().str.contains(a.text.upper(), regex=False) | df["norm"].str.contains(key, regex=False)]
+    if a.year:
+        hit = hit[hit["month"].dt.year == a.year]
+    mp = cfg.data_dir / "lse_matched.parquet"
+    matched = pd.read_parquet(mp) if mp.exists() else pd.DataFrame()
+    cols = [c for c in ("month", "company", "norm", "market", "country", "category", "cap_m", "source") if c in hit]
+    with pd.option_context("display.width", 250, "display.max_columns", 20, "display.max_colwidth", 60):
+        print(hit.sort_values(["month", "company"])[cols].to_string(index=False) if len(hit) else "no rows")
+        if len(matched) and len(hit):
+            m = matched[matched["norm"].isin(hit["norm"]) | matched["company"].isin(hit["company"])]
+            last = m[m["month"] == m["month"].max()]
+            print("\nmatched to FMP lines in the latest month:")
+            print(last[["company", "norm", "market", "symbol"]].to_string(index=False) if len(last) else "none")
+        sp = cfg.data_dir / "lse_status.parquet"
+        if sp.exists() and len(matched):
+            st = pd.read_parquet(sp)
+            syms = set(matched.loc[matched["company"].isin(hit["company"]), "symbol"].dropna())
+            s = st[st["symbol"].isin(syms) & (st["month"] == st["month"].max())]
+            print("\nstatus in the latest month:")
+            print(s[["symbol", "market", "country", "overseas_rule", "eligible"]].to_string(index=False) if len(s) else "none")
+
+
 def cmd_compare(cfg, a):
     from .runlog import RunLog
     df = RunLog(cfg.p("run_log")).read()
@@ -280,6 +308,8 @@ def main(argv=None):
     s = sub.add_parser("run"); s.add_argument("strategy", nargs="+")
     s.add_argument("--period", default="dev"); s.add_argument("--final", action="store_true")
     s = sub.add_parser("signals"); s.add_argument("--period", choices=["dev", "val"])
+    s = sub.add_parser("lse-rows", help="print the LSE issuer-list rows whose company name contains TEXT")
+    s.add_argument("text"); s.add_argument("--year", type=int, default=None)
     s = sub.add_parser("compare"); s.add_argument("family")
     s = sub.add_parser("report"); s.add_argument("run_id")
     s = sub.add_parser("validate")
@@ -291,7 +321,7 @@ def main(argv=None):
     _setup_logging(cfg)
     try:
         {"fetch": cmd_fetch, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
-         "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate}[a.cmd](cfg, a)
+         "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate}[a.cmd](cfg, a)
     except Exception as e:     # never let a key reach the terminal in a traceback
         log.error("%s failed: %s", a.cmd, mask(e))
         if __import__("os").environ.get("RESEARCH_DEBUG"):

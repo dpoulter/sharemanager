@@ -291,12 +291,46 @@ def test_cap_steps_of_100x_rescaled_bcg_case():
     cap = np.where(d < pd.Timestamp("2025-03-03"), 1.5e11, 1.5e9) * np.linspace(1.04, 0.7, len(d))
     caps = pd.DataFrame({"symbol": "BCG.L", "date": d, "market_cap": cap})
     other = pd.DataFrame({"symbol": "OK.L", "date": d, "market_cap": np.linspace(1e9, 3e9, len(d))})
-    fixed, log = fix_cap_steps(pd.concat([caps, other]))
+    fixed, done, refused = fix_cap_steps(pd.concat([caps, other]))
     b = fixed[fixed["symbol"] == "BCG.L"].set_index("date")["market_cap"]
     assert 1.2e9 < b.loc["2024-12-02"] < 1.8e9
     assert b.loc["2026-09-30"] == pytest.approx(cap[-1])
-    assert list(log["symbol"]) == ["BCG.L"]
+    assert list(done["symbol"]) == ["BCG.L"] and refused.empty
     assert (fixed[fixed["symbol"] == "OK.L"]["market_cap"].to_numpy() == other["market_cap"].to_numpy()).all()
+
+
+
+
+def test_z2_rescale_anchored_to_median_refusals_logged_nothing_above_500bn():
+    """Z2: the anchor is the symbol's median, a x100 on a segment already above 1m is refused,
+    every refusal is recorded, and no symbol ends above 500bn."""
+    from research.clean import CAP_CEILING, fix_cap_steps
+    d = pd.bdate_range("2023-01-02", periods=400)
+    series = {
+        # A 80m company that jumps to 8bn in one day for 100 days: the tail is the error, not the body.
+        "PLAZ.L": np.r_[np.full(300, 8e7), np.full(100, 8e9)],
+        # A £45bn company with a short 100x-too-small glitch: multiplying a segment already above 1m
+        # is refused, so the glitch is left as it was and recorded.
+        "RGO.L": np.r_[np.full(350, 4.5e10), np.full(30, 4.5e8), np.full(20, 4.5e10)],
+        # Even split, the lower half above 1m: refused, series untouched.
+        "HOME.L": np.r_[np.full(200, 5e8), np.full(200, 5e6)],
+        # Pence read as pounds for the first 120 days: fixed.
+        "BCG.L": np.r_[np.full(120, 1.5e11), np.full(280, 1.5e9)],
+        # Far too big for the first 100 days (trillions): divided down to the body.
+        "WILD.L": np.r_[np.full(100, 6e12), np.full(300, 6e10)],
+    }
+    caps = pd.concat([pd.DataFrame({"symbol": s, "date": d, "market_cap": v}) for s, v in series.items()])
+    fixed, done, refused = fix_cap_steps(caps)
+    by = {s: g["market_cap"].to_numpy() for s, g in fixed.groupby("symbol")}
+    assert max(v.max() for v in by.values()) <= CAP_CEILING
+    assert by["PLAZ.L"].max() == pytest.approx(8e7)
+    assert by["RGO.L"].tolist() == series["RGO.L"].tolist()
+    assert by["HOME.L"].tolist() == series["HOME.L"].tolist()
+    assert by["BCG.L"].max() == pytest.approx(1.5e9)
+    assert by["WILD.L"].max() == pytest.approx(6e10)
+    assert {"RGO.L", "HOME.L"} <= set(refused["symbol"])
+    assert {"reason", "segment_max", "segment_median", "from", "to", "factor"} <= set(refused.columns)
+    assert set(done["symbol"]) == {"PLAZ.L", "BCG.L", "WILD.L"}
 
 
 def test_trust_candidates_closed_ended_only_one_line_per_issuer():
@@ -321,3 +355,40 @@ def test_trust_candidates_closed_ended_only_one_line_per_issuer():
     first = set(u["symbol"])
     assert first == {f"C{i}.L" for i in range(8)}                      # SMT and one F&C line counted
     assert u.attrs["trusts_counted"][u["date"].min()] == 2
+
+
+def test_investec_both_fmp_lines_matched_and_home_line_kept(tmp_path):
+    """INVP: the LSE row for Investec plc belongs to both FMP lines called Investec plc; the universe
+    keeps the home (GB ISIN) line, not the South African one, even if that one trades more."""
+    ref = tmp_path / "reference" / "lse_issuer_lists" / "2026"
+    ref.mkdir(parents=True)
+    rows = [("Investec plc", "UNITED KINGDOM", "Main Market", 3000.0, "N"),
+            ("Investec Limited", "SOUTH AFRICA", "MAIN MARKET / ADMISSION TO TRADING ONLY", 3000.0, "N"),
+            ("Padding plc", "UNITED KINGDOM", "Main Market", 1000.0, "N")]
+    _write_book(ref / "list.xlsx", {"Nov": _rows_2020(rows)}, 6)
+    n = 15
+    prices = {"INVP.L": [500.0] * n, "INVR.L": [500.0] * n, "PAD.L": [100.0] * n}
+    m = make_market(prices, start="2026-11-02", caps={"INVP.L": 3e9, "INVR.L": 3e9, "PAD.L": 1e9},
+                    master={"INVP.L": {"name": "Investec plc", "norm": "INVESTEC", "overseas_isin": False},
+                            "INVR.L": {"name": "Investec plc", "norm": "INVESTEC", "overseas_isin": True},
+                            "PAD.L": {"name": "Padding plc", "norm": "PADDING", "overseas_isin": False}})
+    m.volume = pd.DataFrame({"INVP.L": 1e4, "INVR.L": 1e7, "PAD.L": 1e5}, index=m.dates)   # INVR trades far more
+    master = m.master.reset_index().rename(columns={"index": "symbol"})
+    elig, rep = build_status(tmp_path, master, m.market_cap, pd.DatetimeIndex(["2026-11-01"]), False)
+    assert bool(elig.at[pd.Timestamp("2026-11-01"), "INVP.L"]) and bool(elig.at[pd.Timestamp("2026-11-01"), "INVR.L"])
+    u = build_universe(m, size=10, large=5, start="2026-11-01", eligible=elig)
+    got = set(u["symbol"])
+    assert "INVP.L" in got and "INVR.L" not in got
+
+
+def test_override_applies_to_a_share_the_lists_never_matched(tmp_path):
+    (tmp_path / "reference" / "lse_issuer_lists" / "2026").mkdir(parents=True)
+    _write_book(tmp_path / "reference" / "lse_issuer_lists" / "2026" / "list.xlsx",
+                {"Nov": _rows_2020([("Other plc", "UNITED KINGDOM", "Main Market", 100.0, "N")])}, 6)
+    pd.DataFrame({"symbol": ["INVP"], "decision": ["in"], "reason": ["Investec plc, premium listed"]}) \
+        .to_csv(tmp_path / "reference" / "listing_overrides.csv", index=False)
+    m = make_market({"INVP.L": [500.0] * 5, "OTHER.L": [100.0] * 5}, start="2026-11-02",
+                    master={"INVP.L": {"name": "Investec plc"}, "OTHER.L": {"name": "Other plc"}})
+    master = m.master.reset_index().rename(columns={"index": "symbol"})
+    elig, _ = build_status(tmp_path, master, m.market_cap, pd.DatetimeIndex(["2026-11-01"]), False)
+    assert bool(elig.at[pd.Timestamp("2026-11-01"), "INVP.L"]) is True

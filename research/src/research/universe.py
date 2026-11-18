@@ -43,6 +43,7 @@ def build_universe(m: Market, size: int = 350, large: int = 100, start="2007-01-
         ok &= ~aim
     cols = [c for c in m.close.columns if ok.get(c, False)]
     norm = master.get("norm", pd.Series(index=master.index, dtype=object)).reindex(cols)
+    home = 1.0 - master.get("overseas_isin", pd.Series(False, index=master.index)).fillna(False).astype(float)
     trusts_counted, trusts_top = {}, {}
     trust_norm = pd.Series(dtype=object)
     if trust_caps is not None:
@@ -75,8 +76,11 @@ def build_universe(m: Market, size: int = 350, large: int = 100, start="2007-01-
             dup = names.notna() & (names != "") & names.duplicated(keep=False)
             if dup.any():
                 tv = traded.loc[d].reindex(c.index).fillna(0) if traded is not None else pd.Series(0.0, index=c.index)
-                g = pd.DataFrame({"name": names[dup], "tv": tv[dup], "cap": c[dup]})
-                keep_line = g.sort_values(["tv", "cap"], ascending=False).groupby("name").head(1).index
+                # The company's home line first (a GB ISIN: INVP, not the South African Investec's
+                # INVR), then the one trading more, then the larger cap.
+                g = pd.DataFrame({"name": names[dup], "home": home.reindex(c.index[dup]).fillna(1.0).to_numpy(),
+                                  "tv": tv[dup], "cap": c[dup]})
+                keep_line = g.sort_values(["home", "tv", "cap"], ascending=False).groupby("name").head(1).index
                 c = c.drop(g.index.difference(keep_line))
         if trust_caps is not None and len(trust_caps.columns):
             # Count the trusts in the top `size`, then leave them out.

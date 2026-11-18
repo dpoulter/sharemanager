@@ -48,6 +48,53 @@ class Context:
     def ma200(self) -> pd.DataFrame:
         return self.m.ma200
 
+    @cached_property
+    def _next_prev_valid(self) -> tuple[np.ndarray, np.ndarray]:
+        """For every row and share: the position of the first price at or after it,
+        and of the last price at or before it, in the share's own price series."""
+        a = self.m.adj
+        pos = np.where(a.notna().to_numpy(), np.arange(len(a), dtype=np.float32)[:, None], np.nan).astype(np.float32)
+        frame = pd.DataFrame(pos)
+        return frame.bfill().to_numpy(), frame.ffill().to_numpy()
+
+    def n100_return_detail(self, date, months: int = 6) -> pd.DataFrame:
+        """The N100's momentum, as calc_momentum() and backfill_trend_statistics.php define it.
+
+        Calendar months, not trading days: from the FIRST price on or AFTER
+        (date - N months) to the LAST price on or BEFORE the date, each from
+        the share's own prices (a day it has none is skipped, not filled), and
+        only where the start is before the end. A share with less history than
+        the window gets the return over the history it has. Returns a fraction
+        (the N100 stores per cent) with the two base dates.
+        """
+        cols = self.m.adj.columns
+        i = self.pos(date)
+        out = pd.DataFrame(index=cols, columns=["ret", "start", "end"], dtype=object)
+        out["ret"] = np.nan
+        if i < 0:
+            return out
+        back = pd.Timestamp(date) - pd.DateOffset(months=months)
+        j = int(self.m.dates.searchsorted(back, side="left"))      # first panel date on or after
+        if j > i:
+            return out
+        nxt, prv = self._next_prev_valid
+        s_idx, e_idx = nxt[j], prv[i]
+        ok = np.isfinite(s_idx) & np.isfinite(e_idx) & (s_idx < e_idx)
+        a = self.m.adj.to_numpy()
+        k = np.arange(len(cols))
+        si = np.where(ok, s_idx, 0).astype(int)
+        ei = np.where(ok, e_idx, 0).astype(int)
+        sp, ep = a[si, k], a[ei, k]
+        good = ok & (sp > 0)
+        out["ret"] = np.where(good, ep / np.where(sp > 0, sp, np.nan) - 1, np.nan)
+        dates = self.m.dates
+        out["start"] = np.where(good, dates[si].strftime("%Y-%m-%d"), None)
+        out["end"] = np.where(good, dates[ei].strftime("%Y-%m-%d"), None)
+        return out
+
+    def n100_return(self, date, months: int = 6) -> pd.Series:
+        return self.n100_return_detail(date, months)["ret"].astype(float)
+
     def pos(self, date) -> int:
         return int(self.m.dates.searchsorted(pd.Timestamp(date), side="right") - 1)
 

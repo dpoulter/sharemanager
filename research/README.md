@@ -64,6 +64,13 @@ A strategy is a small YAML file in `strategies/`. The docstring in `src/research
 | `metrics.py` | Metrics, and the deflated Sharpe ratio (Bailey and López de Prado, 2014) |
 | `report.py` | One self-contained HTML file per run |
 
+## The N100's definitions, copied exactly
+
+- **6-month return** (`signals/base.py: n100_return_detail`, from `calc_momentum()` and `backfill_trend_statistics.php`): calendar months, not trading days. It runs from the first price on or after (date − 6 months) to the last price on or before the date, using each share's own prices, and only where the start is before the end. A share with less history than the window gets the return over the history it has.
+- **Price basis** (`price_basis`): the N100 uses raw closes with no dividends, so `validate` runs `raw`. Research runs use `adjusted`.
+- **Market caps** (`clean.py`): pence read as pounds is fixed at the merge. Each series is split at one-day steps of 70 to 140 times, and each segment goes to whichever of ×1, ×100 and ×0.01 lands nearest the symbol's median. A ×100 on a segment already above £1m is refused, and so is any result above £500bn. Refusals are listed in `data_report.md`.
+- **Two lines, one company:** the LSE row is given to every FMP line with that name, and the universe keeps one each month: the home-ISIN line, then the one trading, then the more heavily traded. `research lse-rows investec --year 2026` prints the raw LSE rows for a name.
+
 ## Rules that keep it honest
 
 - **Holdout.** The holdout runs from 18 May 2025 to the latest date. Any run reaching it fails unless `--final` is passed. A final run is logged as such and freezes the strategy: a second final, or a later run of that name with a changed file, is refused. The run 9 reproduction is the only exception, because it is an engine check (logged as `engine_validation`). It does show trend following over holdout dates, so treat that figure as seen.

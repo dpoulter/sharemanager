@@ -132,7 +132,44 @@ def explain_month(ws: Workspace, out: dict, month, ours: set, theirs: set, held_
                      "ma200": None if pd.isna(ma) else round(float(ma), 4),
                      "held_the_month_before": sym in held_before})
     return {"month": str(month), "rebalance_date": None if d is None else str(d.date()),
-            "only_ours": sorted(ours - theirs), "only_n100": sorted(theirs - ours), "shares": rows}
+            "only_ours": sorted(ours - theirs), "only_n100": sorted(theirs - ours), "shares": rows,
+            "rankings": rankings(ws, out, d, month, sorted((ours - theirs) | (theirs - ours)))}
+
+
+def rankings(ws: Workspace, out: dict, d, month, differing: list[str]) -> dict:
+    """Our top 20 on the rebalance date, with the 6-month return and its base dates, beside the
+    N100's own 6mnth ranking where Jarvis has exported it (data/validation/n100_6mnth_YYYY-MM.csv:
+    symbol,value). Without that file the N100 side is its buys, valued the same way as ours."""
+    from .signals.base import Context
+    from .universe import to_fmp
+    if d is None:
+        return {}
+    ctx = Context(out["market"], ws.f)
+    det = ctx.n100_return_detail(d, 6)
+    s = out["scores"].get(d, pd.Series(dtype=float)).dropna().sort_values(ascending=False)
+
+    def row(sym, rank=None):
+        r = det.loc[sym] if sym in det.index else None
+        ma = out["market"].ma200[sym].iloc[ctx.pos(d)] if sym in out["market"].ma200.columns else np.nan
+        cl = out["market"].adj[sym].iloc[ctx.pos(d)] if sym in out["market"].adj.columns else np.nan
+        return {"rank": rank, "symbol": sym,
+                "return_pct": None if r is None or pd.isna(r["ret"]) else round(float(r["ret"]) * 100, 3),
+                "base_date": None if r is None else r["start"], "end_date": None if r is None else r["end"],
+                "above_ma200": bool(cl > ma) if pd.notna(cl) and pd.notna(ma) else None}
+
+    res = {"ours_top20": [row(sym, k) for k, sym in enumerate(s.index[:20], 1)],
+           "differing_shares": [row(sym, int(s.index.get_loc(sym)) + 1 if sym in s.index else None) for sym in differing]}
+    p = ws.cfg.data_dir / "validation" / f"n100_6mnth_{month}.csv"
+    if p.exists():
+        n = pd.read_csv(p)
+        n["symbol"] = n["symbol"].map(to_fmp)
+        n = n.sort_values("value", ascending=False).head(20)
+        res["n100_top20"] = [{"rank": k, "symbol": r.symbol, "return_pct": round(float(r.value), 3),
+                              "our_return_pct": row(r.symbol)["return_pct"], "our_base_date": row(r.symbol)["base_date"]}
+                             for k, r in enumerate(n.itertuples(index=False), 1)]
+    else:
+        res["n100_top20"] = f"not available: export the N100's 6mnth for {d.date()} to {p.name} (symbol,value)"
+    return res
 
 
 def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv: Path | None,
