@@ -227,7 +227,11 @@
 					<td>
 						<a href="strategies.php?s=<?= urlencode((string) $card['strategy']) ?>"><?=
 							e(strategy_display_name($card['strategy'])) ?></a>
-						<?= status_badge_html($card['broker'] === null ? 'paper' : 'due',
+						<?php /* Live gets its own colour here too: the dashboard is
+						         where somebody looks first, and "which of these is
+						         real money" should not need reading. */ ?>
+						<?= status_badge_html(strategy_mode_is_live($card['mode']) ? 'live'
+						                      : ($card['broker'] === null ? 'paper' : 'due'),
 						                      strategy_mode_name($card['mode'])) ?>
 						<?php /* And whether a live account is armed. The badge says
 						         which kind of account it is; this says whether it

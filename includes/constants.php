@@ -456,6 +456,13 @@
     define("T212_POLL_AFTER_SECONDS",   (int) (getenv("SM_T212_POLL_AFTER") ?: 30));
     define("T212_UNKNOWN_AFTER_SECONDS",(int) (getenv("SM_T212_UNKNOWN_AFTER") ?: 900));
 
+    // Where the live order path posts, when something other than Trading 212
+    // has to answer it. For the suite's stub and for nothing else: the live
+    // sender refuses the practice host whatever this says, and with this
+    // unset the host must be live.trading212.com exactly. Set it and the
+    // sender says in its output that it is not talking to Trading 212.
+    define("T212_LIVE_ORDERS_BASE_URL", getenv("SM_T212_LIVE_ORDERS_BASE_URL") ?: "");
+
     // ---------------------------------------------------------------------
     // The live account's caps.
     //

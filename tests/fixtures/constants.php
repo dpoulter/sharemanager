@@ -139,6 +139,10 @@
     define("T212_MIN_ORDER_VALUE", (float) (getenv("SM_T212_MIN_ORDER") ?: 10.00));
     define("T212_QUANTITY_DECIMALS", (int) (getenv("SM_T212_QUANTITY_DECIMALS") ?: 2));
     define("T212_MAX_RUN_VALUE", (float) (getenv("SM_T212_MAX_RUN_VALUE") ?: 1000.00));
+    // Where the live order path posts, for the suite's stub. The sender
+    // refuses the practice host whatever this says, and with it unset the
+    // host must be live.trading212.com exactly.
+    define("T212_LIVE_ORDERS_BASE_URL", getenv("SM_T212_LIVE_ORDERS_BASE_URL") ?: "");
     // The live account's caps: literals in the application too, because a
     // cap an environment variable can widen is not a cap. The suite uses
     // the same figures the server does.

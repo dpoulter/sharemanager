@@ -44,6 +44,10 @@
 	/* Green, for a strategy with nothing outstanding. Dark enough to carry
 	   white text at the same contrast as the other four. */
 	--sm-status-ok:    #15803d;
+	/* Violet, for a live account, and for nothing else anywhere in this
+	   stylesheet: real money is the one thing on these pages a reader
+	   should never mistake for something else. */
+	--sm-status-live:  #6d28d9;
 
 	/* ---------------------------------------------------------------
 	   The house style, approved 18 Nov 2026.
@@ -316,6 +320,7 @@ th.sm-num,
 .sm-status-halt  { background: var(--sm-status-halt);  cursor: default; }
 .sm-status-due   { background: var(--sm-status-due);   cursor: default; }
 .sm-status-ok    { background: var(--sm-status-ok);    cursor: default; }
+.sm-status-live  { background: var(--sm-status-live);  cursor: default; }
 
 /* Smaller, for three of them in a table cell. */
 .sm-badges-tight .sm-badge {

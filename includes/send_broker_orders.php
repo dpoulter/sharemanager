@@ -107,8 +107,9 @@
 		   should be able to find the reason for. */
 		if ($mode['mode'] !== STRATEGY_MODE_T212_DEMO) {
 			echo "\r\n--- " . $strategy . " (" . $mode['words'] . ") ---\r\n";
-			echo "  not this job's to send: a live account's orders go out only when"
-			   . " the account is armed and the batch approved.\r\n";
+			echo "  not this job's to send: a live account's orders go out through"
+			   . " includes/send_live_orders.php, and only when the account is armed"
+			   . " and the batch approved.\r\n";
 			continue;
 		}
 

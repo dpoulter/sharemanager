@@ -12,6 +12,11 @@
      * movement. There is no "run for real" here and there is not going to
      * be: the nightly job is the only thing that trades.
      *
+     * For a live account it answers one more question - what would be sent
+     * if the batch were approved - through broker_live_send_orders()'s own
+     * dry run, which opens no socket and writes no row. Approving is a
+     * different form on a different page, and sending is a cron job.
+     *
      * config.php applies the same authentication gate as every other page
      * here - this script is not on its allow list, so an anonymous request
      * is redirected to login.php and never reaches a strategy. A paper book
@@ -25,6 +30,10 @@
 
     require("../includes/config.php");
     require_once("../includes/strategy_functions.php");
+    /* For a live account, the popup also answers "what would be sent if
+       this batch were approved", which is the live sender's own dry run.
+       It writes nothing either: see broker_live_send_orders()'s dry_run. */
+    require_once("../includes/broker_live_send.php");
 
     header("Content-Type: application/json");
     header("X-Content-Type-Options: nosniff");

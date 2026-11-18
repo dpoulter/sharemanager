@@ -24,9 +24,9 @@
      * decision a person makes in their own logged in session, with the
      * password typed again and the strategy's name typed in full, and this
      * is the only place in the application where it can be made. The
-     * sending itself is somewhere else and does not exist yet. The dry run
-     * endpoint computes a plan and writes nothing at all, and the kill
-     * switch stops even that.
+     * sending itself is a cron job that this page cannot reach
+     * (includes/send_live_orders.php). The dry run endpoint computes a plan
+     * and writes nothing at all, and the kill switch stops even that.
      *
      * config.php applies the same authentication gate as every other page
      * here. There is no second copy of it to drift out of step with the

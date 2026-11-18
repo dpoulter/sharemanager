@@ -148,6 +148,54 @@
 		return wrapper;
 	}
 
+	/* A live account's other question: what would be sent if the batch
+	   waiting now were approved. The plan below is about tonight; this is
+	   about the orders already on the book and whether arming, approval and
+	   the caps would let any of them out. Nothing here is a button: arming
+	   and approving are forms on the page, and sending is a cron job. */
+	function liveBlock(live) {
+
+		var box = element("div", "border rounded p-2 mb-3");
+
+		box.appendChild(element("p", "mb-1 fw-semibold", String(live.words || "")));
+
+		if (live.would_send && live.would_send.length) {
+
+			box.appendChild(element("p", "mb-1",
+				(live.approval && live.waiting ? "If this batch were approved, " : "")
+				+ whole(live.would_send.length) + " order(s) would be sent in this session,"
+				+ " about " + money(live.value) + " in all:"));
+
+			var list = element("ul", "mb-1");
+			live.would_send.forEach(function (order) {
+				list.appendChild(element("li", null,
+					String(order.side) + " " + shares(order.quantity) + " "
+					+ String(order.symbol) + " (" + money(order.value) + ")"));
+			});
+			box.appendChild(list);
+		}
+		else {
+			box.appendChild(element("p", "mb-1",
+				"Nothing would be sent in this session."));
+		}
+
+		if (live.held_back) {
+			box.appendChild(element("p", "mb-1 text-danger",
+				whole(live.held_back) + " order(s) would be held back by a cap."));
+		}
+
+		(live.conditions || []).forEach(function (reason) {
+			box.appendChild(element("p", "mb-0 small text-body-secondary",
+				"Would not be sent: " + String(reason)));
+		});
+
+		(live.errors || []).forEach(function (reason) {
+			box.appendChild(element("p", "mb-0 small text-body-secondary", String(reason)));
+		});
+
+		return box;
+	}
+
 	function totalsBlock(totals) {
 
 		var list = element("div", "row g-3");
@@ -224,6 +272,11 @@
 				String(missed.symbol || "") + " was not selected: "
 				+ String(missed.reason || "")));
 		});
+
+		/* Before the plan, because it is about real money and the plan is
+		   not: a reader who opens this on a live account is asking about
+		   the orders that could actually go out. */
+		if (report.live) { body.appendChild(liveBlock(report.live)); }
 
 		if (!report.trades || !report.trades.length) {
 			body.appendChild(alertBox("secondary", "No trades tonight."));

@@ -36,11 +36,12 @@
 	 * when the row expires or the strategy halts. Off is the safe direction,
 	 * so it is the easy one.
 	 *
-	 * This file sends nothing. It is deliberately the whole of the gate and
-	 * none of the door: the live order function is stage C, and until it
-	 * exists an armed, approved, within-caps live account still has its
-	 * orders planned and left waiting, because broker_send_orders() refuses
-	 * any mode but the practice one.
+	 * This file sends nothing itself. It is the gate; the door is
+	 * includes/broker_live_send.php, which holds the one function in this
+	 * application that posts to the live account and calls
+	 * broker_live_conditions() as the first thing it does. Keeping them
+	 * apart is what lets the pages, the nightly job and the dry run ask
+	 * what the state is without loading the thing that can trade.
 	 */
 
 	require_once("constants.php");

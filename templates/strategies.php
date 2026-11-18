@@ -73,8 +73,15 @@
 	/* The mode, as a reader should see it. "PAPER" and "T212_DEMO" are
 	   column values; the badge says Paper and Practice. */
 	function s_mode_badge($card) {
-		return status_badge_html($card['broker'] === null ? 'paper' : 'due',
-		                         strategy_mode_name($card['mode']));
+		return status_badge_html(s_mode_tone($card), strategy_mode_name($card['mode']));
+	}
+	/* Which badge colour a mode gets. Live has one of its own, used for
+	   nothing else on any page: paper and practice are both pretend, and a
+	   reader must never have to read the word to tell which of the three
+	   this is. */
+	function s_mode_tone($card) {
+		if (strategy_mode_is_live($card['mode'])) { return 'live'; }
+		return ($card['broker'] === null) ? 'paper' : 'due';
 	}
 
 	/* The status, worst-first, with the reason in a tooltip. */
@@ -101,15 +108,14 @@
 	<?php /* The sentence that used to be here said no real money was ever at
 	         risk. Dale decided on 18 November 2026 to run trend following
 	         with the GBP 250 in his Trading 212 account, so the page says
-	         what is true now instead of a promise it can no longer keep.
-	         The part that sends a live order does not exist yet; what does
-	         exist is everything that has to be true before one can, and the
-	         live account's own panel says which of it is. */ ?>
+	         what is true now instead of a promise it can no longer keep:
+	         the condition, not the comfort. The live account's own panel
+	         below says which of the six conditions hold right now. */ ?>
 	<p class="sm-sub mb-3">
 		Strategies run by the nightly job.
 		<strong>No order goes to a live account unless that account is
 		armed</strong> on its own page, by somebody logged in, with a cap and an
-		expiry - and nothing in this application can send one yet at all.
+		expiry - and the night's orders approved.
 		<a href="<?= e(s_link(['s' => '_how'], $show_disabled)) ?>">How this works</a>
 	</p>
 
@@ -268,8 +274,7 @@
 									<span class="sm-menu-name"><?= e(strategy_display_name($row['strategy'])) ?></span>
 								</span>
 								<span class="sm-menu-line sm-menu-meta">
-									<span class="sm-badge sm-status-<?= $row['broker'] === null ? 'paper' : 'due' ?>"><?=
-										e(strategy_mode_name($row['mode'])) ?></span>
+									<?= s_mode_badge($row) ?>
 									<span class="sm-menu-return<?= s_colour($row['return']) ?>"><?= s_percent($row['return']) ?></span>
 								</span>
 							</a>
@@ -1468,8 +1473,18 @@
 						password typed again, the strategy's name typed in full, a cap in
 						pounds and an expiry - the night's batch has been
 						<em>approved</em>, every cap holds, and neither the kill switch
-						nor a halt is in the way. A halt disarms, arming expires by
-						itself, and the part that would actually send is not built yet.
+						nor a halt is in the way. A halt disarms and arming expires by
+						itself.
+					</p>
+					<p>
+						All six are checked inside the one function that posts to the
+						live account, as the first thing it does, rather than by whatever
+						asked it to send - a condition checked in a caller is a condition
+						the next caller does not have. Approved orders go out during the
+						London session, through a job of their own that can reach no
+						other account, and nothing on this page sends one: the buttons
+						here arm, disarm, approve and reject, and the dry run writes
+						nothing at all.
 					</p>
 					<p>
 						The caps are constants rather than settings: at most

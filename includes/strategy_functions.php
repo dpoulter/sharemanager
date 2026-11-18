@@ -3859,6 +3859,18 @@
 
 		$night=strategy_run_night($strategy,$as_of,true,$exchange);
 
+		/* And, for a live account, the other question: what would be SENT
+		   if the batch were approved. Not the same question as what would
+		   be planned - the batch waiting now was planned last night, and
+		   the caps, the arming and the approval are what decide whether any
+		   of it goes. Writes nothing: the live sender's own dry run.
+
+		   function_exists, because the nightly job plans a paper account
+		   without the broker layer and must not need it here. */
+		if (!empty($mode['live'])&&function_exists('broker_live_preview')){
+			$report['live']=broker_live_preview($strategy);
+		}
+
 		$report['rebalance']=$night['rebalance'];
 		$report['lines']=$night['lines'];
 		/* The names the selection could not take, with the reason. A book

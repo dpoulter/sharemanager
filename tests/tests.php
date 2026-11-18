@@ -27,6 +27,10 @@
     //Stage 2: the orders a T212_DEMO account sends. Loading it sends
     //nothing; only broker_send_orders() does, and only to the demo host.
     require_once("broker_orders.php");
+    //Stage C: the one function that can post to the live account. Loading it
+    //sends nothing; broker_live_place_order() does, and only after the six
+    //conditions hold - which the suite's switch being off never allows.
+    require_once("broker_live_send.php");
     //The quote page's own arithmetic: the header, the panels and the
     //accounts. Loading it does nothing on its own.
     require_once("quote_view.php");
@@ -1610,39 +1614,66 @@
              === 'PENDING',
           $lv_job_out);
 
-    /* No file in this application sends anything to the live host. The
-       check is on the code rather than on a run: a POST that only happens
-       when six conditions line up is a POST no test can be sure it has
-       stopped by running. */
+    /* WHO MAY WRITE TO THE LIVE HOST.
+       The check is on the code rather than on a run: a POST that only
+       happens when six conditions line up is a POST no test can be sure it
+       has stopped by running. In stage A the answer was "nobody". Now there
+       is exactly one function, and the question becomes whether it is the
+       only one and whether it checks the six conditions first. */
     $lv_sources = [];
     foreach (glob(dirname(__DIR__) . '/includes/*.php') as $lv_file) {
         $lv_sources[basename($lv_file)] = (string) file_get_contents($lv_file);
     }
-    $lv_writers = [];
-    foreach ($lv_sources as $lv_name => $lv_text) {
-        if (strpos($lv_text, 'T212_LIVE_BASE_URL') === false) { continue; }
-        /* The client names the live host to READ with the read-only key.
-           A writer is a file that also posts. */
-        if (preg_match('~CURLOPT_POST(FIELDS)?\s*=>~', $lv_text)
-            || stripos($lv_text, "'POST'") !== false) { $lv_writers[] = $lv_name; }
-    }
-    /* constants.php defines it; the client is the only thing that uses it.
-       When the live order path is built it will be a third name on this
-       list, and the check becomes "and that file checks the six
-       conditions" rather than "nobody names it". */
     $lv_names = array_values(array_filter(array_keys($lv_sources), function ($f) use ($lv_sources) {
         return strpos($lv_sources[$f], 'T212_LIVE_BASE_URL') !== false;
     }));
     sort($lv_names);
-    check('the live host is named by the constant that defines it and the client',
-          $lv_names === ['constants.php', 't212_client.php'], json_encode($lv_names));
-    check('and the only order path in it is the practice one',
+    check('the live host is named by the constant, the client that reads it'
+          . ' and the one file that writes to it',
+          $lv_names === ['broker_live_send.php', 'constants.php', 't212_client.php'],
+          json_encode($lv_names));
+
+    /* A writer is a file that posts. Looked for by the method rather than
+       by the host, so a second order path cannot hide behind a variable.
+       llm.php posts to the model and is not a broker path, which is why it
+       is named here rather than filtered out silently: a third broker file
+       appearing on this list is exactly what this is for. */
+    $lv_writers = [];
+    foreach ($lv_sources as $lv_name => $lv_text) {
+        if (preg_match('~"method"\s*=>\s*"POST"~i', $lv_text)
+            || preg_match('~CURLOPT_POST(FIELDS)?\s*=>~', $lv_text)) { $lv_writers[] = $lv_name; }
+    }
+    sort($lv_writers);
+    check('three files post anything at all: the model, the practice client'
+          . ' and the live sender',
+          $lv_writers === ['broker_live_send.php', 'llm.php', 't212_client.php'],
+          json_encode($lv_writers));
+
+    /* And in the live sender, the write is in one function, and the
+       conditions come before it. Read as source: the order of two lines in
+       a function is not something a run can demonstrate. */
+    $lv_send_src = $lv_sources['broker_live_send.php'];
+    $lv_post_at  = strpos($lv_send_src, '"method"  => "POST"');
+    $lv_func_at  = strpos($lv_send_src, 'function broker_live_place_order');
+    $lv_cond_at  = strpos($lv_send_src, 'broker_live_conditions($strategy');
+    check('the live host is written to inside one function',
+          substr_count($lv_send_src, '"method"  => "POST"') === 1
+          && $lv_post_at !== false && $lv_func_at !== false && $lv_func_at < $lv_post_at,
+          json_encode([$lv_func_at, $lv_post_at]));
+    check('and that function checks the six conditions before it posts',
+          $lv_cond_at !== false && $lv_func_at < $lv_cond_at && $lv_cond_at < $lv_post_at,
+          json_encode([$lv_func_at, $lv_cond_at, $lv_post_at]));
+    check('the practice client still has one order path, and it is the practice one',
           substr_count($lv_sources['t212_client.php'], 'function place_market_order') === 1
           && strpos($lv_sources['t212_client.php'],
-                    "an order can only be placed against the demo account") !== false);
+                    "an order can only be placed against the demo account") !== false
+          /* And no write path for the live environments, however a client
+             is built. */
+          && substr_count($lv_sources['t212_client.php'], '"method"  => "POST"') === 1);
 
-    /* The key that could trade is not even configured in the suite, and
-       the sync never asks for it. */
+    /* The key that could trade is not configured in the suite by default,
+       and the sync never asks for it. The send tests below switch it on for
+       one subprocess at a time, pointed at a stub. */
     check('no key with Orders - Execute is configured here',
           trim((string) T212_LIVE_ORDERS_API_KEY) === ''
           && T212_LIVE_ORDERS_ON === false);
@@ -2228,19 +2259,21 @@
     $lb_arm($LB, 250.00);
 
     [$lb_check_off] = run_script('live_check.php', [$LB]);
-    check('the state reporter says the switch is off and nothing can send',
+    check('the state reporter says the switch is off and the account is armed',
           stripos($lb_check_off, 'SM_T212_LIVE_ORDERS is off') !== false
-          && stripos($lb_check_off, 'no live order path yet') !== false
-          && stripos($lb_check_off, 'Armed by dale') !== false,
+          && stripos($lb_check_off, '[NO ] switch') !== false
+          && stripos($lb_check_off, 'Armed by dale') !== false
+          && stripos($lb_check_off, 'would an order be sent: no') !== false,
           $lb_check_off);
+    check('and names the one job that can send one',
+          stripos($lb_check_off, 'send_live_orders.php') !== false, $lb_check_off);
 
     [$lb_check_on] = run_script('live_check.php', [$LB],
         ['SM_T212_LIVE_ORDERS' => 'on', 'SM_T212_LIVE_ORDERS_API_KEY' => 'k',
          'SM_T212_LIVE_ORDERS_API_SECRET' => 's']);
-    check('with the switch on it says so, and still that there is no path',
+    check('with the switch on it says so',
           stripos($lb_check_on, 'SM_T212_LIVE_ORDERS is on') !== false
-          && stripos($lb_check_on, '[yes] switch') !== false
-          && stripos($lb_check_on, 'no live order path yet') !== false,
+          && stripos($lb_check_on, '[yes] switch') !== false,
           $lb_check_on);
 
     /* The kill switch, which stops a live order on its own. In a
@@ -2269,6 +2302,622 @@
     db()->prepare("delete from strategy_live_arming where strategy in (?,?)")->execute([$LB, $LB2]);
     db()->prepare("delete from strategy_live_log where strategy in (?,?)")->execute([$LB, $LB2]);
     db()->prepare("delete from strategy_order_batches where strategy in (?,?)")->execute([$LB, $LB2]);
+
+
+    echo "\n--- live orders, stage C: the one function that can send one ---\n";
+
+    /* Stage B built the gate and no door. This is the door, and these are
+       the checks the brief asks for: with the switch off nothing reaches the
+       live host at all; each of the six conditions, removed one at a time,
+       stops the order and the reason is recorded; an approved batch is sent
+       once; every cap holds on the way out; and the practice path is exactly
+       what it was.
+
+       No test sends anything to Trading 212. The stub answers on localhost,
+       and SM_T212_LIVE_ORDERS_BASE_URL is what points this run at it - a
+       setting that exists for the suite and that the sender refuses to point
+       at the practice account whatever it says. */
+
+    $lc_dir = sys_get_temp_dir() . '/smt212lc' . getmypid();
+    exec('rm -rf ' . escapeshellarg($lc_dir));
+    @mkdir($lc_dir, 0777, true);
+
+    $lc_port = 8373;
+    /* A stub left over from a run that died answers on this port with a
+       directory that no longer belongs to anyone, and every send below would
+       then "succeed" with nothing recorded. Said as a check of its own, so
+       a stale process is the first failure rather than eleven confusing ones. */
+    $lc_busy = @fsockopen('127.0.0.1', $lc_port, $lc_errno, $lc_errstr, 0.5);
+    if ($lc_busy) { fclose($lc_busy); }
+    check('the stage C stub port is free before the stub starts', $lc_busy === false,
+          "something is already listening on $lc_port - kill it: pkill -f tools/t212_stub.php");
+    $lc_pid  = (int) trim((string) shell_exec(
+        'SM_STUB_DIR=' . escapeshellarg($lc_dir) . ' php -S 127.0.0.1:' . $lc_port . ' '
+        . escapeshellarg(dirname(__DIR__) . '/tools/t212_stub.php')
+        . ' > /dev/null 2>&1 & echo $!'));
+    usleep(900000);
+
+    $lc_base = 'http://127.0.0.1:' . $lc_port . '/api/v0';
+    $LC = 'test_live_c';
+
+    s_drop($LC);
+    s_rules($LC, ['holdings' => 5, 'rebalance' => 'monthly']);
+    s_reset($LC, 250.00, 'Y', 'T212_LIVE');
+    db()->prepare("delete from strategy_live_arming where strategy=?")->execute([$LC]);
+    db()->prepare("delete from strategy_live_log where strategy=?")->execute([$LC]);
+    db()->prepare("delete from strategy_order_batches where strategy=?")->execute([$LC]);
+
+    /* The live account's own instrument list. An instrument the practice
+       account lists is not one the live account lists - that is what the
+       environment column is for - so these rows are live ones. */
+    db()->exec("delete from broker_instruments where symbol in ('AAA','BBB','CCC')");
+    $lc_instrument = db()->prepare("insert into broker_instruments
+                                      (broker,environment,broker_ticker,symbol,short_name,isin,
+                                       currency,venue,status,matched_on,last_seen)
+                                    values (?,'live',?,?,?,?,'GBX','london','matched','short_name',?)");
+    foreach (['AAA' => 'AAAl_EQ', 'BBB' => 'BBBl_EQ', 'CCC' => 'CCCl_EQ'] as $lc_sym => $lc_tick) {
+        $lc_instrument->execute([BROKER_T212, $lc_tick, $lc_sym, $lc_sym,
+                                 'GB00' . $lc_sym . '0001', asof_date()]);
+    }
+
+    /* The price every quantity below is worked out from, so a test says
+       "about sixteen pounds" and means it whatever the seed holds. */
+    $lc_qty   = function ($pounds, $symbol = 'AAA') use ($SASOF) {
+        /* Each share at its own price: an order meant to be about GBP 70 of
+           BBB is not the quantity that is GBP 70 of AAA. */
+        return round($pounds / (float) strategy_price_asof($symbol, 'XLON', $SASOF), 2);
+    };
+
+    $lc_env = function ($extra = []) use ($lc_base) {
+        return array_merge([
+            'SM_T212_LIVE_ORDERS'            => 'on',
+            'SM_T212_LIVE_ORDERS_API_KEY'    => 'T212-LIVE-ORDERS-KEY-NOT-REAL-4f2a',
+            'SM_T212_LIVE_ORDERS_API_SECRET' => 'T212-LIVE-ORDERS-SECRET-NOT-REAL-91bc',
+            'SM_T212_LIVE_ORDERS_BASE_URL'   => $lc_base,
+            'SM_T212_BASE_URL'               => $lc_base,
+            'SM_T212_THROTTLE'               => '0',
+            'SM_T212_MAX_WAIT'               => '1',
+        ], $extra);
+    };
+    $lc_run = function ($extra = [], $args = null) use ($lc_env, $LC) {
+        return run_script('send_live_orders.php',
+                          $args === null ? [$LC, '--any-time'] : $args, $lc_env($extra));
+    };
+    $lc_sent = function () use ($lc_dir) {
+        return array_values(array_filter(explode("\n",
+               (string) @file_get_contents("$lc_dir/t212_orders"))));
+    };
+    $lc_reset = function () use ($lc_dir) {
+        @file_put_contents("$lc_dir/t212_orders", '');
+        @file_put_contents("$lc_dir/t212_requests", '');
+        @unlink("$lc_dir/pending.json");
+        @unlink("$lc_dir/t212_place");
+        @unlink("$lc_dir/t212_next_order_id");
+    };
+
+    /* Armed, as the page's form leaves it. Written here because this
+       process cannot call broker_live_arm() at all - it is a POST from a
+       browser or nothing, which is the stage B guarantee. */
+    $lc_arm = function ($cap = 250.00, $days = 35) use ($LC) {
+        db()->prepare("update strategy_live_arming set disarmed_at=now(), disarmed_by='test'
+                        where strategy=? and disarmed_at is null")->execute([$LC]);
+        db()->prepare("insert into strategy_live_arming
+                         (strategy,armed_by,armed_user_id,armed_at,capital_cap,expires_at)
+                       values (?,'dale',1,now(),?,date_add(now(), interval ? day))")
+          ->execute([$LC, $cap, $days]);
+    };
+
+    /* One batch, and orders in it. The batch is what approval is given to,
+       so a test that wants an approved order gives it an approved batch. */
+    $lc_batch_id = $LC . ':' . $SASOF;
+    $lc_batch = function ($status = 'APPROVED') use ($LC, $SASOF, $lc_batch_id) {
+        db()->prepare("delete from strategy_order_batches where strategy=?")->execute([$LC]);
+        db()->prepare("insert into strategy_order_batches
+                         (batch,strategy,as_of_date,status,created_at,decided_at,decided_by)
+                       values (?,?,?,?,now(),now(),'dale')")
+          ->execute([$lc_batch_id, $LC, $SASOF, $status]);
+    };
+    $lc_order = function ($side, $quantity, $symbol = 'AAA') use ($LC, $SASOF, $lc_batch_id) {
+        $id = $LC . ':' . $symbol . ':' . $side;
+        db()->prepare("delete from strategy_orders where client_order_id=?")->execute([$id]);
+        db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,batch,symbol,exchange,side,quantity,
+                          status,note,created_at)
+                       values (?,?,?,?,?,'XLON',?,?,'PENDING','rebalance',now())")
+          ->execute([$id, $LC, $SASOF, $lc_batch_id, $symbol, $side, $quantity]);
+        return $id;
+    };
+    $lc_clear_orders = function () use ($LC) {
+        db()->prepare("delete from strategy_orders where strategy=?")->execute([$LC]);
+    };
+
+    /* The broker's side, read today, agreeing with what the strategy holds.
+       That is the state a real run is in: the sync runs before the sender. */
+    $lc_agreed = function ($quantity = 0.0, $symbol = 'AAA', $ticker = 'AAAl_EQ') use ($LC) {
+        db()->exec("delete from broker_positions where environment='live'");
+        db()->prepare("delete from strategy_positions where strategy=?")->execute([$LC]);
+        db()->exec("delete from broker_sync_runs where environment='live'");
+        if ($quantity > 0) {
+            db()->prepare("insert into broker_positions (broker,environment,as_of_date,
+                                                         broker_ticker,symbol,quantity,
+                                                         price_unit,synced_at)
+                           values (?,'live',?,?,?,?,'pence',now())")
+              ->execute([BROKER_T212, date('Y-m-d'), $ticker, $symbol, $quantity]);
+            db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,
+                                                           avg_price,updated_at)
+                           values (?,?,'XLON',?,1.00,now())")->execute([$LC, $symbol, $quantity]);
+        }
+        db()->prepare("insert into broker_sync_runs (broker,environment,started_at,finished_at,
+                                                     status,as_of_date,positions)
+                       values (?,'live',now(),now(),'OK',?,?)")
+          ->execute([BROKER_T212, date('Y-m-d'), $quantity > 0 ? 1 : 0]);
+    };
+
+    $lc_log = function ($event) use ($LC) {
+        return (int) scalar("select count(*) from strategy_live_log where strategy=? and event=?",
+                            [$LC, $event]);
+    };
+
+    /* ---------------- the switch ---------------- */
+
+    $lc_arm(250.00);
+    $lc_batch('APPROVED');
+    $lc_agreed(0.0);
+    $lc_clear_orders();
+    $lc_buy = $lc_order('BUY', $lc_qty(16.00));
+    $lc_reset();
+
+    [$lc_off_out] = $lc_run(['SM_T212_LIVE_ORDERS' => 'off']);
+    check('with the live orders switch off the job sends nothing and says so',
+          count($lc_sent()) === 0
+          && stripos($lc_off_out, 'SM_T212_LIVE_ORDERS is off') !== false
+          && scalar("select status from strategy_orders where client_order_id=?", [$lc_buy])
+             === 'PENDING',
+          $lc_off_out);
+
+    /* And the function itself, in this process, where the switch is off and
+       stays off: armed, approved, inside every cap, and refused. */
+    $lc_row = rows("select * from strategy_orders where client_order_id=?", [$lc_buy])[0];
+    $lc_try = broker_live_place_order($LC, $lc_row, ['ignore_time' => true]);
+    check('and the order function refuses before it opens a socket',
+          $lc_try['ok'] === false
+          && stripos($lc_try['message'], 'SM_T212_LIVE_ORDERS is off') !== false
+          && count($lc_sent()) === 0,
+          json_encode($lc_try));
+    check('the refusal is recorded, so "why did nothing go out" has an answer',
+          $lc_log('REFUSED') > 0);
+
+    check('and the sender refuses the whole run for the same reason',
+          broker_live_send_orders($LC, ['ignore_time' => true])['sent'] === 0
+          && count($lc_sent()) === 0);
+
+    /* Nothing in this application ever sends a DELETE anywhere, to either
+       host: an order is never cancelled through the API, it is resolved. */
+    $lc_deletes = [];
+    foreach (glob(dirname(__DIR__) . '/includes/*.php') as $lc_file) {
+        if (preg_match('~"method"\s*=>\s*"DELETE"|CURLOPT_CUSTOMREQUEST~i',
+                       (string) file_get_contents($lc_file))) {
+            $lc_deletes[] = basename($lc_file);
+        }
+    }
+    check('no file in the application sends a DELETE to either account',
+          $lc_deletes === [], json_encode($lc_deletes));
+
+    /* ---------------- the host ---------------- */
+
+    /* In this process there is no override, so the question is what the
+       sender would post to if it ever got that far. */
+    $lc_host = broker_live_host();
+    check('with nothing overridden the live path posts to live.trading212.com',
+          $lc_host['base'] === T212_LIVE_BASE_URL
+          && $lc_host['host'] === 'live.trading212.com'
+          && $lc_host['stub'] === false,
+          json_encode($lc_host));
+
+    /* And the one thing it will not be pointed at, whatever is set: the
+       practice account. A live order placed on the practice account is not
+       a smaller mistake - it is a trade that did not happen where the book
+       says it did. */
+    [$lc_demo_out] = $lc_run(['SM_T212_LIVE_ORDERS_BASE_URL' => 'https://demo.trading212.com/api/v0']);
+    check('the live sender refuses to post to the practice host',
+          stripos($lc_demo_out, 'practice account') !== false
+          && count($lc_sent()) === 0
+          && scalar("select status from strategy_orders where client_order_id=?", [$lc_buy])
+             === 'PENDING',
+          $lc_demo_out);
+
+    /* ---------------- the six conditions, one at a time ---------------- */
+
+    /* Each one removed on its own, through the job, with everything else in
+       place: the order is not sent, it is left as it was, and the reason is
+       recorded. Condition 2 is the switch, which is the check above. */
+
+    $lc_cases = [];
+
+    /* 1. the mode. */
+    db()->prepare("update strategy_accounts set mode='T212_DEMO' where strategy=?")->execute([$LC]);
+    $lc_reset();
+    [$lc_mode_out] = $lc_run();
+    $lc_cases['the mode is not live'] = [count($lc_sent()) === 0,
+        stripos($lc_mode_out, 'no live accounts') !== false, $lc_mode_out];
+    db()->prepare("update strategy_accounts set mode='T212_LIVE' where strategy=?")->execute([$LC]);
+
+    /* 3. armed. */
+    broker_live_disarm($LC, 'test', 'condition 3');
+    $lc_reset();
+    [$lc_unarmed_out] = $lc_run();
+    $lc_cases['the account is not armed'] = [count($lc_sent()) === 0,
+        stripos($lc_unarmed_out, 'Not armed') !== false, $lc_unarmed_out];
+    $lc_arm(250.00);
+
+    /* 4. approved. */
+    $lc_batch('UNAPPROVED');
+    $lc_reset();
+    [$lc_unapproved_out] = $lc_run();
+    $lc_cases['the batch is not approved'] = [count($lc_sent()) === 0,
+        stripos($lc_unapproved_out, 'not been approved') !== false, $lc_unapproved_out];
+    $lc_batch('APPROVED');
+
+    /* 5. the caps: one order over 15% of a GBP 250 cap. */
+    $lc_clear_orders();
+    $lc_big = $lc_order('BUY', $lc_qty(60.00));
+    $lc_reset();
+    [$lc_cap_out] = $lc_run();
+    $lc_cases['an order is over a cap'] = [count($lc_sent()) === 0,
+        stripos($lc_cap_out, 'held back') !== false, $lc_cap_out];
+    check('a capped order is left PENDING for the next run, not lost',
+          scalar("select status from strategy_orders where client_order_id=?", [$lc_big])
+          === 'PENDING');
+    check('and the cap refusal is in the log with its reason',
+          $lc_log('CAP_REFUSED') > 0);
+    $lc_clear_orders();
+    $lc_buy = $lc_order('BUY', $lc_qty(16.00));
+
+    /* 6. the kill switch, and the strategy. */
+    $lc_ks = sys_get_temp_dir() . '/sharemanager_live_c_stop' . getmypid();
+    touch($lc_ks);
+    $lc_reset();
+    [$lc_ks_out] = $lc_run(['STRATEGY_KILL_SWITCH_FILE' => $lc_ks]);
+    unlink($lc_ks);
+    $lc_cases['the kill switch is on'] = [count($lc_sent()) === 0,
+        stripos($lc_ks_out, 'kill switch') !== false, $lc_ks_out];
+
+    db()->prepare("update strategy_accounts set halted='Y', halt_reason='by hand' where strategy=?")
+      ->execute([$LC]);
+    $lc_reset();
+    [$lc_halt_out] = $lc_run();
+    $lc_cases['the strategy is halted'] = [count($lc_sent()) === 0,
+        stripos($lc_halt_out, 'halted') !== false, $lc_halt_out];
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+      ->execute([$LC]);
+
+    foreach ($lc_cases as $lc_what => $lc_result) {
+        check('nothing is sent when ' . $lc_what, $lc_result[0] === true, $lc_result[2]);
+        check('and the job says which condition it was: ' . $lc_what,
+              $lc_result[1] === true, $lc_result[2]);
+    }
+
+    /* ---------------- an approved batch is sent, once ---------------- */
+
+    $lc_agreed(0.0);
+    $lc_clear_orders();
+    $lc_buy = $lc_order('BUY', $lc_qty(16.00));
+    $lc_reset();
+    file_put_contents("$lc_dir/t212_next_order_id", 'live-order-1');
+
+    [$lc_send_out] = $lc_run();
+    $lc_bodies = $lc_sent();
+
+    check('an armed, approved order inside every cap is sent',
+          count($lc_bodies) === 1
+          && scalar("select status from strategy_orders where client_order_id=?", [$lc_buy])
+             === 'SENT'
+          && scalar("select broker_order_id from strategy_orders where client_order_id=?",
+                    [$lc_buy]) === 'live-order-1',
+          $lc_send_out . "\n" . json_encode($lc_bodies));
+    check('with the live account\'s own ticker and a positive quantity',
+          strpos((string) ($lc_bodies[0] ?? ''), 'AAAl_EQ') !== false
+          && strpos((string) ($lc_bodies[0] ?? ''), '-') === false,
+          json_encode($lc_bodies));
+    check('and the send is in the log, which is the record of what real money did',
+          $lc_log('SENT') === 1
+          && stripos((string) scalar("select detail from strategy_live_log
+                                       where strategy=? and event='SENT'", [$LC]),
+                     'live-order-1') !== false);
+    check('the job says what it sent',
+          stripos($lc_send_out, 'sent 1') !== false, $lc_send_out);
+
+    /* Once. The order is SENT now, so a second run has nothing PENDING to
+       send and says so rather than sending it again: the order calls are
+       not idempotent. */
+    $lc_reset();
+    [$lc_again_out] = $lc_run();
+    check('and a second run in the same session sends nothing again',
+          count($lc_sent()) === 0,
+          $lc_again_out . "\n" . json_encode($lc_sent()));
+
+    /* ---------------- a sale, and whose shares it is ---------------- */
+
+    /* The strategy holds 10 of BBB and the broker holds 25 of it: the other
+       fifteen are Dale's, bought outside this application. Selling the ten
+       is this strategy's to do; selling eleven is not. */
+    db()->exec("delete from broker_positions where environment='live'");
+    db()->exec("delete from broker_sync_runs where environment='live'");
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$LC]);
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'BBB','XLON',10,1.00,now())")->execute([$LC]);
+    db()->prepare("insert into broker_positions (broker,environment,as_of_date,broker_ticker,
+                                                 symbol,quantity,price_unit,synced_at)
+                   values (?,'live',?,'BBBl_EQ','BBB',25,'pence',now())")
+      ->execute([BROKER_T212, date('Y-m-d')]);
+    db()->prepare("insert into broker_sync_runs (broker,environment,started_at,finished_at,
+                                                 status,as_of_date,positions)
+                   values (?,'live',now(),now(),'OK',?,1)")->execute([BROKER_T212, date('Y-m-d')]);
+
+    $lc_clear_orders();
+    $lc_sell = $lc_order('SELL', 10, 'BBB');
+    $lc_reset();
+    file_put_contents("$lc_dir/t212_next_order_id", 'live-sell-1');
+
+    [$lc_sell_out] = $lc_run();
+    check('extra holdings of Dale\'s do not stop the strategy selling its own',
+          count($lc_sent()) === 1
+          && scalar("select status from strategy_orders where client_order_id=?", [$lc_sell])
+             === 'SENT',
+          $lc_sell_out);
+    check('and a sale goes to the broker as a negative quantity',
+          strpos((string) ($lc_sent()[0] ?? ''), '-10') !== false,
+          json_encode($lc_sent()));
+    check('the account\'s other holdings are reported rather than halted on',
+          stripos($lc_sell_out, 'not ours') !== false, $lc_sell_out);
+
+    /* More than it bought is refused, and nothing is sent. */
+    $lc_clear_orders();
+    $lc_too_much = $lc_order('SELL', 11, 'BBB');
+    $lc_reset();
+    [$lc_over_out] = $lc_run();
+    check('a sale larger than what the strategy bought is refused',
+          count($lc_sent()) === 0
+          && stripos($lc_over_out, 'never sells more') !== false,
+          $lc_over_out);
+
+    /* And a share it never bought is not its to sell at all. */
+    $lc_clear_orders();
+    $lc_not_ours = $lc_order('SELL', 1, 'CCC');
+    $lc_reset();
+    [$lc_notours_out] = $lc_run();
+    check('and a share the strategy does not hold is not its to sell',
+          count($lc_sent()) === 0
+          && stripos($lc_notours_out, 'not one of this strategy') !== false,
+          $lc_notours_out);
+
+    /* ---------------- the broker holding less than we bought ---------------- */
+
+    db()->exec("delete from broker_positions where environment='live'");
+    db()->prepare("insert into broker_positions (broker,environment,as_of_date,broker_ticker,
+                                                 symbol,quantity,price_unit,synced_at)
+                   values (?,'live',?,'BBBl_EQ','BBB',4,'pence',now())")
+      ->execute([BROKER_T212, date('Y-m-d')]);
+    $lc_clear_orders();
+    $lc_shortfall_order = $lc_order('BUY', $lc_qty(16.00));
+    $lc_reset();
+    [$lc_short_out] = $lc_run();
+    check('a shortfall in one of its own holdings halts it and sends nothing',
+          count($lc_sent()) === 0
+          && stripos($lc_short_out, 'less than this strategy bought') !== false
+          && scalar("select halted from strategy_accounts where strategy=?", [$LC]) === 'Y',
+          $lc_short_out);
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+      ->execute([$LC]);
+    /* The halt disarmed it, as a halt does. */
+    check('and the halt disarmed the account on the way',
+          broker_live_armed($LC) === false);
+    $lc_arm(250.00);
+
+    /* ---------------- the caps, on the way out ---------------- */
+
+    /* Two orders over a cap on their own size in one run is not bad luck:
+       the sizing is wrong, and the strategy stops for a person. */
+    $lc_agreed(0.0);
+    $lc_clear_orders();
+    $lc_order('BUY', $lc_qty(60.00), 'AAA');
+    $lc_order('BUY', $lc_qty(60.00, 'BBB'), 'BBB');
+    $lc_reset();
+    [$lc_two_out] = $lc_run();
+    check('two orders over a size cap in one run halt the strategy',
+          count($lc_sent()) === 0
+          && stripos($lc_two_out, 'breached a size cap') !== false
+          && scalar("select halted from strategy_accounts where strategy=?", [$LC]) === 'Y'
+          /* The reason a person reads when they come to clear it. */
+          && stripos((string) scalar("select halt_reason from strategy_accounts where strategy=?",
+                                     [$LC]), 'sizing is wrong') !== false,
+          $lc_two_out);
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+      ->execute([$LC]);
+    $lc_arm(500.00);
+
+    /* The run cap is the other kind: each order is the right size and the
+       run has sent all it may. The rest are left PENDING for the next run
+       rather than refused. */
+    $lc_agreed(0.0);
+    $lc_clear_orders();
+    $lc_run_a = $lc_order('BUY', $lc_qty(70.00), 'AAA');
+    $lc_run_b = $lc_order('BUY', $lc_qty(70.00, 'BBB'), 'BBB');
+    $lc_run_c = $lc_order('BUY', $lc_qty(70.00, 'CCC'), 'CCC');
+    $lc_reset();
+    [$lc_run_out] = $lc_run();
+    check('the run stops at GBP 150 and leaves the rest for the next one',
+          count($lc_sent()) === 2
+          && stripos($lc_run_out, 'a live run may send') !== false
+          && (int) scalar("select count(*) from strategy_orders
+                            where strategy=? and status='PENDING'", [$LC]) === 1
+          && scalar("select halted from strategy_accounts where strategy=?", [$LC]) === 'N',
+          $lc_run_out . "\n" . json_encode($lc_sent()));
+
+    /* A deposit at the broker does not raise what the strategy may spend:
+       its cash is its own ledger. */
+    db()->prepare("delete from broker_account_values where broker=? and environment='live'")
+      ->execute([BROKER_T212]);
+    db()->prepare("insert into broker_account_values (broker,environment,as_of_date,cash,total,synced_at)
+                   values (?,'live',?,10000,10000,now())")->execute([BROKER_T212, date('Y-m-d')]);
+    $lc_arm(250.00);
+    /* The strategy holds one CCC at GBP 240, and the broker holds it too:
+       a holding the broker does not have is a shortfall, which halts, and
+       that is not what is being tested here. */
+    $lc_agreed(1.0, 'CCC', 'CCCl_EQ');
+    db()->prepare("update strategy_positions set avg_price=240.00 where strategy=? and symbol='CCC'")
+      ->execute([$LC]);
+    $lc_clear_orders();
+    $lc_capital = $lc_order('BUY', $lc_qty(30.00), 'AAA');
+    $lc_reset();
+    [$lc_capital_out] = $lc_run();
+    check('GBP 10,000 of broker cash does not let a GBP 250 strategy spend more',
+          count($lc_sent()) === 0
+          && stripos($lc_capital_out, 'does not raise it') !== false
+          && scalar("select status from strategy_orders where client_order_id=?", [$lc_capital])
+             === 'PENDING',
+          $lc_capital_out);
+    db()->prepare("delete from broker_account_values where broker=? and environment='live'")
+      ->execute([BROKER_T212]);
+
+    /* ---------------- an answer that never came ---------------- */
+
+    /* The dangerous one. The order may or may not have arrived, so it is
+       UNKNOWN: not resent, not written off, resolved against the broker's
+       own records by the next run. */
+    $lc_agreed(0.0);
+    $lc_clear_orders();
+    $lc_timeout = $lc_order('BUY', $lc_qty(16.00));
+    $lc_reset();
+    file_put_contents("$lc_dir/t212_place", 'timeout');
+    [$lc_timeout_out] = $lc_run();
+    check('an answer that is not JSON leaves the order UNKNOWN, not resent',
+          scalar("select status from strategy_orders where client_order_id=?", [$lc_timeout])
+          === 'UNKNOWN'
+          && count($lc_sent()) === 1,
+          $lc_timeout_out);
+    check('and the next run adds nothing while it is unaccounted for',
+          (function () use ($lc_run, $lc_reset, $lc_sent) {
+              $lc_reset();
+              $lc_run();
+              return count($lc_sent()) === 0;
+          })() === true);
+    @unlink("$lc_dir/t212_place");
+
+    /* A refusal of the order itself: the broker says no, the order is
+       REJECTED with the reason, and the share is remembered as one that
+       does not deal in fractions. */
+    $lc_agreed(0.0);
+    $lc_clear_orders();
+    $lc_reject = $lc_order('BUY', $lc_qty(16.00));
+    $lc_reset();
+    file_put_contents("$lc_dir/t212_place", 'reject');
+    [$lc_reject_out] = $lc_run();
+    check('a refused order is REJECTED with the broker\'s reason',
+          scalar("select status from strategy_orders where client_order_id=?", [$lc_reject])
+          === 'REJECTED'
+          && stripos((string) scalar("select note from strategy_orders where client_order_id=?",
+                                     [$lc_reject]), 'QuantityPrecisionInvalid') !== false,
+          $lc_reject_out);
+    check('and the share is sized in whole shares from now on',
+          scalar("select whole_shares from broker_instruments
+                   where broker=? and environment='live' and symbol='AAA'", [BROKER_T212]) === 'Y');
+    db()->prepare("update broker_instruments set whole_shares=null
+                    where broker=? and environment='live'")->execute([BROKER_T212]);
+    @unlink("$lc_dir/t212_place");
+
+    /* ---------------- arming that ran out ---------------- */
+
+    $lc_agreed(0.0);
+    $lc_clear_orders();
+    $lc_expired = $lc_order('BUY', $lc_qty(16.00));
+    db()->prepare("update strategy_live_arming set expires_at=date_sub(now(), interval 1 day)
+                    where strategy=?")->execute([$LC]);
+    $lc_reset();
+    [$lc_expired_out] = $lc_run();
+    check('an account whose arming ran out plans and does not send',
+          count($lc_sent()) === 0
+          && stripos($lc_expired_out, 'ran out') !== false
+          && scalar("select status from strategy_orders where client_order_id=?", [$lc_expired])
+             === 'PENDING',
+          $lc_expired_out);
+    $lc_arm(250.00);
+
+    /* ---------------- the dry run ---------------- */
+
+    $lc_reset();
+    [$lc_dry_out] = $lc_run([], [$LC, '--any-time', '--dry-run']);
+    check('a dry run says what would go and sends nothing',
+          count($lc_sent()) === 0
+          && stripos($lc_dry_out, 'dry run: nothing was sent') !== false
+          && scalar("select status from strategy_orders where client_order_id=?", [$lc_expired])
+             === 'PENDING',
+          $lc_dry_out);
+
+    /* And the page's version of the same question, which is asked of an
+       unapproved batch: what would go if it were approved. */
+    $lc_batch('UNAPPROVED');
+    $lc_preview = broker_live_preview($LC);
+    check('the page can ask what would be sent if the batch were approved',
+          count($lc_preview['would_send']) === 1
+          && $lc_preview['would_send'][0]['approved'] === false
+          && $lc_preview['armed'] === true,
+          json_encode($lc_preview));
+    check('and asking writes nothing and sends nothing',
+          count($lc_sent()) === 0
+          && scalar("select status from strategy_orders where client_order_id=?", [$lc_expired])
+             === 'PENDING'
+          && scalar("select status from strategy_order_batches where batch=?", [$lc_batch_id])
+             === 'UNAPPROVED');
+    $lc_batch('APPROVED');
+
+    /* ---------------- the practice path is untouched ---------------- */
+
+    /* A practice account cannot reach the live host even with live orders
+       switched on and another account armed. The live job refuses it by
+       mode, and the practice sender posts to the demo constant. */
+    $LCD = 'test_live_c_demo';
+    s_drop($LCD);
+    s_rules($LCD, ['holdings' => 1, 'rebalance' => 'monthly']);
+    s_reset($LCD, 250.00, 'Y', 'T212_DEMO');
+    $lc_reset();
+    [$lc_demo_job] = run_script('send_live_orders.php', [$LCD, '--any-time'], $lc_env());
+    check('the live job refuses a practice account by name',
+          count($lc_sent()) === 0
+          && stripos($lc_demo_job, 'no live accounts') !== false,
+          $lc_demo_job);
+    check('and the practice sender refuses a live account, as it always has',
+          stripos((string) run_script('send_broker_orders.php', [$LC, '--any-time'],
+                      $lc_env(['SM_T212_DEMO' => 'on', 'SM_T212_DEMO_API_KEY' => 'x',
+                               'SM_T212_DEMO_API_SECRET' => 'y']))[0],
+                  'send_live_orders.php') !== false
+          && count($lc_sent()) === 0);
+    s_drop($LCD);
+
+    /* ---------------- the badge ---------------- */
+
+    check('Live has a badge colour of its own',
+          strpos(status_badge_html('live'), 'sm-status-live') !== false
+          && stripos(status_badge_html('live'), 'LIVE') !== false
+          && isset(view_palette()['status-live']));
+    $lc_css = (string) file_get_contents(dirname(__DIR__) . '/templates/app.css');
+    check('and that colour is used for nothing else in the stylesheet',
+          substr_count($lc_css, view_palette()['status-live'][0]) === 1,
+          view_palette()['status-live'][0] . ' appears '
+          . substr_count($lc_css, view_palette()['status-live'][0]) . ' time(s)');
+    check('the summary table, the menu and the header all draw the mode the same way',
+          substr_count((string) file_get_contents(dirname(__DIR__) . '/templates/strategies.php'),
+                       's_mode_badge(') >= 3);
+
+    if ($lc_pid > 0) { exec("kill $lc_pid 2>/dev/null"); }
+    exec('rm -rf ' . escapeshellarg($lc_dir));
+    s_drop($LC);
+    db()->prepare("delete from strategy_live_arming where strategy=?")->execute([$LC]);
+    db()->prepare("delete from strategy_live_log where strategy=?")->execute([$LC]);
+    db()->prepare("delete from strategy_order_batches where strategy=?")->execute([$LC]);
+    db()->exec("delete from broker_instruments where environment='live'");
+    db()->exec("delete from broker_positions where environment='live'");
+    db()->exec("delete from broker_sync_runs where environment='live'");
 
     echo "\n--- fix M: a share the broker does not list is not selected ---\n";
 

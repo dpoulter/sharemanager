@@ -18,14 +18,26 @@
 #   /etc/sharemanager.env   (mode 600: it holds the database password and
 #                            the broker key)
 #
-#     SM_T212_ENV=demo              # off, live-read or demo
+#     SM_T212_DEMO=on               # read and trade the practice account
 #     SM_T212_DEMO_API_KEY=...      # the practice account's key
 #     SM_T212_DEMO_API_SECRET=...
+#     SM_T212_LIVE_READ=on          # read the live account (read-only key)
+#     SM_T212_API_KEY=...
+#     SM_T212_API_SECRET=...
+#     SM_T212_LIVE_ORDERS=on        # SEND to the live account. Off by default.
+#     SM_T212_LIVE_ORDERS_API_KEY=...     # a key of its own, Orders - Execute
+#     SM_T212_LIVE_ORDERS_API_SECRET=...
 #
-# DEMO ONLY. The sender refuses to run unless SM_T212_ENV=demo, and the
-# order call underneath it refuses any host but the demo one.
+# Two senders, because there are two accounts and they must not be reachable
+# from one another. send_broker_orders.php refuses anything but the practice
+# account and posts only to the demo host. send_live_orders.php sends the
+# live account's orders and posts only to the live host - and sends nothing
+# at all unless Dale has armed that account on its page and approved the
+# night's batch. Neither this wrapper nor anything it runs can arm or
+# approve: both are forms in his own logged in session.
 #
-# Exit code: the sender's. The sync is not allowed to fail the job - the
+# Exit code: the practice sender's, or the live one's if that was the only
+# failure. The sync is not allowed to fail the job - the
 # sender no longer depends on it, and a 429 on the dividend history is not a
 # reason to skip the orders.
 
@@ -50,7 +62,9 @@ if [ ! -d "$APP_DIR" ]; then
   exit 2
 fi
 
-echo "broker_run: $(date '+%Y-%m-%d %H:%M:%S') env=${SM_T212_ENV:-off} app=$APP_DIR"
+echo "broker_run: $(date '+%Y-%m-%d %H:%M:%S') demo=${SM_T212_DEMO:-off}" \
+     "live-read=${SM_T212_LIVE_READ:-off} live-orders=${SM_T212_LIVE_ORDERS:-off}" \
+     "app=$APP_DIR"
 
 # The read first. The sender no longer needs it - it reads the positions
 # again itself after writing a fill up, which is what fix J was - but the
@@ -59,5 +73,16 @@ echo "broker_run: $(date '+%Y-%m-%d %H:%M:%S') env=${SM_T212_ENV:-off} app=$APP_
 # back to showing last night's account.
 "$PHP" "$APP_DIR/includes/sync_broker.php" || echo "broker_run: the sync did not finish; sending anyway"
 
-# Then the orders.
+# Then the practice account's orders.
 "$PHP" "$APP_DIR/includes/send_broker_orders.php"
+PRACTICE_RC=$?
+
+# And the live account's, which does nothing unless SM_T212_LIVE_ORDERS is
+# on, the account is armed and the batch approved. Run even when the
+# practice sender failed: the two accounts are independent, and a rate limit
+# on one is not a reason to leave an approved order unsent on the other.
+"$PHP" "$APP_DIR/includes/send_live_orders.php"
+LIVE_RC=$?
+
+if [ "$PRACTICE_RC" -ne 0 ]; then exit "$PRACTICE_RC"; fi
+exit "$LIVE_RC"

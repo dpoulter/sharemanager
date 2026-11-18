@@ -40,12 +40,11 @@
 	   . ", its own key is " . (T212_LIVE_ORDERS_API_KEY === '' ? "not set" : "set")
 	   . "\r\n";
 
-	/* Said every time, because it is the most important sentence here until
-	   stage C exists: the conditions below are the gate, and the door is not
-	   built. */
-	echo "this application has no live order path yet: an armed, approved,"
-	   . " within-caps live account still has its orders planned and left"
-	   . " waiting\r\n";
+	/* Said every time, because it is the sentence that matters: an order
+	   goes out only when every one of the conditions below holds, and the
+	   only thing that can send one is the session job. */
+	echo "orders are sent by includes/send_live_orders.php during the London"
+	   . " session, and only when every condition below holds\r\n";
 
 	if (!broker_live_ready()) {
 		echo "sql/strategy_live.sql has not been applied, so nothing is armed and"
@@ -93,7 +92,8 @@
 
 		echo "  would an order be sent: "
 		   . ($state['conditions']['ok']
-		        ? "every condition holds, and there is still no path that sends one"
+		        ? "yes - every condition holds, so an approved order would go out in"
+		          . " the session"
 		        : "no") . "\r\n";
 	}
 

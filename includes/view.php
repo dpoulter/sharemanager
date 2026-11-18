@@ -305,6 +305,10 @@
 			'status-off'   => ['#4b5563', '#ffffff'],
 			'status-halt'  => ['#b91c1c', '#ffffff'],
 			'status-due'   => ['#b45309', '#ffffff'],
+			/* Real money. Violet, because none of the other four is, and
+			   because the one badge on these pages that should stop a
+			   reader has to look like nothing else on them. */
+			'status-live'  => ['#6d28d9', '#ffffff'],
 		];
 	}
 
@@ -602,12 +606,16 @@
 
 	/** A status badge: PAPER, disabled, halted, rebalance tonight. */
 	function status_badge_html($kind, $text = null) {
+		/* 'live' is real money, and its colour is used for nothing else on
+		   any page: a reader who has learnt that violet means the live
+		   account has learnt something that cannot be confused with a
+		   rebalance due or a halt. */
 		$styles = ['paper' => 'status-paper', 'off' => 'status-off',
 		           'halted' => 'status-halt', 'due' => 'status-due',
-		           'ok' => 'status-ok'];
+		           'ok' => 'status-ok', 'live' => 'status-live'];
 		$words  = ['paper' => 'PAPER', 'off' => 'disabled',
 		           'halted' => 'halted', 'due' => 'rebalance tonight',
-		           'ok' => 'OK'];
+		           'ok' => 'OK', 'live' => 'LIVE'];
 		$key = isset($styles[$kind]) ? $kind : 'off';
 		return '<span class="sm-badge sm-' . $styles[$key] . '">'
 		     . htmlspecialchars($text === null ? $words[$key] : $text) . '</span>';

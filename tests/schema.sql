@@ -26,6 +26,12 @@ drop table if exists historical_prices, stock_symbols, screen_indicators,
 -- applied by tests/run_tests.sh after the seed.
 drop table if exists strategy_rules, strategy_values, strategy_backtest_runs;
 
+-- The live orders tables (sql/strategy_live.sql). Dropped for the reason
+-- above, and one more: they hold the record of who armed an account and what
+-- was approved, so a row from an earlier run is a row the next run's expiry,
+-- arming and approval checks would count as their own.
+drop table if exists strategy_live_arming, strategy_order_batches, strategy_live_log;
+
 -- Daily prices, loaded by get_share_prices.php via share_functions.php:319.
 -- The exchange column is written from $_SESSION["exchange"] ('XLON').
 create table historical_prices (

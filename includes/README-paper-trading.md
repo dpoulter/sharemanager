@@ -276,6 +276,7 @@ reports; Jarvis does not arm and does not approve.
 ```sh
 mysql sharemanager < sql/strategy_live.sql   # arming, batches, the log
 php includes/live_check.php                  # what each live account could do, reads only
+php includes/send_live_orders.php --dry-run  # what would go out, sends nothing
 ```
 
 Six things have to be true before a live order can be sent, and
@@ -322,6 +323,24 @@ the same account.
 expiry and refusal. The application only inserts into it; there is no code path
 that deletes or rewrites a row, and the suite checks that there is none.
 
-As at stage B there is still **no code path that sends a live order**: an
-armed, approved, within-caps live account has its orders planned and left
-waiting, and `includes/live_check.php` says so every time it runs.
+**Sending**: `includes/send_live_orders.php`, from cron through
+`includes/broker_run.sh` every ten minutes through the session, beside the
+practice sender and never instead of it. It resolves what is already out
+there, compares this strategy's own positions with the broker's, and sends
+what is approved and inside every cap - one order at a time, marked SENT
+before the call, because the order calls are not idempotent. The one function
+that posts to the live account is `broker_live_place_order()` in
+`includes/broker_live_send.php`; it builds its URL from the live constant,
+refuses the practice host whatever anything is set to, and asks
+`broker_live_conditions()` before it opens a socket. `T212Client` has no
+write path for the live account at all.
+
+Two senders, two keys, two hosts: `send_broker_orders.php` can only reach the
+practice account and `send_live_orders.php` can only reach the live one.
+Neither can be turned into the other by an argument, and the suite checks
+that the live host is used for a write in exactly one function.
+
+A buy that would breach a cap is refused with the reason and left PENDING for
+the next run. Two orders in one run over a cap on their own size halts the
+strategy: that is the sizing being wrong rather than the cap being tight.
+Reaching the £150 a run or the day's allowance just ends the run.
