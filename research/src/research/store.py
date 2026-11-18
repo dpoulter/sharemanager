@@ -41,9 +41,23 @@ class Market:
         return float(s.iloc[-1]) if len(s) else np.nan
 
 
-def to_pounds_factor(master: pd.DataFrame, fx: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
+def quote_currency(master: pd.DataFrame) -> pd.Series:
+    """The currency a line is QUOTED in.
+
+    master.py infers it from the prices (quote_currency). FMP's profile
+    `currency` is the reporting currency for some London lines, so it is
+    only a fallback, and only when it is a sterling unit.
+    """
+    if "quote_currency" in master:
+        return master["quote_currency"].fillna("GBp")
+    cur = master.get("currency", pd.Series("GBp", index=master.index)).fillna("GBp")
+    return cur.where(cur.isin(list(PENCE | {"GBP"})), "GBp")
+
+
+def to_pounds_factor(master: pd.DataFrame, fx: pd.DataFrame, dates: pd.DatetimeIndex,
+                     column: str | None = None) -> pd.DataFrame:
     """date x symbol multiplier from the quote unit to pounds."""
-    cur = master["currency"].fillna("GBp")
+    cur = (master[column] if column else quote_currency(master)).fillna("GBp")
     out = pd.DataFrame(1.0, index=dates, columns=master.index)
     pence = cur[cur.isin(PENCE)].index
     out[pence] = 0.01
@@ -65,6 +79,13 @@ def load_market(data: Path, symbols: list[str] | None = None) -> Market:
         prices = prices[prices["symbol"].isin(symbols)]
     prices["date"] = pd.to_datetime(prices["date"])
     prices = prices.drop_duplicates(["symbol", "date"], keep="last")
+    ticks_path = data / "bad_ticks.parquet"
+    if ticks_path.exists():
+        t = pd.read_parquet(ticks_path, columns=["symbol", "date"])
+        if len(t):
+            t["date"] = pd.to_datetime(t["date"])
+            key = pd.MultiIndex.from_frame(prices[["symbol", "date"]])
+            prices = prices[~key.isin(pd.MultiIndex.from_frame(t))]
     close = prices.pivot(index="date", columns="symbol", values="close").sort_index()
     adj = prices.pivot(index="date", columns="symbol", values="adj_close").sort_index()
     adj = adj.where(adj.notna(), close)
@@ -86,10 +107,13 @@ def load_market(data: Path, symbols: list[str] | None = None) -> Market:
         m["date"] = pd.to_datetime(m["date"])
         m = m[m["symbol"].isin(close.columns)].drop_duplicates(["symbol", "date"], keep="last")
         mcap = m.pivot(index="date", columns="symbol", values="market_cap").reindex(index=close.index, columns=close.columns)
-        # FMP's cap is in the major unit of the quote currency.
-        cur = master.loc[close.columns, "currency"].fillna("GBp")
-        major = cur.replace({"GBp": "GBP", "GBX": "GBP", "GBx": "GBP"})
-        cap_factor = to_pounds_factor(pd.DataFrame({"currency": major}), fx, close.index)
+        # The cap's currency is checked against price x shares in master.py;
+        # it is the reporting currency for a few lines, pounds for the rest.
+        if "cap_currency" in master:
+            ccy = master.loc[close.columns, "cap_currency"].fillna("GBP")
+        else:
+            ccy = quote_currency(master.loc[close.columns]).replace({"GBp": "GBP", "GBX": "GBP", "GBx": "GBP"})
+        cap_factor = to_pounds_factor(pd.DataFrame({"c": ccy}), fx, close.index, column="c")
         mcap = mcap * cap_factor
 
     statements = pd.DataFrame()

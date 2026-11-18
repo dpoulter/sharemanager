@@ -36,11 +36,14 @@ universe:
   aim_list: null
 
 periods:
-  dev: ["2007-01-01", "2021-12-31"]
-  val: ["2022-01-01", "2025-05-17"]
+  # Validation starts in 2023, not 2022: the pulled data has dead London
+  # lines only from 2023 (2021: 1, 2022: 13, 2023: 141). Dale's call; to go
+  # back, set dev to end 2021-12-31 and val to start 2022-01-01.
+  dev: ["2007-01-01", "2022-12-31"]
+  val: ["2023-01-01", "2025-05-17"]
   holdout_start: "2025-05-18"
 
 caveats:
   - "Restatements: FMP holds the latest figures, not those first published, so accounts-based signals may see corrections made later."
   - "Accounts are lagged from period end (4 months annual, 3 months half-year) because FMP's UK filing dates are period ends."
-  - "Development period (2007-2021) is survivorship-biased: FMP holds few companies that died before 2021."
+  - "Development period (2007-2022) is survivorship-biased: the data holds few companies that died before 2023."

@@ -44,7 +44,9 @@ def value_measures(ctx: Context, date) -> pd.DataFrame:
     Earnings, book, sales, operating cash flow and EBITDA yields (the inverses
     of P/E, P/B, P/S, P/CF and EV/EBITDA) and shareholder yield. Negative
     ratios are excluded (left unranked, the N100's rank_negative EXCLUDE);
-    EV/EBITDA is not used for Financial Services.
+    EV/EBITDA is not used for Financial Services. A measure whose inputs are
+    missing is left empty for that company (it then counts as the neutral 50th
+    percentile in the composite, as on the N100), never computed from zeros.
     """
     flows = ["netIncome", "revenue", "operatingCashFlow", "ebitda", "dividendsPaid", "commonStockRepurchased",
              "commonStockIssued"]
@@ -53,7 +55,8 @@ def value_measures(ctx: Context, date) -> pd.DataFrame:
     idx = t.index.union(bs.index)
     t, bs = t.reindex(idx), bs.reindex(idx)
     cap = ctx.market_cap(date).reindex(idx)
-    ev = cap + bs["totalDebt"].fillna(0) - bs["cashAndCashEquivalents"].fillna(0)
+    # A missing field means the company is skipped for that measure, never read as zero.
+    ev = cap + bs["totalDebt"] - bs["cashAndCashEquivalents"]
     out = pd.DataFrame(index=idx)
     out["earnings_yield"] = t["netIncome"] / cap
     out["book_yield"] = bs["totalStockholdersEquity"] / cap
@@ -63,8 +66,8 @@ def value_measures(ctx: Context, date) -> pd.DataFrame:
     sector = ctx.m.master.reindex(idx).get("sector")
     if sector is not None:
         out.loc[sector == "Financial Services", "ebitda_ev"] = np.nan
-    paid = -t["dividendsPaid"].fillna(0)
-    bought = -t["commonStockRepurchased"].fillna(0) - t["commonStockIssued"].fillna(0)
+    paid = -t["dividendsPaid"]
+    bought = -t["commonStockRepurchased"] - t["commonStockIssued"]
     out["shareholder_yield"] = (paid + bought) / cap
     for c in ["earnings_yield", "book_yield", "sales_yield", "cash_flow_yield", "ebitda_ev"]:
         out[c] = out[c].where(out[c] > 0)

@@ -25,6 +25,8 @@ class Fmp:
         self.key = api_key(cfg)
         self._stamps: list[float] = []
         self.calls = 0
+        self.throttled = 0
+        self._started = time.monotonic()
 
     def _throttle(self) -> None:
         now = time.monotonic()
@@ -42,6 +44,9 @@ class Fmp:
         for attempt in range(self.max_retries + 1):
             self._throttle()
             self.calls += 1
+            if self.calls % 300 == 0:
+                rate = self.calls / max(1e-9, (time.monotonic() - self._started) / 60)
+                log.info("FMP: %d calls (%.0f a minute), %d 429s", self.calls, rate, self.throttled)
             try:
                 with urllib.request.urlopen(url, timeout=90) as r:
                     # Honour a lower limit if FMP announces one.
@@ -56,6 +61,8 @@ class Fmp:
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     return None
+                if e.code == 429:
+                    self.throttled += 1
                 if e.code in (429, 500, 502, 503, 504) and attempt < self.max_retries:
                     wait = float(e.headers.get("Retry-After") or delay)
                     log.warning("FMP %s on %s, waiting %.0fs", e.code, path, wait)

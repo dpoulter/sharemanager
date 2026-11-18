@@ -19,9 +19,12 @@ Data goes to `~/sharemanager-research/data/` as Parquet, reports to `~/sharemana
 |---|---|---|
 | 1 | `nohup uv run research fetch --full > ~/sharemanager-research/logs/fetch.out 2>&1 &` | `data/data_report.md`; progress in `data/fetch_state.json` |
 | 2 | `uv run research universe --live stock_symbols.csv` | overlap with the N100's list, also in `data/universe_overlap.json` |
-| 3 | `uv run research validate --universe stock_symbols.csv --orders run9_orders.csv --values run9_values.csv` | must pass before anything else is trusted |
+| 3 | `uv run research validate` | must pass before anything else is trusted; reads the three files in `data/validation/` |
 | 4 | `uv run research signals` | one comparison table for Dale |
 | nightly | `uv run research fetch` | top-up: new prices, market caps and statements |
+| any time | `uv run research fetch --merge-only` | no downloads: merge, master pass, price cleaning, data report |
+
+After every merge, `master.py` makes a second pass over the symbol master using the prices. It sets each line's quote currency and market-cap currency from price × shares, because FMP's profile currency is sometimes the reporting currency. It also drops loan stock and bond-like series, overseas ISINs (anything outside GB, JE, GG and IM, counted by prefix in `data/master_report.json`) and second share classes, and marks AIM shares from `data/reference/aim_companies.*` (the LSE file, as CSV or XLSX). `clean.py` drops bad ticks: a move over 50% that comes back within 20% inside 3 sessions. They are recorded in `data/bad_ticks.parquet`.
 
 A full pull is resumable. Each symbol's file is written as soon as it is fetched, so if the run is interrupted, starting it again carries on from where it stopped. Calls are paced to `fmp.calls_per_minute` (600), drop to a lower limit if FMP announces one in its headers, and back off on 429.
 
@@ -85,7 +88,6 @@ Run them with `uv run pytest`. They cover:
 
 ## Known gaps
 
-- **Costs section J.** The cost tests use worked examples of my own. The worked examples from section J of the Strategies page brief still need adding to `tests/test_research.py`.
-- **AIM flag.** FMP rarely marks AIM lines. Set `universe.aim_list` to a CSV of AIM symbols if the master shows none.
+- **AIM flag.** FMP does not mark AIM lines. The LSE file lists only companies on AIM today, so dead AIM companies stay unmarked.
 - **Delisting reason.** FMP's delisted list gives no reason. Both cases are handled the same way: the company leaves at its last traded price.
-- **Live API.** The fetcher is written to FMP's stable endpoints as used in `python/fmp.py`, but it has not yet been run against the live API. Read the first data report closely.
+- **Periods.** Development runs from 2007 to 2022 and is survivorship-biased. Validation runs from 2023 to 17 May 2025, because the data has dead companies only from 2023. Both are in `config.yaml`.

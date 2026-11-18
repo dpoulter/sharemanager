@@ -95,24 +95,122 @@ def test_share_growing_into_top_350_enters_at_next_rebuild():
 
 
 # ---------------------------------------------------------------- costs
-def test_costs_worked_examples():
-    # A £5,000 buy of a FTSE 250-like share: stamp £25.00, spread 25 bp £12.50, no commission, no PTM.
-    b = T212.buy(1000, 5.0, large=False)
-    assert b["stamp_duty"] == pytest.approx(25.0)
-    assert b["spread"] == pytest.approx(12.5)
-    assert b["ptm"] == 0 and b["commission"] == 0
-    assert b["cash"] == pytest.approx(-5037.5)
-    # A £12,000 sell of a FTSE 100-like share: no stamp, spread 10 bp £12.00, PTM £1.
-    s = T212.sell(2000, 6.0, large=True)
-    assert s["stamp_duty"] == 0
-    assert s["spread"] == pytest.approx(12.0)
-    assert s["ptm"] == 1.0
-    assert s["cash"] == pytest.approx(12000 - 13.0)
-    # AIM buys pay no stamp duty.
-    assert T212.buy(1000, 5.0, large=False, aim=True)["stamp_duty"] == 0
-    # Exactly £10,000 is not over the threshold.
-    assert T212.buy(1000, 10.0, large=True)["ptm"] == 0
+def test_costs_worked_examples_section_j():
+    """The Trading 212 worked examples from the automated strategies brief, section J."""
+    b = T212.buy(1000, 6.60, large=True)                 # a £6,600 FTSE 100 buy
+    assert b["stamp_duty"] == pytest.approx(33.00) and b["spread"] == pytest.approx(6.60)
+    assert b["commission"] == 0 and b["ptm"] == 0
+    b = T212.buy(1000, 6.60, large=False)                # the same in a FTSE 250 share
+    assert b["stamp_duty"] == pytest.approx(33.00) and b["spread"] == pytest.approx(16.50)
+    s = T212.sell(1000, 12.0, large=True)                # a £12,000 sell: the spread + £1 PTM
+    assert s["stamp_duty"] == 0 and s["ptm"] == 1.00
+    assert s["total"] == pytest.approx(12.00 + 1.00)
+    s = T212.sell(1000, 12.0, large=False)
+    assert s["total"] == pytest.approx(30.00 + 1.00)
+    assert T212.buy(1000, 6.60, large=False, aim=True)["stamp_duty"] == 0   # AIM: no stamp
+    assert T212.buy(1000, 10.0, large=True)["ptm"] == 0  # exactly £10,000 is not over
     assert T212.free().buy(1000, 5.0, large=False)["total"] == 0
+
+
+def test_periods_validation_starts_2023(cfg):
+    assert cfg["periods"]["val"][0] == "2023-01-01"
+    assert cfg["periods"]["dev"][1] == "2022-12-31"
+
+
+# ---------------------------------------------------------------- bad ticks (H)
+def test_bad_tick_dropped_real_move_kept():
+    from research.clean import bad_tick_positions
+    p = np.array([100, 101, 1500, 102, 103, 104, 300, 310, 305, 99, 100, 200, 210, 220, 230.0])
+    bad = bad_tick_positions(p)
+    assert 2 in bad                      # 15x and back next day
+    assert {6, 7, 8} <= set(bad)         # up 3x for three sessions, back within 20%
+    assert 11 not in bad                 # a doubling that stays
+
+
+# ---------------------------------------------------------------- master (F, G)
+def test_units_from_prices_not_profile_currency():
+    from research.master import infer_units
+    fx = pd.DataFrame({"date": pd.to_datetime(["2026-11-02"] * 2), "currency": ["USD", "EUR"],
+                       "gbp_per_unit": [0.78, 0.85]})
+    # IHG-like: profile says USD, trades at 9,000p, cap reported in USD.
+    shares = 160e6
+    cap_usd = 90.0 * shares / 0.78
+    q, c, _ = infer_units(9000.0, cap_usd, shares, "USD", fx)
+    assert (q, c) == ("GBp", "USD")
+    # Compass-like: profile EUR (wrongly), trades in pence, cap in pounds.
+    q, c, _ = infer_units(2500.0, 25.0 * 1.7e9, 1.7e9, "EUR", fx)
+    assert (q, c) == ("GBp", "GBP")
+    # No shares known: pence and pounds, as nearly every London line.
+    assert infer_units(100.0, 1e9, float("nan"), "USD", fx)[:2] == ("GBp", "GBP")
+
+
+def test_master_drops_bonds_classes_overseas_and_marks_aim(tmp_path):
+    from research.master import refine_master
+    from research.fetch import exclusion_reason
+    assert exclusion_reason({"symbol": "49GP.L", "name": "Croda International"}).startswith("loan stock")
+    n = 300
+    dates = pd.bdate_range("2025-01-01", periods=n)
+    rng = np.random.default_rng(0)
+    rows, caps = [], []
+    series = {
+        "BP.L": 400 * np.cumprod(1 + rng.normal(0, 0.015, n)),
+        "BP-A.L": 400 * np.cumprod(1 + rng.normal(0, 0.015, n)),
+        "BT-A.L": 150 * np.cumprod(1 + rng.normal(0, 0.015, n)),
+        "BT-B.L": 150 * np.cumprod(1 + rng.normal(0, 0.015, n)),
+        "BHP.L": 2000 * np.cumprod(1 + rng.normal(0, 0.015, n)),
+        "LOAN.L": 100 + rng.normal(0, 0.05, n),
+        "AMS.L": 50 * np.cumprod(1 + rng.normal(0, 0.02, n)),
+    }
+    vol = {"BT-A.L": 1e6, "BT-B.L": 1e3}
+    for s, p in series.items():
+        for d, v in zip(dates, p):
+            rows.append((s, d, v, v, vol.get(s, 1e5)))
+            caps.append((s, d, v * 1e7))
+    pd.DataFrame(rows, columns=["symbol", "date", "close", "adj_close", "volume"]).to_parquet(tmp_path / "prices.parquet")
+    pd.DataFrame(caps, columns=["symbol", "date", "market_cap"]).to_parquet(tmp_path / "market_cap.parquet")
+    isin = {"BP.L": "GB0007980591", "BP-A.L": "GB0007980592", "BT-A.L": "GB0030913577", "BT-B.L": "GB0030913578",
+            "BHP.L": "AU000000BHP4", "LOAN.L": "GB00B0000001", "AMS.L": "GB00B1234567"}
+    pd.DataFrame({"symbol": list(series), "name": [f"{s} plc" for s in series], "currency": "GBp",
+                  "isin": [isin[s] for s in series], "is_aim": None, "is_etf": False, "is_fund": False,
+                  "delisted_date": None}).to_parquet(tmp_path / "symbols.parquet")
+    (tmp_path / "reference").mkdir()
+    pd.DataFrame({"TIDM": ["AMS"], "ISIN": ["GB00B1234567"]}).to_csv(tmp_path / "reference" / "aim_companies.csv", index=False)
+    m = refine_master(tmp_path).set_index("symbol")
+    kept = set(m.index[m["included"]])
+    assert kept == {"BP.L", "BT-A.L", "AMS.L"}
+    assert m.loc["BP-A.L", "exclude_reason"] == "second share class (kept BP.L)"
+    assert m.loc["BT-B.L", "exclude_reason"] == "second share class (kept BT-A.L)"
+    assert m.loc["BHP.L", "exclude_reason"] == "overseas company (ISIN AU)"
+    assert m.loc["LOAN.L", "exclude_reason"] == "price series looks like a bond"
+    assert bool(m.loc["AMS.L", "is_aim"]) is True
+
+
+def test_load_market_uses_quote_and_cap_currency(tmp_path):
+    """CPG/IHG case: profile currency EUR/USD, quoted in pence; both must rank in the top 100."""
+    from research.store import load_market
+    dates = pd.bdate_range("2026-10-01", periods=30)
+    syms = [f"S{i:03d}.L" for i in range(150)]
+    px, cp = [], []
+    for i, s in enumerate(syms):
+        for d in dates:
+            px.append((s, d, 100.0, 100.0))
+            cp.append((s, d, 1e8 * (200 - i)))           # £20bn down to £5bn, in pounds
+    for d in dates:
+        px += [("IHG.L", d, 9000.0, 9000.0), ("CPG.L", d, 2500.0, 2500.0)]
+        cp += [("IHG.L", d, 14e9 / 0.78), ("CPG.L", d, 42e9)]   # IHG's cap in USD
+    pd.DataFrame(px, columns=["symbol", "date", "close", "adj_close"]).to_parquet(tmp_path / "prices.parquet")
+    pd.DataFrame(cp, columns=["symbol", "date", "market_cap"]).to_parquet(tmp_path / "market_cap.parquet")
+    pd.DataFrame({"date": dates, "currency": "USD", "gbp_per_unit": 0.78}).to_parquet(tmp_path / "fx.parquet")
+    master = pd.DataFrame({"symbol": syms + ["IHG.L", "CPG.L"], "included": True, "is_aim": False,
+                           "currency": ["GBp"] * 150 + ["USD", "EUR"], "quote_currency": "GBp",
+                           "cap_currency": ["GBP"] * 150 + ["USD", "GBP"], "delisted_date": None})
+    master.to_parquet(tmp_path / "symbols.parquet")
+    m = load_market(tmp_path)
+    assert m.close["IHG.L"].iloc[-1] == pytest.approx(90.0)       # pence to pounds, not dollars
+    assert m.market_cap["IHG.L"].iloc[-1] == pytest.approx(14e9)
+    u = build_universe(m, size=100, large=100, start="2026-10-01")
+    top = u[u["date"] == u["date"].max()].set_index("symbol")["rank"]
+    assert top["CPG.L"] <= 100 and top["IHG.L"] <= 100
 
 
 # ---------------------------------------------------------------- holdout

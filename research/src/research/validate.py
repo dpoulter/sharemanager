@@ -4,10 +4,12 @@ Run 9: trend following, monthly, hold_rank 30, 10 bp spread, 1 Nov 2022 to
 13 Nov 2026, on the N100's universe (today's FTSE 350 list). Pass: total
 return within 3 percentage points and fill count within 10%.
 
-Jarvis exports from the N100:
-  - the symbol list: stock_symbols (enabled, XLON), one column `symbol`
-  - run 9's orders: date, symbol, side, quantity, price
-  - run 9's values: date, total
+Jarvis's exports from the N100 (rerun as run 10, identical to run 9:
++104.43%, 425 fills), in data/validation/ by default:
+  - n100_universe_2026-11-18.tsv: symbol, is_fund, sector (350 rows). Funds
+    (is_fund=Y) are dropped, as run 9 excluded them
+  - n100_run9_orders.csv: date, symbol, side, quantity, price (pounds)
+  - n100_run9_values.csv: date, total
 
 This run covers holdout dates. It is an engine check, logged as kind
 'engine_validation' and not as research, but it does show trend following's
@@ -33,27 +35,47 @@ RUN9 = {
     "drift_band": 0.02,
     "max_turnover": 0.5,
     "start_cash": 100000,
-    # Paper account rules on the N100: commission GBP 5.95, whole shares,
-    # GBP 250 minimum order, 0.5% stamp, and run 9's 10 bp spread on every line.
-    "costs": {"commission": 5.95, "decimals": 0, "minimum_order": 250.0,
+    # Run 9 came from Jarvis's patched copy of the N100 app with Trading 212
+    # costs (Dale, 18 Nov 2026): no commission, 10 bp spread each way on every
+    # line, 0.5% stamp on buys, whole shares, GBP 250 minimum order, no PTM levy.
+    "costs": {"commission": 0.0, "decimals": 0, "minimum_order": 250.0,
               "spread_large_bp": 10.0, "spread_mid_bp": 10.0, "ptm_levy": 0.0},
 }
 
 
+def universe_list(path: Path, out: Path) -> Path:
+    """The N100 list without its funds, written as a one-column CSV the engine reads."""
+    df = pd.read_csv(path, sep=None, engine="python", dtype=str)
+    df.columns = [c.strip().lower() for c in df.columns]
+    if "is_fund" in df:
+        df = df[df["is_fund"].fillna("N").str.strip().str.upper() != "Y"]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df[["symbol"]].to_csv(out, index=False)
+    return out
+
+
 def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv: Path | None,
          costs: dict | None = None) -> dict:
-    raw = dict(RUN9, universe=f"list:{universe_csv}")
+    listed = universe_list(Path(universe_csv), ws.cfg.data_dir / "validation" / "run9_universe_no_funds.csv")
+    raw = dict(RUN9, universe=f"list:{listed}")
     if costs:
         raw["costs"] = {**raw["costs"], **costs}
     spec = spec_from_dict(raw)
     out = ws.run(spec, period="2022-11-01:2026-11-13", kind="engine_validation",
                  start="2022-11-01", end="2026-11-13")
     rec = out["record"]
-    report = {"ours_total_return": rec["total_return"], "ours_fills": rec["fills"],
+    report = {"universe_without_funds": int(len(pd.read_csv(listed))),
+              "ours_total_return": rec["total_return"], "ours_fills": rec["fills"],
+              "ours_costs": rec["costs_paid"],
               "report": str(out.get("report"))}
     if values_csv:
         v = pd.read_csv(values_csv, parse_dates=["date"]).sort_values("date")
-        theirs = float(v["total"].iloc[-1] / v["total"].iloc[0] - 1)
+        # From the starting cash, not the first row: the N100's first value
+        # (98,723.75 on 1 Nov 2022) is already after the first build's costs,
+        # and its stated +104.43% is 204,432.69 over 100,000.
+        theirs = float(v["total"].iloc[-1] / float(raw["start_cash"]) - 1)
+        report["n100_first_value"] = float(v["total"].iloc[0])
+        report["ours_first_value"] = float(out["result"].values["total"].iloc[0])
         report["n100_total_return"] = theirs
         report["return_gap_pp"] = 100 * (rec["total_return"] - theirs)
         report["return_ok"] = abs(report["return_gap_pp"]) <= 3

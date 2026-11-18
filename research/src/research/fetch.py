@@ -26,6 +26,7 @@ import re
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .config import Config, mask
@@ -42,6 +43,7 @@ FUND_NAME = re.compile(
 PREF_NAME = re.compile(r"\bpref(erence)?\b|\bcum(ulative)?\b.*%|\d+(\.\d+)?\s?%|\bdebenture\b|\bnotes?\b|\bbond\b", re.I)
 DEPOSITARY = re.compile(r"\bgdr\b|\badr\b|depositary", re.I)
 IOB = re.compile(r"^0[A-Z0-9]{3}\.L$")
+LOAN_STOCK = re.compile(r"^\d{2}[A-Z]{2}\.L$")      # 49GP.L: a Croda bond under Croda's name
 
 STATEMENTS = {
     "income": "income-statement",
@@ -95,7 +97,10 @@ class Fetcher:
         have = pd.read_parquet(path) if path.exists() else pd.DataFrame(columns=["symbol"])
         todo = [s for s in symbols if s not in set(have["symbol"])]
         rows = []
+        log.info("profiles: %d to fetch, %d held", len(todo), len(have))
         for i, sym in enumerate(todo):
+            if i and i % 200 == 0:
+                log.info("profiles %d/%d, %d calls", i, len(todo), self.fmp.calls)
             try:
                 data = self.fmp.get("profile", symbol=sym)
             except FmpError as e:
@@ -277,44 +282,77 @@ class Fetcher:
         out.drop_duplicates(["date", "currency"], keep="last").sort_values(["currency", "date"]).to_parquet(path)
 
     # ------------------------------------------------------------ the run
-    def run(self, full: bool = False, symbols: list[str] | None = None) -> dict:
+    def run(self, full: bool = False, symbols: list[str] | None = None, merge_only: bool = False) -> dict:
+        """Download, then merge. Safe to start again: per-symbol files that exist are not re-fetched
+        on a full pull, and when fetch_state.json says the downloads finished, a re-run (or
+        merge_only) goes straight to the merge without one call."""
         end = _today()
-        master = self.build_master(full)
-        todo = symbols or master.loc[master["included"], "symbol"].tolist()
         state_path = self.data / "fetch_state.json"
-        log.info("fetching %d symbols (%s)", len(todo), "full" if full else "top-up")
-        for i, sym in enumerate(todo, 1):
-            delisted = master.loc[master["symbol"] == sym, "delisted_date"]
-            sym_end = end
-            if len(delisted) and pd.notna(delisted.iloc[0]):
-                sym_end = min(end, str(delisted.iloc[0])[:10])
-                # A delisted company has nothing new to top up once fetched.
-                if not full and self._path("prices", sym).exists():
-                    continue
-            try:
-                self.prices(sym, full, sym_end)
-                self.market_cap(sym, full, sym_end)
-                self.dividends(sym, full)
-                self.statements(sym, full)
-            except FmpError as e:
-                self.failures.append({"symbol": sym, "dataset": "symbol", "error": str(e)})
-                log.warning("%s: %s", sym, mask(e))
-            if i % 25 == 0:
-                state_path.write_text(json.dumps({"done": i, "of": len(todo), "last": sym,
-                                                  "calls": self.fmp.calls, "at": dt.datetime.now().isoformat()}))
-                log.info("%d/%d %s (%d calls)", i, len(todo), sym, self.fmp.calls)
-        stmt_ccy = set()
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        master_path = self.data / "symbols.parquet"
+        # A run that died in the merge left done == of without the flag (18 Nov 2026).
+        finished = state.get("downloaded") or (state.get("done") and state.get("done") == state.get("of"))
+        downloaded = bool(finished) and master_path.exists() and (full or merge_only)
+        if merge_only and not master_path.exists():
+            raise RuntimeError("nothing to merge: no symbols.parquet yet")
+        if downloaded or merge_only:
+            log.info("downloads already complete (%s); merging only", state.get("downloaded_at", "?"))
+            master = pd.read_parquet(master_path)
+            todo = symbols or master.loc[master["included"], "symbol"].tolist()
+        else:
+            master = self.build_master(full)
+            todo = symbols or master.loc[master["included"], "symbol"].tolist()
+            log.info("fetching %d symbols (%s)", len(todo), "full" if full else "top-up")
+            started = dt.datetime.now()
+            for i, sym in enumerate(todo, 1):
+                delisted = master.loc[master["symbol"] == sym, "delisted_date"]
+                sym_end = end
+                if len(delisted) and pd.notna(delisted.iloc[0]):
+                    sym_end = min(end, str(delisted.iloc[0])[:10])
+                    # A delisted company has nothing new to top up once fetched.
+                    if not full and self._path("prices", sym).exists():
+                        continue
+                try:
+                    self.prices(sym, full, sym_end)
+                    self.market_cap(sym, full, sym_end)
+                    self.dividends(sym, full)
+                    self.statements(sym, full)
+                except FmpError as e:
+                    self.failures.append({"symbol": sym, "dataset": "symbol", "error": str(e)})
+                    log.warning("%s: %s", sym, mask(e))
+                if i % 10 == 0 or i == len(todo):
+                    secs = (dt.datetime.now() - started).total_seconds()
+                    eta = secs / i * (len(todo) - i)
+                    state_path.write_text(json.dumps({"done": i, "of": len(todo), "last": sym,
+                                                      "calls": self.fmp.calls, "429s": self.fmp.throttled,
+                                                      "at": dt.datetime.now().isoformat()}))
+                    if i % 25 == 0 or i == len(todo):
+                        log.info("symbols %d/%d (%s), %d calls, %d 429s, about %.0f min left",
+                                 i, len(todo), sym, self.fmp.calls, self.fmp.throttled, eta / 60)
+            state_path.write_text(json.dumps({"downloaded": True, "downloaded_at": dt.datetime.now().isoformat(),
+                                              "of": len(todo), "calls": self.fmp.calls,
+                                              "failures": len(self.failures)}))
+        log.info("merging per-symbol files")
         consolidate(self.data)
         st = self.data / "statements.parquet"
+        stmt_ccy = set()
         if st.exists():
             stmt_ccy = set(pd.read_parquet(st, columns=["reportedCurrency"])["reportedCurrency"].dropna())
         quote_ccy = set(master["currency"].dropna())
-        self.fx(stmt_ccy | quote_ccy, full, end)
+        # FX before the master pass: it needs the rates to tell a pence quote from a dollar one.
+        self.fx(stmt_ccy | quote_ccy, False, end)
+        from .master import refine_master
+        from .clean import clean_prices
+        refine_master(self.data)
+        clean_prices(self.data)
         if self.failures:
             pd.DataFrame(self.failures).to_parquet(self.data / "fetch_failures.parquet")
-        state_path.write_text(json.dumps({"done": len(todo), "of": len(todo), "calls": self.fmp.calls,
-                                          "finished": dt.datetime.now().isoformat(),
-                                          "failures": len(self.failures)}))
+        # A top-up leaves the next run free to download again; a full pull stays marked as done.
+        done = {"downloaded": bool(full or downloaded or merge_only),
+                "downloaded_at": state.get("downloaded_at") if (downloaded or merge_only) else dt.datetime.now().isoformat(),
+                "merged_at": dt.datetime.now().isoformat(), "of": len(todo),
+                "calls": self.fmp.calls, "failures": len(self.failures)}
+        state_path.write_text(json.dumps(done))
         return {"symbols": len(todo), "calls": self.fmp.calls, "failures": len(self.failures)}
 
 
@@ -330,6 +368,8 @@ def exclusion_reason(row) -> str | None:
     name = str(row.get("name") or "")
     if IOB.match(sym):
         return "international order book line (0xxx.L)"
+    if LOAN_STOCK.match(sym):
+        return "loan stock or bond line (99XX.L)"
     if row.get("is_etf") is True:
         return "FMP isEtf"
     if row.get("is_fund") is True:
@@ -357,14 +397,17 @@ def consolidate(data: Path) -> None:
         for f in sorted(d.glob("*.parquet")):
             df = pd.read_parquet(f)
             if len(df):
-                df.insert(0, "symbol", f.stem)
-                frames.append(df)
+                # FMP's own rows often carry a symbol column already: set, never insert.
+                df["symbol"] = f.stem
+                frames.append(df[["symbol"] + [c for c in df.columns if c != "symbol"]])
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     p = gather("prices")
     if len(p):
         p["adj_close"] = pd.to_numeric(p["adj_close"], errors="coerce")
-        p[["symbol", "date", "close", "adj_close"]].to_parquet(data / "prices.parquet")
+        if "volume" not in p:
+            p["volume"] = np.nan
+        p[["symbol", "date", "close", "adj_close", "volume"]].to_parquet(data / "prices.parquet")
     m = gather("market_cap")
     if len(m):
         m.to_parquet(data / "market_cap.parquet")

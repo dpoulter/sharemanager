@@ -29,6 +29,13 @@ FIRST_SIGNALS = ["momentum_12_1", "reversal_1m", "high_52w", "low_volatility", "
 
 
 def _setup_logging(cfg) -> None:
+    # Under nohup stdout is a file and Python buffers it: line-buffer so a long
+    # run can be watched with tail -f.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
     logs = cfg.p("logs")
     logs.mkdir(parents=True, exist_ok=True)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -44,6 +51,7 @@ def _setup_logging(cfg) -> None:
     for h in (logging.StreamHandler(sys.stdout),
               logging.FileHandler(logs / f"research-{time.strftime('%Y%m%d')}.log")):
         h.setFormatter(fmt)
+        h.terminator = "\n"
         h.addFilter(Masking())
         root.addHandler(h)
 
@@ -52,7 +60,7 @@ def cmd_fetch(cfg, a):
     from .checks import write_data_report
     from .fetch import Fetcher
     from .store import load_market
-    summary = Fetcher(cfg).run(full=a.full)
+    summary = Fetcher(cfg).run(full=a.full, merge_only=a.merge_only)
     log.info("fetch done: %s", summary)
     path = write_data_report(load_market(cfg.data_dir), cfg.data_dir)
     log.info("data report: %s", path)
@@ -65,6 +73,8 @@ def cmd_universe(cfg, a):
     m = load_market(cfg.data_dir)
     uni = build_universe(m, u["size"], u["large_size"], u["start"], u["include_aim"] or a.aim)
     uni.to_parquet(cfg.data_dir / "universe.parquet")
+    from .checks import write_data_report
+    log.info("data report (with universe-only counts): %s", write_data_report(m, cfg.data_dir))
     per = uni.groupby("date").size()
     print(f"{per.size} monthly rebuilds from {per.index.min().date()} to {per.index.max().date()}; "
           f"members per rebuild {per.min()} to {per.max()}")
@@ -142,7 +152,11 @@ def cmd_report(cfg, a):
 def cmd_validate(cfg, a):
     from .strategy import Workspace
     from .validate import run9
-    rep = run9(Workspace(cfg), Path(a.universe), a.orders and Path(a.orders), a.values and Path(a.values))
+    v = cfg.data_dir / "validation"
+    uni = Path(a.universe) if a.universe else v / "n100_universe_2026-11-18.tsv"
+    orders = Path(a.orders) if a.orders else v / "n100_run9_orders.csv"
+    values = Path(a.values) if a.values else v / "n100_run9_values.csv"
+    rep = run9(Workspace(cfg), uni, orders if orders.exists() else None, values if values.exists() else None)
     print(json.dumps(rep, indent=1, default=str))
     sys.exit(0 if rep.get("passed") else 1)
 
@@ -152,14 +166,18 @@ def main(argv=None):
     p.add_argument("--config", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("fetch"); s.add_argument("--full", action="store_true")
+    s.add_argument("--merge-only", action="store_true",
+                   help="no downloads: merge the per-symbol files, refine the master, clean prices, report")
     s = sub.add_parser("universe"); s.add_argument("--live"); s.add_argument("--aim", action="store_true")
     s = sub.add_parser("run"); s.add_argument("strategy", nargs="+")
     s.add_argument("--period", default="dev"); s.add_argument("--final", action="store_true")
     s = sub.add_parser("signals"); s.add_argument("--period", choices=["dev", "val"])
     s = sub.add_parser("compare"); s.add_argument("family")
     s = sub.add_parser("report"); s.add_argument("run_id")
-    s = sub.add_parser("validate"); s.add_argument("--universe", required=True)
-    s.add_argument("--orders"); s.add_argument("--values")
+    s = sub.add_parser("validate")
+    s.add_argument("--universe", help="default data/validation/n100_universe_2026-11-18.tsv")
+    s.add_argument("--orders", help="default data/validation/n100_run9_orders.csv")
+    s.add_argument("--values", help="default data/validation/n100_run9_values.csv")
     a = p.parse_args(argv)
     cfg = load_config(a.config)
     _setup_logging(cfg)

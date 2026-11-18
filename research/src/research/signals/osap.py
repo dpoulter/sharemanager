@@ -6,6 +6,12 @@ the two latest halves where both are usable, otherwise the latest annual.
 
 Every score is oriented so that higher is what the paper found to earn more.
 Accounts are only those usable by the date (see pit.py).
+
+Missing data: a company whose input field is missing (a bank has no revenue
+or gross profit line; an interim row may have no balance sheet) gets no
+score for that signal and is skipped. A missing field is never read as
+zero. Each run's report shows how many universe members had a score on
+each rebalance date.
 """
 from __future__ import annotations
 

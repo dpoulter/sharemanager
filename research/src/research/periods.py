@@ -11,8 +11,8 @@ class HoldoutLocked(Exception):
 
 
 LABELS = {
-    "dev": "DEVELOPMENT 2007-2021: survivorship-biased (few dead companies before 2021)",
-    "val": "VALIDATION 2022 to 17 May 2025: dead companies included",
+    "dev": "DEVELOPMENT 2007-2022: survivorship-biased (few dead companies in the data before 2023)",
+    "val": "VALIDATION 2023 to 17 May 2025: dead companies included",
     "holdout": "HOLDOUT (final exam): strategy and settings frozen from this run",
 }
 

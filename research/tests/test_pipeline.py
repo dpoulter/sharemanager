@@ -16,6 +16,7 @@ DATES = pd.bdate_range("2006-06-01", "2008-12-31")
 
 class FakeFmp:
     calls = 0
+    throttled = 0
 
     def __init__(self):
         rng = np.random.default_rng(3)
@@ -47,13 +48,13 @@ class FakeFmp:
             sel = (DATES >= a) & (DATES <= b)
             if sym == "DED.L":
                 sel &= DATES <= pd.Timestamp("2008-06-30")
-            return [{"date": d.date().isoformat(), "marketCap": float(v) * 1e7} for d, v in zip(DATES[sel], self.px[sym][sel])]
+            return [{"symbol": sym, "date": d.date().isoformat(), "marketCap": float(v) * 1e7 / 100} for d, v in zip(DATES[sel], self.px[sym][sel])]
         if path == "dividends":
-            return [{"date": "2007-05-01", "dividend": 3.0}]
+            return [{"symbol": sym, "date": "2007-05-01", "dividend": 3.0}]
         if path in ("income-statement", "balance-sheet-statement", "cash-flow-statement"):
             if p["period"] != "annual":
                 return []
-            return [{"date": f"{y}-12-31", "period": "FY", "reportedCurrency": "GBP", "revenue": 1e9, "grossProfit": 4e8,
+            return [{"symbol": sym, "date": f"{y}-12-31", "period": "FY", "reportedCurrency": "GBP", "revenue": 1e9, "grossProfit": 4e8,
                      "netIncome": 1e8, "totalAssets": 2e9 + y, "operatingCashFlow": 1.2e8,
                      "weightedAverageShsOut": 1e7, "totalStockholdersEquity": 1e9} for y in (2005, 2006, 2007)]
         return []
@@ -74,6 +75,19 @@ def test_pipeline_end_to_end(cfg, tmp_path):
     f2 = Fetcher(cfg, client=FakeFmp())
     f2.run(full=True)
     assert f2.fmp.calls < 20
+
+    # Fix E: a merge that failed must not cost a re-download. A run with the
+    # downloads marked done (or done == of, as the failed run left it) only merges.
+    import json
+    (data / "fetch_state.json").write_text(json.dumps({"done": 4, "of": 4}))
+    (data / "prices.parquet").unlink()
+    f3 = Fetcher(cfg, client=FakeFmp())
+    f3.run(full=True)
+    assert (data / "prices.parquet").exists()
+    assert f3.fmp.calls <= 4                # FX only
+    f4 = Fetcher(cfg, client=FakeFmp())
+    f4.run(merge_only=True)
+    assert f4.fmp.calls <= 4
 
     m = load_market(data)
     assert m.close["AAA.L"].dropna().iloc[0] < 5          # pence turned into pounds
@@ -106,3 +120,14 @@ def test_exclusions():
     assert exclusion_reason({"symbol": "BP.L", "name": "BP p.l.c."}) is None
     assert exclusion_reason({"symbol": "ABC.L", "name": "ABC 8.75% Cum Pref"}).startswith("preference")
     assert exclusion_reason({"symbol": "XYZ.L", "name": "XYZ", "is_fund": True}) == "FMP isFund"
+
+
+def test_consolidate_with_symbol_column_already_present(tmp_path):
+    from research.fetch import consolidate
+    d = tmp_path / "raw" / "market_cap"
+    d.mkdir(parents=True)
+    pd.DataFrame({"symbol": ["AAA.L"], "date": pd.to_datetime(["2020-01-02"]), "market_cap": [1.0]}) \
+        .to_parquet(d / "AAA.L.parquet")
+    consolidate(tmp_path)
+    m = pd.read_parquet(tmp_path / "market_cap.parquet")
+    assert list(m["symbol"]) == ["AAA.L"] and list(m.columns).count("symbol") == 1

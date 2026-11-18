@@ -80,12 +80,24 @@ def write_report(cfg: Config, result: dict, trials: int, period_label: str | Non
                                         f"{rec['holdings_mean']:.1f}, {rec['holdings_min']}, {rec['holdings_max']}"),
         ("Share of return from the top 5 holdings", _pct(rec["top5_share_of_return"], 0)),
         ("Rebalances refused by the turnover cap", str(rec["rebalance_refusals"])),
+        ("Universe members with a score (median, min)",
+         f"{rec.get('coverage_median', 0):.0f} of {rec.get('members_median', 0):.0f}, {rec.get('coverage_min', '-')}"),
         ("Variants of this family tried", str(trials)),
     ]
     yearly = result["yearly"]
     yhead = "".join(f"<th>{html.escape(c.replace('_', ' '))}</th>" for c in yearly.columns)
     ybody = "".join(f"<tr><td>{y}</td>" + "".join(f"<td>{_pct(v)}</td>" for v in r) + "</tr>"
                     for y, r in zip(yearly.index, yearly.to_numpy()))
+    cov = result.get("coverage")
+    cov_html = ""
+    if cov is not None and len(cov):
+        by_year = cov.groupby(cov.index.year).agg(["min", "median", "max"])
+        head = "".join(f"<th>{html.escape(str(c))} {s}</th>" for c, s in by_year.columns)
+        body = "".join(f"<tr><td>{y}</td>" + "".join(f"<td>{v:.0f}</td>" for v in r_) + "</tr>"
+                       for y, r_ in zip(by_year.index, by_year.to_numpy()))
+        cov_html = ("<h2>Coverage</h2><p class=\"mut\">Universe members with a value on each rebalance date, "
+                    "by year. A company with a missing field is skipped, never scored as zero.</p>"
+                    f"<table><tr><th>Year</th>{head}</tr>{body}</table>")
     caveats = list(cfg.get("caveats", []))
     if period_label:
         caveats.insert(0, period_label)
@@ -114,6 +126,7 @@ commit {rec['git_commit']} · strategy file {rec['strategy_hash']} · costs chec
 <h2>Value against the benchmarks</h2>{chart}
 <h2>Results</h2><table>{''.join(f'<tr><td>{k}</td><td>{v}</td></tr>' for k, v in rows)}</table>
 <h2>Year by year</h2><table><tr><th>Year</th>{yhead}</tr>{ybody}</table>
+{cov_html}
 <h2>Settings</h2><p><code>{params}</code></p>
 </body></html>"""
     path.write_text(page)

@@ -131,14 +131,21 @@ class Workspace:
         flags = engine.rebalance_flags(dates, rules.rebalance)
         flags[0] = True
         parts = [(REGISTRY[s], float(w)) for s, w in spec.raw["signals"].items()]
-        scores = {}
+        scores, cover = {}, []
         for d in dates[flags]:
             row = member.loc[d]
             uni_syms = list(row.index[row.to_numpy()])
+            line = {"date": d, "members": len(uni_syms)}
             if len(parts) == 1:
                 scores[d] = parts[0][0](ctx, d).reindex(uni_syms)
+                line[parts[0][0].signal_name] = int(scores[d].notna().sum())
             else:
+                for fn, _ in parts:
+                    line[fn.signal_name] = int(fn(ctx, d).reindex(uni_syms).notna().sum())
                 scores[d] = blend(ctx, d, parts, uni_syms)
+            line["scored"] = int(scores[d].notna().sum())
+            cover.append(line)
+        coverage = pd.DataFrame(cover).set_index("date")
         exit_flags = engine.ma200_below_twice(self.m.adj) if rules.exit_ma200 else None
         costs = from_dict(spec.raw.get("costs"))
         res = engine.simulate(self.m, member, large, scores, rules, costs, start, end, exit_flags)
@@ -146,6 +153,11 @@ class Workspace:
         bench = engine.benchmarks(self.m, member, start, end)
         out = metrics.summarise(res.values["total"], bench, res.fills, res.values["holdings"], res.pnl,
                                 free.values["total"])
+        share = coverage["scored"] / coverage["members"].replace(0, np.nan)
+        out["coverage_median"] = float(coverage["scored"].median())
+        out["coverage_min"] = int(coverage["scored"].min())
+        out["coverage_share_median"] = float(share.median())
+        out["members_median"] = float(coverage["members"].median())
         out["rebalance_refusals"] = res.refusals
         out["orders_skipped"] = res.skipped
 
@@ -170,7 +182,7 @@ class Workspace:
         self.log.append(record)
         if final and kind == "research":
             self.log.freeze(spec.name, spec.hash, run_id)
-        result = {"record": record, "result": res, "zero_cost": free, "bench": bench,
+        result = {"record": record, "result": res, "zero_cost": free, "bench": bench, "coverage": coverage,
                   "yearly": metrics.yearly(res.values["total"], bench)}
         if write_report:
             from .report import write_report as wr
