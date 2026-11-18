@@ -41,6 +41,7 @@
 		return $value === null ? '' : ' ' . move_class($value);
 	}
 	function s_date($value) { return e(fmt_date($value)); }
+	function s_when($value) { return e(fmt_when($value)); }
 
 	/* A difference in basis points, signed: +10 bp. A hundredth of a per
 	   cent, which is the unit a fill price difference is argued in. */
@@ -147,19 +148,15 @@
 		/* The menu's entries, in the order they are shown. A halted
 		   strategy goes to the top of its group: it is the one somebody
 		   needs to look at. */
-		$groups = ['Paper' => [], 'Practice' => []];
+		/* $summary is already in the one order the page uses - see
+		   strategy_order() - so the menu groups it without re-sorting:
+		   two sorts are two orders, and the reader finds the same
+		   strategy in two places. */
+		$groups = ['Paper' => [], 'Practice' => [], 'Live' => []];
 		foreach ($summary as $row) {
-			$groups[strategy_mode_name($row['mode']) === 'Practice' ? 'Practice' : 'Paper'][] = $row;
-		}
-		foreach ($groups as $name => $rows) {
-			usort($rows, function ($a, $b) {
-				$ah = $a['halted'] === 'Y' ? 0 : 1;
-				$bh = $b['halted'] === 'Y' ? 0 : 1;
-				if ($ah !== $bh) { return $ah - $bh; }
-				return strcmp(strategy_display_name($a['strategy']),
-				              strategy_display_name($b['strategy']));
-			});
-			$groups[$name] = $rows;
+			$group = strategy_group_name($row['mode']);
+			if (!isset($groups[$group])) { $groups[$group] = []; }
+			$groups[$group][] = $row;
 		}
 		/* Headings only once there are enough entries for them to help.
 		   Two strategies under two headings is more furniture than list. */
@@ -285,6 +282,10 @@
 					<thead>
 						<tr>
 							<th data-sort="text">Strategy</th>
+							<?php /* Second, not eleventh. It is the thing to look at
+							         first, and on a laptop the eleventh column is off
+							         the right-hand edge. */ ?>
+							<th data-sort="text">Status</th>
 							<th data-sort="text">Mode</th>
 							<th class="sm-num" data-sort="number">Value</th>
 							<th class="sm-num" data-sort="number">Return</th>
@@ -294,7 +295,6 @@
 							<th class="sm-num" data-sort="number">Holdings</th>
 							<th class="sm-num" data-sort="number">Cash</th>
 							<th data-sort="text">Next rebalance</th>
-							<th data-sort="text">Status</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -309,6 +309,7 @@
 							<td data-label="Strategy"><a href="<?= e(s_link(['s' => $row['strategy']], $show_disabled)) ?>"
 							       title="<?= e($row['strategy']) ?>" data-bs-toggle="tooltip"><?=
 								e(strategy_display_name($row['strategy'])) ?></a></td>
+							<td data-label="Status"><?= s_status_badge($row['status']) ?></td>
 							<td data-label="Mode"><?= s_mode_badge($row) ?></td>
 							<td class="sm-num" data-label="Value" data-value="<?= e((string) $row['total']) ?>"><?= s_money($row['total'], 0) ?></td>
 							<td class="sm-num<?= s_colour($row['return']) ?>" data-label="Return" data-value="<?= e((string) $row['return']) ?>"><?= s_percent($row['return']) ?></td>
@@ -324,7 +325,6 @@
 							<td class="sm-num" data-label="Cash" data-value="<?= e((string) $row['cash']) ?>"><?= s_money($row['cash'], 0) ?></td>
 							<td data-label="Next rebalance" data-value="<?= e((string) ($row['next_rebalance'] === null
 								? $row['starts_on'] ?? '' : $row['next_rebalance'])) ?>"><?= s_date($row['next_rebalance']) ?></td>
-							<td data-label="Status"><?= s_status_badge($row['status']) ?></td>
 						</tr>
 					<?php endforeach ?>
 					<?php
@@ -341,10 +341,25 @@
 					         stacked block: the benchmark has a name and a return
 					         and nine dashes, and nine dashes is not worth a
 					         screenful. */ ?>
+					<?php /* Ten dashes said nothing. Until the benchmark has two
+					         nights there is no return to show, so the row says when
+					         there will be one. */ ?>
 					<tr class="sm-total-row text-body-secondary">
 						<td data-label="Strategy">FTSE 350 (equal weighted)</td>
+						<td data-label="Status">benchmark</td>
 						<td><?= e(VIEW_DASH) ?></td>
 						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
+						<?php if ($bench_return === null): ?>
+						<td colspan="7" class="text-body-secondary" data-label="Return"><small>
+							<?php if (count($benchmark)): ?>
+								The first return is from <?= s_date($benchmark[0]['date']) ?>,
+								once there is a second night to measure against.
+							<?php else: ?>
+								Nothing has been measured yet: the nightly job writes the
+								first level tonight.
+							<?php endif ?>
+						</small></td>
+						<?php else: ?>
 						<td class="sm-num<?= s_colour($bench_return) ?>" data-label="Return"><?= s_percent($bench_return) ?></td>
 						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
 						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
@@ -352,7 +367,7 @@
 						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
 						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
 						<td><?= e(VIEW_DASH) ?></td>
-						<td>benchmark</td>
+						<?php endif ?>
 					</tr>
 					</tbody>
 				</table>
@@ -564,7 +579,7 @@
 							at the broker <?= $agree['their_cash'] === null
 								? e(VIEW_DASH) : s_money($agree['their_cash'], 2) ?>.
 							<?php if ($agree['sync'] !== null): ?>
-								Last read <?= e((string) $agree['sync']['finished_at']) ?>
+								Last read <?= s_when($agree['sync']['finished_at']) ?>
 								(<?= e((string) $agree['sync']['status']) ?>).
 							<?php else: ?>
 								The broker has never been read.
@@ -708,6 +723,16 @@
 									$total_cost += $holding['cost'];
 									if ($holding['gain'] !== null) { $total_gain += $holding['gain']; }
 								}
+								/* Weights are a share of the account, the same thing
+								   Target weight is a share of, so the cash sits in the
+								   table as a row of its own and the column still adds
+								   up to a hundred. The basis is the holdings on this
+								   page plus the cash, not the stored total, so the
+								   column and the total it is divided by are the same
+								   arithmetic. */
+								$cash_held     = $card['cash'] === null ? 0.0 : (float) $card['cash'];
+								$account_value = $total_value + $cash_held;
+								$cash_weight   = $account_value > 0 ? $cash_held / $account_value : null;
 							?>
 							<div class="table-responsive">
 								<table class="table table-sm table-striped sm-table-sort">
@@ -759,9 +784,18 @@
 									<?php endforeach ?>
 									</tbody>
 									<tfoot>
+										<tr>
+											<td colspan="5">Cash</td>
+											<td class="sm-num"><?= s_money($cash_held, 0) ?></td>
+											<td class="sm-num"><?= $cash_weight === null
+												? VIEW_DASH : e(fmt_pct($cash_weight * 100)) ?></td>
+											<td class="sm-num"></td>
+											<td class="sm-num"></td>
+											<td class="sm-num"></td>
+										</tr>
 										<tr class="sm-total-row">
 											<th colspan="5">Total</th>
-											<th class="sm-num"><?= s_money($total_value, 0) ?></th>
+											<th class="sm-num"><?= s_money($account_value, 0) ?></th>
 											<th class="sm-num"><?= e(fmt_pct(100, 1)) ?></th>
 											<th class="sm-num"></th>
 											<th class="sm-num<?= s_colour($total_gain) ?>">
@@ -846,7 +880,7 @@
 											<td><?= htmlspecialchars((string) $order['note']) ?></td>
 											<?php if ($card['broker'] !== null): ?>
 											<td><small><?= e((string) $order['broker_order_id']) ?></small></td>
-											<td><small><?= e((string) $order['sent_at']) ?></small></td>
+											<td><small><?= s_when($order["sent_at"]) ?></small></td>
 											<?php endif ?>
 										</tr>
 									<?php endforeach ?>

@@ -1366,6 +1366,44 @@
 	}
 
 	/**
+	 * The order the page lists strategies in, everywhere it lists them.
+	 *
+	 * The menu and the summary table were sorted by two different things,
+	 * so the third entry in one was the first row in the other and a
+	 * reader had to find the same strategy twice. One order: paper first,
+	 * then practice, then live, each by display name - and a halted
+	 * strategy at the top of its group, because it is the one somebody has
+	 * to look at.
+	 */
+	function strategy_order(array $rows) {
+
+		$rank=function($row){
+			$mode=strtoupper(trim((string)$row['mode']));
+			if ($mode===STRATEGY_MODE_T212_LIVE){ return 2; }
+			if ($mode===STRATEGY_MODE_T212_DEMO){ return 1; }
+			return 0;
+		};
+
+		usort($rows,function($a,$b) use ($rank) {
+
+			$ar=$rank($a); $br=$rank($b);
+			if ($ar!==$br){ return $ar-$br; }
+
+			$ah=($a['halted']==='Y') ? 0 : 1;
+			$bh=($b['halted']==='Y') ? 0 : 1;
+			if ($ah!==$bh){ return $ah-$bh; }
+
+			return strcasecmp(strategy_display_name($a['strategy']),
+			                  strategy_display_name($b['strategy']));
+		});
+
+		return $rows;
+	}
+
+	/** The group a strategy belongs to in the menu: its mode, in words. */
+	function strategy_group_name($mode) { return strategy_mode_name($mode); }
+
+	/**
 	 * The worst thing true of a strategy right now, as a badge.
 	 *
 	 * Worst first: a halted strategy with orders waiting is a halted
@@ -1586,12 +1624,24 @@
 		$out=[];
 		$seen=[];
 
+		/* What each run's own fills paid, in one query: the only evidence
+		   of the cost model for a run that predates recording it. */
+		$accounts=[];
+		foreach ($runs as $run) { $accounts[]=(string)$run['account']; }
+		$commission=strategy_backtest_commission($accounts);
+
 		foreach ($runs as $run) {
 
 			$rules=strategy_rules((string)$run['strategy']);
 			$account=strategy_account((string)$run['strategy']);
 
-			$label=strategy_backtest_label($run,$rules,$account);
+			$paid=array_key_exists((string)$run['account'],$commission)
+			    ? $commission[(string)$run['account']] : null;
+
+			$label=strategy_backtest_label($run,$rules,$account,$paid);
+
+			//The caveat belongs at the top of the table, once, not here.
+			$run['note']=strategy_backtest_note($run);
 
 			$run['label']=$label['words'];
 			$run['matches_live']=$label['matches_live'];
@@ -1642,7 +1692,7 @@
 	 * What a backtest run was run with, in words, and whether that is what
 	 * the live strategy does now.
 	 */
-	function strategy_backtest_label($run,$rules,$account=null) {
+	function strategy_backtest_label($run,$rules,$account=null,$commission_paid=null) {
 
 		$parts=[];
 		$key=[];
@@ -1680,7 +1730,7 @@
 		/* And what it cost. Two runs of the same rules with different cost
 		   settings are two different experiments, and the only thing that
 		   said so was the return. */
-		$costs=strategy_backtest_costs_words($run);
+		$costs=strategy_backtest_costs_words($run,$commission_paid);
 		$parts[]=$costs['words'];
 		$key[]=$costs['key'];
 
@@ -1699,35 +1749,60 @@
 		        'matches_live'=>$matches];
 	}
 
-	/** The cost settings a run recorded, in words. */
-	function strategy_backtest_costs_words($run) {
+	/**
+	 * Which of the two cost models a run dealt under, in words.
+	 *
+	 * There have only ever been two, and the model changed once, on
+	 * 16 Nov 2026: before it every deal paid GBP 5.95 commission and a
+	 * 25 bp spread; after it a Trading 212 account pays no commission.
+	 * "costs not recorded (GBP 29.51 a fill)" was an average, and an
+	 * average of commission, stamp duty and spread over fifteen names
+	 * does not tell anybody which model the run assumed - two runs with
+	 * the same model and different turnover read as two models, and two
+	 * runs with different models and similar turnover read as one.
+	 *
+	 * The recorded settings answer it where a run has them, and the
+	 * commission they name is a commission a deal, so it is the figure in
+	 * the label. Where a run has no recorded settings, $commission_paid is
+	 * what its fills paid in total and only its sign is read: anything
+	 * above nothing is the old model, which only ever charged
+	 * STRATEGY_COMMISSION a deal; nothing over at least one fill is the
+	 * Trading 212 model; and null - no fills left to read - is not guessed
+	 * at, because a run that never dealt says nothing about either.
+	 */
+	function strategy_backtest_costs_words($run,$commission_paid=null) {
 
 		$recorded=array_key_exists('cost_settings',$run)
 		        ? trim((string)$run['cost_settings']) : '';
 
+		$commission=null;
+
 		if ($recorded!==''){
-			$parts=strategy_backtest_costs_parse($recorded);
-			return ['key'=>$recorded,
-			        'words'=>($parts['commission']>0
-			                  ? fmt_pounds($parts['commission'],2).' commission'
-			                  : 'no commission')];
+			$commission=strategy_backtest_costs_parse($recorded)['commission'];
+		}
+		else if ($commission_paid!==null){
+			$commission=((float)$commission_paid>0) ? (float)STRATEGY_COMMISSION : 0.0;
 		}
 
-		/* A run from before the settings were recorded. What it paid per
-		   fill is the only evidence left, and it is enough to tell a
-		   GBP 5.95 run from a free one. */
-		$fills=(int)$run['fills'];
-		$paid=($run['costs_paid']===null) ? null : (float)$run['costs_paid'];
-
-		if ($fills>0&&$paid!==null){
-			return ['key'=>'per-fill:'.round($paid/$fills,2),
-			        'words'=>'costs not recorded ('.fmt_pounds($paid/$fills,2).' a fill)'];
+		if ($commission===null){
+			return ['key'=>'unknown','words'=>'cost model not recorded'];
 		}
 
-		return ['key'=>'unrecorded','words'=>'costs not recorded'];
+		return ($commission>0)
+		     ? ['key'=>'commission',
+		        'words'=>'old costs ('.fmt_pounds($commission,2).' commission)']
+		     : ['key'=>'no-commission','words'=>'Trading 212 costs'];
 	}
 
-	/** The cost settings in force now, in the same shape a run records. */
+	/**
+	 * The cost model in force now.
+	 *
+	 * 'text' is what a run records against itself, field by field, so a
+	 * later change to the spread or the minimum can still be read off an
+	 * old run. 'key' is the model, which is what a run is labelled and
+	 * compared by: the two are not the same thing, and a run recorded
+	 * before the spread moved is still a run under the old model.
+	 */
 	function strategy_backtest_costs_now($mode) {
 
 		$rules=strategy_mode_rules($mode);
@@ -1737,7 +1812,71 @@
 		     .', spread_bps='.number_format(STRATEGY_SLIPPAGE_BPS,2,'.','')
 		     .', minimum='.number_format((float)$rules['minimum_order'],2,'.','');
 
-		return ['key'=>$text,'commission'=>(float)$rules['commission']];
+		$commission=(float)$rules['commission'];
+
+		return ['text'=>$text,
+		        'key'=>($commission>0) ? 'commission' : 'no-commission',
+		        'commission'=>$commission];
+	}
+
+	/**
+	 * What a run's own fills paid in commission, by backtest account.
+	 *
+	 * One query for the whole table rather than one a row. The value is
+	 * null where no fill is left to read, which is not the same as zero:
+	 * a run that never dealt says nothing about either model.
+	 */
+	function strategy_backtest_commission(array $accounts) {
+
+		$out=[];
+
+		$wanted=[];
+		foreach ($accounts as $account) {
+			$account=trim((string)$account);
+			if ($account!==''){ $wanted[$account]=true; }
+		}
+		if (!count($wanted)){ return $out; }
+
+		$names=array_keys($wanted);
+		$marks=implode(',',array_fill(0,count($names),'?'));
+
+		foreach (query("select strategy, count(*) fills,
+		                       ifnull(sum(commission),0) commission
+		                  from strategy_orders
+		                 where status='FILLED' and strategy in (".$marks.")
+		                 group by strategy",...$names) as $row) {
+			$out[(string)$row['strategy']]=((int)$row['fills']>0)
+			                             ? (float)$row['commission'] : null;
+		}
+
+		return $out;
+	}
+
+	/**
+	 * What is left of a run's note once the general caveat is taken out.
+	 *
+	 * The survivorship and look-ahead caveat was written into every run's
+	 * note as well as printed once at the top of the table, so a reader
+	 * met it six times and read it none. It belongs to the method, not to
+	 * a run. New runs no longer record it; the rows that already have it
+	 * are stripped here rather than edited in the database, and what is
+	 * left - a turnover refusal, a problem - is the only thing a note was
+	 * ever worth printing for.
+	 */
+	function strategy_backtest_note($run) {
+
+		$note=trim((string)(array_key_exists('note',$run) ? $run['note'] : ''));
+		if ($note===''){ return null; }
+
+		/* By sentence, because the wording of the caveat has changed
+		   once already and the rows that carry the older one are the
+		   rows that need it taken out. Neither sentence has a full stop
+		   inside it, so one is all it takes to find the end. */
+		$note=preg_replace('/\b(?:Survivorship|Look-ahead)\b[^.]*\.\s*/i','',$note);
+		$note=preg_replace('/\bPrices are adjusted closes\.\s*/i','',$note);
+		$note=trim((string)$note);
+
+		return ($note==='') ? null : $note;
 	}
 
 	/** The pieces of a recorded cost setting string. */
@@ -2980,6 +3119,33 @@
 	 * and said so in "unpriced", rather than dropped: a share suspended
 	 * this morning is still money in the account.
 	 */
+	/**
+	 * The shares this strategy bought after the latest close, by symbol.
+	 *
+	 * A holding filled this morning has no close of its own yet: the
+	 * latest one in historical_prices is yesterday's, from before the
+	 * shares were bought. Marking it to that price is not a valuation, it
+	 * is arithmetic on two unrelated days - and it showed the practice
+	 * account up 0.7% on the afternoon it opened.
+	 *
+	 * One query, and the answer is normally empty: this only happens on
+	 * the day of a fill.
+	 */
+	function strategy_fills_after($strategy,$as_of) {
+
+		$as_of=substr((string)$as_of,0,10);
+
+		$out=[];
+		foreach (query("select symbol, max(fill_date) d from strategy_orders
+		                 where strategy=? and status='FILLED' and fill_date is not null
+		                 group by symbol",$strategy) as $row) {
+			if (substr((string)$row['d'],0,10)>$as_of){
+				$out[(string)$row['symbol']]=substr((string)$row['d'],0,10);
+			}
+		}
+		return $out;
+	}
+
 	function strategy_value_now($strategy,$as_of,$exchange=null,$prices=null) {
 
 		$exchange=($exchange===null) ? session_exchange() : $exchange;
@@ -2988,21 +3154,37 @@
 		$account=strategy_account($strategy);
 
 		$out=['cash'=>$account===null ? 0.0 : (float)$account['cash'],
-		      'holdings'=>0,'value'=>0.0,'total'=>0.0,'unpriced'=>0,
+		      'holdings'=>0,'value'=>0.0,'total'=>0.0,'unpriced'=>0,'at_cost'=>0,
 		      'prices_as_of'=>$as_of,'last_fill'=>null,'prices_behind'=>false];
+
+		$filled=strategy_fills_after($strategy,$as_of);
 
 		foreach (query("select symbol, exchange, quantity, avg_price
 		                  from strategy_positions
 		                 where strategy=? and quantity>0",$strategy) as $row) {
 
+			$symbol=(string)$row['symbol'];
 			$quantity=(float)$row['quantity'];
 			/* From the page's one price query when it brought one, and
 			   from the database when it did not. */
-			$price=($prices!==null&&array_key_exists((string)$row['symbol'],$prices))
-			     ? $prices[(string)$row['symbol']]
+			$price=($prices!==null&&array_key_exists($symbol,$prices))
+			     ? $prices[$symbol]
 			     : strategy_price_asof($row['symbol'],(string)$row['exchange'],$as_of);
 
 			$out['holdings']++;
+
+			/* Bought since the last close. Valuing it at that close values
+			   shares at a price from before they were bought, which is how
+			   a practice account showed +0.7% on the day it opened: it had
+			   not made anything, it had been marked to a price that
+			   predated it. What it paid is the honest figure until a close
+			   exists that is newer than the fill. */
+			if (isset($filled[$symbol])){
+				$out['at_cost']++;
+				$out['value'] += (float)$row['avg_price']*$quantity;
+				continue;
+			}
+
 			if ($price===null){
 				$out['unpriced']++;
 				$out['value'] += (float)$row['avg_price']*$quantity;
@@ -3205,6 +3387,12 @@
 		$rows=[];
 		$total=0.0;
 
+		/* The same rule the headline uses: a share bought since the last
+		   close is worth what it cost until there is a close newer than
+		   the fill. The two figures have to agree, or the Holdings table
+		   adds up to something the card does not say. */
+		$filled=strategy_fills_after($strategy,$as_of);
+
 		foreach (query("select p.symbol, p.exchange, p.quantity, p.avg_price, ss.name
 		                 from strategy_positions p
 		                 left join stock_symbols ss on ss.symbol=p.symbol and ss.exchange=p.exchange
@@ -3218,8 +3406,12 @@
 			   int cast here showed the holding as nought on the page while
 			   its average cost and its value were right. */
 			$quantity=(float)$row['quantity'];
-			$value=($price===null) ? null : $price*$quantity;
 			$cost=(float)$row['avg_price']*$quantity;
+
+			$fresh=isset($filled[(string)$row['symbol']]);
+			if ($fresh){ $price=(float)$row['avg_price']; }
+
+			$value=($price===null) ? null : $price*$quantity;
 
 			$last_sell=query("select max(fill_date) d from strategy_orders
 			                   where strategy=? and symbol=? and side='SELL' and status='FILLED'",
@@ -3241,6 +3433,10 @@
 			         'cost'=>$cost,
 			         'gain'=>($value===null) ? null : $value-$cost,
 			         'gain_percent'=>($value===null||$cost<=0) ? null : (($value/$cost)-1),
+			         /* Priced at what it cost, because it was bought after
+			            the latest close and there is nothing newer to mark
+			            it to. */
+			         'at_cost'=>$fresh,
 			         'held_since'=>$held_since,
 			         /* To today, and never below nought. Measured to the as of
 			            date it read -1 on the morning of a fill: the shares were
@@ -3252,9 +3448,20 @@
 			if ($value!==null){ $total += $value; }
 		}
 
-		//Weights once the total is known, so they add up to what is held.
+		/* Weights as a share of the ACCOUNT, not of what is held.
+		   Target weight is one over the number of holdings of the account
+		   - cash included - so a column of weights against the holdings
+		   total was being read against a target measured on something
+		   else: fifteen names at 6.6% of GBP4,962 beside a target of 6.6%
+		   of GBP5,034. The page shows a cash row so the column still sums
+		   to a hundred. */
+		$account=strategy_account($strategy);
+		$cash=($account===null) ? 0.0 : (float)$account['cash'];
+		$account_value=$total+$cash;
+
 		foreach ($rows as $i => $row) {
-			$rows[$i]['weight']=($total>0&&$row['value']!==null) ? $row['value']/$total : null;
+			$rows[$i]['weight']=($account_value>0&&$row['value']!==null)
+			                  ? $row['value']/$account_value : null;
 		}
 
 		return $rows;

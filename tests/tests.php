@@ -2440,9 +2440,14 @@
           json_encode([$bt_run[0]['costs_paid'], $bt_run[0]['fills']]));
     check('it measured itself against the benchmark over its own period',
           $bt_run[0]['benchmark_return'] !== null);
-    check('and it says what to read the result with, both ways',
-          stripos((string)$bt_run[0]['note'], 'survivorship') !== false
-          && stripos((string)$bt_run[0]['note'], 'look-ahead') !== false,
+    /* The caveat belongs to the method, not to a run: a page that printed
+       the note under every row said it as many times as there were runs
+       and emphasised none of them. So the run records only what is true of
+       itself, and the caveat is said where somebody reads the result - at
+       the top of the table, and in the output of the job. */
+    check('a run records only what is true of itself, not the general caveat',
+          stripos((string)$bt_run[0]['note'], 'survivorship') === false
+          && stripos((string)$bt_run[0]['note'], 'look-ahead') === false,
           (string)$bt_run[0]['note']);
     check('the two caveats are in the output as well, where somebody running it will see them',
           stripos($bt_out, 'survivorship') !== false && stripos($bt_out, 'look-ahead') !== false);
@@ -4412,6 +4417,75 @@
     check('and no row anywhere counts a negative number of days',
           count($sp_negative) === 0, implode(', ', $sp_negative));
 
+    /* Valued at what it cost until a close exists that is newer than the
+       fill. The practice account showed +0.7% on the day it opened: it had
+       not made anything, its shares had been marked to the previous
+       close - a price from before they were bought. */
+    $FF = 'test_fresh_fill';
+    s_drop($FF);
+    s_rules($FF, ['holdings' => 2]);
+    s_reset($FF, 100.00, 'Y', 'T212_DEMO');
+
+    $ff_close = (float) strategy_price_asof('AAA', 'XLON', $sp_prev);
+    $ff_other = (float) strategy_price_asof('BBB', 'XLON', $sp_prev);
+    /* Deliberately not the close, and above it, so a row valued at the
+       close and a row valued at cost cannot be confused. */
+    $ff_cost  = round($ff_close * 1.25 + 0.5, 4);
+
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',100,?,now()), (?,'BBB','XLON',50,?,now())")
+        ->execute([$FF, $ff_cost, $FF, $ff_other]);
+    /* AAA was bought this morning, after the last close. BBB was bought
+       before it, so the close is the newer price and the one to use. */
+    db()->prepare("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,exchange,
+                                                side,quantity,status,fill_date,fill_price,
+                                                consideration,total_cost,created_at,filled_at,note)
+                   values (?,?,?,'AAA','XLON','BUY',100,'FILLED',?,?,?,?,now(),now(),'build'),
+                          (?,?,?,'BBB','XLON','BUY',50,'FILLED',?,?,?,?,now(),now(),'build')")
+        ->execute([$FF . '-a', $FF, $sp_prev, date('Y-m-d'), $ff_cost,
+                   100 * $ff_cost, -(100 * $ff_cost),
+                   $FF . '-b', $FF, $sp_prev, $sp_prev, $ff_other,
+                   50 * $ff_other, -(50 * $ff_other)]);
+
+    $ff_rows = [];
+    foreach (strategy_holdings($FF, $sp_prev, 'XLON') as $ff_row) {
+        $ff_rows[(string) $ff_row['symbol']] = $ff_row;
+    }
+
+    check('a holding bought after the last close is valued at what it cost',
+          abs((float) $ff_rows['AAA']['value'] - 100 * $ff_cost) < 0.005
+          && $ff_rows['AAA']['at_cost'] === true,
+          json_encode([$ff_rows['AAA']['value'], 100 * $ff_cost, 100 * $ff_close,
+                       $ff_rows['AAA']['at_cost']]));
+    check('and one bought before it is still valued at the close',
+          abs((float) $ff_rows['BBB']['value'] - 50 * $ff_other) < 0.005
+          && $ff_rows['BBB']['at_cost'] === false,
+          json_encode([$ff_rows['BBB']['value'], 50 * $ff_other]));
+
+    $ff_now = strategy_value_now($FF, $sp_prev, 'XLON');
+    check('so the account is not up on the day it bought them',
+          abs((float) $ff_now['total'] - (100.00 + 100 * $ff_cost + 50 * $ff_other)) < 0.01
+          && (int) $ff_now['at_cost'] === 1,
+          json_encode([$ff_now['total'], 100.00 + 100 * $ff_cost + 50 * $ff_other,
+                       $ff_now['at_cost']]));
+
+    /* Weights are a share of the account, which is what Target weight is a
+       share of. They used to be a share of the holdings, so fifteen names
+       at a sixteenth of GBP5,034 each read as 6.6% against a target of
+       6.6% and added up to 100% of GBP4,962 instead. */
+    $ff_total = (float) $ff_now['total'];
+    $ff_sum = 0.0;
+    foreach ($ff_rows as $ff_row) { $ff_sum += (float) $ff_row['weight']; }
+
+    check('a holding\'s weight is its share of the account, cash included',
+          abs((float) $ff_rows['AAA']['weight'] - (100 * $ff_cost / $ff_total)) < 0.0005,
+          json_encode([$ff_rows['AAA']['weight'], 100 * $ff_cost / $ff_total]));
+    check('so the weights and the cash add up to the whole account, not the weights alone',
+          abs($ff_sum + (100.00 / $ff_total) - 1.0) < 0.0005 && $ff_sum < 0.999,
+          json_encode([$ff_sum, 100.00 / $ff_total, $ff_sum + (100.00 / $ff_total)]));
+
+    s_drop($FF);
+
     /* The orders that have not filled. A paper card with an empty book and
        fifteen orders planned for tonight said "Nothing held", full stop. */
     $SPP = 'test_card_pending';
@@ -4630,9 +4704,19 @@
        here: a fixture that hard-codes them would say "matches live" after
        somebody changed the commission. The other two are deliberately not
        the live ones. */
-    $bl_live = strategy_backtest_costs_now('PAPER')['key'];
-    $bl_old  = 'commission=11.95, stamp=0.00500, spread_bps=25.00, minimum=250.00';
+    $bl_live = strategy_backtest_costs_now('PAPER')['text'];
+    $bl_old  = 'commission=5.95, stamp=0.00500, spread_bps=25.00, minimum=250.00';
     $bl_free = 'commission=0.00, stamp=0.00500, spread_bps=25.00, minimum=10.00';
+
+    /* The model is what a run is labelled and compared by; the recorded
+       text is field by field, so a later change to the spread does not
+       turn an old run into a third model. */
+    check('the cost model in force is named, and recorded field by field',
+          strategy_backtest_costs_now('PAPER')['key'] === 'commission'
+          && strategy_backtest_costs_now('T212_DEMO')['key'] === 'no-commission'
+          && strpos($bl_live, 'commission=5.95') === 0,
+          json_encode([strategy_backtest_costs_now('PAPER')['key'],
+                       strategy_backtest_costs_now('T212_DEMO')['key'], $bl_live]));
 
     $bl_insert->execute([$BL, 'bt_' . $BL . '_1', '2021-01-04', '2026-01-02',
                          'rebalance=monthly, hold-rank=30', $bl_old,
@@ -4652,56 +4736,144 @@
           stripos($bl_labels[0], 'monthly') !== false
           && stripos($bl_labels[0], 'hold to rank 30') !== false,
           json_encode($bl_labels));
-    check('the commission is what tells them apart',
-          stripos(implode(' ', $bl_labels), '11.95') !== false
-          && stripos(implode(' ', $bl_labels), 'no commission') !== false,
+    /* The two real cost models, by name. The label used to read "costs
+       not recorded (GBP 29.51 a fill)", which is an average of
+       commission, stamp duty and spread over however many deals the run
+       made: two runs under the same model and different turnover read as
+       two models, and two runs under different models with similar
+       turnover read as one. */
+    check('each run is labelled by which of the two cost models it used',
+          stripos(implode(' ', $bl_labels), 'old costs') !== false
+          && stripos(implode(' ', $bl_labels), '5.95 commission') !== false
+          && stripos(implode(' ', $bl_labels), 'Trading 212 costs') !== false,
+          json_encode($bl_labels));
+    check('and no label offers an average cost per fill as the model',
+          stripos(implode(' ', $bl_labels), 'a fill') === false,
           json_encode($bl_labels));
 
-    /* The one whose rules and costs match the live strategy is marked and
-       listed first: it is the one that says what the strategy would have
-       done, and the others are history of the settings. */
+    /* The one whose rules and cost model match the live strategy is marked
+       and listed first: it is the one that says what the strategy would
+       have done, and the others are the history of the settings. The
+       paper account pays commission, so the old-costs run is the match
+       and the free one is not. */
     $bl_insert->execute([$BL, 'bt_' . $BL . '_3', '2021-01-04', '2026-01-02',
-                         'rebalance=monthly, hold-rank=30', $bl_live,
+                         'rebalance=weekly, hold-rank=none', $bl_old,
                          '2026-11-03 10:00:00', 201000, 1.010, 0.40, 120.00]);
 
     $bl_rows = strategy_backtest_rows($BL, 10);
-    check('the run that matches the live settings is first and marked',
-          count($bl_rows) === 3 && $bl_rows[0]['matches_live'] === true
-          && $bl_rows[1]['matches_live'] === false,
+    $bl_match = [];
+    foreach ($bl_rows as $bl_run) {
+        if ($bl_run['matches_live']) { $bl_match[] = $bl_run['account']; }
+    }
+    check('the run that matches the live rules and cost model is first, and only it',
+          count($bl_rows) === 3 && $bl_rows[0]['account'] === 'bt_' . $BL . '_1'
+          && $bl_match === ['bt_' . $BL . '_1'],
           json_encode(array_map(function ($r) {
-              return [$r['label'], $r['matches_live'], $r['superseded']]; }, $bl_rows)));
+              return [$r['account'], $r['label'], $r['matches_live']]; }, $bl_rows)));
+
+    /* And the match follows the account, not the calendar: the same table
+       under a practice account marks the Trading 212 run instead, because
+       that is the one that says what this strategy would do now. */
+    db()->prepare("update strategy_accounts set mode='T212_DEMO' where strategy=?")->execute([$BL]);
+    $bl_demo = [];
+    foreach (strategy_backtest_rows($BL, 10) as $bl_run) {
+        if ($bl_run['matches_live']) { $bl_demo[] = $bl_run['account']; }
+    }
+    check('a practice account marks the run that paid no commission instead',
+          $bl_demo === ['bt_' . $BL . '_2'], json_encode($bl_demo));
+    db()->prepare("update strategy_accounts set mode='PAPER' where strategy=?")->execute([$BL]);
 
     /* A later run with the same settings supersedes an earlier one: the
        newer answer to the same question is the answer. */
     $bl_insert->execute([$BL, 'bt_' . $BL . '_4', '2021-01-04', '2026-01-02',
-                         'rebalance=monthly, hold-rank=30', $bl_free,
-                         '2026-11-04 10:00:00', 198000, 0.980, 0.40, 0.00]);
+                         'rebalance=monthly, hold-rank=30', $bl_live,
+                         '2026-11-04 10:00:00', 198000, 0.980, 0.40, 714.00]);
 
     $bl_rows = strategy_backtest_rows($BL, 10);
-    $bl_super = 0;
-    foreach ($bl_rows as $bl_run) { if ($bl_run['superseded']) { $bl_super++; } }
-    check('an older run with the same settings is marked superseded',
-          $bl_super === 1, json_encode(array_map(function ($r) {
-              return [$r['started_at'], $r['superseded']]; }, $bl_rows)));
+    $bl_super = [];
+    foreach ($bl_rows as $bl_run) {
+        if ($bl_run['superseded']) { $bl_super[] = $bl_run['account']; }
+    }
+    check('an older run with the same rules and the same cost model is superseded',
+          $bl_super === ['bt_' . $BL . '_1'], json_encode(array_map(function ($r) {
+              return [$r['account'], $r['started_at'], $r['superseded']]; }, $bl_rows)));
 
     check('a run restates its return as a yearly rate',
           $bl_rows[0]['a_year'] !== null
           && $bl_rows[0]['a_year'] < (float) $bl_rows[0]['total_return'],
           json_encode([$bl_rows[0]['total_return'], $bl_rows[0]['a_year']]));
 
-    /* A run from before the settings were recorded is still told apart from
-       a free one: what it paid per fill is the evidence that is left. */
-    $bl_insert->execute([$BL, 'bt_' . $BL . '_5', '2021-01-04', '2026-01-02',
-                         'rebalance=monthly, hold-rank=30', null,
-                         '2026-10-01 10:00:00', 190000, 0.900, 0.40, 714.00]);
-    $bl_old_run = null;
-    foreach (strategy_backtest_rows($BL, 10) as $bl_run) {
-        if ($bl_run['account'] === 'bt_' . $BL . '_5') { $bl_old_run = $bl_run; }
+    /* A run from before the settings were recorded: its own fills are the
+       evidence left, and whether any of them paid commission is the whole
+       question. An average of commission, stamp duty and spread over the
+       deals it made is not. */
+    $bl_fill = db()->prepare("insert into strategy_orders
+                   (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,
+                    fill_date,fill_price,consideration,commission,stamp_duty,slippage,
+                    total_cost,created_at,filled_at,note)
+                 values (?,?,'2025-06-02','AAA','XLON','BUY',100,'FILLED','2025-06-03',
+                         2.0,200,?,1.0,0.5,?,now(),now(),'backtest')");
+
+    foreach ([['_5', 5.95, '2026-10-01 10:00:00'],
+              ['_6', 0.00, '2026-10-02 10:00:00']] as $bl_case) {
+        $bl_insert->execute([$BL, 'bt_' . $BL . $bl_case[0], '2021-01-04', '2026-01-02',
+                             'rebalance=monthly, hold-rank=30', null,
+                             $bl_case[2], 190000, 0.900, 0.40, 714.00]);
+        for ($bl_i = 1; $bl_i <= 3; $bl_i++) {
+            $bl_fill->execute(['bt' . $BL . $bl_case[0] . '-' . $bl_i,
+                               'bt_' . $BL . $bl_case[0], $bl_case[1],
+                               -(200 + $bl_case[1] + 1.5)]);
+        }
     }
-    check('a run with no cost settings recorded says so, with what it paid a fill',
-          $bl_old_run !== null && stripos($bl_old_run['label'], 'not recorded') !== false
-          && strpos($bl_old_run['label'], '5.95') !== false,
-          $bl_old_run === null ? 'missing' : $bl_old_run['label']);
+    /* And one whose fills are gone - an old run whose backtest account was
+       cleared out - which says nothing about either model and must not be
+       guessed at. */
+    $bl_insert->execute([$BL, 'bt_' . $BL . '_7', '2021-01-04', '2026-01-02',
+                         'rebalance=monthly, hold-rank=30', null,
+                         '2026-10-03 10:00:00', 100000, 0.000, 0.40, 0.00]);
+
+    $bl_by_account = [];
+    foreach (strategy_backtest_rows($BL, 10) as $bl_run) {
+        $bl_by_account[(string) $bl_run['account']] = (string) $bl_run['label'];
+    }
+    check('a run whose fills paid commission is labelled the old cost model',
+          stripos($bl_by_account['bt_' . $BL . '_5'] ?? '', 'old costs') !== false
+          && strpos($bl_by_account['bt_' . $BL . '_5'] ?? '', '5.95') !== false,
+          $bl_by_account['bt_' . $BL . '_5'] ?? 'missing');
+    check('one whose fills paid none is labelled the Trading 212 model',
+          stripos($bl_by_account['bt_' . $BL . '_6'] ?? '', 'Trading 212 costs') !== false,
+          $bl_by_account['bt_' . $BL . '_6'] ?? 'missing');
+    check('and one that never dealt says the model is not recorded, rather than guessing',
+          stripos($bl_by_account['bt_' . $BL . '_7'] ?? '', 'not recorded') !== false
+          && stripos($bl_by_account['bt_' . $BL . '_7'] ?? '', 'Trading 212') === false,
+          $bl_by_account['bt_' . $BL . '_7'] ?? 'missing');
+
+    /* The caveat is a property of the method, not of a run. It was written
+       into every run's note as well as printed once at the top of the
+       table, so a reader met it six times and read it none. */
+    check('the general caveat is taken out of a run note, and the run\'s own words kept',
+          strategy_backtest_note(['note' => "Survivorship: the universe is today's FTSE 350,"
+                                  . " so companies that left the index are missing and the"
+                                  . " result is flattered. Look-ahead: each date used only the"
+                                  . " statistics stored for it. Prices are adjusted closes."
+                                  . " 2 rebalances refused by the turnover limit."])
+          === '2 rebalances refused by the turnover limit.',
+          json_encode(strategy_backtest_note(['note' => 'Survivorship: x. 2 rebalances refused'
+                                              . ' by the turnover limit.'])));
+    check('an older wording of the caveat goes too, and a note of nothing else is nothing',
+          strategy_backtest_note(['note' => "Survivorship: the universe is today's FTSE 350."
+                                  . " Look-ahead: each date used only the statistics stored"
+                                  . " for it."]) === null
+          && strategy_backtest_note(['note' => null]) === null);
+    /* And no new run writes it: the one place it belongs is the page. */
+    check('the backtest job no longer records the caveat against a run',
+          stripos((string) php_strip_whitespace(dirname(__DIR__)
+                  . '/includes/backtest_strategy.php'), '$note="Survivorship') === false);
+
+    foreach (['_5', '_6'] as $bl_case) {
+        db()->prepare("delete from strategy_orders where strategy=?")
+            ->execute(['bt_' . $BL . $bl_case]);
+    }
 
     db()->prepare("delete from strategy_backtest_runs where strategy=?")->execute([$BL]);
     s_drop($BL);
@@ -13842,6 +14014,46 @@ STUB
         check('and the caveat is printed once, not under every run',
               substr_count($sp_with_bt, 'Flattered by survivorship') === 1,
               (string) substr_count($sp_with_bt, 'Flattered by survivorship'));
+        /* C. Not once at the top and again under every row. The job used
+           to write the caveat into each run's note, and the note is
+           printed under its row, so the tab said it as many times as
+           there were runs. */
+        check('and the run\'s own note does not say it a second time',
+              substr_count(strtolower($sp_with_bt), 'survivorship') === 1
+              && strpos(strtolower($sp_with_bt), 'look-ahead') === false,
+              (string) substr_count(strtolower($sp_with_bt), 'survivorship'));
+
+        /* C. Six runs listed with equal weight, none marked and none put
+           away: the one that says what the strategy would do now is the
+           one whose rules and cost model are the live ones, and the runs
+           a later run has answered since belong behind a fold. */
+        $sp_bt_live = db()->prepare("insert into strategy_backtest_runs
+                         (strategy,account,from_date,to_date,cost_settings,started_at,finished_at,
+                          status,trading_days,rebalances,exits,fills,start_value,final_value,
+                          total_return,benchmark_return,max_drawdown,costs_paid)
+                       values (?,?,?,?,?,?,now(),'DONE',120,6,2,30,100000,?,?,0.04,0.085,842.10)");
+        $sp_bt_live->execute([$sp, STRATEGY_BACKTEST_PREFIX . $sp . '_2', '2026-01-02', $sp_prev,
+                              strategy_backtest_costs_now('PAPER')['text'],
+                              '2026-11-01 10:00:00', 204400, 1.044]);
+        $sp_bt_live->execute([$sp, STRATEGY_BACKTEST_PREFIX . $sp . '_3', '2026-01-02', $sp_prev,
+                              strategy_backtest_costs_now('PAPER')['text'],
+                              '2026-10-01 10:00:00', 150000, 0.500]);
+
+        $sp_bt_tab = (string) $curl("$base/strategies.php?s=" . urlencode($sp) . "&tab=backtest");
+        check('the run whose rules and cost model are the live ones is marked, and first',
+              strpos($sp_bt_tab, 'matches live settings') !== false
+              && strpos($sp_bt_tab, '+104.4%') !== false
+              && strpos($sp_bt_tab, '+104.4%') < strpos($sp_bt_tab, '+12.0%'),
+              substr($sp_bt_tab, max(0, strpos($sp_bt_tab, 'matches live settings') - 400), 600));
+        check('and it says which cost model it used, not an average cost a fill',
+              stripos($sp_bt_tab, 'old costs') !== false
+              && stripos($sp_bt_tab, 'a fill)') === false,
+              substr($sp_bt_tab, max(0, stripos($sp_bt_tab, 'old costs') - 200), 400));
+        check('a run a later one has answered since is folded away under Earlier runs',
+              stripos($sp_bt_tab, 'Earlier runs (1)') !== false
+              && strpos($sp_bt_tab, '<details') !== false
+              && strpos($sp_bt_tab, '+50.0%') > strpos($sp_bt_tab, 'Earlier runs'),
+              substr($sp_bt_tab, max(0, stripos($sp_bt_tab, 'Earlier runs') - 200), 500));
         check('every run is in the Backtests view as well',
               stripos((string) $curl("$base/strategies.php?s=_backtests"), '+12.0%') !== false);
         db()->exec("delete from strategy_backtest_runs where strategy='$sp'");
@@ -13949,6 +14161,140 @@ STUB
               stripos($sp_halt, '>Halted<') !== false);
         db()->prepare("update strategy_accounts set mode='T212_DEMO', halted='N',
                          halt_reason=null where strategy=?")->execute([$sp2]);
+
+        /* ---------------- After the first deploy ---------------- */
+
+        /* B. One order, in the menu and in the table. The menu listed
+           Trend following, Trending Value, Trend following (practice)
+           while the table listed Trending Value first, so the third entry
+           in one was the first row in the other and a reader had to find
+           the same strategy twice. */
+        $sp_both     = (string) $curl("$base/strategies.php");
+        $sp_cut      = (int) strpos($sp_both, 'sm-view-col');
+        $sp_in_menu  = substr($sp_both, 0, $sp_cut);
+        $sp_in_table = substr($sp_both, $sp_cut);
+        $sp_order    = function ($html) use ($sp, $sp2) {
+            $found = [];
+            foreach ([$sp, $sp2] as $sp_name) {
+                $at = strpos($html, strategy_display_name($sp_name));
+                if ($at !== false) { $found[$sp_name] = $at; }
+            }
+            asort($found);
+            return array_keys($found);
+        };
+        check('the menu lists strategies in the same order as the summary table',
+              count($sp_order($sp_in_menu)) === 2
+              && $sp_order($sp_in_menu) === $sp_order($sp_in_table),
+              json_encode([$sp_order($sp_in_menu), $sp_order($sp_in_table)]));
+        check('and that order is paper first, then practice',
+              $sp_order($sp_in_table) === [$sp, $sp2],
+              json_encode($sp_order($sp_in_table)));
+
+        /* E. Status next to the name. It was the eleventh column, which on
+           a laptop is off the right-hand edge, and it is the thing to read
+           first. */
+        $sp_thead = substr($sp_in_table, (int) strpos($sp_in_table, '<thead>'),
+                           max(1, (int) strpos($sp_in_table, '</thead>')
+                                  - (int) strpos($sp_in_table, '<thead>')));
+        preg_match_all('#<th\b[^>]*>(.*?)</th>#s', $sp_thead, $sp_heads);
+        $sp_columns = array_map('trim', $sp_heads[1]);
+        check('Status is the second column of the summary table',
+              ($sp_columns[0] ?? '') === 'Strategy' && ($sp_columns[1] ?? '') === 'Status',
+              implode(' | ', $sp_columns));
+
+        /* D. The weights were a share of the holdings while the target
+           weight beside them was a share of the account: fifteen names
+           adding to 100.0% of GBP4,962 against targets measured on
+           GBP5,034. One basis, the account, and the cash as a row of its
+           own so the column still adds up to a hundred. */
+        $sp_hold_at = (int) strpos($sp_card, 'id="pane-holdings"');
+        $sp_holdings = substr($sp_card, $sp_hold_at,
+                              max(1, (int) strpos($sp_card, 'id="pane-orders"') - $sp_hold_at));
+        check('the holdings table has a cash row and totals the whole account',
+              stripos($sp_holdings, '>Cash<') !== false
+              && strpos($sp_holdings, '105,000') !== false,
+              substr($sp_holdings, max(0, (int) strpos($sp_holdings, '>Cash<') - 400), 700));
+        check('and a weight is a share of the account, so the column adds up to a hundred',
+              strpos($sp_holdings, fmt_pct($sp_price * 1000 / 105000 * 100)) !== false
+              && strpos($sp_holdings, fmt_pct($sp_cash / 105000 * 100)) !== false
+              && strpos($sp_holdings, fmt_pct(100, 1)) !== false,
+              json_encode([fmt_pct($sp_price * 1000 / 105000 * 100),
+                           fmt_pct($sp_cash / 105000 * 100)]));
+
+        /* D. A timestamp in the same words as every date on the page. The
+           broker line printed 2026-11-17 17:44:01 under dates written
+           17 Nov 2026. */
+        check('a timestamp reads the way the dates beside it do',
+              fmt_when('2026-11-17 17:44:01') === '17 Nov 2026 17:44'
+              && fmt_when(null) === VIEW_DASH && fmt_when('') === VIEW_DASH,
+              fmt_when('2026-11-17 17:44:01'));
+        $sp_stamps = [];
+        foreach (['strategies.php', 'broker.php', 'broker_account.php'] as $sp_file) {
+            $sp_text = (string) file_get_contents(dirname(__DIR__) . '/templates/' . $sp_file);
+            /* By printed expression rather than by the characters around
+               it: one <?= ?> can read two columns, and the helper is named
+               once in front of both. */
+            preg_match_all('/<\?=(.*?)\?>/s', $sp_text, $sp_echoes);
+            foreach ($sp_echoes[1] as $sp_echo) {
+                foreach (['finished_at', 'sent_at', 'started_at', 'filled_at',
+                          'placed_at', 'created_at'] as $sp_column) {
+                    if (strpos($sp_echo, $sp_column) !== false
+                        && stripos($sp_echo, 'when(') === false) {
+                        $sp_stamps[] = $sp_file . ': ' . trim(preg_replace('/\s+/', ' ', $sp_echo));
+                    }
+                }
+            }
+        }
+        check('and no page prints one the way the database stores it',
+              count($sp_stamps) === 0, implode(' | ', $sp_stamps));
+
+        /* D. The benchmark row was ten dashes until it had two nights,
+           which reads as a benchmark that lost everything rather than one
+           that has not started. */
+        db()->prepare("delete from strategy_values where strategy=? and date=?")
+            ->execute([STRATEGY_BENCHMARK, $sp_prev]);
+        $sp_one_night = (string) $curl("$base/strategies.php");
+        check('with one night the benchmark row says when its first return will be',
+              stripos($sp_one_night, 'The first return is from ' . fmt_date($sp_asof)) !== false
+              && stripos($sp_one_night, 'once there is a second night') !== false,
+              substr($sp_one_night, max(0, stripos($sp_one_night, 'FTSE 350 (equal weighted)')), 700));
+        $sp_values->execute([STRATEGY_BENCHMARK, $sp_prev, 0, 0, 100, 12]);
+
+        /* A. A wide page, a 240px menu, and nothing about the menu that
+           can draw a scrollbar. What was deployed sat in the old centred
+           container - about 870px of a 1,372px window - with the menu at
+           150px truncating "Trend following (Trading 212 pr" and a
+           scrollbar under it, and the tables cut off on the right. The
+           widths are checked in a browser by tests/phone_widths.js; this
+           is the stylesheet, which is checked whether or not a browser is
+           installed. */
+        /* Without its comments: a rule that explains why overflow-y is not
+           there would otherwise read as a rule that has it. */
+        $sp_css = preg_replace('#/\*.*?\*/#s', '',
+                               (string) file_get_contents(dirname(__DIR__) . '/templates/app.css'));
+        preg_match('/\.sm-side-menu\s*\{([^}]*)\}/', $sp_css, $sp_menu_css);
+        check('the menu is 240px wide and cannot scroll on its own',
+              isset($sp_menu_css[1])
+              && strpos($sp_menu_css[1], 'width: 240px') !== false
+              && strpos($sp_menu_css[1], 'overflow: visible') !== false
+              && stripos($sp_menu_css[1], 'overflow-y') === false
+              && stripos($sp_menu_css[1], 'overflow-x') === false
+              && stripos($sp_menu_css[1], 'max-height') === false,
+              $sp_menu_css[1] ?? 'no .sm-side-menu rule');
+        preg_match('/\.sm-menu-name\s*\{([^}]*)\}/', $sp_css, $sp_name_css);
+        check('and a long name wraps instead of being cut off',
+              isset($sp_name_css[1])
+              && strpos($sp_name_css[1], 'overflow-wrap: anywhere') !== false
+              && stripos($sp_name_css[1], 'ellipsis') === false
+              && stripos($sp_name_css[1], 'nowrap') === false,
+              $sp_name_css[1] ?? 'no .sm-menu-name rule');
+        preg_match('/\.sm-page\s*\{([^}]*)\}/', $sp_css, $sp_page_css);
+        preg_match('/\.sm-table-wide\s*\{[^}]*min-width:\s*([\d.]+)rem/', $sp_css, $sp_wide_css);
+        check('the page is wider than the old container, and a wide table fits beside the menu at 1,280px',
+              isset($sp_page_css[1]) && strpos($sp_page_css[1], 'max-width: 1400px') !== false
+              && isset($sp_wide_css[1])
+              && (((float) $sp_wide_css[1] * 16) + 240 + 64) <= 1280,
+              json_encode([$sp_page_css[1] ?? null, $sp_wide_css[1] ?? null]));
 
         /* Nothing a reader sees is a column value or an internal name. The
            tooltip is the one exception, because somebody debugging needs

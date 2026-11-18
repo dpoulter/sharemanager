@@ -361,6 +361,105 @@ function skip(why) {
 		}
 		await narrow.close();
 
+		/* And on a laptop. The brief asked for a wide page with a 240px
+		   menu beside it; what was deployed sat in the old centred
+		   container, about 870px of a 1372px window, so the menu was
+		   150px and truncated "Trend following (Trading 212 pr" with a
+		   scrollbar under itself while the summary and backtest tables
+		   were cut off on the right. Nothing at 1,280px or above should
+		   need to be scrolled sideways to be read. */
+		const laptop = await browser.newContext({
+			viewport: { width: 1280, height: 900 },
+			deviceScaleFactor: 1,
+		});
+		const laptopPage = await laptop.newPage();
+		await laptopPage.goto(`${BASE}/login.php`, { waitUntil: 'domcontentloaded' });
+		await laptopPage.fill('input[name=username]', 'tester');
+		await laptopPage.fill('input[name=password]', 'testpass');
+		await laptopPage.click('form[action="login.php"] button[type=submit]');
+		await laptopPage.waitForLoadState('domcontentloaded');
+
+		const laptopViews = [['the overview', ''],
+		                     ['a strategy', '?s=trend_following'],
+		                     ['the backtests', '?s=_backtests']];
+
+		for (const [what, where] of laptopViews) {
+
+			await laptopPage.goto(`${BASE}/strategies.php${where}`,
+			                      { waitUntil: 'networkidle' }).catch(() => {});
+
+			const wide = await laptopPage.evaluate(() => {
+				const doc = document.documentElement;
+				const menu = document.querySelector('nav.sm-side-menu');
+				/* A table inside .table-responsive is allowed to scroll in
+				   its own box on a phone; at 1,280px it should not have to.
+				   Two pixels of slack for sub-pixel rounding. */
+				const scrollers = [];
+				document.querySelectorAll('.sm-view-col .table-responsive').forEach(box => {
+					const over = box.scrollWidth - box.clientWidth;
+					if (over > 2) {
+						scrollers.push((box.querySelector('table')
+						                ? box.querySelector('table').className : 'table')
+						               + ' +' + over + 'px');
+					}
+				});
+				/* And no menu entry is cut off: the name wraps onto a
+				   second line instead. */
+				const clipped = [];
+				document.querySelectorAll('.sm-menu-name').forEach(name => {
+					const style = getComputedStyle(name);
+					if (name.scrollWidth - name.clientWidth > 1
+					    || style.textOverflow === 'ellipsis') {
+						clipped.push(name.textContent.trim().slice(0, 40));
+					}
+				});
+				return {
+					page: doc.scrollWidth - doc.clientWidth,
+					menuWidth: menu ? Math.round(menu.getBoundingClientRect().width) : null,
+					menuScrolls: menu ? (menu.scrollWidth - menu.clientWidth > 1
+					                     || menu.scrollHeight - menu.clientHeight > 1) : null,
+					menuOverflow: menu ? getComputedStyle(menu).overflowY : null,
+					scrollers, clipped,
+					fatal: /Fatal error|Parse error/.test(document.body.innerText),
+				};
+			});
+
+			check(`${what} renders at 1,280px`, !wide.fatal);
+			check(`${what} does not scroll the page sideways at 1,280px`,
+			      wide.page <= 1, `${wide.page}px over`);
+			check(`and no table in ${what} has to be scrolled sideways at 1,280px`,
+			      wide.scrollers.length === 0, wide.scrollers.join(', '));
+			check(`the menu beside ${what} is 240px wide, not a tenth of the window`,
+			      wide.menuWidth !== null && Math.abs(wide.menuWidth - 240) <= 1,
+			      String(wide.menuWidth));
+			check(`and draws no scrollbar of its own beside ${what}`,
+			      wide.menuScrolls === false && wide.menuOverflow === 'visible',
+			      `${wide.menuScrolls} / ${wide.menuOverflow}`);
+			check(`and no strategy's name is cut off beside ${what}`,
+			      wide.clipped.length === 0, wide.clipped.join(' | '));
+		}
+
+		/* Status is the second column, because it is the thing to look at
+		   first and the eleventh column is off the right-hand edge of a
+		   laptop. */
+		await laptopPage.goto(`${BASE}/strategies.php`, { waitUntil: 'networkidle' });
+		const headings = await laptopPage.evaluate(() =>
+			Array.from(document.querySelectorAll('table.sm-stack thead th'))
+			     .map(th => th.textContent.trim()));
+		check('Status is the second column of the summary, next to the name',
+		      headings[0] === 'Strategy' && headings[1] === 'Status',
+		      headings.join(' | '));
+		const statusOnScreen = await laptopPage.evaluate(() => {
+			const cell = document.querySelector('table.sm-stack tbody td[data-label="Status"]');
+			if (!cell) { return null; }
+			return cell.getBoundingClientRect().right
+			       <= document.documentElement.clientWidth;
+		});
+		check('and it is on the screen without scrolling', statusOnScreen === true,
+		      String(statusOnScreen));
+
+		await laptop.close();
+
 		/* The outlook is the other one. It only draws its fold when there is
 		   an outlook to fold, so the panel is asked for its markup rather
 		   than for an open triangle. */

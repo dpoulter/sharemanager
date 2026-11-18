@@ -15,10 +15,7 @@
 	   front of the figure rather than inside it. */
 	function b_money_signed($value, $dp = 2) { return e(fmt_pounds_signed($value, $dp)); }
 	function b_date($value)  { return e(fmt_date($value)); }
-	function b_when($value) {
-		return $value === null ? e(VIEW_DASH)
-		     : e(date('j M Y H:i', strtotime((string) $value)));
-	}
+	function b_when($value) { return e(fmt_when($value)); }
 ?>
 
 	<h1><?= e($title) ?></h1>

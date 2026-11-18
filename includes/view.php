@@ -224,6 +224,18 @@
 		return $stamp === false ? VIEW_DASH : date('j M Y', $stamp);
 	}
 
+	/** 13 Nov 2026 17:44, for a timestamp: a moment, not a day.
+
+	    A page was printing "2026-11-17 17:44:01" from the database beside
+	    dates written "17 Nov 2026", so the same instant was spelled two
+	    ways on one screen. The seconds go: nothing on these pages is
+	    argued to the second. */
+	function fmt_when($when) {
+		if ($when === null || trim((string) $when) === '') { return VIEW_DASH; }
+		$stamp = strtotime((string) $when);
+		return $stamp === false ? VIEW_DASH : date('j M Y H:i', $stamp);
+	}
+
 	/** 13 Nov, for a dense table where the year is in the heading. */
 	function fmt_date_short($date) {
 		if ($date === null || trim((string) $date) === '') { return VIEW_DASH; }

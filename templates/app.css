@@ -475,8 +475,11 @@ th.sm-num,
 	position: sticky;
 	top: 1rem;
 	align-self: flex-start;
-	max-height: calc(100vh - 2rem);
-	overflow-y: auto;
+	/* No scrollbar, ever. overflow-y:auto put one under the menu as soon
+	   as the list was taller than the window, and on a narrow column the
+	   browser drew a horizontal one with it. A menu of five entries does
+	   not need to scroll; a menu of fifty can scroll the page. */
+	overflow: visible;
 }
 
 .sm-side-menu .nav-link {
@@ -502,8 +505,9 @@ th.sm-num,
    the return. Three things on one line at 240px wrap into a muddle. */
 .sm-menu-line {
 	display: flex;
-	align-items: center;
+	align-items: baseline;
 	gap: 0.35rem;
+	min-width: 0;
 }
 
 .sm-menu-meta {
@@ -516,10 +520,12 @@ th.sm-num,
 	font-variant-numeric: tabular-nums;
 }
 
+/* Wrapped, not truncated. "Trend following (Trading 212 pr" is not a
+   strategy anybody can recognise, and the three characters an ellipsis
+   saves are worth less than the name. */
 .sm-menu-name {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	overflow-wrap: anywhere;
+	hyphens: auto;
 }
 
 .sm-menu-heading {
@@ -578,8 +584,38 @@ th.sm-num,
  * and a twelve column table in a 1,000px column puts one word per line in
  * every cell. A floor on the width makes the scroll container do its job
  * instead. Below 768px .sm-stack takes over and the floor is lifted. */
+/* Enough that the columns do not become one word per line, and little
+   enough that the table fits a 1,280px window beside the 240px menu
+   without scrolling. */
 .sm-table-wide {
-	min-width: 52rem;
+	min-width: 46rem;
+}
+
+/* And its headings may wrap. .table thead th holds every heading on one
+   line, which is right for a narrow table and was what pushed the eleven
+   column summary 47px past a 1,280px window: "Next rebalance" on one line
+   is 127px of a 984px column. Over two lines it is still "Next
+   rebalance". The figures below it still never wrap - a number broken
+   over two lines is a different number - because .sm-num says so. */
+.sm-table-wide thead th {
+	white-space: normal;
+}
+
+/* And its columns sit a little closer together. Eleven columns pay the
+   horizontal padding twenty-two times, so 0.1rem off each side is 35px of
+   a 984px column - the difference between a table that fits a laptop and
+   one that has to be dragged sideways to read its last column. */
+.sm-table-wide > :not(caption) > * > * {
+	padding-left: 0.35rem;
+	padding-right: 0.35rem;
+}
+
+/* And a badge in one of its cells may wrap rather than set the floor for
+   its column. A badge is nowrap everywhere else because it is usually a
+   word; "Not agreed with broker" in an eleven column table is a column
+   wider than the figures it sits beside. */
+.sm-table-wide .sm-badge {
+	white-space: normal;
 }
 
 @media (max-width: 767.98px) {

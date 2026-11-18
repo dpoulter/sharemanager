@@ -400,14 +400,17 @@
 	      date('Y-m-d H:i:s'),
 	      'Backtest of '.$strategy.' from '.$from.' to '.$to);
 
-	/* What this run paid to deal, recorded with it. Two runs of the same
-	   rules a month apart can be two different experiments - the cost
-	   settings moved between them - and until now the only thing that said
-	   so was the return. The backtest account is a paper one, so these are
-	   the paper mode's settings as they stand tonight. */
+	/* What this run paid to deal, recorded with it, field by field. Two
+	   runs of the same rules a month apart can be two different
+	   experiments - the cost settings moved between them - and until now
+	   the only thing that said so was the return. The backtest account is
+	   a paper one, so these are the paper mode's settings as they stand
+	   tonight: GBP 5.95 commission, which is the old model. The text is
+	   recorded rather than the model's name because the spread and the
+	   minimum can move inside a model. */
 	if (backtest_has_cost_settings()){
 		query("update strategy_backtest_runs set cost_settings=? where run_id=?",
-		      strategy_backtest_costs_now(STRATEGY_MODE_PAPER)['key'],$run_id);
+		      strategy_backtest_costs_now(STRATEGY_MODE_PAPER)['text'],$run_id);
 	}
 
 	/* $rules already carries the overrides, so the copy the engine reads
@@ -507,17 +510,21 @@
 	$costs=strategy_costs_paid($bt);
 	$fills=$costs['fills'];
 
-	$note="Survivorship: the universe is today's FTSE 350, so companies that left the index are"
-	     ." missing and the result is flattered. Look-ahead: each date used only the statistics"
-	     ." stored for it. Prices are adjusted closes.";
+	/* Only what is true of THIS run. The survivorship and look-ahead
+	   caveat used to be written in here as well, so a table of six runs
+	   printed it six times under the copy at the top of the page and
+	   nobody read any of them. It is a property of the method, so the
+	   page says it once; strategy_backtest_note() strips it from the runs
+	   that already carry it. */
+	$note="";
 
 	if ($turnover_refusals>0){
-		$note .= " ".$turnover_refusals." rebalance".($turnover_refusals===1?"":"s")
+		$note .= $turnover_refusals." rebalance".($turnover_refusals===1?"":"s")
 		      ." refused by the turnover limit.";
 	}
 
 	if (count($errors)){
-		$note .= " Problems: ".implode('; ',array_slice($errors,0,5))
+		$note .= ($note===""?"":" ")."Problems: ".implode('; ',array_slice($errors,0,5))
 		      .(count($errors)>5 ? " (+".(count($errors)-5)." more)" : "");
 	}
 
@@ -531,7 +538,8 @@
 	      $final_value===null ? null : round($final_value,4),
 	      $total_return===null ? null : round($total_return,6),
 	      $benchmark===null ? null : round($benchmark,6),
-	      round($drawdown,6),round($costs['total'],4),substr($note,0,1000),$run_id);
+	      round($drawdown,6),round($costs['total'],4),
+	      $note==="" ? null : substr($note,0,1000),$run_id);
 
 	if (backtest_has_overrides()){
 		query("update strategy_backtest_runs set turnover_refusals=?, starting_cash=?

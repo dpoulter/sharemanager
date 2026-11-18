@@ -112,7 +112,11 @@
        return and status cannot say one thing in the list and another in the
        table. Built once, for every view, because the menu is on all of
        them. */
-    $summary = strategy_summary($strategies, $as_of, $exchange);
+    /* One order for the menu and for the table: paper, then practice, then
+       live, each by name, with a halted strategy at the top of its group.
+       They were sorted by two different things, so the third entry in the
+       menu was the first row in the table. */
+    $summary = strategy_order(strategy_summary($strategies, $as_of, $exchange));
 
     $pairs = [];
     $chart = [];
