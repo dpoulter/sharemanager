@@ -39,6 +39,10 @@ RUN9 = {
     # The N100 prices everything on raw closes (historical_prices.price): no
     # dividends in returns, averages or valuations.
     "price_basis": "raw",
+    # strategy_price_asof takes a price on or before the date, traded that day or not, and
+    # STRATEGY_MAX_ORDERS_PER_RUN refuses a rebalance of more than 50 orders.
+    "require_traded_today": False,
+    "max_orders": 50,
     # Run 9 came from Jarvis's patched copy of the N100 app with Trading 212
     # costs (Dale, 18 Nov 2026): no commission, 10 bp spread each way on every
     # line, 0.5% stamp on buys, whole shares, GBP 250 minimum order, no PTM levy.
@@ -101,6 +105,102 @@ def holdings_by_month(fills: pd.DataFrame) -> dict:
             pos[r.symbol] = pos.get(r.symbol, 0.0) + r.signed
         out[mm] = {s for s, q in pos.items() if q > 1e-6}
     return out
+
+
+def positions_by_month(fills: pd.DataFrame) -> dict:
+    """Period('M') -> {symbol: quantity} held at that month's end, from a list of fills."""
+    f = fills.copy()
+    f["date"] = pd.to_datetime(f["date"])
+    f["signed"] = np.where(f["side"].astype(str).str.upper() == "BUY", 1.0, -1.0) * f["quantity"].astype(float)
+    f = f.sort_values("date")
+    out, pos = {}, {}
+    if f.empty:
+        return out
+    f["month"] = f["date"].dt.to_period("M")
+    for mm in pd.period_range(f["month"].min(), f["month"].max(), freq="M"):
+        for r in f[f["month"] == mm].itertuples(index=False):
+            pos[r.symbol] = pos.get(r.symbol, 0.0) + r.signed
+        out[mm] = {s: q for s, q in pos.items() if q > 1e-6}
+    return out
+
+
+def same_positions(a: dict, b: dict) -> bool:
+    return set(a) == set(b) and all(np.isclose(a[s], b[s], atol=0.5) for s in a)
+
+
+def fills_side_by_side(n100: pd.DataFrame, ours: pd.DataFrame, month) -> list[dict]:
+    """Every fill in a month, the N100's beside ours: date, quantity and price, by share and side."""
+    def prep(df):
+        d = df.copy()
+        d["date"] = pd.to_datetime(d["date"])
+        d = d[d["date"].dt.to_period("M") == month]
+        d["side"] = d["side"].astype(str).str.upper()
+        return d.sort_values(["symbol", "side", "date"])
+    a, b = prep(n100), prep(ours)
+    keys = sorted(set(zip(a["symbol"], a["side"])) | set(zip(b["symbol"], b["side"])))
+    rows = []
+    for s, side in keys:
+        x = a[(a["symbol"] == s) & (a["side"] == side)]
+        y = b[(b["symbol"] == s) & (b["side"] == side)]
+        rows.append({"symbol": s, "side": side,
+                     "n100": [(str(r.date.date()), float(r.quantity), round(float(r.price), 4)) for r in x.itertuples()],
+                     "ours": [(str(r.date.date()), float(r.quantity), round(float(r.price), 4)) for r in y.itertuples()]})
+    return rows
+
+
+def engine_decisions(events: list[dict], month, symbols: set) -> list[dict]:
+    """What the research engine decided for these shares at that month's rebalance, and why."""
+    return [{"date": str(e["date"].date()), "symbol": e["symbol"], "event": e["event"], "detail": e["detail"]}
+            for e in events if e["date"].to_period("M") == month and (e["symbol"] in symbols or e["symbol"] == "(all)")]
+
+
+def statistics_check(ws: Workspace, out: dict, rebalance_date: str | None) -> dict | str:
+    """Our close, 200-day average and 6-month return against the N100's own statistics for the
+    rebalance date, and every share whose place in the trend screen differs.
+
+    Needs data/validation/n100_stats_YYYY-MM-DD.csv with columns symbol, close_price, ma200, 6mnth
+    (the N100's `statistics` rows for that date, one row per symbol). Without it, says what to export:
+    this is the check that shows whether the N100's screen dropped a share (HFD) that ours kept.
+    """
+    from .universe import to_fmp
+    if not rebalance_date:
+        return "no rebalance date"
+    p = ws.cfg.data_dir / "validation" / f"n100_stats_{rebalance_date}.csv"
+    if not p.exists():
+        return (f"not available: export the N100's statistics for {rebalance_date} to {p.name} "
+                f"(select symbol, indicator, value from statistics where date='{rebalance_date}' and indicator in "
+                f"('close_price','ma200','6mnth'), pivoted to symbol,close_price,ma200,6mnth)")
+    n = pd.read_csv(p)
+    n.columns = [c.strip().lower() for c in n.columns]
+    n["symbol"] = n["symbol"].map(to_fmp)
+    n = n.set_index("symbol")
+    mk, d = out["market"], pd.Timestamp(rebalance_date)
+    i = int(mk.dates.searchsorted(d, side="right") - 1)
+    ours_close = mk.adj.ffill(limit=10).iloc[i]
+    ours_ma = mk.ma200.iloc[i]
+    from .signals.base import Context
+    ctx = Context(mk, ws.f)
+    ours_6m = ctx.n100_return(d, 6) * 100
+    rows, screen_diff = [], []
+    for s in n.index:
+        if s not in ours_close.index:
+            rows.append({"symbol": s, "problem": "no prices in our data"})
+            continue
+        nc, nm = n.at[s, "close_price"], n.at[s, "ma200"]
+        n_above = bool(pd.notna(nc) and pd.notna(nm) and nc > nm)
+        o_above = bool(pd.notna(ours_close[s]) and pd.notna(ours_ma[s]) and ours_close[s] > ours_ma[s])
+        if n_above != o_above:
+            screen_diff.append({"symbol": s, "n100_close": nc, "n100_ma200": nm, "our_close": None if pd.isna(ours_close[s]) else round(float(ours_close[s]), 4),
+                                "our_ma200": None if pd.isna(ours_ma[s]) else round(float(ours_ma[s]), 4),
+                                "n100_above": n_above, "our_above": o_above,
+                                "n100_has_ma200": bool(pd.notna(nm))})
+        for name, ours_v, theirs in (("close_price", ours_close[s], nc), ("ma200", ours_ma[s], nm),
+                                     ("6mnth", ours_6m.get(s, np.nan), n.at[s, "6mnth"] if "6mnth" in n else np.nan)):
+            if pd.notna(ours_v) and pd.notna(theirs) and abs(ours_v / theirs - 1) > 0.001 and theirs != 0:
+                rows.append({"symbol": s, "indicator": name, "n100": float(theirs), "ours": round(float(ours_v), 4)})
+    only_n100 = sorted(set(n.index) - set(ours_close.dropna().index))
+    return {"file": p.name, "shares_in_file": int(len(n)), "screen_membership_differs": screen_diff,
+            "values_over_0.1pct_apart": rows[:60], "n100_only_symbols": only_n100[:30]}
 
 
 def explain_month(ws: Workspace, out: dict, month, ours: set, theirs: set, held_before: set, listed: set) -> dict:
@@ -229,10 +329,40 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
         hm = sorted(set(h_n100) | set(h_ours))
         same = [mm for mm in hm if h_n100.get(mm, set()) == h_ours.get(mm, set())]
         report["months_with_identical_holdings"] = f"{len(same)} of {len(hm)}"
-        first = next((mm for mm in hm if h_n100.get(mm, set()) != h_ours.get(mm, set())), None)
+        q_n100, q_ours = positions_by_month(o_f), positions_by_month(ours_f)
+        same_q = [mm for mm in hm if same_positions(q_n100.get(mm, {}), q_ours.get(mm, {}))]
+        report["months_with_identical_positions (shares and quantities)"] = f"{len(same_q)} of {len(hm)}"
+
+        # Sells month by month, as well as buys.
+        s_ours = ours_f[ours_f["side"] == "SELL"].assign(month=ours_f["date"].dt.to_period("M")) \
+            .groupby("month")["symbol"].apply(set)
+        s_n100 = o_f[o_f["side"].astype(str).str.upper() == "SELL"].assign(month=o_f["date"].dt.to_period("M")) \
+            .groupby("month")["symbol"].apply(set)
+        sell_diff = [{"month": str(mm), "only_ours": sorted(s_ours.get(mm, set()) - s_n100.get(mm, set())),
+                      "only_n100": sorted(s_n100.get(mm, set()) - s_ours.get(mm, set()))}
+                     for mm in hm if s_ours.get(mm, set()) != s_n100.get(mm, set())]
+        report["months_with_identical_sells"] = f"{len(hm) - len(sell_diff)} of {len(hm)}"
+        report["first_month_sells_differ"] = sell_diff[0] if sell_diff else None
+
+        first_set = next((mm for mm in hm if h_n100.get(mm, set()) != h_ours.get(mm, set())), None)
+        first_pos = next((mm for mm in hm if mm not in same_q), None)
+        first = first_set if first_set is not None else first_pos
+        report["first_month_positions_differ"] = None if first_pos is None else str(first_pos)
         if first is not None:
+            held_before = h_ours.get(first - 1, set())
             report["first_month_holdings_differ"] = explain_month(
                 ws, out, first, h_ours.get(first, set()), h_n100.get(first, set()),
-                h_ours.get(first - 1, set()), set(pd.read_csv(listed)["symbol"]))
+                held_before, set(pd.read_csv(listed)["symbol"]))
+            report["first_month_holdings_differ"]["fills_side_by_side"] = fills_side_by_side(o_f, ours_f, first)
+            report["first_month_holdings_differ"]["quantities"] = [
+                {"symbol": s, "n100": q_n100.get(first, {}).get(s), "ours": q_ours.get(first, {}).get(s)}
+                for s in sorted(set(q_n100.get(first, {})) | set(q_ours.get(first, {})))
+                if not np.isclose(q_n100.get(first, {}).get(s, 0.0), q_ours.get(first, {}).get(s, 0.0))]
+            report["first_month_holdings_differ"]["engine_decisions"] = engine_decisions(
+                out["result"].events, first, (set(report["first_month_holdings_differ"]["only_ours"])
+                                              | set(report["first_month_holdings_differ"]["only_n100"])
+                                              | {r["symbol"] for r in report["first_month_holdings_differ"]["quantities"]}))
+            report["first_month_holdings_differ"]["n100_statistics_check"] = statistics_check(
+                ws, out, report["first_month_holdings_differ"]["rebalance_date"])
     report["passed"] = bool(report.get("return_ok", False) and report.get("fills_ok", False))
     return report

@@ -13,6 +13,8 @@
     start_cash: 100000
     drift_band: 0.02
     max_turnover: null
+    require_traded_today: true   # false: a price on or before the date is enough (the N100)
+    max_orders: null             # the N100 refuses a rebalance of more than 50
 """
 from __future__ import annotations
 
@@ -57,7 +59,9 @@ class Spec:
         return engine.Rules(holdings=r.get("holdings", 15), rebalance=r.get("rebalance", "monthly"),
                             hold_rank=r.get("hold_rank"), exit_ma200=r.get("exit") == "below_ma200_2d",
                             drift_band=float(r.get("drift_band", 0.02)), max_turnover=r.get("max_turnover"),
-                            start_cash=float(r.get("start_cash", 100_000)))
+                            start_cash=float(r.get("start_cash", 100_000)),
+                            require_traded_today=bool(r.get("require_traded_today", True)),
+                            max_orders=r.get("max_orders"))
 
 
 def load_spec(path: str | Path) -> Spec:

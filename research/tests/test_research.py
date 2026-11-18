@@ -494,3 +494,94 @@ def test_six_month_return_is_the_n100s_calendar_definition():
     assert det.at["FLAT.L", "ret"] == 0
     assert det.at["STALE.L", "end"] == str(dates[39].date())            # last price on or before, however old
     assert ctx.n100_return(d).notna().sum() == 5
+
+
+# ---------------------------------------------------------------- AC: matching the N100's selection and fills
+def test_candidate_need_not_have_traded_on_the_rebalance_date_when_the_n100_rule_is_on():
+    """strategy_price_asof takes the last price on or before the date. Research's default needs a trade that day,
+    so a share that skips a day drops out of the ranking and is replaced; the N100 rule keeps it."""
+    n = 40
+    prices = {"B.L": [100.0] * n, "C.L": [100.0] * 20 + [np.nan] * 3 + [100.0] * 17}
+    m = make_market(prices, start="2024-01-01")
+    member = pd.DataFrame(True, index=m.dates, columns=m.close.columns)
+    sc = pd.Series({"B.L": 1.0, "C.L": 2.0})                     # C is always the better share
+    scores = {d: sc for d in m.dates}
+    bought = {}
+    for traded_today in (True, False):
+        rules = engine.Rules(holdings=1, start_cash=10_000, drift_band=0.5, rebalance="daily",
+                             require_traded_today=traded_today)
+        res = engine.simulate(m, member, member, scores, rules, T212.free(), m.dates[0], m.dates[-1])
+        bought[traded_today] = bool(((res.fills["symbol"] == "B.L") & (res.fills["side"] == "BUY")).any())
+    assert bought[True] is True        # C had no close on three dates: B stood in
+    assert bought[False] is False      # a stale price is enough, so C was kept throughout
+
+
+def test_max_orders_refuses_the_whole_rebalance_and_events_say_why():
+    prices = {f"S{i}.L": [100.0] * 10 for i in range(8)}
+    m = make_market(prices, start="2024-01-01")
+    member = pd.DataFrame(True, index=m.dates, columns=m.close.columns)
+    sc = pd.Series({f"S{i}.L": float(i) for i in range(8)})
+    rules = engine.Rules(holdings=8, start_cash=100_000, max_orders=5)
+    res = engine.simulate(m, member, member, {m.dates[0]: sc}, rules, T212.free(), m.dates[0], m.dates[-1])
+    assert res.fills.empty and res.refusals == 1
+    assert any(e["event"] == "rebalance refused: too many orders" for e in res.events)
+
+
+def test_events_record_top_up_drift_band_and_minimum_order():
+    prices = {"A.L": [100.0] * 80, "B.L": [100.0] * 80}
+    prices["A.L"][30:] = [60.0] * 50                       # A falls 40% after the first build: well under target weight
+    m = make_market(prices, start="2024-01-01")
+    member = pd.DataFrame(True, index=m.dates, columns=m.close.columns)
+    feb = m.dates[m.dates.month == 2][0]
+    mar = m.dates[m.dates.month == 3][0]
+    sc = pd.Series({"A.L": 2.0, "B.L": 1.0})
+    rules = engine.Rules(holdings=2, start_cash=100_000, drift_band=0.02)
+    res = engine.simulate(m, member, member, {m.dates[0]: sc, feb: sc, mar: sc}, rules, T212.free(), m.dates[0], m.dates[-1])
+    kinds = {(e["symbol"], e["event"]) for e in res.events}
+    assert ("A.L", "ordered top-up") in kinds                  # outside the band: topped up, like KNOS
+
+
+def test_two_closes_below_the_average_survive_a_day_the_share_did_not_trade():
+    up = list(np.linspace(100, 200, 220))
+    a = up + [150.0, np.nan, 140.0, 130.0]                 # below, no trade, below, below
+    m = make_market({"A.L": a})
+    flags = engine.ma200_below_twice(m.adj, m.ma200)
+    assert flags["A.L"].iloc[221]                          # the carried close is still below: two in a row
+
+
+def test_validate_reports_sells_positions_and_fills_side_by_side(cfg, tmp_path):
+    from research.validate import RUN9, run9
+    ws, m = _ws_with_dividends(cfg)
+    lst = tmp_path / "n100.tsv"
+    lst.write_text("symbol\tis_fund\tsector\n" + "".join(f"{s[:-2]}\tN\tX, Y\n" for s in m.close.columns))
+    kw = dict(start="2025-02-03", end="2025-09-30")
+    run9(ws, lst, None, None, **kw)
+    spec = spec_from_dict({**RUN9, "universe": f"list:{cfg.data_dir / 'validation' / 'run9_universe_no_funds.csv'}"})
+    out = ws.run(spec, kind="engine_validation", start=kw["start"], end=kw["end"], write_report=False)
+    fills = out["result"].fills
+    values = tmp_path / "values.csv"
+    out["result"].values["total"].rename("total").reset_index().to_csv(values, index=False)
+    orders = tmp_path / "orders.csv"
+    # The N100 buys one share more of the first holding: same set, different quantity.
+    bad = fills.copy()
+    i0 = bad.index[bad["side"] == "BUY"][0]
+    bad.loc[i0, "quantity"] += 25
+    bad[["date", "symbol", "side", "quantity", "price"]].to_csv(orders, index=False)
+    rep = run9(ws, lst, orders, values, **kw)
+    assert rep["months_with_identical_holdings"].split(" of ")[0] == rep["months_with_identical_holdings"].split(" of ")[1]
+    assert rep["months_with_identical_positions (shares and quantities)"].split(" of ")[0] != \
+        rep["months_with_identical_positions (shares and quantities)"].split(" of ")[1]
+    diff = rep["first_month_holdings_differ"]
+    assert diff["quantities"] and diff["quantities"][0]["symbol"] == bad.at[i0, "symbol"]
+    assert diff["fills_side_by_side"] and "n100" in diff["fills_side_by_side"][0]
+    assert diff["n100_statistics_check"].startswith("not available")
+    assert "months_with_identical_sells" in rep and "first_month_sells_differ" in rep
+    # With the N100's statistics for the date, a share whose screen membership differs is named.
+    d = diff["rebalance_date"]
+    s = diff["quantities"][0]["symbol"]
+    stats = pd.DataFrame({"symbol": [x[:-2] for x in m.close.columns], "close_price": 100.0, "ma200": 90.0, "6mnth": 5.0})
+    stats.loc[stats["symbol"] == s[:-2], "ma200"] = 500.0                 # the N100 has it below its average
+    stats.to_csv(cfg.data_dir / "validation" / f"n100_stats_{d}.csv", index=False)
+    rep2 = run9(ws, lst, orders, values, **kw)
+    chk = rep2["first_month_holdings_differ"]["n100_statistics_check"]
+    assert any(r["symbol"] == s for r in chk["screen_membership_differs"]) or chk["values_over_0.1pct_apart"]

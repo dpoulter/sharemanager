@@ -47,6 +47,11 @@ class Rules:
     drift_band: float = 0.02
     max_turnover: float | None = None
     start_cash: float = 100_000.0
+    # The N100 accepts a share with a price on or before the date, traded that day or not
+    # (strategy_price_asof), and refuses a rebalance of more than 50 orders
+    # (STRATEGY_MAX_ORDERS_PER_RUN). Research defaults are stricter on the first and unlimited on the second.
+    require_traded_today: bool = True
+    max_orders: int | None = None
 
     def n_holdings(self, universe_size: int) -> int:
         if isinstance(self.holdings, str):
@@ -63,6 +68,9 @@ class Result:
     refusals: int = 0
     skipped: int = 0
     notes: list[str] = field(default_factory=list)
+    # What the engine decided and why, per rebalance: skipped for the drift band, under the minimum
+    # order, rounded to nothing, trimmed to fit cash, refused. validate prints these for a month.
+    events: list[dict] = field(default_factory=list)
 
 
 def rebalance_flags(dates: pd.DatetimeIndex, how: str) -> np.ndarray:
@@ -87,7 +95,11 @@ def ma200_below_twice(adj: pd.DataFrame, ma: pd.DataFrame | None = None) -> pd.D
     if ma is None:
         from .store import moving_average
         ma = moving_average(adj, 200)
-    below = (adj < ma) & ma.notna()
+    # The N100 reads two rows of statistics (close_price, ma200), written for every trading date
+    # with the last price carried over a day the share did not trade: so a no-trade day is still
+    # "below" if the carried close is, and does not break the two in a row.
+    filled = adj.ffill(limit=10)
+    below = (filled < ma) & ma.notna()
     return below & below.shift(1, fill_value=False)
 
 
@@ -124,6 +136,7 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
     pending: list[tuple[int, str, float, str]] = []   # (col, side, shares, reason)
     fills = []
     values = []
+    events: list[dict] = []
     refusals = skipped = 0
     built = False
 
@@ -162,10 +175,15 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
                     if -c["cash"] > cash:
                         # Not enough cash at the fill price: buy what it pays for.
                         unit_cost = p * (1 + costs.stamp(aim[j]) + costs.spread(lg[i, j]))
+                        q0 = q
                         q = round_down(max(0.0, (cash - costs.commission - costs.ptm(cash)) / unit_cost))
                         if q <= 0 or q * p < costs.minimum_order:
                             skipped += 1
+                            events.append({"date": d, "symbol": syms[j], "event": "buy dropped: not enough cash",
+                                           "detail": f"wanted {q0:g}, cash {cash:,.2f}"})
                             continue
+                        events.append({"date": d, "symbol": syms[j], "event": "buy trimmed to fit cash",
+                                       "detail": f"{q0:g} -> {q:g}"})
                         c = costs.buy(q, p, lg[i, j], aim[j])
                     units[j] += q * p / adj[i, j]
                 cash += c["cash"]
@@ -196,7 +214,8 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
         if rebal[i]:
             plan, refused, n_skip = _plan(i, d, scores.get(d), member, syms, col, units, adj, close,
                                           traded_today, lg, aim, total, rules, costs, round_down,
-                                          shares_held, first_build=not built and not (units > 0).any())
+                                          shares_held, first_build=not built and not (units > 0).any(),
+                                          events=events)
             refusals += refused
             skipped += n_skip
             pending = plan
@@ -214,12 +233,13 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
     final_value = np.where(units > 0, units * np.nan_to_num(adj[last]), 0.0)
     pnl = pd.Series(flows + final_value, index=syms)
     pnl = pnl[(flows != 0) | (final_value != 0)]
-    return Result(values=vals, fills=f, pnl=pnl, refusals=refusals, skipped=skipped)
+    return Result(values=vals, fills=f, pnl=pnl, refusals=refusals, skipped=skipped, events=events)
 
 
 def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, total, rules, costs,
-          round_down, shares_held, first_build):
+          round_down, shares_held, first_build, events=None):
     """Orders for one rebalance. Returns (orders, refused, skipped)."""
+    events = events if events is not None else []
     orders, skipped = [], 0
     if score is None:
         score = pd.Series(dtype=float)
@@ -227,7 +247,10 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
     universe = [s for s in mem.index[mem.to_numpy()] if s in col]
     n = rules.n_holdings(len(universe))
     s = score.reindex(universe)
-    ok = s.notna() & np.array([traded[i, col[x]] and close[i, col[x]] > 0 for x in s.index], dtype=bool)
+    if rules.require_traded_today:
+        ok = s.notna() & np.array([traded[i, col[x]] and close[i, col[x]] > 0 for x in s.index], dtype=bool)
+    else:        # a price on or before the date is enough, as strategy_price_asof
+        ok = s.notna() & np.array([close[i, col[x]] > 0 for x in s.index], dtype=bool)
     # Highest score first, ties broken by symbol, as the N100 orders by value then symbol.
     cand = s[ok]
     ranked = pd.Series(cand.values, index=cand.index).iloc[
@@ -252,6 +275,8 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
         target = round_down(weight * investable / p)
         held = shares_held(j, i)
         if held > 0 and abs(held * p / total - weight) <= rules.drift_band:
+            events.append({"date": d, "symbol": x, "event": "held, inside the drift band: left alone",
+                           "detail": f"held weight {held * p / total:.4f} target {weight:.4f} (band {rules.drift_band})"})
             continue
         delta = target - held
         value = abs(delta) * p
@@ -259,6 +284,8 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
             continue
         if value < costs.minimum_order:
             skipped += 1
+            events.append({"date": d, "symbol": x, "event": "under the minimum order",
+                           "detail": f"{delta:+g} shares = {value:,.2f}"})
             continue
         if delta > 0:
             orders.append((j, "BUY", delta, "rebalance"))
@@ -266,13 +293,23 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
         else:
             orders.append((j, "SELL", -delta, "rebalance"))
             sells += value
+        events.append({"date": d, "symbol": x, "event": "ordered " + ("top-up" if held > 0 and delta > 0
+                                                                      else "trim" if delta < 0 else "new holding"),
+                       "detail": f"held {held:g}, target {target:g}, delta {delta:+g}, "
+                                 f"held weight {held * p / total:.4f}, target {weight:.4f}"})
     for j in np.where(units > 0)[0]:
         if syms[j] not in want:
             q = shares_held(j, i)
             orders.append((j, "SELL", q, "no_longer_selected"))
             sells += q * close[i, j] if close[i, j] > 0 else 0
+    if rules.max_orders is not None and len(orders) > rules.max_orders:
+        events.append({"date": d, "symbol": "(all)", "event": "rebalance refused: too many orders",
+                       "detail": f"{len(orders)} orders, limit {rules.max_orders}"})
+        return [], 1, skipped
     if (rules.max_turnover is not None and not first_build and total > 0
             and min(buys, sells) / total > rules.max_turnover):
+        events.append({"date": d, "symbol": "(all)", "event": "rebalance refused: turnover",
+                       "detail": f"{min(buys, sells) / total:.3f} over {rules.max_turnover}"})
         return [], 1, skipped
     return orders, 0, skipped
 

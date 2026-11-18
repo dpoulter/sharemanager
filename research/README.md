@@ -68,8 +68,16 @@ A strategy is a small YAML file in `strategies/`. The docstring in `src/research
 
 - **6-month return** (`signals/base.py: n100_return_detail`, from `calc_momentum()` and `backfill_trend_statistics.php`): calendar months, not trading days. It runs from the first price on or after (date − 6 months) to the last price on or before the date, using each share's own prices, and only where the start is before the end. A share with less history than the window gets the return over the history it has.
 - **Price basis** (`price_basis`): the N100 uses raw closes with no dividends, so `validate` runs `raw`. Research runs use `adjusted`.
+- **Selection and fills** (read from `strategy_functions.php`): a candidate needs only a price on or before the date (`strategy_price_asof`), traded that day or not; a rebalance of more than 50 orders is refused whole; the two-closes-below exit reads rows that carry a stale close over a no-trade day; a holding more than 2% from target is topped up or trimmed, otherwise left alone; a buy the cash no longer covers is trimmed to fit. `validate` sets the first two (`require_traded_today: false`, `max_orders: 50`).
 - **Market caps** (`clean.py`): pence read as pounds is fixed at the merge. Each series is split at one-day steps of 70 to 140 times, and each segment goes to whichever of ×1, ×100 and ×0.01 lands nearest the symbol's median. A ×100 on a segment already above £1m is refused, and so is any result above £500bn. Refusals are listed in `data_report.md`.
 - **Two lines, one company:** the LSE row is given to every FMP line with that name, and the universe keeps one each month: the home-ISIN line, then the one trading, then the more heavily traded. `research lse-rows investec --year 2026` prints the raw LSE rows for a name.
+
+### When `validate` still differs
+
+`data/validation/run9_check.json` gives, for the first month where holdings, sells or quantities differ: both sides' fills side by side (date, quantity, price), the quantities that differ, what the research engine decided for each share and why (drift band, under the minimum order, trimmed for cash, refused), and our top 20 with returns and base dates. Two optional exports from the N100 make it exact:
+
+- `n100_6mnth_YYYY-MM.csv` (`symbol,value`): the N100's own `6mnth` for that month's rebalance date.
+- `n100_stats_YYYY-MM-DD.csv` (`symbol,close_price,ma200,6mnth`): the N100's `statistics` rows for the rebalance date. It names every share whose place in the trend screen (close above its 200-day average) differs between the N100 and the research engine, which is how a share like HFD that one side buys and the other doesn't gets explained.
 
 ## Rules that keep it honest
 
