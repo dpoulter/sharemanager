@@ -32,6 +32,10 @@ universe:
   large_size: 100            # FTSE 100-like = top 100, FTSE 250-like = 101..350
   start: "2007-01-01"        # market cap history starts here; nothing before it
   include_aim: false
+  # Rank like the FTSE 350: the top `size` by market cap WITH investment trusts
+  # and funds counted, then drop them (about 260 companies, as the FTSE 350
+  # has). False ranks companies only, which reaches about 90 places deeper.
+  rank_with_trusts: true
   # Optional CSV of AIM symbols (one column, symbol) where FMP does not say.
   aim_list: null
 

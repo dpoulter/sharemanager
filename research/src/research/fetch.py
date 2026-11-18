@@ -45,6 +45,8 @@ DEPOSITARY = re.compile(r"\bgdr\b|\badr\b|depositary", re.I)
 IOB = re.compile(r"^0[A-Z0-9]{3}\.L$")
 LOAN_STOCK = re.compile(r"^\d{2}[A-Z]{2}\.L$")      # 49GP.L: a Croda bond under Croda's name
 
+TRUST_REASONS = ("FMP isFund", "fund sector", "fund or trust by name")
+
 STATEMENTS = {
     "income": "income-statement",
     "balance": "balance-sheet-statement",
@@ -281,8 +283,31 @@ class Fetcher:
         out["date"] = pd.to_datetime(out["date"])
         out.drop_duplicates(["date", "currency"], keep="last").sort_values(["currency", "date"]).to_parquet(path)
 
+    # ------------------------------------------------------------ trusts
+    def trust_caps(self, master: pd.DataFrame, full: bool, end: str) -> int:
+        """Market cap only, for investment trusts and funds.
+
+        The FTSE 350 is ranked with its trusts in it; the universe takes the
+        top 350 that way and then drops the trusts (universe.rank_with_trusts).
+        Only their size is needed, so only their market cap is fetched.
+        """
+        sel = master[master["exclude_reason"].isin(TRUST_REASONS)]
+        log.info("trust market caps: %d lines", len(sel))
+        n = 0
+        for i, row in enumerate(sel.itertuples(index=False), 1):
+            sym_end = end if pd.isna(row.delisted_date) else min(end, str(row.delisted_date)[:10])
+            try:
+                self.market_cap(row.symbol, full, sym_end)
+                n += 1
+            except FmpError as e:
+                self.failures.append({"symbol": row.symbol, "dataset": "trust_cap", "error": str(e)})
+            if i % 100 == 0:
+                log.info("trust caps %d/%d, %d calls", i, len(sel), self.fmp.calls)
+        return n
+
     # ------------------------------------------------------------ the run
-    def run(self, full: bool = False, symbols: list[str] | None = None, merge_only: bool = False) -> dict:
+    def run(self, full: bool = False, symbols: list[str] | None = None, merge_only: bool = False,
+            trusts: bool = True) -> dict:
         """Download, then merge. Safe to start again: per-symbol files that exist are not re-fetched
         on a full pull, and when fetch_state.json says the downloads finished, a re-run (or
         merge_only) goes straight to the merge without one call."""
@@ -332,6 +357,8 @@ class Fetcher:
             state_path.write_text(json.dumps({"downloaded": True, "downloaded_at": dt.datetime.now().isoformat(),
                                               "of": len(todo), "calls": self.fmp.calls,
                                               "failures": len(self.failures)}))
+        if trusts and not merge_only and not symbols:
+            self.trust_caps(master, full, end)
         log.info("merging per-symbol files")
         consolidate(self.data)
         st = self.data / "statements.parquet"

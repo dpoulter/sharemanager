@@ -140,6 +140,9 @@ def test_units_from_prices_not_profile_currency():
     # Compass-like: profile EUR (wrongly), trades in pence, cap in pounds.
     q, c, _ = infer_units(2500.0, 25.0 * 1.7e9, 1.7e9, "EUR", fx)
     assert (q, c) == ("GBp", "GBP")
+    # T: Compass-like with profile GBP but a dollar cap: the reporting currency decides.
+    q, c, _ = infer_units(2500.0, 25.0 * 1.7e9 / 0.78, 1.7e9, "GBp", fx, reporting_ccy="USD")
+    assert (q, c) == ("GBp", "USD")
     # No shares known: pence and pounds, as nearly every London line.
     assert infer_units(100.0, 1e9, float("nan"), "USD", fx)[:2] == ("GBp", "GBP")
 
@@ -377,3 +380,30 @@ def test_deflated_sharpe_falls_with_trials():
     assert one["deflated_sharpe"] == pytest.approx(1.0)
     assert many["deflated_sharpe"] < one["deflated_sharpe"]
     assert many["dsr"] < one["dsr"]
+
+
+# ---------------------------------------------------------------- W: run 9 builds on day one
+def test_trend_strategy_builds_on_day_one_with_gaps_in_the_panel():
+    """A 200-day signal must build on the first day when 200+ closes exist,
+    even with a bad-tick hole, a missing day, and a date only one line traded."""
+    n = 320
+    rng = np.random.default_rng(5)
+    prices = {f"S{i}.L": list(100 * np.cumprod(1 + rng.normal(0.002, 0.01, n))) for i in range(20)}
+    prices["S0.L"][150] = np.nan                    # a dropped bad tick
+    for s in list(prices)[1:]:
+        prices[s][200] = np.nan                     # a date only S0 traded (thin calendar date)
+    m = make_market(prices, start="2021-01-01")
+    from research.store import drop_thin_dates
+    m = drop_thin_dates(m)
+    assert len(m.dates) == n - 1                    # the thin date is not a trading day
+    member = pd.DataFrame(True, index=m.dates, columns=m.close.columns)
+    from research.pit import Fundamentals
+    ctx = Context(m, Fundamentals(pd.DataFrame()))
+    d = m.dates[260]
+    score = REGISTRY["trend_following"](ctx, d)
+    assert score.notna().sum() >= 15                # the averages exist
+    rules = engine.Rules(holdings=15, hold_rank=30, exit_ma200=True)
+    res = engine.simulate(m, member, member, {d: score}, rules, T212, d, m.dates[-1],
+                          engine.ma200_below_twice(m.adj))
+    first = res.fills[res.fills["date"] == m.dates[261]]
+    assert len(first) == 15 and (first["side"] == "BUY").all()

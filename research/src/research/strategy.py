@@ -146,7 +146,7 @@ class Workspace:
             line["scored"] = int(scores[d].notna().sum())
             cover.append(line)
         coverage = pd.DataFrame(cover).set_index("date")
-        exit_flags = engine.ma200_below_twice(self.m.adj) if rules.exit_ma200 else None
+        exit_flags = engine.ma200_below_twice(self.m.adj, self.m.ma200) if rules.exit_ma200 else None
         costs = from_dict(spec.raw.get("costs"))
         res = engine.simulate(self.m, member, large, scores, rules, costs, start, end, exit_flags)
         free = engine.simulate(self.m, member, large, scores, rules, costs.free(), start, end, exit_flags)

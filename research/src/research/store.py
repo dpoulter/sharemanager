@@ -27,6 +27,14 @@ class Market:
     fx: pd.DataFrame = field(default_factory=pd.DataFrame)   # date x currency, GBP per unit
     last_price: pd.Series = field(default_factory=pd.Series)  # symbol -> last date with a price
     gone: pd.Series = field(default_factory=pd.Series)        # symbol -> True if it stopped trading
+    volume: pd.DataFrame | None = None                         # shares traded, for choosing between two lines
+    _ma200: pd.DataFrame | None = None
+
+    @property
+    def ma200(self) -> pd.DataFrame:
+        if self._ma200 is None:
+            self._ma200 = moving_average(self.adj, 200)
+        return self._ma200
 
     @property
     def dates(self) -> pd.DatetimeIndex:
@@ -120,8 +128,50 @@ def load_market(data: Path, symbols: list[str] | None = None) -> Market:
     if (data / "statements.parquet").exists():
         statements = pd.read_parquet(data / "statements.parquet")
 
-    return finish_market(Market(close=close, adj=adj, market_cap=mcap, master=master,
-                                statements=statements, fx=fx))
+    volume = None
+    if "volume" in prices:
+        volume = prices.pivot(index="date", columns="symbol", values="volume").sort_index() \
+            .reindex(index=close.index, columns=close.columns)
+    m = Market(close=close, adj=adj, market_cap=mcap, master=master, statements=statements, fx=fx, volume=volume)
+    return finish_market(drop_thin_dates(m))
+
+
+def drop_thin_dates(m: Market, share: float = 0.3) -> Market:
+    """Keep only real trading days.
+
+    The panel's calendar is every date any line has a price on. FMP has stray
+    rows on holidays and weekends for a few lines, and on those dates nearly
+    every share is missing: a 200-day average over the panel would have a
+    hole in it, and a rebalance falling there would find nothing priced.
+    A date is a trading day if at least `share` of the lines priced around
+    it (the median count over a month) have a close.
+    """
+    if m.close.empty:
+        return m
+    count = m.close.notna().sum(axis=1)
+    typical = count.rolling(21, center=True, min_periods=1).median()
+    keep = count >= share * typical
+    if keep.all():
+        return m
+    m.close, m.adj = m.close[keep], m.adj[keep]
+    m.market_cap = m.market_cap.reindex(m.close.index)
+    if m.volume is not None:
+        m.volume = m.volume.reindex(m.close.index)
+    return m
+
+
+def moving_average(adj: pd.DataFrame, n: int = 200) -> pd.DataFrame:
+    """Each share's average of its own last n closes, as the N100 computes it.
+
+    Over its own prices, not over the panel's rows: a day a share has no
+    price (a dropped bad tick, a suspension) does not blank its average for
+    the next n days, which rolling(n, min_periods=n) on the panel would.
+    """
+    out = {}
+    for c in adj.columns:
+        s = adj[c].dropna()
+        out[c] = s.rolling(n, min_periods=n).mean().reindex(adj.index).ffill(limit=10)
+    return pd.DataFrame(out, index=adj.index).where(adj.ffill(limit=10).notna())
 
 
 def finish_market(m: Market, end_slack_sessions: int = 10) -> Market:

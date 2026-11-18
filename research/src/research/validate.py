@@ -51,6 +51,36 @@ def universe_list(path: Path, out: Path) -> Path:
     return out
 
 
+def trace_first_month(ws: Workspace, orders: pd.DataFrame, listed: Path) -> list[dict]:
+    """For each share the N100 bought in its first month: what the research engine saw on day one."""
+    from .signals.live import six_month_return
+    from .signals.base import Context
+    m = ws.m
+    start = m.dates[m.dates.searchsorted(pd.Timestamp("2022-11-01"))]
+    first_month = orders["date"].dt.to_period("M").min()
+    buys = orders[(orders["date"].dt.to_period("M") == first_month) & (orders["side"].str.upper() == "BUY")]
+    syms = sorted({s if s.endswith(".L") else s + ".L" for s in buys["symbol"].astype(str)})
+    uni = set(pd.read_csv(listed)["symbol"])
+    ctx = Context(m, ws.f)
+    six = six_month_return(ctx, start)
+    i = ctx.pos(start)
+    ma = m.ma200.iloc[i]
+    close = ctx.adj_at(start)
+    above = (close > ma)
+    score = six.where(above).reindex(sorted(uni & set(six.index)))
+    rank = score.rank(ascending=False)
+    out = []
+    for s in syms:
+        out.append({"symbol": s, "in_list": s in uni, "has_prices": s in m.close.columns,
+                    "adj_close": None if s not in close else round(float(close[s]), 4),
+                    "ma200": None if s not in ma or pd.isna(ma[s]) else round(float(ma[s]), 4),
+                    "closes_in_last_260": int(m.adj[s].iloc[max(0, i - 259): i + 1].notna().sum()) if s in m.adj else 0,
+                    "six_month": None if s not in six or pd.isna(six[s]) else round(float(six[s]), 4),
+                    "above_ma200": bool(above.get(s, False)),
+                    "rank_on_day_one": None if s not in rank or pd.isna(rank[s]) else int(rank[s])})
+    return out
+
+
 def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv: Path | None,
          costs: dict | None = None) -> dict:
     listed = universe_list(Path(universe_csv), ws.cfg.data_dir / "validation" / "run9_universe_no_funds.csv")
@@ -95,5 +125,10 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
             if x != y:
                 diff.append({"month": str(mth), "only_ours": sorted(x - y), "only_n100": sorted(y - x)})
         report["months_with_different_buys"] = diff
+        report["months_compared"] = len(months)
+        report["months_identical"] = len(months) - len(diff)
+        report["first_fill_n100"] = str(o["date"].min().date())
+        report["first_fill_ours"] = str(ours["date"].min().date()) if len(ours) else None
+        report["first_month_trace"] = trace_first_month(ws, o, listed)
     report["passed"] = bool(report.get("return_ok", False) and report.get("fills_ok", False))
     return report

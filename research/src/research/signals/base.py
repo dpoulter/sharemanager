@@ -46,7 +46,7 @@ class Context:
 
     @cached_property
     def ma200(self) -> pd.DataFrame:
-        return self.m.adj.rolling(200, min_periods=200).mean()
+        return self.m.ma200
 
     def pos(self, date) -> int:
         return int(self.m.dates.searchsorted(pd.Timestamp(date), side="right") - 1)

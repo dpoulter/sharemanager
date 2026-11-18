@@ -60,7 +60,14 @@ def cmd_fetch(cfg, a):
     from .checks import write_data_report
     from .fetch import Fetcher
     from .store import load_market
-    summary = Fetcher(cfg).run(full=a.full, merge_only=a.merge_only)
+    if a.trust_caps:
+        import pandas as _pd
+        f = Fetcher(cfg)
+        master = _pd.read_parquet(cfg.data_dir / "symbols.parquet")
+        f.trust_caps(master, False, time.strftime("%Y-%m-%d"))
+        summary = f.run(merge_only=True)
+    else:
+        summary = Fetcher(cfg).run(full=a.full, merge_only=a.merge_only)
     log.info("fetch done: %s", summary)
     path = write_data_report(load_market(cfg.data_dir), cfg.data_dir)
     log.info("data report: %s", path)
@@ -76,10 +83,30 @@ def cmd_universe(cfg, a):
     months = pd.DatetimeIndex([pd.Timestamp(d.year, d.month, 1) for d in rebuild_dates(m.dates, u["start"])])
     elig, rep = build_status(cfg.data_dir, m.master.reset_index().rename(columns={"index": "symbol"}),
                              m.market_cap, months, include_aim)
-    uni = build_universe(m, u["size"], u["large_size"], u["start"], include_aim, eligible=elig)
+    trust_caps = None
+    if u.get("rank_with_trusts", True):
+        from .universe import load_trust_caps
+        trust_caps = load_trust_caps(cfg.data_dir, m)
+        log.info("ranking with %d investment trusts and funds in the count",
+                 0 if trust_caps is None else trust_caps.shape[1])
+    uni = build_universe(m, u["size"], u["large_size"], u["start"], include_aim, eligible=elig,
+                         trust_caps=trust_caps)
     uni.to_parquet(cfg.data_dir / "universe.parquet")
     last = uni[uni["date"] == uni["date"].max()]
     rep["universe_basis_latest"] = last["basis"].value_counts().to_dict()
+    stp = cfg.data_dir / "lse_status.parquet"
+    if stp.exists():
+        st = pd.read_parquet(stp)
+        st_last = st[st["month"] == st["month"].max()].set_index("symbol")
+        flagged = [s for s in last["symbol"] if s in st_last.index and bool(st_last.at[s, "inflated_cap"])]
+        rep["universe_members_latest_fmp_cap_over_3x_lse"] = flagged
+        ovr = st_last["override"].dropna() if "override" in st_last else pd.Series(dtype=object)
+        rep["overrides_applied_latest"] = {s: v for s, v in ovr.items()}
+        m_names = m.master.get("name", pd.Series(dtype=object))
+        aimish = [s for s in last["symbol"] if s in st_last.index and str(st_last.at[s, "market"]) == "AIM"]
+        rep["universe_members_latest_on_aim (should be none)"] = aimish
+        rep["universe_members_latest_without_lse_match"] = {
+            s: str(m_names.get(s)) for s in last.loc[last["basis"] != "LSE list", "symbol"]}
     rep["universe_members_latest_not_in_lse_lists"] = sorted(last.loc[last["basis"] == "ISIN fallback", "symbol"])
     gaps = cap_check(uni, cfg.data_dir)
     if len(gaps):
@@ -215,6 +242,8 @@ def main(argv=None):
     s = sub.add_parser("fetch"); s.add_argument("--full", action="store_true")
     s.add_argument("--merge-only", action="store_true",
                    help="no downloads: merge the per-symbol files, refine the master, clean prices, report")
+    s.add_argument("--trust-caps", action="store_true",
+                   help="fetch market caps of investment trusts only (for ranking like the FTSE 350), then merge")
     s = sub.add_parser("universe"); s.add_argument("--live"); s.add_argument("--aim", action="store_true")
     s = sub.add_parser("run"); s.add_argument("strategy", nargs="+")
     s.add_argument("--period", default="dev"); s.add_argument("--final", action="store_true")

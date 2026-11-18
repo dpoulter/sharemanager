@@ -82,9 +82,11 @@ def rebalance_flags(dates: pd.DatetimeIndex, how: str) -> np.ndarray:
     return first == np.arange(len(dates))
 
 
-def ma200_below_twice(adj: pd.DataFrame) -> pd.DataFrame:
+def ma200_below_twice(adj: pd.DataFrame, ma: pd.DataFrame | None = None) -> pd.DataFrame:
     """True where the close is below its 200-day average today and the previous close."""
-    ma = adj.rolling(200, min_periods=200).mean()
+    if ma is None:
+        from .store import moving_average
+        ma = moving_average(adj, 200)
     below = (adj < ma) & ma.notna()
     return below & below.shift(1, fill_value=False)
 

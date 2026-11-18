@@ -45,7 +45,8 @@ def _fx_last(fx: pd.DataFrame, cur: str) -> float:
     return float(s.sort_values("date")["gbp_per_unit"].iloc[-1]) if len(s) else math.nan
 
 
-def infer_units(close: float, cap: float, shares: float, profile_ccy: str | None, fx: pd.DataFrame) -> tuple[str, str, float]:
+def infer_units(close: float, cap: float, shares: float, profile_ccy: str | None, fx: pd.DataFrame,
+                reporting_ccy: str | None = None) -> tuple[str, str, float]:
     """(quote_currency, cap_currency, log error) that best makes close x shares = cap.
 
     Prefers pence for the quote and pounds for the cap when the evidence is
@@ -55,6 +56,12 @@ def infer_units(close: float, cap: float, shares: float, profile_ccy: str | None
     prof_major = "GBP" if prof in PENCE else prof
     quotes = ["GBp", "GBP"] + ([prof_major] if prof_major not in ("GBP",) else [])
     caps = ["GBP"] + ([prof_major] if prof_major != "GBP" else [])
+    # FMP's cap for a dollar reporter (Compass, IHG, Ashtead) is in dollars even
+    # when the profile says GBP: the statements' currency is a candidate too.
+    rep = (reporting_ccy or "").strip()
+    rep = "GBP" if rep in PENCE else rep
+    if rep and rep not in caps:
+        caps.append(rep)
     if not (close > 0 and cap > 0 and shares > 0):
         return "GBp", "GBP", math.nan
     best = ("GBp", "GBP", math.inf)
@@ -121,11 +128,15 @@ def refine_master(data: Path) -> pd.DataFrame:
     fx = pd.read_parquet(data / "fx.parquet") if (data / "fx.parquet").exists() else pd.DataFrame(
         columns=["date", "currency", "gbp_per_unit"])
     shares = pd.Series(dtype=float)
+    reporting = pd.Series(dtype=object)
     if (data / "statements.parquet").exists():
         st = pd.read_parquet(data / "statements.parquet", columns=None)
         if "weightedAverageShsOut" in st:
             shares = st.dropna(subset=["weightedAverageShsOut"]).sort_values("period_end") \
                 .groupby("symbol")["weightedAverageShsOut"].last()
+        if "reportedCurrency" in st:
+            reporting = st.dropna(subset=["reportedCurrency"]).sort_values("period_end") \
+                .groupby("symbol")["reportedCurrency"].last()
 
     prices = prices.sort_values(["symbol", "date"])
     last_close = prices.dropna(subset=["close"]).groupby("symbol").last()
@@ -144,8 +155,10 @@ def refine_master(data: Path) -> pd.DataFrame:
         cap_at = c[c["date"] <= lc["date"]]["market_cap"]
         cap_v = float(cap_at.iloc[-1]) if len(cap_at) else math.nan
         prof = m.loc[m["symbol"] == sym, "currency"].iloc[0] if "currency" in m else None
+        rc = reporting.get(sym)
         q, k, e = infer_units(float(lc["close"]), cap_v, float(shares.get(sym, math.nan)),
-                              prof if isinstance(prof, str) else None, fx)
+                              prof if isinstance(prof, str) else None, fx,
+                              rc if isinstance(rc, str) else None)
         quote[sym], capc[sym], err[sym] = q, k, e
         bond[sym] = bond_like(g.set_index("date")["close"].iloc[-500:])
         vol = g["volume"] if "volume" in g else pd.Series(np.nan, index=g.index)
@@ -194,28 +207,21 @@ def refine_master(data: Path) -> pd.DataFrame:
                 second += 1
     counts["second share class"] = second
 
-    # Two London lines of one company under different codes (INVP.L and
-    # INVR.L, both "Investec plc"): one line per normalised name too.
+    # Two London lines of one company under different codes (INVP/INVR, or
+    # BDEV, Barratt's old code, beside BTRW, Barratt Redrow): which one counts
+    # is decided month by month in the universe (the line trading that month,
+    # then the higher traded value), not here, so a rename or merger cannot
+    # keep a dead code. The normalised name is stored for that.
     from .lse import norm_name
     m["norm"] = m["name"].map(norm_name)
-    alive = m[m["exclude_reason"].isna() & (m["norm"] != "")]
-    dup = 0
-    for name, g in alive.groupby("norm"):
-        if len(g) < 2 or g["delisted_date"].notna().any():
-            continue
-        keep = g.sort_values("traded", ascending=False)["symbol"].iloc[0]
-        for sym in g["symbol"]:
-            if sym != keep:
-                m.loc[m["symbol"] == sym, "exclude_reason"] = f"second line of the same company (kept {keep})"
-                dup += 1
-    counts["second line, same name"] = dup
+    counts["same name, decided monthly"] = int(m[m["exclude_reason"].isna()].duplicated("norm", keep=False).sum())
 
     aim_isins, aim_ticks, aim_file = load_aim(data)
     if aim_file and not use_lse:
         tick = m["symbol"].str.replace(r"\.L$", "", regex=True).str.upper()
         m["is_aim"] = m["is_aim"].fillna(False).astype(bool) | isin.isin(list(aim_isins)).fillna(False) | tick.isin(aim_ticks)
     m["included"] = m["exclude_reason"].isna()
-    m = m.drop(columns=["base", "norm"])
+    m = m.drop(columns=["base"])
     m.to_parquet(mp)
 
     summary = {

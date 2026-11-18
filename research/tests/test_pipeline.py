@@ -48,6 +48,8 @@ class FakeFmp:
             sel = (DATES >= a) & (DATES <= b)
             if sym == "DED.L":
                 sel &= DATES <= pd.Timestamp("2008-06-30")
+            if sym not in self.px:            # an investment trust: market cap only
+                return [{"symbol": sym, "date": d.date().isoformat(), "marketCap": 5e8} for d in DATES[sel]]
             return [{"symbol": sym, "date": d.date().isoformat(), "marketCap": float(v) * 1e7 / 100} for d, v in zip(DATES[sel], self.px[sym][sel])]
         if path == "dividends":
             return [{"symbol": sym, "date": "2007-05-01", "dividend": 3.0}]
@@ -75,6 +77,8 @@ def test_pipeline_end_to_end(cfg, tmp_path):
     f2 = Fetcher(cfg, client=FakeFmp())
     f2.run(full=True)
     assert f2.fmp.calls < 20
+    caps = pd.read_parquet(data / "market_cap.parquet")
+    assert "TRU.L" in set(caps["symbol"])            # the trust's cap, for ranking like the FTSE 350
 
     # Fix E: a merge that failed must not cost a re-download. A run with the
     # downloads marked done (or done == of, as the failed run left it) only merges.

@@ -111,7 +111,7 @@ def test_overseas_premium_in_secondary_out_aim_out(lse_data):
     assert set(PREMIUM_OVERSEAS) - {"RHIM.L", "AMRQ.L"} <= kept      # category carried from 2016
     assert not (set(SECONDARY) & kept)
     assert not (set(AIM) & kept)
-    assert "SANB.L" not in kept and "SANB.L" in rep["lines_with_fmp_cap_over_3x_lse"]
+    assert "SANB.L" in rep["lines_with_fmp_cap_over_3x_lse (reported only)"]      # flagged, not removed
     assert {"BP.L", "INVP.L", "JMAT.L"} <= kept
     # RHI and Amaroq have no category in any list; the issuer flag (N) is not
     # enough on its own, so they need the overrides file, and the report says so.
@@ -119,14 +119,15 @@ def test_overseas_premium_in_secondary_out_aim_out(lse_data):
 
 
 def test_overrides_file(lse_data):
-    pd.DataFrame({"symbol": ["RHIM", "AMRQ.L"], "decision": ["in", "in"],
-                  "reason": ["premium since 2017", "ESCC 2024"]}).to_csv(
+    pd.DataFrame({"symbol": ["RHIM", "AMRQ.L", "SANB"], "decision": ["in", "in", "out"],
+                  "reason": ["premium since 2017", "ESCC 2024", "preference share line"]}).to_csv(
         lse_data / "reference" / "listing_overrides.csv", index=False)
     m = _market("2026-11-02")
     master = m.master.reset_index().rename(columns={"index": "symbol"})
     elig, _ = build_status(lse_data, master, m.market_cap, pd.DatetimeIndex(["2026-11-01"]), False)
     u = build_universe(m, size=350, large=100, start="2026-11-01", eligible=elig)
     assert set(PREMIUM_OVERSEAS) <= set(u["symbol"])
+    assert "SANB.L" not in set(u["symbol"])
 
 
 def test_before_2016_uses_jan_2016_status(lse_data):
@@ -160,26 +161,21 @@ def test_master_isin_edge_cases(tmp_path):
     assert bool(m.loc["DDD.L", "overseas_isin"]) is True
 
 
-def test_two_lines_same_company_name(tmp_path):
-    """N: INVP.L and INVR.L, both 'Investec plc': one line kept, the more traded."""
-    from research.master import refine_master
-    n = 80
-    dates = pd.bdate_range("2025-01-01", periods=n)
-    rng = np.random.default_rng(2)
-    rows = []
-    for s, vol in (("INVP.L", 1e6), ("INVR.L", 1e4)):
-        for d, v in zip(dates, 500 * np.cumprod(1 + rng.normal(0, 0.02, n))):
-            rows.append((s, d, v, v, vol))
-    pd.DataFrame(rows, columns=["symbol", "date", "close", "adj_close", "volume"]).to_parquet(tmp_path / "prices.parquet")
-    pd.DataFrame([(s, d, 5e9) for s in ("INVP.L", "INVR.L") for d in dates],
-                 columns=["symbol", "date", "market_cap"]).to_parquet(tmp_path / "market_cap.parquet")
-    (tmp_path / "reference" / "lse_issuer_lists").mkdir(parents=True)     # lists present: no ISIN exclusion
-    pd.DataFrame({"symbol": ["INVP.L", "INVR.L"], "name": ["Investec plc", "Investec PLC"], "currency": "GBp",
-                  "isin": ["GB00B17BBQ50", "ZAE000081949"], "is_aim": None, "is_etf": False, "is_fund": False,
-                  "delisted_date": None}).to_parquet(tmp_path / "symbols.parquet")
-    m = refine_master(tmp_path).set_index("symbol")
-    assert bool(m.loc["INVP.L", "included"]) is True
-    assert m.loc["INVR.L", "exclude_reason"] == "second line of the same company (kept INVP.L)"
+def test_two_lines_same_company_month_by_month():
+    """S: BDEV (old code) stops trading, BTRW starts; INVP and INVR trade together."""
+    n = 120
+    prices = {"BDEV.L": [500.0] * 60 + [np.nan] * 60, "BTRW.L": [np.nan] * 55 + [400.0] * 65,
+              "INVP.L": [500.0] * n, "INVR.L": [500.0] * n, "OTHER.L": [100.0] * n}
+    m = make_market(prices, start="2025-01-01",
+                    master={"BDEV.L": {"norm": "BARRATT REDROW"}, "BTRW.L": {"norm": "BARRATT REDROW"},
+                            "INVP.L": {"norm": "INVESTEC"}, "INVR.L": {"norm": "INVESTEC"}, "OTHER.L": {"norm": "OTHER"}})
+    m.volume = pd.DataFrame({"BDEV.L": 1e6, "BTRW.L": 1e6, "INVP.L": 1e6, "INVR.L": 1e3, "OTHER.L": 1e5},
+                            index=m.dates)
+    u = build_universe(m, size=10, large=10, start="2025-01-01")
+    first, last = u[u["date"] == u["date"].min()], u[u["date"] == u["date"].max()]
+    assert "BDEV.L" in set(first["symbol"]) and "BTRW.L" not in set(first["symbol"])
+    assert "BTRW.L" in set(last["symbol"]) and "BDEV.L" not in set(last["symbol"])
+    assert "INVP.L" in set(last["symbol"]) and "INVR.L" not in set(last["symbol"])
 
 
 def test_live_list_reader(tmp_path):
@@ -192,3 +188,63 @@ def test_live_list_reader(tmp_path):
     c.write_text("symbol,is_fund\nBT.A,N\nSMT,Y\n")
     assert list(read_symbol_list(c)["symbol"]) == ["BT-A.L"]
     assert to_fmp("bt.a") == "BT-A.L" and to_fmp("VOD.L") == "VOD.L"
+
+
+def test_rank_with_trusts_then_drop_them():
+    """V: the top 10 by cap with trusts counted, then the trusts left out."""
+    prices = {f"C{i}.L": [100.0] * 20 for i in range(10)}
+    caps = {f"C{i}.L": 1e9 * (10 - i) for i in range(10)}            # £10bn down to £1bn
+    m = make_market(prices, start="2026-01-01", caps=caps)
+    trusts = pd.DataFrame({"T1.L": 9.5e9, "T2.L": 5.5e9, "T3.L": 1.5e9}, index=m.dates)
+    u = build_universe(m, size=10, large=5, start="2026-01-01", trust_caps=trusts)
+    first = set(u[u["date"] == u["date"].min()]["symbol"])
+    assert first == {f"C{i}.L" for i in range(8)}                    # T1 and T2 took 2 of the 10 places
+    assert not {"T1.L", "T2.L", "T3.L"} & first
+
+
+def test_two_files_whose_names_say_the_same_year(tmp_path):
+    """Q: the 2025 archive is a file named ..._2026-01-05... in a 2025 folder."""
+    rows = [("DCC plc", "IRELAND", "Main Market", 5000.0, "N")]
+    a = tmp_path / "Issuer_list_archive_2025_11"
+    b = tmp_path / "Issuer_list_archive_2026_10"
+    a.mkdir(); b.mkdir()
+    _write_book(a / "Issuer list archive_2026-01-05-09-44-33.xlsx", {"Jan": _rows_2020(rows), "Dec": _rows_2020(rows)}, 6)
+    _write_book(b / "Issuer list archive_2026-10-01-07-55-43.xlsx", {"Jan": _rows_2020(rows), "Sep": _rows_2020(rows)}, 6)
+    # A loose file with no year in its folder: the admission dates inside decide (latest Nov 2023 -> Dec sheet is 2023).
+    loose = pd.DataFrame([{"Admission Date": "2023-11-20", "Company Name": "DCC plc", "Country of Incorporation": "IRELAND",
+                           "Market": "MAIN MARKET "}])
+    _write_book(tmp_path / "Issuer list archive_2099.xlsx", {"Dec": loose}, 6)
+    df, info = read_issuer_lists(tmp_path)
+    got = set(df["month"].dt.strftime("%Y-%m"))
+    assert {"2025-01", "2025-12", "2026-01", "2026-09", "2023-12"} <= got
+    assert "2099-12" not in got
+    assert not info["_months_from_two_files"]
+
+
+def test_unreadable_workbook_stops_the_run(tmp_path):
+    """P: a workbook that cannot be read is an error, not a skipped year."""
+    from research.lse import UnreadableWorkbook
+    (tmp_path / "LISTDATE HISTORIC 2016.xls").write_bytes(b"not a workbook")
+    with pytest.raises(UnreadableWorkbook):
+        read_issuer_lists(tmp_path)
+
+
+def test_xls_2016_categories_reach_today(tmp_path):
+    """P and R: the 2016 premium category, read from the old file, carries to 2026 by
+    matched symbol, though the company's name has changed (DCC -> DCC ENERGY)."""
+    ref = tmp_path / "reference" / "lse_issuer_lists"
+    (ref / "2016").mkdir(parents=True)
+    (ref / "2026").mkdir(parents=True)
+    _write_book(ref / "2016" / "LISTDATE HISTORIC 2016.xlsx",
+                {"Jan": _rows_2016([("DCC", "IRELAND", "Main Market", 4000.0, "Premium"),
+                                    ("BHP Billiton plc", "AUSTRALIA", "Main Market", 9e4, "Standard")])}, 6)
+    _write_book(ref / "2026" / "Issuer list archive 2026.xlsx",
+                {"Nov": _rows_2020([("DCC ENERGY PLC", "IRELAND", "Main Market", 5000.0, "Y"),
+                                    ("BHP Billiton plc", "AUSTRALIA", "Main Market", 9e4, "Y")])}, 7)
+    m = make_market({"DCC.L": [100.0] * 5, "BHP.L": [100.0] * 5}, start="2026-11-02",
+                    master={"DCC.L": {"name": "DCC plc"}, "BHP.L": {"name": "BHP Billiton plc"}})
+    master = m.master.reset_index().rename(columns={"index": "symbol"})
+    elig, rep = build_status(tmp_path, master, m.market_cap, pd.DatetimeIndex(["2016-01-01", "2026-11-01"]), False)
+    assert "2016" in rep["listing_category_years"]
+    assert bool(elig.at[pd.Timestamp("2026-11-01"), "DCC.L"]) is True       # Y flag does not exclude
+    assert bool(elig.at[pd.Timestamp("2026-11-01"), "BHP.L"]) is False
