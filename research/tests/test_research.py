@@ -668,3 +668,51 @@ def test_price_unit_steps_and_statistics_units_normalised(cfg, tmp_path):
     qd = rep1["first_month_quantities_differ"]
     assert qd["month"] and qd["shares_that_differ"] == 1 and qd["day_one"]["one_investable_fits_all"] is False
     assert "HFD.L" in rep1["watch_shares"]
+
+
+# ---------------------------------------------------------------- AE: the N100 handles shares in symbol order
+def test_cash_trim_falls_on_the_last_buy_alphabetically_not_the_lowest_ranked():
+    """Day one, 2 Nov 2022: the N100 trimmed TRN (last alphabetically), not DOCS (lowest ranked). Prices
+    rise 10% overnight so the build needs more cash than there is; the last buy filled is trimmed."""
+    from research.engine import n100_symbol_key
+    assert n100_symbol_key("BT-A.L") == "BT.A" and n100_symbol_key("TRN.L") == "TRN"
+    prices = {s: [100.0] + [110.0] * 9 for s in ("AAA.L", "MMM.L", "ZZZ.L")}
+    m = make_market(prices, start="2022-11-01")
+    member = pd.DataFrame(True, index=m.dates, columns=m.close.columns)
+    # ZZZ is the best ranked, AAA the worst: rank order would trim AAA, symbol order trims ZZZ.
+    sc = pd.Series({"ZZZ.L": 3.0, "MMM.L": 2.0, "AAA.L": 1.0})
+    rules = engine.Rules(holdings=3, start_cash=30_000, drift_band=0.5)
+    from dataclasses import replace
+    whole = replace(T212.free(), decimals=0)                  # the N100's paper account: whole shares
+    res = engine.simulate(m, member, member, {m.dates[0]: sc}, rules, whole, m.dates[0], m.dates[-1])
+    q = res.fills[res.fills["side"] == "BUY"].set_index("symbol")["quantity"]
+    assert q["AAA.L"] == q["MMM.L"] == 99          # full target: floor(0.333333 x 30,000 / 100)
+    assert 0 < q["ZZZ.L"] < 99                     # the last alphabetically is the one cash ran out on
+    assert any(e["event"] == "buy trimmed to fit cash" and e["symbol"] == "ZZZ.L" for e in res.events)
+
+
+def test_sells_before_buys_trims_then_exits_then_buys_each_in_symbol_order():
+    """strategy_plan_orders plans targets (trims and buys) in symbol order, then held shares that are no
+    longer targets in symbol order; the executor puts every sell before any buy, stably."""
+    n = 40
+    names = ("AAA", "BBB", "CCC", "DDD", "EEE", "FFF")
+    prices = {f"{s}.L": [100.0] * n for s in names}
+    prices["EEE.L"][2:] = [200.0] * (n - 2)           # EEE doubles after the first build: overweight, trimmed
+    prices["CCC.L"][2:] = [50.0] * (n - 2)            # CCC halves: underweight, topped up
+    m = make_market(prices, start="2024-01-01")
+    member = pd.DataFrame(True, index=m.dates, columns=m.close.columns)
+    feb = m.dates[m.dates.month == 2][0]
+    first = pd.Series({"EEE.L": 6.0, "DDD.L": 5.0, "CCC.L": 4.0, "BBB.L": 3.0, "AAA.L": 2.0, "FFF.L": 1.0})
+    second = pd.Series({"AAA.L": 6.0, "CCC.L": 5.0, "EEE.L": 4.0, "FFF.L": 3.0, "BBB.L": 0.5, "DDD.L": 0.4})
+    rules = engine.Rules(holdings=4, hold_rank=4, start_cash=100_000, drift_band=0.02)
+    res = engine.simulate(m, member, member, {m.dates[0]: first, feb: second}, rules, T212.free(), m.dates[0], m.dates[-1])
+    day = res.fills[res.fills["date"] == m.dates[m.dates.get_loc(feb) + 1]].reset_index(drop=True)
+    key = lambda s: engine.n100_symbol_key(s)
+    sells, buys = day[day["side"] == "SELL"], day[day["side"] == "BUY"]
+    assert list(day["side"]) == ["SELL"] * len(sells) + ["BUY"] * len(buys)       # every sell before any buy
+    trims = sells[sells["reason"] == "rebalance"]["symbol"].tolist()
+    exits = sells[sells["reason"] == "no_longer_selected"]["symbol"].tolist()
+    assert trims == ["EEE.L"] and exits == ["BBB.L", "DDD.L"]
+    assert list(sells["reason"]) == ["rebalance"] * len(trims) + ["no_longer_selected"] * len(exits)
+    assert [key(s) for s in exits] == sorted(key(s) for s in exits)
+    assert buys["symbol"].tolist() == ["AAA.L", "CCC.L", "FFF.L"]                  # symbol order, not rank order

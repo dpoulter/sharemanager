@@ -38,6 +38,21 @@ from .store import Market
 WEIGHT_DECIMALS = 1_000_000
 
 
+def n100_symbol_key(symbol: str) -> str:
+    """The order the N100 handles shares in: its own symbol, as MySQL sorts it.
+
+    strategy_plan_orders reads strategy_targets (primary key strategy, as_of_date, symbol) with no
+    ORDER BY, so targets come back in SYMBOL order, not rank order; held shares that are no longer
+    targets (strategy_positions, primary key strategy, symbol) follow in symbol order. The executor
+    then puts sells before buys with a usort that returns 0 for equal sides, which PHP 8 keeps stable.
+    So cash runs out on the buy that is last alphabetically, not the lowest ranked. FMP's BT-A.L is
+    the N100's BT.A.
+    """
+    s = str(symbol)
+    s = s[:-2] if s.endswith(".L") else s
+    return s.replace("-", ".").upper()
+
+
 @dataclass
 class Rules:
     holdings: int | str = 15          # an int, or "quintile" / "decile" of the universe
@@ -177,7 +192,9 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
                         unit_cost = p * (1 + costs.stamp(aim[j]) + costs.spread(lg[i, j]))
                         q0 = q
                         q = round_down(max(0.0, (cash - costs.commission - costs.ptm(cash)) / unit_cost))
-                        if q <= 0 or q * p < costs.minimum_order:
+                        # strategy_fill_order trims to what the cash covers and rejects only when that
+                        # is nothing: there is no minimum order at the fill.
+                        if q <= 0:
                             skipped += 1
                             events.append({"date": d, "symbol": syms[j], "event": "buy dropped: not enough cash",
                                            "detail": f"wanted {q0:g}, cash {cash:,.2f}"})
@@ -223,7 +240,7 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
 
         # 4. Exits between rebalances.
         if ex is not None:
-            for j in np.where((units > 0) & ex[i])[0]:
+            for j in sorted(np.where((units > 0) & ex[i])[0], key=lambda j: n100_symbol_key(syms[j])):
                 pending.append((j, "SELL", shares_held(j, i), "below_ma200_2d"))
 
     vals = pd.DataFrame(values, columns=["date", "cash", "holdings_value", "total", "holdings"]).set_index("date")
@@ -273,7 +290,9 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
                    "account_value": total, "multiplier": mult, "holdings_wanted": n,
                    "detail": f"account value {total:,.2f}, investable {investable:,.2f} "
                              f"(= value less commission, over {mult:.4f}), weight {weight}, {len(chosen)} chosen of {n}"})
-    for x in chosen:
+    # Targets are planned in symbol order (see n100_symbol_key), which is also the order they are
+    # filled in: the cash trim falls on the last buy alphabetically.
+    for x in sorted(chosen, key=n100_symbol_key):
         j = col[x]
         p = close[i, j]
         target = round_down(weight * investable / p)
@@ -301,7 +320,7 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
                                                                       else "trim" if delta < 0 else "new holding"),
                        "detail": f"held {held:g}, target {target:g}, delta {delta:+g}, "
                                  f"held weight {held * p / total:.4f}, target {weight:.4f}"})
-    for j in np.where(units > 0)[0]:
+    for j in sorted(np.where(units > 0)[0], key=lambda j: n100_symbol_key(syms[j])):
         if syms[j] not in want:
             q = shares_held(j, i)
             orders.append((j, "SELL", q, "no_longer_selected"))
