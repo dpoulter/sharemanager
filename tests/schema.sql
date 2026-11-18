@@ -32,6 +32,10 @@ drop table if exists strategy_rules, strategy_values, strategy_backtest_runs;
 -- arming and approval checks would count as their own.
 drop table if exists strategy_live_arming, strategy_order_batches, strategy_live_log;
 
+-- Dividends (sql/dividends.sql): the same reason. A credited dividend left
+-- from the last run would be counted as already paid by this one.
+drop table if exists symbol_dividends, strategy_dividends;
+
 -- Daily prices, loaded by get_share_prices.php via share_functions.php:319.
 -- The exchange column is written from $_SESSION["exchange"] ('XLON').
 create table historical_prices (

@@ -655,3 +655,130 @@ def flatten(sections, log=None):
         flat["Derived.buybackYieldTTM"] = round(buybacks, 8)
 
     return flat
+
+
+# ---------------------------------------------------------------------------
+# Dividends.
+#
+# historical_prices holds RAW closes, which leave dividends out; the paper
+# engine credits them from symbol_dividends (sql/dividends.sql). The stable
+# API's dividends call answers a list of payments for one symbol. The field
+# names below are the candidates in the order they are tried, and a payment
+# with none of them is reported by dividend_rows() rather than skipped in
+# silence: a loader that quietly stores nothing is the failure this project
+# has already had once, with a column of dashes where figures should be.
+# python/fmp_probe.py prints what a response actually carries.
+# ---------------------------------------------------------------------------
+
+DIVIDEND_EX_FIELDS = ("date", "exDate", "exDividendDate")
+DIVIDEND_PAY_FIELDS = ("paymentDate", "payDate", "payment_date")
+# "dividend" is the amount actually paid; "adjDividend" is restated for later
+# splits, which is the wrong figure for cash received on the day.
+DIVIDEND_AMOUNT_FIELDS = ("dividend", "amount")
+
+# A dividend this large against the price it was paid on is not a dividend
+# the engine will believe: it is a unit or a data error, and crediting a
+# quarter of a share's price in one payment would be an invented return.
+DIVIDEND_MAX_YIELD = 0.25
+# The boundary between "pence" and "pounds" when the provider does not say.
+# Against a London price in pence, a payment is 0.5-5% of it in pence and
+# 0.005-0.05% of it in pounds, so anything above this is read as pence and
+# anything below as pounds.
+DIVIDEND_UNIT_SPLIT = 0.001
+
+
+def fetch_dividends(symbol, session=None):
+    """The dividend payments the provider lists for one symbol, or []."""
+    body = _get("dividends", symbol=fmp_symbol(symbol))
+    return body if isinstance(body, list) else []
+
+
+def _date_of(value):
+    """YYYY-MM-DD from the front of a provider date, or None."""
+    if not value:
+        return None
+    text = str(value)[:10]
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return None
+    return text
+
+
+def dividend_rows(records, price_on, minor_unit=True):
+    """Provider payments -> [(ex_date, pay_date, amount_in_price_unit)], report.
+
+    `price_on(ex_date)` is the raw close in historical_prices on or before the
+    ex-date, in the unit that table uses for this share (pence for London), or
+    None. The provider's amount is put in that same unit: a London payment
+    arrives in pounds or in pence depending on the line, and the price beside
+    it says which, so the ratio decides. Nothing is guessed when there is no
+    price to judge by.
+
+    `report` counts what happened to every record, so the loader can say
+    "3 had no ex-date" instead of storing fewer rows and leaving a reader to
+    wonder: kept, as_pence, as_pounds, no_ex_date, no_amount, no_price,
+    implausible.
+    """
+    report = {"seen": 0, "kept": 0, "as_pence": 0, "as_pounds": 0,
+              "no_ex_date": 0, "no_amount": 0, "no_price": 0, "implausible": 0}
+    rows = []
+    seen_ex = set()
+
+    for record in records or []:
+        report["seen"] += 1
+        if not isinstance(record, dict):
+            report["no_ex_date"] += 1
+            continue
+
+        ex = None
+        for name in DIVIDEND_EX_FIELDS:
+            ex = _date_of(record.get(name))
+            if ex:
+                break
+        if not ex:
+            report["no_ex_date"] += 1
+            continue
+        if ex in seen_ex:        # one row per ex-date, the first listed wins
+            continue
+
+        amount = None
+        for name in DIVIDEND_AMOUNT_FIELDS:
+            value = record.get(name)
+            if value is not None:
+                try:
+                    amount = float(value)
+                except (TypeError, ValueError):
+                    amount = None
+                break
+        if amount is None or amount <= 0:
+            report["no_amount"] += 1
+            continue
+
+        pay = None
+        for name in DIVIDEND_PAY_FIELDS:
+            pay = _date_of(record.get(name))
+            if pay:
+                break
+
+        if minor_unit:
+            price = price_on(ex)
+            if price is None or price <= 0:
+                report["no_price"] += 1
+                continue
+            ratio = amount / float(price)
+            if ratio > DIVIDEND_MAX_YIELD:
+                report["implausible"] += 1
+                continue
+            if ratio >= DIVIDEND_UNIT_SPLIT:
+                report["as_pence"] += 1
+            else:
+                amount *= 100.0
+                report["as_pounds"] += 1
+        # A share quoted in a major unit has nothing to convert.
+
+        seen_ex.add(ex)
+        rows.append((ex, pay, round(amount, 6)))
+        report["kept"] += 1
+
+    return rows, report

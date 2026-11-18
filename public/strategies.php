@@ -208,6 +208,7 @@
         $card['pending_prices'] = strategy_prices_for($pending_symbols, $exchange, $as_of);
         $card['trades']         = strategy_trades($chosen, 200);
         $card['costs']          = strategy_costs_paid($chosen);
+        $card['dividends']      = strategy_dividends_received($chosen);
         $card['backtests']      = strategy_backtest_rows($chosen, 50);
         $card['dealing']        = strategy_mode_dealing($card['mode']);
         /* Before the first fill there is nothing to value, and a row of

@@ -78,6 +78,11 @@ echo "refresh_all: $(date '+%Y-%m-%d %H:%M:%S') provider=$PROVIDER app=$APP_DIR"
 # (yfinance) is kept as a fallback but is no longer run.
 if [ "$PROVIDER" = "fmp" ]; then
   "$PYTHON" "$APP_DIR/python/fetch_fmp_fundamentals.py"   || echo "refresh_all: fmp fundamentals failed" >&2
+  # The dividends the paper accounts are credited. Weekly by its own rule, so
+  # most nights this reads the table and asks nobody; a failure here leaves
+  # the accounts on the dividends they already have, which is the right
+  # direction to fail in.
+  "$PYTHON" "$APP_DIR/python/fetch_fmp_dividends.py"      || echo "refresh_all: fmp dividends failed" >&2
 else
   "$PYTHON" "$APP_DIR/python/fetch_eodhd_fundamentals.py" || echo "refresh_all: eodhd fundamentals failed" >&2
 fi

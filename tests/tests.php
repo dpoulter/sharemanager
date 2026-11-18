@@ -972,7 +972,7 @@
     /* The costs are pounds and were always pounds: that is why the price had
        to be. 5.95 commission on a 6,665 pound order is 0.09% of it; on the
        engine's old reading of 62 pounds it was a tenth of the trade. */
-    $px_costs = strategy_costs('BUY', 966, 6.90);
+    $px_costs = strategy_costs('BUY', 966, 6.90, 'PAPER_LEGACY');
     check('commission is 5.95 on that order, which is a tenth of a per cent',
           abs($px_costs['commission'] - 5.95) < 0.0001
           && $px_costs['commission'] / $px_costs['consideration'] < 0.001,
@@ -2919,6 +2919,250 @@
     db()->exec("delete from broker_positions where environment='live'");
     db()->exec("delete from broker_sync_runs where environment='live'");
 
+
+    echo "\n--- K: paper mode trades like Trading 212 ---\n";
+
+    $kp = strategy_mode_rules('PAPER');
+    check('a paper account has a GBP 10 minimum, like Trading 212',
+          (float) $kp['minimum_order'] === (float) T212_MIN_ORDER_VALUE
+          && (float) $kp['minimum_order'] === 10.0, json_encode($kp));
+    check('deals in fractions of a share to two places',
+          $kp['fractional'] === true && (int) $kp['decimals'] === 2);
+    check('and pays no commission',
+          (float) $kp['commission'] === 0.0);
+
+    $kl = strategy_mode_rules('PAPER_LEGACY');
+    check('the legacy costs are exactly what paper used to be',
+          (float) $kl['minimum_order'] === 250.0 && $kl['fractional'] === false
+          && (int) $kl['decimals'] === 0 && (float) $kl['commission'] === 5.95
+          && $kl['broker'] === null, json_encode($kl));
+    check('a legacy account is a mode this knows how to run, and never has a broker',
+          strategy_mode_known('PAPER_LEGACY') && strategy_mode_rules('PAPER_LEGACY')['broker'] === null);
+    check('--costs=legacy asks for it by name, whatever is replayed',
+          strategy_backtest_mode('PAPER', true) === 'PAPER_LEGACY'
+          && strategy_backtest_mode('T212_DEMO', true) === 'PAPER_LEGACY'
+          && strategy_backtest_mode('PAPER') === 'PAPER');
+
+    /* The same GBP 250 account, planned both ways: fifteen names of about
+       GBP 16.67 are possible in fractions and refused under the old
+       minimum. That difference IS the change. */
+    $KP = 'test_paper_k';
+    s_drop($KP);
+    s_rules($KP, ['holdings' => 5]);
+    $kp_targets = [];
+    foreach (['AAA', 'BBB', 'CCC', 'DDD', 'EEE'] as $kp_sym) {
+        $kp_targets[] = ['symbol' => $kp_sym, 'exchange' => 'XLON', 'target_weight' => 0.2];
+    }
+    s_reset($KP, 250.00, 'Y', 'PAPER');
+    $kp_new = strategy_plan_orders($KP, $SASOF, $kp_targets);
+    s_reset($KP, 250.00, 'Y', 'PAPER_LEGACY');
+    $kp_old = strategy_plan_orders($KP, $SASOF, $kp_targets);
+    check('a GBP 250 paper account now buys all five names in fractions',
+          count($kp_new['orders']) === 5
+          && max(array_map(function ($o) { return (float) $o['quantity'] - floor((float) $o['quantity']); },
+                           $kp_new['orders'])) > 0,
+          json_encode($kp_new));
+    check('under the legacy costs the same account is refused them',
+          count($kp_old['orders']) < count($kp_new['orders']),
+          count($kp_old['orders']) . ' vs ' . count($kp_new['orders']));
+
+    /* And a fill under PAPER pays no commission. */
+    s_reset($KP, 250.00, 'Y', 'PAPER');
+    $kp_costs = strategy_costs('BUY', 1, 10.0, 'PAPER');
+    $kp_costs_old = strategy_costs('BUY', 1, 10.0, 'PAPER_LEGACY');
+    check('a paper fill pays stamp duty and spread but no commission',
+          (float) $kp_costs['commission'] === 0.0 && (float) $kp_costs['stamp_duty'] > 0
+          && (float) $kp_costs_old['commission'] === 5.95);
+    s_drop($KP);
+
+    /* The runner. A bad value is refused, named, and non-zero. */
+    [$kb_out, $kb_rc] = run_script('backtest_strategy.php', ['trend_following', '2026-01-01',
+                                                              '2026-02-01', '--costs=cheap']);
+    check('--costs only takes legacy or current', $kb_rc === 2
+          && stripos($kb_out, '--costs must be legacy or current') !== false, $kb_out);
+    [$kb_out2, $kb_rc2] = run_script('backtest_strategy.php', ['trend_following', '2026-01-01',
+                                                               '2026-02-01', '--dividends=maybe']);
+    check('--dividends only takes on or off', $kb_rc2 === 2
+          && stripos($kb_out2, '--dividends must be on or off') !== false, $kb_out2);
+    [$kb_out3, $kb_rc3] = run_script('backtest_strategy.php', []);
+    check('and the usage line names both options',
+          stripos($kb_out3, '--costs=legacy') !== false
+          && stripos($kb_out3, '--dividends=on|off') !== false, $kb_out3);
+
+    echo "\n--- L: dividends ---\n";
+
+    check('the dividend tables are there after sql/dividends.sql',
+          strategy_dividends_ready() === true);
+
+    /* THE COMMENT. historical_prices holds raw closes, and a comment that
+       said it held adjusted ones was wrong (BGEO, 1 Nov 2022: 2,245p raw
+       against 1,813.69p adjusted). */
+    $dv_src = (string) file_get_contents(dirname(__DIR__) . '/includes/strategy_functions.php');
+    check('no comment in the engine still says the stored prices are adjusted closes',
+          stripos($dv_src, 'holds the adjusted close') === false
+          && stripos($dv_src, 'RAW close') !== false);
+    $bt_src = (string) file_get_contents(dirname(__DIR__) . '/includes/backtest_strategy.php');
+    check('nor does the backtest runner',
+          stripos($bt_src, 'adjusted closes, so they carry') === false);
+
+    $DV = 'test_div';
+    s_drop($DV);
+    s_rules($DV, ['holdings' => 5]);
+    s_reset($DV, 1000.00, 'Y', 'PAPER');
+    db()->exec("delete from strategy_dividends where strategy='test_div'");
+    db()->exec("delete from symbol_dividends where symbol in ('AAA','BBB')");
+
+    $dv_dates = array_column(rows("select distinct date d from historical_prices
+                                    where exchange='XLON' order by date desc limit 12"), 'd');
+    $dv_dates = array_reverse($dv_dates);          // oldest first: [0] .. [11]
+    $dv_fill = $dv_dates[1]; $dv_ex = $dv_dates[4]; $dv_pay = $dv_dates[7];
+
+    $dv_fill_order = db()->prepare("insert into strategy_orders
+        (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,fill_date,
+         fill_price,consideration,created_at,filled_at)
+        values (?,?,?,?,'XLON',?,?,'FILLED',?,1,1,now(),now())");
+    $dv_fill_order->execute([$DV . ':a', $DV, $dv_dates[0], 'AAA', 'BUY', 10, $dv_fill]);
+
+    db()->prepare("insert into symbol_dividends (symbol,exchange,ex_date,pay_date,amount,source,loaded_at)
+                   values ('AAA','XLON',?,?,25,'test',now())")->execute([$dv_ex, $dv_pay]);
+
+    $dv_per = strategy_price_pounds(25, 'AAA', 'XLON', $dv_ex);
+    $dv_cash0 = (float) strategy_account($DV)['cash'];
+
+    check('a dividend that has gone ex but not been paid is not credited yet',
+          strategy_credit_dividends($DV, $dv_dates[6], 'XLON')['credited'] === 0
+          && (float) strategy_account($DV)['cash'] === $dv_cash0);
+
+    $dv_dry = strategy_credit_dividends($DV, $dv_pay, 'XLON', true);
+    check('a dry run says what would be credited and writes nothing',
+          $dv_dry['rows'][0]['symbol'] === 'AAA'
+          && abs($dv_dry['rows'][0]['amount'] - round(10 * $dv_per, 4)) < 0.0001
+          && (int) scalar("select count(*) from strategy_dividends where strategy=?", [$DV]) === 0
+          && (float) strategy_account($DV)['cash'] === $dv_cash0);
+
+    $dv_paid = strategy_credit_dividends($DV, $dv_pay, 'XLON');
+    check('on the pay date the shares held at the start of the ex-date are credited as cash',
+          $dv_paid['credited'] === 1
+          && abs((float) strategy_account($DV)['cash'] - ($dv_cash0 + round(10 * $dv_per, 4))) < 0.0001,
+          json_encode($dv_paid));
+    check('and the credit is recorded with what it was for',
+          abs((float) scalar("select quantity from strategy_dividends where strategy=?", [$DV]) - 10) < 0.0001
+          && scalar("select credited_on from strategy_dividends where strategy=?", [$DV]) === $dv_pay);
+
+    $dv_cash1 = (float) strategy_account($DV)['cash'];
+    check('a night that runs twice does not pay the same dividend twice',
+          strategy_credit_dividends($DV, $dv_pay, 'XLON')['credited'] === 0
+          && strategy_credit_dividends($DV, $dv_dates[10], 'XLON')['credited'] === 0
+          && (float) strategy_account($DV)['cash'] === $dv_cash1);
+
+    /* Held at the START of the ex-date. */
+    db()->exec("delete from strategy_dividends where strategy='test_div'");
+    db()->prepare("update strategy_accounts set cash=? where strategy=?")->execute([$dv_cash0, $DV]);
+    db()->prepare("delete from strategy_orders where client_order_id like 'test_div:%'")->execute();
+    $dv_fill_order->execute([$DV . ':b', $DV, $dv_dates[0], 'AAA', 'BUY', 10, $dv_ex]);
+    check('a share bought on the ex-date earns nothing',
+          strategy_credit_dividends($DV, $dv_pay, 'XLON')['credited'] === 0);
+
+    db()->prepare("delete from strategy_orders where client_order_id like 'test_div:%'")->execute();
+    $dv_fill_order->execute([$DV . ':c', $DV, $dv_dates[0], 'AAA', 'BUY', 10, $dv_dates[1]]);
+    $dv_fill_order->execute([$DV . ':d', $DV, $dv_dates[0], 'AAA', 'SELL', 4, $dv_dates[3]]);
+    $dv_part = strategy_credit_dividends($DV, $dv_pay, 'XLON');
+    check('and one sold before the ex-date is not counted, only what was still held',
+          $dv_part['credited'] === 1 && abs($dv_part['rows'][0]['quantity'] - 6) < 0.0001,
+          json_encode($dv_part));
+
+    /* Bought before AND on the ex-date: only what was held at the start of
+       it is entitled. The second purchase is the one that would be counted
+       by an off-by-one on the date. */
+    db()->prepare("delete from strategy_orders where client_order_id like 'test_div:%'")->execute();
+    db()->exec("delete from strategy_dividends where strategy='test_div'");
+    $dv_fill_order->execute([$DV . ':e', $DV, $dv_dates[0], 'AAA', 'BUY', 10, $dv_dates[1]]);
+    $dv_fill_order->execute([$DV . ':f', $DV, $dv_dates[0], 'AAA', 'BUY', 5, $dv_ex]);
+    $dv_both = strategy_credit_dividends($DV, $dv_pay, 'XLON');
+    check('a purchase on the ex-date is not counted beside one made before it',
+          $dv_both['credited'] === 1 && abs($dv_both['rows'][0]['quantity'] - 10) < 0.0001,
+          json_encode($dv_both));
+    db()->prepare("delete from strategy_orders where client_order_id like 'test_div:%'")->execute();
+    $dv_fill_order->execute([$DV . ':c', $DV, $dv_dates[0], 'AAA', 'BUY', 10, $dv_dates[1]]);
+    $dv_fill_order->execute([$DV . ':d', $DV, $dv_dates[0], 'AAA', 'SELL', 4, $dv_dates[3]]);
+
+    /* No pay date: the ex-date. */
+    db()->exec("delete from strategy_dividends where strategy='test_div'");
+    db()->prepare("update symbol_dividends set pay_date=null where symbol='AAA'")->execute();
+    check('with no pay date it is credited on the ex-date',
+          strategy_credit_dividends($DV, $dv_dates[3], 'XLON')['credited'] === 0
+          && strategy_credit_dividends($DV, $dv_ex, 'XLON')['credited'] === 1);
+
+    /* Off. */
+    db()->exec("delete from strategy_dividends where strategy='test_div'");
+    strategy_dividends_enabled(false);
+    $dv_off = strategy_credit_dividends($DV, $dv_pay, 'XLON');
+    strategy_dividends_enabled(true);
+    check('with dividends switched off nothing is credited',
+          $dv_off['credited'] === 0
+          && (int) scalar("select count(*) from strategy_dividends where strategy=?", [$DV]) === 0);
+
+    /* The night credits them, before anything is planned. */
+    db()->exec("delete from strategy_dividends where strategy='test_div'");
+    $dv_night = strategy_run_night($DV, $dv_pay, false, 'XLON');
+    check('the nightly run credits them and says so',
+          (int) scalar("select count(*) from strategy_dividends where strategy=?", [$DV]) === 1
+          && stripos(implode(' ', $dv_night['lines']), 'credited 1 dividend') !== false,
+          json_encode($dv_night['lines']));
+    $dv_dry_night = strategy_run_night($DV, $dv_dates[11], true, 'XLON');
+    db()->exec("delete from strategy_dividends where strategy='test_div'");
+    strategy_run_night($DV, $dv_pay, true, 'XLON');
+    check('and a dry run of the night credits nothing',
+          (int) scalar("select count(*) from strategy_dividends where strategy=?", [$DV]) === 0);
+
+    /* ---------------- the page ---------------- */
+    $dv_recv = strategy_dividends_received($DV);
+    strategy_credit_dividends($DV, $dv_pay, 'XLON');
+    $dv_recv = strategy_dividends_received($DV);
+    check('what an account has received is a total and its rows',
+          $dv_recv['ready'] === true && count($dv_recv['rows']) === 1
+          && abs($dv_recv['total'] - round(6 * $dv_per, 4)) < 0.0001, json_encode($dv_recv));
+    $dv_tpl = php_strip_whitespace(dirname(__DIR__) . '/templates/strategies.php');
+    check('the strategy page has a dividends figure and a table',
+          strpos($dv_tpl, 'Dividends received to date') !== false
+          && strpos($dv_tpl, "card['dividends']") !== false);
+
+    /* ---------------- the benchmark ---------------- */
+    db()->exec("delete from symbol_dividends where symbol in ('AAA','BBB')");
+    $bm_from = $dv_dates[2]; $bm_to = $dv_dates[3];
+    $bm_price = strategy_equal_weight_step($bm_from, $bm_to, 'XLON');
+    db()->prepare("insert into symbol_dividends (symbol,exchange,ex_date,pay_date,amount,source,loaded_at)
+                   select symbol,'XLON',?,null,price*0.05,'test',now() from historical_prices
+                    where exchange='XLON' and date=? limit 400")->execute([$bm_to, $bm_from]);
+    $bm_total = strategy_equal_weight_step($bm_from, $bm_to, 'XLON');
+    check('the benchmark is a total return once dividends are loaded',
+          $bm_total['return'] !== null && $bm_price['return'] !== null
+          && $bm_total['return'] > $bm_price['return'] + 0.03,
+          json_encode([$bm_price, $bm_total]));
+    strategy_dividends_enabled(false);
+    $bm_off = strategy_equal_weight_step($bm_from, $bm_to, 'XLON');
+    strategy_dividends_enabled(true);
+    check('and a price return again when the run asks for one',
+          abs($bm_off['return'] - $bm_price['return']) < 0.0000001);
+    db()->exec("delete from symbol_dividends");
+
+    /* ---------------- the labels ---------------- */
+    $lb_rules = ['rebalance' => 'monthly', 'holdings' => 15, 'hold_rank' => 30];
+    $lb_old = strategy_backtest_label(['overrides' => null, 'cost_settings' => null,
+                                       'dividends' => null], $lb_rules, null, 0);
+    check('a run made before dividends existed is labelled a price return',
+          stripos($lb_old['words'], 'price return, no dividends') !== false, $lb_old['words']);
+    $lb_on = strategy_backtest_label(['overrides' => null, 'cost_settings' => null,
+                                      'dividends' => 'on'], $lb_rules, null, 0);
+    check('and one that was paid them says so',
+          stripos($lb_on['words'], 'with dividends') !== false
+          && stripos($lb_on['words'], 'price return') === false, $lb_on['words']);
+    check('the two are different settings, so one does not supersede the other',
+          $lb_old['key'] !== $lb_on['key']);
+
+    s_drop($DV);
+    db()->exec("delete from strategy_dividends where strategy='test_div'");
+
     echo "\n--- fix M: a share the broker does not list is not selected ---\n";
 
     /* OCI (Oakley Capital Investments) is in the FTSE 250, so the universe
@@ -3074,10 +3318,21 @@
     check('the dry run plans something to price, on both accounts',
           $dr_p['trades'] === 6 && $dr_d['trades'] === 6,
           json_encode([$dr_p, $dr_d, $dr_paper['errors'], $dr_demo['errors']]));
-    check('a paper plan is priced in whole shares at GBP 5.95 a deal',
-          $dr_p['fractions'] === 0
-          && abs($dr_p['commission'] - STRATEGY_COMMISSION * $dr_p['trades']) < 0.005,
+    /* A paper plan was whole shares at GBP 5.95 a deal. From 18 November
+       2026 a paper account trades like Trading 212, so its plan is
+       priced the way the practice one is - and the old plan is still there
+       under PAPER_LEGACY, which is what the next check proves. */
+    check('a paper plan is priced in fractions with no commission, like a practice one',
+          $dr_p['fractions'] > 0 && $dr_p['commission'] == 0.0,
           json_encode($dr_p));
+    s_reset($DR, 100000, 'Y', 'PAPER_LEGACY');
+    $dr_l = $dr_count(strategy_dry_run($DR, $dr_asof, 'XLON'));
+    check('and the legacy plan is whole shares at GBP 5.95 a deal',
+          $dr_l['trades'] > 0 && $dr_l['fractions'] === 0
+          && abs($dr_l['commission'] - STRATEGY_COMMISSION * $dr_l['trades']) < 0.005,
+          json_encode($dr_l));
+    /* Back to the practice account the checks below were written against. */
+    s_reset($DR, 5000, 'Y', 'T212_DEMO');
     check('and a practice plan in fractions of a share, with no commission',
           $dr_d['fractions'] > 0 && $dr_d['commission'] == 0.0,
           json_encode([$dr_d, array_column($dr_demo['trades'], 'quantity')]));
@@ -3826,7 +4081,9 @@
           !in_array((string)$bt_run[0]['account'], strategy_strategies(), true));
 
     /* --keep leaves the mechanism behind for inspection. */
-    [$bt_keep_out, $bt_keep_rc] = run_script('backtest_strategy.php', [$BT, $bf_from, $bf_to, '--keep']);
+    /* --costs=legacy: this run is the paper replay the later checks compare a
+       practice replay with, and paper no longer pays GBP 5.95 a deal. */
+    [$bt_keep_out, $bt_keep_rc] = run_script('backtest_strategy.php', [$BT, $bf_from, $bf_to, '--keep', '--costs=legacy']);
     $bt_keep = rows("select * from strategy_backtest_runs where strategy=? order by run_id desc limit 1", [$BT]);
     check('--keep leaves the orders behind to look at',
           (int)scalar("select count(*) from strategy_orders where strategy=?",
@@ -5572,10 +5829,16 @@
     $s2_paper = strategy_mode_rules('PAPER');
     $s2_demo  = strategy_mode_rules('T212_DEMO');
 
-    check('a paper account keeps its GBP 250 minimum and its whole shares',
-          abs($s2_paper['minimum_order'] - 250.0) < 0.005
-          && $s2_paper['fractional'] === false
-          && abs($s2_paper['commission'] - 5.95) < 0.005,
+    $s2_legacy = strategy_mode_rules('PAPER_LEGACY');
+    check('the legacy paper costs keep the GBP 250 minimum and whole shares',
+          abs($s2_legacy['minimum_order'] - 250.0) < 0.005
+          && $s2_legacy['fractional'] === false
+          && abs($s2_legacy['commission'] - 5.95) < 0.005,
+          json_encode($s2_legacy));
+    check('and a paper account deals like Trading 212 now',
+          abs($s2_paper['minimum_order'] - 10.0) < 0.005
+          && $s2_paper['fractional'] === true
+          && $s2_paper['commission'] === 0.0,
           json_encode($s2_paper));
     check('and a Trading 212 account deals from GBP 10 in fractions, free',
           abs($s2_demo['minimum_order'] - 10.0) < 0.005
@@ -5601,10 +5864,10 @@
        which is the right direction to be wrong in. */
     check('a quantity is rounded down to what the mode can trade',
           strategy_round_quantity(0.4482, $s2_demo) === 0.44
-          && strategy_round_quantity(3.99, $s2_paper) === 3.0
+          && strategy_round_quantity(3.99, $s2_legacy) === 3.0
           && strategy_round_quantity(0.009, $s2_demo) === 0.0,
           json_encode([strategy_round_quantity(0.4482, $s2_demo),
-                       strategy_round_quantity(3.99, $s2_paper)]));
+                       strategy_round_quantity(3.99, $s2_legacy)]));
 
     /* The figure the brief names: GBP 250 across fifteen names is GBP 16.67
        each, and a 3,719.5p share is 0.44 of a share at two decimal places.
@@ -5692,7 +5955,7 @@
        none is placed and the cash sits idle - which is exactly the behaviour
        the Trading 212 mode exists to fix, and exactly the behaviour the
        paper record was built on. */
-    db()->prepare("update strategy_accounts set mode='PAPER' where strategy=?")->execute([$S2]);
+    db()->prepare("update strategy_accounts set mode='PAPER_LEGACY' where strategy=?")->execute([$S2]);
     $s2_paper_plan = strategy_plan_orders($S2, $s2_asof);
     $s2_reasons = implode(' | ', array_column($s2_paper_plan['skipped'], 'reason'));
     check('the same account on paper rules plans nothing, and says why',
@@ -5700,11 +5963,11 @@
           && count($s2_paper_plan['skipped']) === 15,
           json_encode(array_slice($s2_paper_plan['skipped'], 0, 2)));
     check('some because a whole share costs less than the GBP 250 minimum',
-          stripos($s2_reasons, '250 minimum order for paper') !== false, $s2_reasons);
+          stripos($s2_reasons, '250 minimum order for paper, legacy costs') !== false, $s2_reasons);
     check('and the dearer ones because a whole share is more than the target',
           stripos($s2_reasons, 'rounds to nothing') !== false, $s2_reasons);
-    check('and a paper account still buys whole shares',
-          strategy_round_quantity(1.9, strategy_mode_rules('PAPER')) === 1.0);
+    check('and a legacy paper account still buys whole shares',
+          strategy_round_quantity(1.9, strategy_mode_rules('PAPER_LEGACY')) === 1.0);
     db()->prepare("update strategy_accounts set mode='T212_DEMO' where strategy=?")->execute([$S2]);
 
     /* An order too small to place is skipped with its reason rather than
@@ -5990,7 +6253,8 @@
           json_encode([fmt_shares(750, 0, false), fmt_shares(1750, 0, false)]));
     check('the mode decides which, rather than the page',
           (int) strategy_mode_rules('T212_DEMO')['decimals'] === 2
-          && (int) strategy_mode_rules('PAPER')['decimals'] === 0);
+          && (int) strategy_mode_rules('PAPER')['decimals'] === 2
+          && (int) strategy_mode_rules('PAPER_LEGACY')['decimals'] === 0);
 
     /* Signed money. The gain column read "GBP-4 (-1.1%)": the minus sign on
        the percentage is in front, the one on the money is in the middle. */
@@ -6163,9 +6427,11 @@
        text is field by field, so a later change to the spread does not
        turn an old run into a third model. */
     check('the cost model in force is named, and recorded field by field',
-          strategy_backtest_costs_now('PAPER')['key'] === 'commission'
+          strategy_backtest_costs_now('PAPER')['key'] === 'no-commission'
+          && strategy_backtest_costs_now('PAPER_LEGACY')['key'] === 'commission'
           && strategy_backtest_costs_now('T212_DEMO')['key'] === 'no-commission'
-          && strpos($bl_live, 'commission=5.95') === 0,
+          && strpos($bl_live, 'commission=0.00') === 0
+          && strpos(strategy_backtest_costs_now('PAPER_LEGACY')['text'], 'commission=5.95') === 0,
           json_encode([strategy_backtest_costs_now('PAPER')['key'],
                        strategy_backtest_costs_now('T212_DEMO')['key'], $bl_live]));
 
@@ -6205,11 +6471,15 @@
     /* The one whose rules and cost model match the live strategy is marked
        and listed first: it is the one that says what the strategy would
        have done, and the others are the history of the settings. The
-       paper account pays commission, so the old-costs run is the match
-       and the free one is not. */
+       paper account pays no commission now, so the free run is the match
+       and the old-costs one is not. */
     $bl_insert->execute([$BL, 'bt_' . $BL . '_3', '2021-01-04', '2026-01-02',
                          'rebalance=weekly, hold-rank=none', $bl_old,
                          '2026-11-03 10:00:00', 201000, 1.010, 0.40, 120.00]);
+
+    /* The live paper account is credited dividends, so only a run that was
+       is like for like with it. These three are runs that were. */
+    db()->prepare("update strategy_backtest_runs set dividends='on' where strategy=?")->execute([$BL]);
 
     $bl_rows = strategy_backtest_rows($BL, 10);
     $bl_match = [];
@@ -6217,21 +6487,21 @@
         if ($bl_run['matches_live']) { $bl_match[] = $bl_run['account']; }
     }
     check('the run that matches the live rules and cost model is first, and only it',
-          count($bl_rows) === 3 && $bl_rows[0]['account'] === 'bt_' . $BL . '_1'
-          && $bl_match === ['bt_' . $BL . '_1'],
+          count($bl_rows) === 3 && $bl_rows[0]['account'] === 'bt_' . $BL . '_2'
+          && $bl_match === ['bt_' . $BL . '_2'],
           json_encode(array_map(function ($r) {
               return [$r['account'], $r['label'], $r['matches_live']]; }, $bl_rows)));
 
     /* And the match follows the account, not the calendar: the same table
        under a practice account marks the Trading 212 run instead, because
        that is the one that says what this strategy would do now. */
-    db()->prepare("update strategy_accounts set mode='T212_DEMO' where strategy=?")->execute([$BL]);
+    db()->prepare("update strategy_accounts set mode='PAPER_LEGACY' where strategy=?")->execute([$BL]);
     $bl_demo = [];
     foreach (strategy_backtest_rows($BL, 10) as $bl_run) {
         if ($bl_run['matches_live']) { $bl_demo[] = $bl_run['account']; }
     }
-    check('a practice account marks the run that paid no commission instead',
-          $bl_demo === ['bt_' . $BL . '_2'], json_encode($bl_demo));
+    check('an account on the legacy costs marks the run that paid commission instead',
+          $bl_demo === ['bt_' . $BL . '_1'], json_encode($bl_demo));
     db()->prepare("update strategy_accounts set mode='PAPER' where strategy=?")->execute([$BL]);
 
     /* A later run with the same settings supersedes an earlier one: the
@@ -6239,6 +6509,8 @@
     $bl_insert->execute([$BL, 'bt_' . $BL . '_4', '2021-01-04', '2026-01-02',
                          'rebalance=monthly, hold-rank=30', $bl_live,
                          '2026-11-04 10:00:00', 198000, 0.980, 0.40, 714.00]);
+    db()->prepare("update strategy_backtest_runs set dividends='on' where account=?")
+      ->execute(['bt_' . $BL . '_4']);
 
     $bl_rows = strategy_backtest_rows($BL, 10);
     $bl_super = [];
@@ -6246,7 +6518,7 @@
         if ($bl_run['superseded']) { $bl_super[] = $bl_run['account']; }
     }
     check('an older run with the same rules and the same cost model is superseded',
-          $bl_super === ['bt_' . $BL . '_1'], json_encode(array_map(function ($r) {
+          $bl_super === ['bt_' . $BL . '_2'], json_encode(array_map(function ($r) {
               return [$r['account'], $r['started_at'], $r['superseded']]; }, $bl_rows)));
 
     check('a run restates its return as a yearly rate',
@@ -6394,7 +6666,8 @@
     check('and its dealing rules are sentences',
           count(strategy_mode_dealing('T212_DEMO')) >= 3
           && stripos(implode(' ', strategy_mode_dealing('T212_DEMO')), 'fractional') !== false
-          && stripos(implode(' ', strategy_mode_dealing('PAPER')), 'whole shares') !== false,
+          && stripos(implode(' ', strategy_mode_dealing('PAPER_LEGACY')), 'whole shares') !== false
+          && stripos(implode(' ', strategy_mode_dealing('PAPER')), 'fractional') !== false,
           json_encode(strategy_mode_dealing('T212_DEMO')));
 
     /* One query for every price the page needs, rather than one a holding.
@@ -16259,8 +16532,8 @@ STUB
         $sp_bt_live = db()->prepare("insert into strategy_backtest_runs
                          (strategy,account,from_date,to_date,cost_settings,started_at,finished_at,
                           status,trading_days,rebalances,exits,fills,start_value,final_value,
-                          total_return,benchmark_return,max_drawdown,costs_paid)
-                       values (?,?,?,?,?,?,now(),'DONE',120,6,2,30,100000,?,?,0.04,0.085,842.10)");
+                          total_return,benchmark_return,max_drawdown,costs_paid,dividends)
+                       values (?,?,?,?,?,?,now(),'DONE',120,6,2,30,100000,?,?,0.04,0.085,842.10,'on')");
         $sp_bt_live->execute([$sp, STRATEGY_BACKTEST_PREFIX . $sp . '_2', '2026-01-02', $sp_prev,
                               strategy_backtest_costs_now('PAPER')['text'],
                               '2026-11-01 10:00:00', 204400, 1.044]);
@@ -16275,9 +16548,10 @@ STUB
               && strpos($sp_bt_tab, '+104.4%') < strpos($sp_bt_tab, '+12.0%'),
               substr($sp_bt_tab, max(0, strpos($sp_bt_tab, 'matches live settings') - 400), 600));
         check('and it says which cost model it used, not an average cost a fill',
-              stripos($sp_bt_tab, 'old costs') !== false
+              stripos($sp_bt_tab, 'Trading 212 costs') !== false
+              && stripos($sp_bt_tab, 'with dividends') !== false
               && stripos($sp_bt_tab, 'a fill)') === false,
-              substr($sp_bt_tab, max(0, stripos($sp_bt_tab, 'old costs') - 200), 400));
+              substr($sp_bt_tab, max(0, stripos($sp_bt_tab, 'Trading 212 costs') - 200), 400));
         check('a run a later one has answered since is folded away under Earlier runs',
               stripos($sp_bt_tab, 'Earlier runs (1)') !== false
               && strpos($sp_bt_tab, '<details') !== false

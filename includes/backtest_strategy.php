@@ -13,6 +13,11 @@
 	 *   --hold-rank=N     hold a name until it falls out of the top N
 	 *   --holdings=N      how many positions
 	 *   --keep            leave the orders and positions behind
+	 *   --costs=legacy    deal under the old costs (whole shares, GBP 5.95 a
+	 *                     deal, GBP 250 minimum) so runs 1 to 5 can be reproduced;
+	 *                     the default is the Trading 212 costs paper now uses
+	 *   --dividends=on|off  credit the dividends the shares held would have
+	 *                     paid (default on); off is a price return
 	 *
 	 * The overrides are recorded on the run and shown in its label, because
 	 * four runs of the same strategy with four different answers and one
@@ -48,9 +53,12 @@
 	 *
 	 *   Look-ahead. Each date uses only the statistics stored for that date,
 	 *   which is why a strategy is refused for a period where its indicators
-	 *   do not exist rather than being run on today's figures. The prices
-	 *   are adjusted closes, so they carry later dividends and splits - the
-	 *   same approximation the paper account's fills make.
+	 *   do not exist rather than being run on today's figures.
+	 *
+	 *   Prices. historical_prices holds raw closes, which leave dividends
+	 *   out, so a run without --dividends=off credits them as cash on the
+	 *   pay date (the ex-date where there is none). A run with it off, and
+	 *   every run made before dividends existed, is a price return.
 	 */
 
 	require_once("constants.php");
@@ -199,7 +207,7 @@
 		exit(2);
 	};
 
-	$known_options=['keep','compare','rebalance','hold-rank','holdings'];
+	$known_options=['keep','compare','rebalance','hold-rank','holdings','costs','dividends'];
 	foreach (array_keys($options) as $given) {
 		if (!in_array($given,$known_options,true)){
 			$refuse_usage("Unknown option '--".$given."'. Known: --"
@@ -215,7 +223,7 @@
 
 	if ($strategy===null||$from===null||$to===null){
 		$refuse_usage("Usage: php backtest_strategy.php <strategy> <from> <to>"
-		              ." [--rebalance=weekly|monthly|daily] [--hold-rank=N] [--holdings=N] [--keep]"
+		              ." [--rebalance=weekly|monthly|daily] [--hold-rank=N] [--holdings=N] [--costs=legacy] [--dividends=on|off] [--keep]"
 		              ."\r\n   or: php backtest_strategy.php --compare [strategy]");
 	}
 
@@ -282,6 +290,27 @@
 			$rules['hold_rank']=max($wanted,$rules['holdings']);
 			$overrides['hold-rank']=$rules['hold_rank'];
 		}
+	}
+
+	/* --costs: which dealing costs the run assumes. A plain option rather
+	   than an override of the rules, because it is a property of the
+	   account the run trades and is recorded with the cost settings. */
+	$legacy_costs=false;
+	if (isset($options['costs'])){
+		$wanted=strtolower(trim((string)$options['costs']));
+		if (!in_array($wanted,['legacy','current'],true)){
+			$refuse_usage("--costs must be legacy or current");
+		}
+		$legacy_costs=($wanted==='legacy');
+	}
+
+	$dividends_on=true;
+	if (isset($options['dividends'])){
+		$wanted=strtolower(trim((string)$options['dividends']));
+		if (!in_array($wanted,['on','off'],true)){
+			$refuse_usage("--dividends must be on or off");
+		}
+		$dividends_on=($wanted==='on');
 	}
 
 	$override_label=count($overrides)
@@ -404,7 +433,8 @@
 	   broker, so the replay still fills from stored prices and nothing can
 	   send one of its orders anywhere. */
 	$bt_mode=strategy_backtest_mode($account_before===null
-	                                ? STRATEGY_MODE_PAPER : $account_before['mode']);
+	                                ? STRATEGY_MODE_PAPER : $account_before['mode'],
+	                                $legacy_costs);
 
 	query("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at,note)
 	       values (?,?,?,?,'Y',?,?)",
@@ -429,6 +459,21 @@
 		query("update strategy_backtest_runs set cost_settings=? where run_id=?",
 		      strategy_backtest_costs_now($bt_mode)['text'],$run_id);
 	}
+
+	/* Whether this run was paid the dividends its shares would have paid,
+	   recorded with it and applied to the benchmark as well: a price return
+	   compared with a total return benchmark would flatter the benchmark by
+	   its yield. Without sql/dividends.sql there is nothing to credit and
+	   the run is a price return whatever was asked for. */
+	$dividends_run=$dividends_on&&strategy_dividends_ready();
+	strategy_dividends_enabled($dividends_run);
+	if (strategy_dividends_ready()){
+		query("update strategy_backtest_runs set dividends=? where run_id=?",
+		      $dividends_run ? 'on' : 'off',$run_id);
+	}
+	echo "  dividends: ".($dividends_run ? "credited on the pay date"
+	                     : ($dividends_on ? "none loaded, so a price return"
+	                                      : "off, a price return"))."\r\n";
 
 	/* $rules already carries the overrides, so the copy the engine reads
 	   for this account is the overridden configuration - and the live
@@ -525,6 +570,7 @@
 	$drawdown=strategy_drawdown($series);
 	$benchmark=strategy_benchmark_return($from,$to,$exchange);
 	$costs=strategy_costs_paid($bt);
+	$dividends_paid=strategy_dividends_received($bt);
 	$fills=$costs['fills'];
 
 	/* Only what is true of THIS run. The survivorship and look-ahead
@@ -571,6 +617,12 @@
 		query("delete from strategy_positions where strategy=?",$bt);
 		query("delete from strategy_targets where strategy=?",$bt);
 	}
+	/* The credited dividends are the mechanism too, and the next run of the
+	   same account name would otherwise see them as already paid. A run id
+	   is never reused, but a --keep run's rows should not outlive it. */
+	if (!$keep&&strategy_dividends_ready()){
+		query("delete from strategy_dividends where strategy=?",$bt);
+	}
 
 	/* The guarantee, checked rather than asserted: the live account's cash
 	   is exactly what it was before this ran. */
@@ -592,7 +644,12 @@
 	     ." final ".($final_value===null?'?':round($final_value,2))
 	     ." return ".($total_return===null?'?':round($total_return*100,2)."%")."\r\n";
 	echo "  benchmark over the same period: "
-	     .($benchmark===null?'?':round($benchmark*100,2)."%")."\r\n";
+	     .($benchmark===null?'?':round($benchmark*100,2)."%")
+	     .($dividends_run ? " (total return)" : " (price return)")."\r\n";
+	if ($dividends_run){
+		echo "  dividends credited: ".round($dividends_paid['total'],2)." in "
+		     .count($dividends_paid['rows'])." payment(s)\r\n";
+	}
 	echo "  worst fall ".round($drawdown*100,2)."%, dealing costs "
 	     .round($costs['total'],2)
 	     .($starting_cash>0 ? " (".round($costs['total']/$starting_cash*100,1)

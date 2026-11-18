@@ -107,6 +107,17 @@
 	 * strategy_backtest_mode(). */
 	define("STRATEGY_MODE_PAPER_T212", "PAPER_T212");
 
+	/* The dealing costs this engine was written against in September 2026:
+	 * whole shares, GBP 5.95 a deal, a GBP 250 minimum. Paper accounts no
+	 * longer deal like this - from 18 November 2026 a paper account trades
+	 * like Trading 212 (see strategy_mode_rules) - but runs 1 to 5 of the
+	 * backtests were made under it, and a result that cannot be reproduced
+	 * is a result nobody can check. `backtest_strategy.php --costs=legacy`
+	 * replays under this mode so they can be.
+	 *
+	 * Only a backtest account is ever given it; the nightly run never is. */
+	define("STRATEGY_MODE_PAPER_LEGACY", "PAPER_LEGACY");
+
 	/* The figures a Trading 212 account trades by - the minimum order, the
 	   quantity precision, the per-run cap, the session times - are in
 	   constants.php beside the rest of the broker's settings, because the
@@ -176,16 +187,37 @@
 			];
 		}
 
+		if ($mode === STRATEGY_MODE_PAPER_LEGACY) {
+			return [
+				'mode'          => STRATEGY_MODE_PAPER_LEGACY,
+				'broker'        => null,
+				'demo'          => false,
+				'live'          => false,
+				'environment'   => null,
+				'minimum_order' => STRATEGY_MIN_ORDER_VALUE,
+				'fractional'    => false,
+				'decimals'      => 0,
+				'commission'    => STRATEGY_COMMISSION,
+				'words'         => 'paper, legacy costs',
+			];
+		}
+
+		/* PAPER trades like Trading 212: a GBP 10 minimum, fractions to two
+		   places and no commission. A paper account exists to be compared
+		   with the practice and live ones running the same rules, and a
+		   comparison between two accounts that deal under different costs
+		   measures the costs, not the strategy. The figures are the
+		   broker's own constants, so the two cannot drift apart. */
 		return [
 			'mode'          => STRATEGY_MODE_PAPER,
 			'broker'        => null,
 			'demo'          => false,
 			'live'          => false,
 			'environment'   => null,
-			'minimum_order' => STRATEGY_MIN_ORDER_VALUE,
-			'fractional'    => false,
-			'decimals'      => 0,
-			'commission'    => STRATEGY_COMMISSION,
+			'minimum_order' => T212_MIN_ORDER_VALUE,
+			'fractional'    => true,
+			'decimals'      => max(0, min(8, (int) T212_QUANTITY_DECIMALS)),
+			'commission'    => 0.0,
 			'words'         => 'paper',
 		];
 	}
@@ -194,6 +226,7 @@
 	function strategy_mode_known($mode) {
 		return in_array(strtoupper(trim((string) $mode)),
 		                [STRATEGY_MODE_PAPER, STRATEGY_MODE_PAPER_T212,
+		                 STRATEGY_MODE_PAPER_LEGACY,
 		                 STRATEGY_MODE_T212_DEMO, STRATEGY_MODE_T212_LIVE], true);
 	}
 
@@ -207,7 +240,10 @@
 	 * nobody runs. The broker is not part of it - see
 	 * STRATEGY_MODE_PAPER_T212.
 	 */
-	function strategy_backtest_mode($mode) {
+	function strategy_backtest_mode($mode, $legacy = false) {
+		/* The old costs, asked for by name, whatever the account being
+		   replayed is: --costs=legacy is how runs 1 to 5 are reproduced. */
+		if ($legacy) { return STRATEGY_MODE_PAPER_LEGACY; }
 		$rules = strategy_mode_rules($mode);
 		return ($rules['broker'] === null)
 		     ? STRATEGY_MODE_PAPER : STRATEGY_MODE_PAPER_T212;
@@ -438,9 +474,15 @@
 	 * null when the future price is not in the data yet, which is what stops
 	 * the executor filling today's rebalance against today's own close.
 	 *
-	 * Note historical_prices holds the adjusted close, which is restated by
-	 * later dividends and splits. Fills are therefore approximate; a real
-	 * broker fills at an unadjusted traded price.
+	 * historical_prices holds the RAW close - the price that was actually
+	 * quoted on the day - and not an adjusted one. BGEO on 1 Nov 2022 is
+	 * 2,245p there against 1,813.69p adjusted. So a fill here is at a price
+	 * a broker could have dealt at, and nothing in the price is restated by
+	 * a later dividend or split.
+	 *
+	 * The cost of that is dividends: a raw price series leaves them out, so
+	 * an account that held a share through an ex-date would show the fall
+	 * and never the cash. strategy_credit_dividends() puts them back.
 	 */
 	function strategy_next_price($symbol,$exchange,$date) {
 
@@ -1141,6 +1183,164 @@
 
 
 	/* =====================================================================
+	   Dividends.
+
+	   historical_prices holds raw closes, which leave dividends out, so an
+	   account that held a share through an ex-date showed the fall and never
+	   the cash. These put it back: each dividend is credited to the account
+	   as cash on the pay date (the ex-date where the provider gave none) for
+	   the shares it held at the START of the ex-date - bought before it, so
+	   a share bought on the ex-date itself earns nothing, as in life.
+
+	   sql/dividends.sql; python/fetch_fmp_dividends.py loads symbol_dividends.
+	   ===================================================================== */
+
+	/** Whether sql/dividends.sql has been applied. Not cached: a suite
+	 * (and a deploy) applies the migration partway through a process. */
+	function strategy_dividends_ready() {
+		$rows=query("select count(*) n from information_schema.tables
+		              where table_schema=database()
+		                and table_name in ('symbol_dividends','strategy_dividends')");
+		return count($rows)&&(int)$rows[0]['n']===2;
+	}
+
+	/**
+	 * Whether dividends are being counted in this process.
+	 *
+	 * On, unless a backtest asked for --dividends=off. A setting of the run
+	 * rather than of the account: the same engine serves the nightly run
+	 * and the replays, and a replay that wants a price return has to be able
+	 * to say so for the benchmark as well as for the cash.
+	 */
+	function strategy_dividends_enabled($set=null) {
+		static $on=true;
+		if ($set!==null){ $on=(bool)$set; }
+		return $on;
+	}
+
+	/**
+	 * Credit what the account's holdings paid, up to and including $as_of.
+	 *
+	 * Returns ['credited'=>n,'amount'=>pounds,'rows'=>[...]]. Writes only
+	 * when $dry_run is false, and writes nothing twice: strategy_dividends'
+	 * primary key is the guard, and cash is moved only by a row that was
+	 * actually inserted.
+	 *
+	 * Entitlement is read from the account's own FILLED orders: the shares
+	 * held at the start of the ex-date are those bought and not sold on an
+	 * earlier date. A fill's own date is the day it traded, so a share
+	 * bought on the ex-date is not entitled.
+	 */
+	function strategy_credit_dividends($strategy,$as_of,$exchange=null,$dry_run=false) {
+
+		$out=['credited'=>0,'amount'=>0.0,'rows'=>[]];
+
+		if (!strategy_dividends_enabled()||!strategy_dividends_ready()){ return $out; }
+
+		$exchange=($exchange===null) ? session_exchange() : $exchange;
+		$as_of=substr((string)$as_of,0,10);
+
+		$fills=query("select symbol, exchange, side, quantity, fill_date from strategy_orders
+		               where strategy=? and status='FILLED' and fill_date is not null
+		               order by fill_date",$strategy);
+		if (!count($fills)){ return $out; }
+
+		$bySymbol=[];
+		foreach ($fills as $fill) {
+			$bySymbol[(string)$fill['symbol']][]=$fill;
+		}
+
+		foreach ($bySymbol as $symbol=>$list) {
+
+			$first=substr((string)$list[0]['fill_date'],0,10);
+			$ex=(string)$list[0]['exchange'];
+			if ($ex===''){ $ex=$exchange; }
+
+			$dividends=query("select ex_date, pay_date, amount from symbol_dividends
+			                   where symbol=? and exchange=? and ex_date>? and ex_date<=?
+			                     and coalesce(pay_date,ex_date)<=?
+			                   order by ex_date",
+			                 $symbol,$ex,$first,$as_of,$as_of);
+
+			foreach ($dividends as $dividend) {
+
+				$ex_date=substr((string)$dividend['ex_date'],0,10);
+
+				/* Held at the start of the ex-date: fills dated strictly
+				   before it. */
+				$held=0.0;
+				foreach ($list as $fill) {
+					if (substr((string)$fill['fill_date'],0,10)>=$ex_date){ break; }
+					$held+=($fill['side']==='BUY' ? 1 : -1)*(float)$fill['quantity'];
+				}
+				if ($held<=0.00000001){ continue; }
+
+				/* In pounds, the way a price is: a London dividend is in
+				   pence like the price beside it. */
+				$per_share=strategy_price_pounds($dividend['amount'],$symbol,$ex,$ex_date);
+				if ($per_share===null){ continue; }
+
+				$amount=round($held*$per_share,4);
+				if ($amount<=0){ continue; }
+
+				$pay=($dividend['pay_date']===null) ? null : substr((string)$dividend['pay_date'],0,10);
+
+				$out['rows'][]=['symbol'=>$symbol,'ex_date'=>$ex_date,'pay_date'=>$pay,
+				                'quantity'=>$held,'per_share'=>$per_share,'amount'=>$amount];
+
+				if ($dry_run){ continue; }
+
+				/* The key decides whether this is new. Cash moves only for
+				   a row that was inserted. */
+				$exists=query("select 1 from strategy_dividends
+				                where strategy=? and symbol=? and ex_date=?",
+				              $strategy,$symbol,$ex_date);
+				if (count($exists)){ array_pop($out['rows']); continue; }
+
+				/* A second process that got here first, between the check
+				   above and this insert, leaves the primary key to say no.
+				   That is the guard working, not a reason to end the night. */
+				try {
+					$written=query("insert into strategy_dividends
+					                (strategy,symbol,exchange,ex_date,pay_date,quantity,per_share,
+					                 amount,credited_on)
+					                values (?,?,?,?,?,?,?,?,?)",
+					               $strategy,$symbol,$ex,$ex_date,$pay,$held,$per_share,$amount,$as_of);
+				}
+				catch (PDOException $duplicate) { $written=false; }
+				if ($written===false){ array_pop($out['rows']); continue; }
+
+				query("update strategy_accounts set cash=cash+? where strategy=?",$amount,$strategy);
+
+				$out['credited']++;
+				$out['amount']+=$amount;
+			}
+		}
+
+		if ($out['credited']>0){
+			write_log("strategy",$strategy." ".$as_of.": credited ".$out['credited']
+			          ." dividend(s), ".round($out['amount'],2));
+		}
+
+		return $out;
+	}
+
+	/** What an account has been credited in dividends, and the rows. */
+	function strategy_dividends_received($strategy) {
+
+		$out=['total'=>0.0,'rows'=>[],'ready'=>strategy_dividends_ready()];
+		if (!$out['ready']){ return $out; }
+
+		$out['rows']=query("select d.symbol, d.ex_date, d.pay_date, d.quantity, d.per_share,
+		                           d.amount, d.credited_on
+		                      from strategy_dividends d
+		                     where d.strategy=? order by d.ex_date desc, d.symbol",$strategy);
+		foreach ($out['rows'] as $row) { $out['total']+=(float)$row['amount']; }
+
+		return $out;
+	}
+
+	/* =====================================================================
 	   Strategies as configuration.
 
 	   Everything above is the engine: it reconciles, plans, places and
@@ -1362,6 +1562,7 @@
 		   strategies - but a name is cheaper than an "Unknown" in front of
 		   somebody reading a log. */
 		if ($mode===STRATEGY_MODE_PAPER_T212){ return 'Replay'; }
+		if ($mode===STRATEGY_MODE_PAPER_LEGACY){ return 'Replay (legacy costs)'; }
 
 		return 'Unknown';
 	}
@@ -1879,7 +2080,21 @@
 		$parts[]=$costs['words'];
 		$key[]=$costs['key'];
 
+		/* And whether it was paid the dividends. Every run made before
+		   dividends existed carries NULL here, and a NULL is a price
+		   return: the cash the shares paid never reached the account. It
+		   is said in the label because two runs of the same rules and the
+		   same costs, one with the dividends and one without, differ by
+		   several points a year and nothing else said so. */
+		$dividends=(array_key_exists('dividends',$run)&&strtolower(trim((string)$run['dividends']))==='on')
+		         ? 'on' : 'off';
+		$parts[]=($dividends==='on') ? 'with dividends' : 'price return, no dividends';
+		$key[]='div-'.$dividends;
+
 		$live=($account===null) ? null : strategy_backtest_costs_now($account['mode']);
+		/* The live account is credited dividends once they are loaded, so
+		   only a run that was is like for like with it. */
+		$live_dividends=strategy_dividends_ready() ? 'on' : 'off';
 
 		$matches=$rules!==null
 		      && (string)$rebalance===(string)$rules['rebalance']
@@ -1887,7 +2102,8 @@
 		      && (string)$hold_rank===(string)($rules['hold_rank']===null
 		                                       ||(int)$rules['hold_rank']===0
 		                                       ? 'none' : $rules['hold_rank'])
-		      && $live!==null && $costs['key']===$live['key'];
+		      && $live!==null && $costs['key']===$live['key']
+		      && $dividends===$live_dividends;
 
 		return ['words'=>implode(', ',$parts),
 		        'key'=>implode('|',$key),
@@ -2899,6 +3115,18 @@
 				$resumed=true;
 			}
 
+			/* Dividends first, so the cash a rebalance sizes against is the
+			   cash the account has: a month of them paid out and not yet
+			   credited would be a month of idle money. Written only on a real
+			   run, and a no-op until sql/dividends.sql is applied. */
+			if (!$dry_run){
+				$paid=strategy_credit_dividends($strategy,$as_of,$exchange);
+				if ($paid['credited']>0){
+					$night['lines'][]="credited ".$paid['credited']." dividend(s), "
+					                 .round($paid['amount'],2);
+				}
+			}
+
 			$exits=strategy_place_exits($strategy,$as_of,$dry_run,$exchange);
 			$night['exits']=$exits['exits'];
 			foreach ($exits['exits'] as $exit) {
@@ -3033,13 +3261,40 @@
 
 		$exchange=($exchange===null) ? session_exchange() : $exchange;
 
-		$rows=query("select avg(h1.price/h0.price-1) r, count(*) n
-		               from historical_prices h0, historical_prices h1, stock_symbols ss
-		              where h0.symbol=h1.symbol and h0.exchange=h1.exchange
-		                and ss.symbol=h0.symbol and ss.exchange=h0.exchange
-		                and ss.enabled='Y' and h0.exchange=?
-		                and h0.date=? and h1.date=? and h0.price>0 and h1.price>0",
-		            $exchange,substr((string)$from,0,10),substr((string)$to,0,10));
+		$from=substr((string)$from,0,10);
+		$to=substr((string)$to,0,10);
+
+		/* A TOTAL return: each constituent's dividends with an ex-date in
+		   the step are added to its closing price before the return is
+		   taken, as an account that held it would have had them. The
+		   amount is in the price's own unit, so the ratio needs no
+		   conversion. Without dividends loaded, or with them switched off
+		   for a price-return replay, it is the price return it always was. */
+		if (strategy_dividends_enabled()&&strategy_dividends_ready()){
+			$rows=query("select avg((h1.price+ifnull(dv.d,0))/h0.price-1) r, count(*) n
+			               from historical_prices h0
+			               join historical_prices h1
+			                 on h0.symbol=h1.symbol and h0.exchange=h1.exchange
+			               join stock_symbols ss
+			                 on ss.symbol=h0.symbol and ss.exchange=h0.exchange
+			               left join (select symbol, exchange, sum(amount) d
+			                            from symbol_dividends
+			                           where ex_date>? and ex_date<=? and exchange=?
+			                           group by symbol, exchange) dv
+			                 on dv.symbol=h0.symbol and dv.exchange=h0.exchange
+			              where ss.enabled='Y' and h0.exchange=?
+			                and h0.date=? and h1.date=? and h0.price>0 and h1.price>0",
+			            $from,$to,$exchange,$exchange,$from,$to);
+		}
+		else {
+			$rows=query("select avg(h1.price/h0.price-1) r, count(*) n
+			               from historical_prices h0, historical_prices h1, stock_symbols ss
+			              where h0.symbol=h1.symbol and h0.exchange=h1.exchange
+			                and ss.symbol=h0.symbol and ss.exchange=h0.exchange
+			                and ss.enabled='Y' and h0.exchange=?
+			                and h0.date=? and h1.date=? and h0.price>0 and h1.price>0",
+			            $exchange,$from,$to);
+		}
 
 		if (!count($rows)||$rows[0]['r']===null||(int)$rows[0]['n']===0){
 			return ['return'=>null,'constituents'=>0];
@@ -3098,10 +3353,11 @@
 	 *   flattery a backtest does - the companies that left the index are not
 	 *   in it;
 	 *
-	 *   it is a price index, not a total return one. Dividends are in
-	 *   historical_prices only to the extent the adjusted close carries
-	 *   them, which is the same treatment the strategies get, so the
-	 *   comparison is at least like for like.
+	 *   it is a TOTAL return index once dividends are loaded: each
+	 *   constituent's dividends are added on their ex-dates, so the
+	 *   comparison with an account that is credited them is like for like.
+	 *   Before they are loaded, and for a replay run with --dividends=off,
+	 *   it is a price index - see strategy_dividends_enabled().
 	 *
 	 * The level starts at 100 on the first date it is asked for and
 	 * compounds the equal weighted return between consecutive stored dates

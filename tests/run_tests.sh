@@ -164,6 +164,11 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/quote_report.sql" > /dev/null || exit 1
 echo "applying sql/strategy_live.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_live.sql" > /dev/null || exit 1
 
+# Dividends for the paper engine. After sql/strategy_backtest_costs.sql, which
+# adds the column the new backtest column sits after.
+echo "applying sql/dividends.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/dividends.sql" > /dev/null || exit 1
+
 # After sql/report_currency.sql, which adds the column this one sits after.
 echo "applying sql/strategy_prices.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_prices.sql" > /dev/null || exit 1
@@ -183,6 +188,7 @@ echo "running provider client tests (offline, no key needed)"
 python3 "$TESTS_DIR/test_eodhd.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp.py"        || PY_FAILED=1
 python3 "$TESTS_DIR/test_fmp_loader.py" || PY_FAILED=1
+python3 "$TESTS_DIR/test_fmp_dividends.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_job_imports.py" || PY_FAILED=1
 python3 "$TESTS_DIR/test_db_functions.py" || PY_FAILED=1
 
@@ -212,7 +218,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       strategy_backtest strategy_backtest_overrides strategy_backtest_costs \
                       strategy_prices \
                       broker broker_account_fields broker_mapping broker_trading \
-                      broker_fills broker_environment strategy_live quote_report; do
+                      broker_fills broker_environment strategy_live dividends quote_report; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
      done
 

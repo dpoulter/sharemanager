@@ -231,8 +231,19 @@ refuses to trade a share it cannot price.
 
 ## Costs
 
-Stamp duty 0.5% on purchases, £5.95 commission per order, 25bps slippage each
-way. Position sizing reserves these up front: sizing to a full 100% of the
+**From 18 November 2026 a paper account trades like Trading 212**: a £10
+minimum order, fractions of a share to two decimal places, no commission, with
+stamp duty 0.5% on purchases and 25bps slippage each way. A paper account exists
+to be compared with the practice and live accounts running the same rules, and
+a comparison across different costs measures the costs rather than the strategy.
+
+`PAPER_LEGACY` keeps the old model (whole shares, £5.95 a deal, £250 minimum)
+and only a backtest is ever given it: `php includes/backtest_strategy.php
+<strategy> <from> <to> --costs=legacy` reproduces runs 1 to 5. The live paper
+strategies change from their next rebalance; their history is untouched.
+
+The legacy figures were: stamp duty 0.5% on purchases, £5.95 commission per
+order, 25bps slippage each way. Position sizing reserves these up front: sizing to a full 100% of the
 account leaves nothing for costs, so the last order of every rebalance would be
 rejected for want of cash and the book would quietly run one name short.
 
@@ -344,3 +355,35 @@ A buy that would breach a cap is refused with the reason and left PENDING for
 the next run. Two orders in one run over a cap on their own size halts the
 strategy: that is the sizing being wrong rather than the cap being tight.
 Reaching the £150 a run or the day's allowance just ends the run.
+
+## Dividends
+
+`historical_prices` holds **raw closes** - the price quoted on the day, not one
+restated for later payments (BGEO on 1 Nov 2022: 2,245p raw against 1,813.69p
+adjusted). A raw series leaves dividends out, so until 18 November 2026 every
+paper account and backtest was a price return that understated what holding the
+shares paid.
+
+```sh
+mysql sharemanager < sql/dividends.sql          # symbol_dividends, strategy_dividends
+FMP_API_KEY=... python3 python/fetch_fmp_dividends.py   # weekly by its own rule; run from refresh_all.sh
+```
+
+Each dividend is credited to the account as cash **on the pay date** (the ex-date
+where the provider gives none), for the shares held at the start of the ex-date:
+a share bought on the ex-date itself earns nothing. `strategy_dividends` is keyed
+on (account, share, ex-date), so a night run twice or a backtest re-run cannot
+pay one twice. The nightly run credits before it plans, so a rebalance sizes
+against the cash the account has; the strategy page lists what has been received.
+
+The amount is stored in the unit `historical_prices` uses for the share (pence for
+London). The provider does not say whether a London dividend is in pounds or pence,
+so `fmp.dividend_rows()` decides by the price on the ex-date and reports how many
+payments it read each way, and how many it could not store and why - a wrong field
+name shows up as "N payments had no ex-date", not as a table that stays empty.
+
+The benchmark is a **total return** once dividends are loaded. Backtests take
+`--dividends=on|off` (default on); off is a price return for the shares and the
+benchmark both. Runs made before dividends existed are labelled "price return, no
+dividends", and a run is only marked as matching the live settings if it was paid
+them too.

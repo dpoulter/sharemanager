@@ -1290,6 +1290,50 @@
 									spread <?= s_money($card['costs']['slippage'], 2) ?>).
 								</small>
 							</p>
+							<?php /* The dividends the holdings have paid, credited to the
+							         account as cash on the pay date. A raw price series
+							         leaves them out, so without this a share held through
+							         an ex-date would show the fall and never the cash. */ ?>
+							<?php $divs = $card['dividends']; ?>
+							<?php if ($divs['ready']): ?>
+							<p class="mb-3">
+								<small>
+									Dividends received to date
+									<strong><?= s_money($divs['total'], 2) ?></strong>
+									in <?= (int) count($divs['rows']) ?> payment<?= count($divs['rows']) === 1 ? '' : 's' ?>,
+									credited as cash on the pay date.
+									<?php if (!count($divs['rows'])): ?>
+										None of the shares held has paid one yet, or none are loaded.
+									<?php endif ?>
+								</small>
+							</p>
+							<?php if (count($divs['rows'])): ?>
+							<div class="table-responsive mb-3">
+								<table class="table table-sm table-striped sm-table-wide">
+									<thead>
+										<tr>
+											<th>Share</th><th>Ex-date</th><th>Paid</th>
+											<th class="sm-num">Shares held</th>
+											<th class="sm-num">Per share</th>
+											<th class="sm-num">Received</th>
+										</tr>
+									</thead>
+									<tbody>
+									<?php foreach ($divs['rows'] as $div): ?>
+										<tr>
+											<td><a href="quote.php?symbol=<?= urlencode((string) $div['symbol']) ?>"><?= e((string) $div['symbol']) ?></a></td>
+											<td><?= s_date($div['ex_date']) ?></td>
+											<td><?= $div['pay_date'] === null ? e(VIEW_DASH) : s_date($div['pay_date']) ?></td>
+											<td class="sm-num"><?= s_shares($div['quantity'], $card) ?></td>
+											<td class="sm-num"><?= s_money($div['per_share'], 4) ?></td>
+											<td class="sm-num"><?= s_money($div['amount'], 2) ?></td>
+										</tr>
+									<?php endforeach ?>
+									</tbody>
+								</table>
+							</div>
+							<?php endif ?>
+							<?php endif ?>
 							<?php if (!count($fills)): ?>
 								<p class="text-body-secondary">No trades yet.</p>
 							<?php else: ?>
@@ -1451,9 +1495,14 @@
 					</p>
 					<p>
 						A <strong>paper</strong> strategy fills at the next day's close
-						after dealing costs - commission, stamp duty and an allowance for
-						the spread - and never leaves this database. The figures are
-						after costs, not before them.
+						after dealing costs and never leaves this database. It trades
+						like Trading 212 - a GBP 10 minimum, fractions of a share and no
+						commission, with stamp duty and an allowance for the spread - so
+						it can be compared with the practice and live accounts running
+						the same rules. The figures are after costs, not before them.
+						Dividends are credited as cash on the pay date for the shares
+						held at the start of the ex-date, because the stored prices are
+						the raw closes and leave them out.
 					</p>
 					<p>
 						A <strong>practice</strong> strategy sends its orders to a Trading
@@ -1506,14 +1555,19 @@
 					<p>
 						The benchmark is the FTSE 350 equal weighted, built from the
 						constituents' own prices and rebased to 100 - there is no index
-						level in the data. It is today's constituents, so like any
+						level in the data. It is a total return once dividends are
+						loaded, so it is compared like for like with accounts that are
+						credited them. It is today's constituents, so like any
 						backtest it leaves out the companies that have left the index.
 					</p>
 					<p>
 						A <strong>backtest</strong> replays the same rules over stored
 						history through the same engine. It is not a record of trading,
 						and it is flattered by survivorship for the same reason the
-						benchmark is.
+						benchmark is. Runs made before 18 November 2026 are labelled
+						"price return, no dividends": the cash the shares paid never
+						reached them, so they understate what holding the shares
+						returned.
 					</p>
 					<p class="mb-0">
 						Valued at <?= s_date($as_of) ?>. Not financial advice.
