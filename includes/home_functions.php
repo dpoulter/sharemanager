@@ -1,0 +1,458 @@
+<?php
+
+	/**
+	 * home_functions.php - what the dashboard shows.
+	 *
+	 * The home page used to be the market outlook in full, then four lists of
+	 * ticker and company name. It answered "what scored well last night" and
+	 * nothing else: not what the portfolio is worth, not what the strategies
+	 * did, not what was announced this week. These are the queries behind the
+	 * page that answers those.
+	 *
+	 * Everything here reads. Nothing on the dashboard writes, and nothing on
+	 * it calls the model - the outlook is whatever was last generated, and
+	 * generating a new one is a button.
+	 */
+
+	require_once("portfolio_functions.php");
+
+	/* ---------------------------------------------------------------------
+	   The portfolio strip.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * What the holdings are worth, what they did today, and the cash.
+	 *
+	 * Today's change is computed from the two most recent stored closes
+	 * rather than from the performance snapshots: the snapshot job has to
+	 * have run on both days for a difference between snapshots to mean
+	 * anything, and when it has not the honest answer is "no change
+	 * recorded", not a day's move that is really a week's.
+	 *
+	 * Prices are pence and holdings are worth pounds, so everything that
+	 * leaves here is pounds.
+	 */
+	function home_portfolio_strip($session_id, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+
+		$strip = ['holdings' => 0, 'value' => 0.0, 'cash' => 0.0, 'total' => 0.0,
+		          'gain' => null, 'day_change' => null, 'day_change_pct' => null,
+		          'as_of' => null];
+
+		/* The cash book, run down. One implementation, in
+		   portfolio_functions.php, because buy.php checks against the same
+		   figure before it lets a purchase through. */
+		$strip['cash'] = portfolio_cash_balance($session_id);
+
+		$positions = get_active_positions($session_id);
+		$strip['holdings'] = count($positions);
+
+		if (!count($positions)) {
+			$strip['total'] = $strip['cash'];
+			return $strip;
+		}
+
+		$value = 0.0; $gain = 0.0;
+		foreach ($positions as $position) {
+			$value += (float) $position['value_raw'];
+			$gain  += (float) $position['profit_raw'];
+		}
+		$strip['value'] = $value;
+		$strip['gain']  = $gain;
+		$strip['total'] = $value + $strip['cash'];
+
+		$strip['as_of'] = last_trading_date($exchange);
+
+		$change = 0.0; $base = 0.0; $priced = 0;
+		foreach ($positions as $position) {
+			$held = (int) $position['qty_purchased'] - (int) $position['qty_sold'];
+			if ($held <= 0) { continue; }
+			$move = portfolio_day_move($position['symbol'], $exchange);
+			if ($move === null) { continue; }
+			$priced++;
+			$change += $move['change'] * $held / 100;
+			$base   += $move['previous'] * $held / 100;
+		}
+
+		/* No holding had two closes to compare: the honest answer is that no
+		   change is known, not that nothing moved. */
+		if ($priced === 0) { return $strip; }
+
+		$strip['day_change']     = $change;
+		$strip['day_change_pct'] = $base > 0 ? ($change / $base) * 100 : null;
+
+		return $strip;
+	}
+
+	/**
+	 * What one share did between its last two closes.
+	 *
+	 * Its own last two, not the exchange's. The exchange's latest two dates
+	 * are the same thing only when every share traded on both of them, and
+	 * a share that was suspended, or that simply has a gap in the loaded
+	 * history, then reports no move at all - which on a page of ten holdings
+	 * reads as a flat market rather than as missing data.
+	 *
+	 * Returns ['change' => pence per share, 'previous' => pence, 'date' =>
+	 * the later of the two], or null when there are not two closes.
+	 */
+	function portfolio_day_move($symbol, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+
+		$closes = query("select date, price from historical_prices
+		                  where symbol=? and exchange=? and price is not null
+		                  order by date desc limit 2", $symbol, $exchange);
+
+		if (count($closes) < 2 || (float) $closes[1]['price'] == 0.0) { return null; }
+
+		return ['change'   => (float) $closes[0]['price'] - (float) $closes[1]['price'],
+		        'previous' => (float) $closes[1]['price'],
+		        'date'     => (string) $closes[0]['date']];
+	}
+
+	/* ---------------------------------------------------------------------
+	   The market state card.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * Whether the nightly breadth table is there.
+	 *
+	 * sql/market_breadth.sql creates it. Guarded so the dashboard works on a
+	 * host that is one deploy behind the migration rather than failing on an
+	 * unknown table - it falls back to computing the figures, which is what
+	 * it always did.
+	 */
+	function market_breadth_ready() {
+		static $known = null;
+		if ($known !== null) { return $known; }
+		$found = query("select count(*) n from information_schema.tables
+		                 where table_schema=database() and table_name='market_breadth'");
+		$known = count($found) && (int) $found[0]['n'] > 0;
+		return $known;
+	}
+
+	/**
+	 * The breadth figures for one date, worked out from statistics.
+	 *
+	 * The rule, in one place: a close above the 200 day average, counted
+	 * over the shares that have a 200 day average, plus the 50/200 crossover
+	 * and the median twelve month return. This is what the nightly job
+	 * stores and what the test compares the stored figures against - if it
+	 * lived in two places they would answer differently the first time one
+	 * of them was changed.
+	 */
+	function market_breadth_compute($date, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+
+		$rows = query("select s.symbol,
+		                      max(case when s.indicator='close_price' then s.value end) close_price,
+		                      max(case when s.indicator='ma50'        then s.value end) ma50,
+		                      max(case when s.indicator='ma200'       then s.value end) ma200,
+		                      max(case when s.indicator='12mnth'      then s.value end) momentum_12m
+		                 from statistics s, stock_symbols ss
+		                where ss.symbol=s.symbol and ss.enabled='Y' and ss.exchange=?
+		                  and s.exchange=? and s.date=?
+		                group by s.symbol", $exchange, $exchange, $date);
+
+		$with_ma200 = 0; $above = 0; $golden = 0; $momentum = [];
+		foreach ($rows as $row) {
+			if ($row['momentum_12m'] !== null) { $momentum[] = (float) $row['momentum_12m']; }
+			if ($row['ma200'] === null) { continue; }
+			$with_ma200++;
+			if ($row['close_price'] !== null && (float) $row['close_price'] > (float) $row['ma200']) { $above++; }
+			if ($row['ma50'] !== null && (float) $row['ma50'] > (float) $row['ma200']) { $golden++; }
+		}
+
+		$pct = function ($n, $of) { return $of > 0 ? round($n / $of * 100, 2) : null; };
+
+		sort($momentum);
+		$median = null;
+		if (count($momentum)) {
+			$middle = (int) floor(count($momentum) / 2);
+			$median = count($momentum) % 2
+			        ? round($momentum[$middle], 4)
+			        : round(($momentum[$middle - 1] + $momentum[$middle]) / 2, 4);
+		}
+
+		return ['date'                 => substr((string) $date, 0, 10),
+		        'exchange'             => $exchange,
+		        'pct_above_ma200'      => $pct($above, $with_ma200),
+		        'pct_ma50_above_ma200' => $pct($golden, $with_ma200),
+		        'median_12m'           => $median,
+		        'shares_counted'       => $with_ma200];
+	}
+
+	/** Work one date out and store it. Returns what was stored. */
+	function market_breadth_write($date, $exchange = null) {
+		$figures = market_breadth_compute($date, $exchange);
+		if (!market_breadth_ready()) { return $figures; }
+		query("insert into market_breadth
+		         (date, exchange, pct_above_ma200, pct_ma50_above_ma200,
+		          median_12m, shares_counted, written_at)
+		       values (?,?,?,?,?,?,now())
+		       on duplicate key update
+		         pct_above_ma200=values(pct_above_ma200),
+		         pct_ma50_above_ma200=values(pct_ma50_above_ma200),
+		         median_12m=values(median_12m),
+		         shares_counted=values(shares_counted),
+		         written_at=now()",
+		      $figures['date'], $figures['exchange'], $figures['pct_above_ma200'],
+		      $figures['pct_ma50_above_ma200'], $figures['median_12m'],
+		      $figures['shares_counted']);
+		return $figures;
+	}
+
+	/**
+	 * The breadth figures the dashboard shows: the stored row if there is
+	 * one, worked out on the spot if there is not.
+	 *
+	 * Falling back rather than showing nothing, because the figures are
+	 * right either way - the only difference is who waits for them. A host
+	 * where the migration has not run, or a night the job did not, gets the
+	 * old behaviour and the old second and a bit.
+	 */
+	function market_breadth($date, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+
+		if (market_breadth_ready()) {
+			$rows = query("select date, exchange, pct_above_ma200, pct_ma50_above_ma200,
+			                      median_12m, shares_counted
+			                 from market_breadth where date=? and exchange=?",
+			              substr((string) $date, 0, 10), $exchange);
+			if (count($rows)) {
+				return ['date'                 => substr((string) $rows[0]['date'], 0, 10),
+				        'exchange'             => $rows[0]['exchange'],
+				        'pct_above_ma200'      => $rows[0]['pct_above_ma200'] === null
+				                                ? null : (float) $rows[0]['pct_above_ma200'],
+				        'pct_ma50_above_ma200' => $rows[0]['pct_ma50_above_ma200'] === null
+				                                ? null : (float) $rows[0]['pct_ma50_above_ma200'],
+				        'median_12m'           => $rows[0]['median_12m'] === null
+				                                ? null : (float) $rows[0]['median_12m'],
+				        'shares_counted'       => (int) $rows[0]['shares_counted'],
+				        'stored'               => true];
+			}
+		}
+
+		$figures = market_breadth_compute($date, $exchange);
+		$figures['stored'] = false;
+		return $figures;
+	}
+
+	/**
+	 * How much of the market is in an uptrend, as a six month line.
+	 *
+	 * Read from market_breadth, which the nightly job fills. It used to
+	 * pivot statistics across every date in the range on every page load:
+	 * 1.57 seconds of the dashboard, for figures that change once a night.
+	 *
+	 * Falls back to the old query where the table is missing or empty, so a
+	 * host one deploy behind still draws the line.
+	 *
+	 * Returns [] when the statistics do not go back far enough, and the card
+	 * then shows the figure without a line rather than an empty box.
+	 */
+	function home_breadth_history($as_of, $months = 6, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+		$months   = max(1, (int) $months);
+		$from     = date('Y-m-d', strtotime($as_of . ' -' . $months . ' month'));
+
+		if (market_breadth_ready()) {
+			$rows = query("select date, pct_above_ma200 pct from market_breadth
+			                where exchange=? and date between ? and ?
+			                  and pct_above_ma200 is not null
+			                order by date", $exchange, $from, $as_of);
+			if (count($rows)) { return $rows; }
+		}
+
+		return query("select d.date, round(sum(d.above)/count(*)*100, 1) pct
+		                from (select s.date, s.symbol,
+		                             max(case when s.indicator='ma200' then s.value end) ma200,
+		                             case when max(case when s.indicator='close_price' then s.value end)
+		                                     > max(case when s.indicator='ma200' then s.value end)
+		                                  then 1 else 0 end above
+		                        from statistics s, stock_symbols ss
+		                       where ss.symbol=s.symbol and ss.enabled='Y' and ss.exchange=?
+		                         and s.exchange=? and s.indicator in ('close_price','ma200')
+		                         and s.date between ? and ?
+		                       group by s.date, s.symbol
+		                      having ma200 is not null) d
+		               group by d.date order by d.date",
+		             $exchange, $exchange, $from, $as_of);
+	}
+
+	/* ---------------------------------------------------------------------
+	   The ranked lists.
+	   --------------------------------------------------------------------- */
+
+	/** The four scores the dashboard ranks by, and what to call each one. */
+	function home_scores() {
+		return [
+			'momentum' => ['indicator' => 'momentum_score', 'title' => 'Momentum',
+			               'blurb' => 'Shares that have gone up, ranked on 3, 6 and 12 month returns.'],
+			'value'    => ['indicator' => 'value_score',    'title' => 'Value',
+			               'blurb' => 'Shares that look cheap on earnings, book, sales and cash flow.'],
+			'quality'  => ['indicator' => 'quality_score',  'title' => 'Quality',
+			               'blurb' => 'Shares that earn well on what they employ, with sound finances.'],
+			'overall'  => ['indicator' => 'overall_score',  'title' => 'Overall',
+			               'blurb' => 'The three scores together: the ShareRank.'],
+		];
+	}
+
+	/**
+	 * One ranked list: ticker, company, score, last price and six month move.
+	 *
+	 * Four near-identical copies of this query used to sit in
+	 * share_functions.php, one per score, and each returned the ticker, the
+	 * name and nothing else - so the dashboard could rank shares without
+	 * saying what any of the ranks were.
+	 *
+	 * $limit null means the whole universe, which is what the full list page
+	 * asks for.
+	 */
+	function home_ranked($score, $limit = 10, $exchange = null) {
+
+		$scores = home_scores();
+		if (!isset($scores[$score])) { return []; }
+		$indicator = $scores[$score]['indicator'];
+		$exchange  = $exchange === null ? session_exchange() : $exchange;
+
+		/* The date the statistics describe, not the day the job ran. */
+		$dates = query("select max(date) as_of from statistics
+		                 where indicator=? and exchange=?", $indicator, $exchange);
+		$as_of = count($dates) ? $dates[0]['as_of'] : null;
+		if ($as_of === null) { return []; }
+
+		/* MariaDB will not take a placeholder for LIMIT when the driver is
+		   not emulating prepares, so the integer is cast and interpolated. */
+		$tail = $limit === null ? '' : ' limit ' . max(1, (int) $limit);
+
+		return query("select ss.symbol, ss.name,
+		                     sc.value score,
+		                     cp.value price,
+		                     mo.value change_6m
+		                from statistics sc
+		                join stock_symbols ss
+		                  on ss.symbol=sc.symbol and ss.enabled='Y' and ss.exchange=?
+		                left join statistics cp
+		                  on cp.symbol=sc.symbol and cp.exchange=sc.exchange
+		                 and cp.date=sc.date and cp.indicator='close_price'
+		                left join statistics mo
+		                  on mo.symbol=sc.symbol and mo.exchange=sc.exchange
+		                 and mo.date=sc.date and mo.indicator='6mnth'
+		               where sc.indicator=? and sc.exchange=? and sc.date=?"
+		             . not_fund_sql('ss.symbol')
+		             . " order by sc.value desc, ss.symbol" . $tail,
+		             $exchange, $indicator, $exchange, $as_of);
+	}
+
+	/** The date the ranked lists describe, for the heading. */
+	function home_ranked_asof($score, $exchange = null) {
+		$scores = home_scores();
+		if (!isset($scores[$score])) { return null; }
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+		$dates = query("select max(date) as_of from statistics
+		                 where indicator=? and exchange=?",
+		               $scores[$score]['indicator'], $exchange);
+		return count($dates) ? $dates[0]['as_of'] : null;
+	}
+
+	/* ---------------------------------------------------------------------
+	   News this week.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * The five best and five worst shares by sentiment this week, each with
+	 * what the share has done since it announced.
+	 *
+	 * rns_movers() ranks them; the move comes off the announcement rows,
+	 * where the nightly job stores it. A company with several announcements
+	 * in the week is one entry, as it is on "In the news", and the move shown
+	 * is the one since its strongest announcement - the move since the
+	 * weakest of three would be describing a different event.
+	 */
+	function home_news_week($from, $to, $limit = 5, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+		$movers   = rns_movers($from, $to, $limit, $exchange);
+
+		foreach (['best', 'worst'] as $side) {
+			foreach ($movers[$side] as $i => $row) {
+				$strongest = query("select sentiment, price_move, title, published_at
+				                      from rns_announcements
+				                     where symbol=? and skipped='N' and sentiment is not null
+				                       and date(published_at) between ? and ?
+				                     order by " . ($side === 'best' ? 'sentiment desc' : 'sentiment asc')
+				                   . ", published_at desc limit 1",
+				                   $row['symbol'], $from, $to);
+				$movers[$side][$i]['price_move'] = count($strongest) && $strongest[0]['price_move'] !== null
+				                                 ? (float) $strongest[0]['price_move'] : null;
+				$movers[$side][$i]['title']      = count($strongest) ? $strongest[0]['title'] : null;
+				$movers[$side][$i]['published']  = count($strongest) ? $strongest[0]['published_at'] : null;
+			}
+		}
+
+		return $movers;
+	}
+
+	/**
+	 * The window "this week" means: the last seven trading days, counted off
+	 * the stored closes rather than off the calendar, so a bank holiday does
+	 * not quietly shorten it.
+	 */
+	function home_news_window($as_of, $days = 7, $exchange = null) {
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+		$dates = query("select distinct date from historical_prices
+		                 where exchange=? and date<=? order by date desc limit "
+		               . (max(1, (int) $days) + 1), $exchange, $as_of);
+		return count($dates) ? (string) end($dates)['date']
+		                     : date('Y-m-d', strtotime($as_of . ' -' . (int) $days . ' day'));
+	}
+
+	/* ---------------------------------------------------------------------
+	   The strategies row.
+	   --------------------------------------------------------------------- */
+
+	/**
+	 * One card per strategy that is switched on.
+	 *
+	 * strategy_card() does the work; this exists so the dashboard does not
+	 * have to know that a disabled strategy is still in strategy_accounts,
+	 * or that the tables may not be there at all on a host where the
+	 * migration has not been applied.
+	 */
+	function home_strategy_rows($exchange = null) {
+		if (!function_exists('strategy_rules_ready') || !strategy_rules_ready()) { return []; }
+		$rows = [];
+		foreach (strategy_strategies() as $strategy) {
+			$card = strategy_card($strategy, $exchange);
+			/* And what a live account's state is, in the same words the
+			   strategies page uses: "Armed by dale until 25 Dec 2026, cap
+			   GBP 250", or "Not armed: orders are planned and not sent".
+			   Empty for every other account, and empty when the broker
+			   layer is not loaded - the dashboard is not the place to find
+			   out that a migration has not been applied. */
+			$card['live_words'] = function_exists('broker_live_words')
+			                    ? broker_live_words($strategy) : '';
+			$rows[] = $card;
+		}
+		return $rows;
+	}
+
+	/**
+	 * The live batches waiting for an approval, for the top of the
+	 * dashboard.
+	 *
+	 * Here rather than in the template so that a host without
+	 * includes/broker_live.php - or without the migration behind it - gets
+	 * an empty list instead of a fatal.
+	 */
+	function home_live_waiting() {
+		return function_exists('broker_live_waiting') ? broker_live_waiting() : [];
+	}
+
+?>

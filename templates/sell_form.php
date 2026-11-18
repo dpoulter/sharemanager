@@ -1,7 +1,7 @@
 <form action="sell.php" method="post">
     <fieldset>
         Stock to sell:
-        <div class="form-group">
+        <div class="mb-3">
             <select name="symbol">
             <?php foreach ($portfolio as $stock): ?>
             <option><?=$stock["symbol"] ?> </option>
@@ -9,7 +9,7 @@
             </select>
             
         </div>
-        <div class="form-group">
+        <div class="mb-3">
             <input autofocus class="form-control" name="qty" placeholder="Quantity" type="text"/>
         </div>
         <div>

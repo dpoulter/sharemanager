@@ -3,7 +3,7 @@
 
   // configuration
     require("../includes/config.php");
-	include("../includes/share_screen.php");
+	include_once("../includes/share_screen.php");
 
     // if form was submitted
     if ($_SERVER["REQUEST_METHOD"] == "POST"){
@@ -63,8 +63,15 @@
 				}
     }
     else
-	//came in some other way
+	//Came in some other way. $screen_id is only set on the branches above, so
+	//reaching here without one used to render the template with three
+	//undefined variables. There is nothing to show without a screen, and
+	//screen_list.php is where screens are chosen.
     {
+			if (!isset($screen_id)||$screen_id===""){
+				redirect("screen_list.php");
+			}
+
  			$screen=screen($screen_id);
 			$criteria=screen_criteria($screen_id);
 			render("screen_criteria.php",["screen_id"=>$screen_id, "screen" => $screen["name"],"description"=>$screen["description"], "criterias"=>$criteria]);

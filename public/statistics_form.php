@@ -18,15 +18,15 @@
 </style>
   <body>
     <h3>Calculate Statistics</h3>
-    <form action="statistics.php" method="post" class="form-inline">
+    <form action="statistics.php" method="post" class="d-flex">
         <fieldset>
             <div class="input-group">
 		<input autofocus  id="asofdate" size="10" name="asOfDate" value=<?php echo date("d-m-Y");?>  type="text"/>
                 <button type="submit" class="btn btn-default">Calculate</button>
 	    	<ul class="nav nav-tabs" id="myTab" data-tabs="tabs">
-      		<li role="presentation" class="active"><a data-toggle="tab" href="#pricemomentum">Price Momentum</a></li>
-      		<li role="presentation"><a data-toggle="tab" href="#movingavg">Moving Average</a></li>
-      		<li role="presentation"><a data-toggle="tab" href="#earningsgrowth">Earnings Growth</a></li>
+      		<li role="presentation" class="active"><a data-bs-toggle="tab" href="#pricemomentum">Price Momentum</a></li>
+      		<li role="presentation"><a data-bs-toggle="tab" href="#movingavg">Moving Average</a></li>
+      		<li role="presentation"><a data-bs-toggle="tab" href="#earningsgrowth">Earnings Growth</a></li>
    		</ul>
 	<div class="tab-content">
   		<div class="tab-pane active" id="pricemomentum">
@@ -57,7 +57,7 @@
                 </table>
                 </div>
 	    </div>
-            <div class="form-group">
+            <div class="mb-3">
             </div>
         </fieldset>
     </form>

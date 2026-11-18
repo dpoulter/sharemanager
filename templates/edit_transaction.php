@@ -7,7 +7,7 @@
       label{float:left;}
     </style>
 <fieldset>
-		 <div class="form-group col-md-4" id="search">
+		 <div class="mb-3 col-md-4" id="search">
 		   <ul>
 		    <li><input type="hidden" value="<?= $position["id"] ?>" name="id[]"></input></li>
             <li><label>Symbol</label><input autofocus class="form-control typeahead" name="symbol[]" placeholder="Symbol" type="text" value="<?= $position["symbol"] ?>"></input></li>

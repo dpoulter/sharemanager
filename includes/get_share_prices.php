@@ -28,6 +28,12 @@
 	 //Set exchange
 	 $_SESSION["exchange"]='XLON';
 	 get_historical_prices(date_format($start_date,'Y-m-d'),date_format($end_date,'Y-m-d'));
+
+	 //The index, for the market outlook panel. Separate from the loop above
+	 //because an index is not part of the tradeable universe: it must not be
+	 //screened, ranked or counted in the breadth figures, so it is not a row
+	 //in stock_symbols. See index_symbols() in share_functions.php.
+	 get_index_prices(date_format($start_date,'Y-m-d'),date_format($end_date,'Y-m-d'));
 	 
 	 //Set default exchange
 	 //$_SESSION["exchange"]='JSE';

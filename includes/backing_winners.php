@@ -7,7 +7,7 @@
      */
 
     require_once("constants.php");
-	 include("share_screen.php");
+	 include_once("share_screen.php");
 	
 		
 		

@@ -3,6 +3,22 @@
     // configuration
 	require("../includes/config.php");
 	require("../includes/portfolio_functions.php");
+
+	/**
+	 * The years there are transactions in, and this one.
+	 *
+	 * The dropdown was a fixed 2014 to 2019, so a page whose default view is
+	 * the current month could not be pointed at any month in it.
+	 */
+	function edit_years($session_id) {
+		$rows = query("select min(year(purchase_date)) first, max(year(purchase_date)) last
+		                 from purchases where session_id=?", $session_id);
+		$first = (count($rows) && $rows[0]['first'] !== null)
+		       ? (int) $rows[0]['first'] : (int) date('Y');
+		$last  = max((int) date('Y'),
+		             (count($rows) && $rows[0]['last'] !== null) ? (int) $rows[0]['last'] : 0);
+		return range(min($first, $last), $last);
+	}
   
 	//Set default for year and month
 
@@ -193,7 +209,7 @@
 				//query shares held by user
 				$rows= query("SELECT id,symbol,trx_type,shares,price_paid,commission,purchase_date from purchases where  session_id = ?", $_SESSION["id"]);
 				// render edit portfolio form 
-				render("edit_portfolio.php", ["title" => "Transactions", "positions" => $rows,"month" => date('m'), "year"=>date('Y')]);
+				render("edit_portfolio.php", ["years" => edit_years($_SESSION["id"]), "title" => "Transactions", "positions" => $rows,"month" => date('m'), "year"=>date('Y')]);
 			
 			}
 		  }
@@ -202,7 +218,7 @@
 				//query shares held by user
 				$rows= query("SELECT id,symbol,,shares,price_paid,commission,purchase_date from purchases where  session_id = ?", $_SESSION["id"]);
 				// render edit portfolio form with editable rows
-				render("edit_portfolio.php", ["title" => "Edit Transaction", "ptrx_typeositions" => $rows,"edits"=>$_POST["edit"],"month" => date('m'), "year"=>date('Y')]);
+				render("edit_portfolio.php", ["years" => edit_years($_SESSION["id"]), "title" => "Edit Transaction", "positions" => $rows,"edits"=>$_POST["edit"],"month" => date('m'), "year"=>date('Y')]);
 		
 		
 		}
@@ -217,7 +233,7 @@
 			//Query transactions for month and year
 			$rows= query("SELECT id,symbol,trx_type,shares,price_paid,commission,purchase_date from purchases where  session_id = ? and month(purchase_date)=? and year(purchase_date)=?", $_SESSION["id"],$month,$year);
 			// render edit portfolio form 
-			render("edit_portfolio.php", ["title" => "Transactions", "positions" => $rows,"month" => $month, "year"=>$year]);
+			render("edit_portfolio.php", ["years" => edit_years($_SESSION["id"]), "title" => "Transactions", "positions" => $rows,"month" => $month, "year"=>$year]);
 		}
     }
 	elseif ($_SERVER["REQUEST_METHOD"] == "GET"){
@@ -241,7 +257,7 @@
 				//query shares held by user
 				$rows= query("SELECT id,symbol,trx_type,shares,price_paid,commission,purchase_date from purchases where  session_id = ?", $_SESSION["id"]);
 				// render edit portfolio form without editable row
-				render("edit_portfolio.php", ["title" => "Transactions", "positions" => $rows,"month" => date('m'), "year"=>date('Y')]);
+				render("edit_portfolio.php", ["years" => edit_years($_SESSION["id"]), "title" => "Transactions", "positions" => $rows,"month" => date('m'), "year"=>date('Y')]);
 			}
 			elseif ($action=="edit"){
 				$rows= query("SELECT id,symbol,trx_type,shares,price_paid,commission,purchase_date from purchases where id=?",$id);
@@ -255,7 +271,7 @@
 			//query shares held by user
 			$rows= query("SELECT id,symbol,trx_type,shares,price_paid,commission,purchase_date from purchases where  session_id = ? and month(purchase_date)=? and year(purchase_date)=?", $_SESSION["id"], trim(date('m')), date('Y'));
 			// render edit portfolio form
-			render("edit_portfolio.php", ["title" => "Transactions", "positions" => $rows, "month" => date('m'), "year"=>date('Y')]);
+			render("edit_portfolio.php", ["years" => edit_years($_SESSION["id"]), "title" => "Transactions", "positions" => $rows, "month" => date('m'), "year"=>date('Y')]);
 		}
 	}
 ?>

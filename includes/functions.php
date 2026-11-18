@@ -72,7 +72,7 @@
 		};*/
 		
 		//Get Default Exchange
-		//$exchange=$_SESSION["exchange"];
+		//$exchange=session_exchange();
 		
 		//echo "symbol=$symbol";
 		
@@ -107,7 +107,10 @@
 			write_log("functions","Trying symbol=$symbol");
     //    	$string = file_get_contents("https://www.worldtradingdata.com/api/v1/stock?symbol=$symbol&api_token=ALFvINqaRaN1WSsJqL5CA6BGG79Hooi0siMCcHi1G5PUWm16f6eMa8MYD8Bi");
 	//		$arrJson = json_decode($string, true);
-			write_log("functions","API returned: ".print_r($arrJson));
+			//print_r needs its second argument to return a string. Without it the
+			//array is printed straight onto the page and the log records "1",
+			//so the quote page carried a dump of the API response.
+			write_log("functions","API returned: ".print_r($arrJson, true));
 //		}
 		
 		if (!isset($arrJson["data"][0]["symbol"]))
@@ -211,21 +214,23 @@
         }
     
         
+        $fundamentals = share_fundamentals($symbol);
+
         $share_info=[
             "symbol" => $symbol,
             "name" => [],//$name,
             "price" => convert_value($price),
-            "shares" => [],//convert_value($arrJson["shares"]),
+            "shares" => $fundamentals["shares"],//convert_value($arrJson["shares"]),
             "change" => [],//convert_value($change),
             "day_range" => [],
-            "52w_low" => [],//convert_value($fifty_two_week_low),
-            "52w_high" => [],//convert_value($fifty_two_week_high),
-            "pe" => [],//$arrJson["pe"],
-            "profit_margin" => [],//convert_value($net_profit_margin),
-            "operating_margin"=>[],//convert_value($operating_margin),
-            "roa"=>[],//convert_value($roa),
-            "roe_ttm"=>[],//convert_value($roe_ttm)
-            "market_cap"=>[],//change_number($market_cap)
+            "52w_low" => $fundamentals["52w_low"],//convert_value($fifty_two_week_low),
+            "52w_high" => $fundamentals["52w_high"],//convert_value($fifty_two_week_high),
+            "pe" => $fundamentals["pe"],//$arrJson["pe"],
+            "profit_margin" => $fundamentals["profit_margin"],//convert_value($net_profit_margin),
+            "operating_margin"=>$fundamentals["operating_margin"],//convert_value($operating_margin),
+            "roa"=>$fundamentals["roa"],//convert_value($roa),
+            "roe_ttm"=>$fundamentals["roe_ttm"],//convert_value($roe_ttm)
+            "market_cap"=>$fundamentals["market_cap"],//change_number($market_cap)
         ];
         
 
@@ -380,25 +385,66 @@
 	* Insert message into log table
 	*/
 	function write_log($module,$text){
-        if (TRUE){
-		    query("insert into message_log(module,message_text,timestamp) values (?,?,?)",$module,substr($text,0,4000),date_format(new DateTime(),'Y-m-d H:i:s'));
-        }
+		query("insert into message_log(module,message_text,timestamp) values (?,?,?)",$module,substr($text,0,4000),date_format(new DateTime(),'Y-m-d H:i:s'));
+	}
+
+	//Per row tracing. Off unless DEBUG_LOG is explicitly enabled in constants.php,
+	//so a deployment carrying an older constants.php stays quiet rather than
+	//filling message_log. Use write_log() for anything worth keeping.
+	function debug_log($module,$text){
+		if (defined('DEBUG_LOG')&&DEBUG_LOG==='Y'){
+			write_log($module,$text);
+		}
 	}
 	
 	//Update Password
+	/**
+	 * Mint a reset token, store only its hash, and return the token.
+	 *
+	 * The old scheme put md5(90*13+id) in the link, which is md5(1170 + the
+	 * user id): anyone could compute the token for any account, and
+	 * reset_passwd.php is exempt from the login gate, so that was an account
+	 * takeover needing no credentials at all.
+	 */
+	function create_reset_token($user_id, $ttl_minutes = 60) {
+		$token = bin2hex(random_bytes(32));
+		query("insert into password_resets (user_id, token_hash, expires_at) values (?,?,?)",
+		      $user_id, hash("sha256", $token),
+		      date("Y-m-d H:i:s", time() + $ttl_minutes * 60));
+		return $token;
+	}
+
+	/**
+	 * The user id a live reset token belongs to, or null.
+	 *
+	 * Null covers every failure the caller should treat alike: unknown token,
+	 * already used, or expired.
+	 */
+	function reset_token_user($token) {
+		if (!is_string($token) || $token === "") { return null; }
+		$rows = query("select user_id from password_resets
+		               where token_hash = ? and used_at is null and expires_at > now()",
+		              hash("sha256", $token));
+		return (is_array($rows) && count($rows) === 1) ? $rows[0]["user_id"] : null;
+	}
+
 	function update_password($encrypt,$password){
 		
-		$Results =query ("SELECT id FROM users where md5(90*13+id)=?",$encrypt);
-		if(count($Results)>=1)
+		$user_id = reset_token_user($encrypt);
+		if($user_id !== null)
 		{
-    		query ( "update users set hash=? where id=?",password_hash($password,PASSWORD_DEFAULT),$Results[0]['id']);
+    		query ( "update users set hash=? where id=?",hash_password($password),$user_id);
+			//Single use, and every other outstanding token for the account goes
+			//with it: whoever just proved control of the mailbox is the only
+			//one who should still be able to get in.
+			query("update password_resets set used_at = now() where user_id = ? and used_at is null", $user_id);
 			$message = "Password has been reset";
 			echo "<script type='text/javascript'>alert('$message');</script>";
 			render("login_form.php", ["title" => "Login"]);
 		}
 	    else
 	    {
-	        apologize ( 'Invalid key please try again');
+	        apologize ( 'That reset link is invalid or has expired. Please request a new one.');
 	    }
 	}
 	
@@ -434,7 +480,7 @@
 				$mail->addAddress($email, $row['username']);     // Add a recipient
 				$mail->isHTML(true);                                  // Set email format to HTML
 				
-				$encrypt = md5(90*13+$row['id']);
+				$encrypt = create_reset_token($row['id']);
 				$site_url = SITE_URL;
 				$mail->Subject = 'Forget Username or Password';
 				$mail->Body    = 'Hi, <br/> <br/>Your username is '.$row['username'].' <br><br>Click here to reset your password '.$site_url.'/reset_passwd.php?encrypt='.$encrypt.'&action=reset   <br/> <br/>';
@@ -485,18 +531,375 @@
 	}
 	
 	//Call Stock API
+	/**
+	 * Latest quote for one symbol, from EODHD.
+	 *
+	 * Returns the response normalised into the {"data":[{...}]} envelope the
+	 * previous provider used, so lookup() is unchanged. EODHD returns a flat
+	 * object keyed on "code" rather than a list.
+	 */
+	/**
+	 * EODHD settings, read defensively.
+	 *
+	 * public/constants.php is gitignored, so a deployment can be running a copy
+	 * of constants.php that predates these constants. Referencing them directly
+	 * makes that a fatal error on every page that touches a quote; this way the
+	 * feature degrades and the rest of the site stays up.
+	 */
+	function eodhd_api_key() {
+		return defined('EODHD_API_KEY') ? EODHD_API_KEY : '';
+	}
+
+	function eodhd_base_url() {
+		return rtrim(defined('EODHD_BASE_URL') ? EODHD_BASE_URL : 'https://eodhd.com/api', '/');
+	}
+
+	function eodhd_exchange() {
+		return defined('EODHD_EXCHANGE') ? EODHD_EXCHANGE : 'LSE';
+	}
+
+	/**
+	 * Which market data provider to use: 'eodhd' or 'fmp'.
+	 *
+	 * Both are supported. This picks one; nothing else in the application
+	 * branches on the provider beyond the functions immediately below and
+	 * the provider_field column in screen_indicators.
+	 */
+	function data_provider() {
+		$p = defined('DATA_PROVIDER') ? strtolower(trim(DATA_PROVIDER)) : 'eodhd';
+		return in_array($p, ['eodhd', 'fmp'], true) ? $p : 'eodhd';
+	}
+
+	/**
+	 * Financial Modeling Prep settings, read defensively, as above.
+	 *
+	 * FMP's /api/v3 endpoints answer 403 "Legacy Endpoint" for accounts opened
+	 * after the change, so the stable API is the only base worth defaulting to.
+	 */
+	function fmp_api_key() {
+		return defined('FMP_API_KEY') ? FMP_API_KEY : '';
+	}
+
+	function fmp_base_url() {
+		return rtrim(defined('FMP_BASE_URL') ? FMP_BASE_URL
+		                                     : 'https://financialmodelingprep.com/stable', '/');
+	}
+
+	function fmp_exchange() {
+		return defined('FMP_EXCHANGE') ? FMP_EXCHANGE : 'L';
+	}
+
+	/**
+	 * The key for whichever provider is selected, '' when it is unset.
+	 *
+	 * An empty key is the documented "no live quotes" state: the pages fall
+	 * back to the last close rather than erroring.
+	 */
+	function provider_api_key() {
+		return data_provider() === 'fmp' ? fmp_api_key() : eodhd_api_key();
+	}
+
+	/**
+	 * stock_symbols holds a bare code; each provider wants its own suffix.
+	 * EODHD says VOD.LSE, FMP says VOD.L, and stock_symbols.exchange holds the
+	 * MIC (XLON) that the rest of the application keys on. None of the three
+	 * are interchangeable.
+	 */
+	function provider_symbol($symbol) {
+		//An index is addressed by its own code and takes no exchange suffix:
+		//FMP wants ^FTSE, not ^FTSE.L. The caret is the marker.
+		if (strpos($symbol, '^') === 0) { return $symbol; }
+		if (strpos($symbol, '.') !== false) { return $symbol; }
+		return $symbol . '.' . (data_provider() === 'fmp' ? fmp_exchange() : eodhd_exchange());
+	}
+
+	/**
+	 * The exchange an account works in, for accounts that have no explicit one.
+	 *
+	 * register.php never set users.default_exchange, so every account created
+	 * through it had a null exchange: the dashboard queries matched nothing and
+	 * the top ten panels came back empty.
+	 */
+	function default_exchange() {
+		return defined('DEFAULT_EXCHANGE') ? DEFAULT_EXCHANGE : 'XLON';
+	}
+
+	/**
+	 * The exchange the current request works in.
+	 *
+	 * Every page read session_exchange() directly, so a session without it
+	 * produced an "Undefined array key" warning and a query matching nothing.
+	 * Registering used to create exactly that, but so does any session that
+	 * predates a fix, and the batch scripts set the key themselves. Reading it
+	 * through here means a missing key degrades to the default instead of
+	 * breaking the page.
+	 */
+	function session_exchange() {
+		return (isset($_SESSION["exchange"]) && $_SESSION["exchange"] !== "")
+		     ? $_SESSION["exchange"] : default_exchange();
+	}
+
+	/**
+	 * Last close from the price history, in the shape lookup() reads.
+	 *
+	 * Used when no live quote is available. Reporting "Invalid Symbol" because
+	 * the quote API is unreachable is wrong: the symbol is fine, the price is
+	 * merely stale, and a stale price is far more useful than an error.
+	 */
+	function last_close_rows($symbol) {
+
+		$rows = query("select date, price from historical_prices
+		               where symbol=? and exchange=? and price is not null
+		               order by date desc limit 1",
+		              $symbol, session_exchange());
+
+		if (count($rows) === 0) {
+			return [];
+		}
+
+		return [[
+			"symbol" => $symbol,
+			"close"  => $rows[0]["price"],
+			"date"   => $rows[0]["date"],
+			"stale"  => true,
+		]];
+	}
+
+	/**
+	 * Hash a password for storage.
+	 *
+	 * This used to be crypt($password, 'sharemanager'): a fixed two character
+	 * DES salt, which means identical passwords hash identically across every
+	 * account, and DES crypt silently ignores everything past the eighth
+	 * character - a twenty character password was only ever as strong as its
+	 * first eight. password_hash() salts each hash separately and uses the
+	 * current default algorithm.
+	 */
+	function hash_password($password) {
+		return password_hash($password, PASSWORD_DEFAULT);
+	}
+
+	/**
+	 * True when $password matches $hash, old scheme or new.
+	 *
+	 * Existing accounts still carry a crypt() hash, and there is no way to
+	 * convert one without the password, so accept it here and let the caller
+	 * upgrade the row on a successful login.
+	 */
+	function verify_password($password, $hash) {
+		$hash = (string) $hash;
+		if ($hash === "") { return false; }
+
+		//A modern hash carries its algorithm in the string.
+		if (password_get_info($hash)["algo"]) {
+			return password_verify($password, $hash);
+		}
+
+		//The legacy fixed-salt scheme. hash_equals keeps the comparison off the
+		//timing side channel that == leaves open.
+		return hash_equals($hash, crypt($password, 'sharemanager'));
+	}
+
+	/**
+	 * True when $hash is in the old scheme and should be replaced.
+	 */
+	function password_needs_upgrade($hash) {
+		return !password_get_info((string) $hash)["algo"]
+		       || password_needs_rehash((string) $hash, PASSWORD_DEFAULT);
+	}
+
+	/**
+	 * Format a number for display, or nothing at all when it is absent.
+	 *
+	 * number_format(null) renders "0", which reads as a real value of zero
+	 * rather than as a figure the provider did not supply.
+	 */
+	function number_or_blank($value, $decimals = 0) {
+		if ($value === null || $value === "" || $value === [] || !is_numeric($value)) {
+			return "";
+		}
+		return number_format((float)$value, $decimals);
+	}
+
+	/**
+	 * Fundamentals for one symbol, from the flat store the provider loader fills.
+	 *
+	 * The quote page has labelled cells for market cap, shares in issue and the
+	 * 52 week range that were never connected to anything: lookup() returned an
+	 * empty array for each. The values are in stock_info under the provider's
+	 * own field names, so read them from there.
+	 *
+	 * Anything absent comes back as an empty string, so a symbol without
+	 * fundamentals shows a blank cell rather than a warning.
+	 */
+	function share_fundamentals($symbol) {
+
+		/* Two spellings for the same figure, because the provider changed.
+		   EODHD wrote Highlights.MarketCapitalization and
+		   SharesStats.SharesOutstanding; FMP writes neither, and
+		   python/fmp.py derives both under Derived - the capitalisation in
+		   the unit the price is quoted in, the share count from the
+		   profile or the quote. Only the old names were read here, so the
+		   quote page has shown a dash for the market capitalisation and
+		   for the shares in issue since the day the provider changed.
+		   The provider's own name is preferred where both exist. */
+		$wanted = [
+			"market_cap"       => "Derived.marketCapInQuoteCurrency",
+			"market_cap_eodhd" => "Highlights.MarketCapitalization",
+			"shares"           => "Derived.sharesOutstanding",
+			"shares_eodhd"     => "SharesStats.SharesOutstanding",
+			"52w_high"         => "Technicals.52WeekHigh",
+			"52w_low"          => "Technicals.52WeekLow",
+			"pe"               => "Valuation.TrailingPE",
+			"roe_ttm"          => "Highlights.ReturnOnEquityTTM",
+			"profit_margin"    => "Highlights.ProfitMargin",
+			"operating_margin" => "Highlights.OperatingMarginTTM",
+			"roa"              => "Highlights.ReturnOnAssetsTTM",
+			"description"      => "General.Description",
+		];
+
+		$rows = query("select attribute, value from stock_info
+		               where symbol=? and asofdate=(select max(asofdate) from stock_info where symbol=?)",
+		              $symbol, $symbol);
+
+		$found = [];
+		foreach ($rows as $row) { $found[$row["attribute"]] = $row["value"]; }
+
+		$out = [];
+		foreach ($wanted as $key => $attribute) {
+			$out[$key] = isset($found[$attribute]) ? $found[$attribute] : "";
+		}
+
+		//The older provider's figure where this one wrote nothing.
+		foreach (["market_cap" => "market_cap_eodhd", "shares" => "shares_eodhd"] as $key => $older) {
+			if (trim((string) $out[$key]) === "") { $out[$key] = $out[$older]; }
+			unset($out[$older]);
+		}
+
+		return $out;
+	}
+
 	function call_stock_api($symbol) {
-		
-		write_log ('call_stock_api',"symbol=$symbol"); 
-		$string = file_get_contents("http://api.marketstack.com/v1/eod/latest?symbols=$symbol&access_key=b0ac70e8c036442832769c69fbc619cb");
-        write_log("call_stock_api",$string);
-		return $string;
-    }
+
+		$provider = data_provider();
+		write_log('call_stock_api',"symbol=$symbol provider=$provider");
+
+		if (provider_api_key()===''){
+			debug_log('call_stock_api',"no $provider key, using the last close");
+			return json_encode(["data" => last_close_rows($symbol)]);
+		}
+
+		$code = provider_symbol($symbol);
+
+		//Never log the URL: it carries the API key.
+		if ($provider === 'fmp') {
+			$url=fmp_base_url()."/quote?symbol=".rawurlencode($code)
+			    ."&apikey=".rawurlencode(fmp_api_key());
+		} else {
+			$url=eodhd_base_url()."/real-time/".rawurlencode($code)
+			    ."?fmt=json&api_token=".rawurlencode(eodhd_api_key());
+		}
+
+		//A provider that is slow or unreachable must not hang the page.
+		$context = stream_context_create(["http" => ["timeout" => 10]]);
+		$body=@file_get_contents($url,false,$context);
+		if ($body===false){
+			write_log('call_stock_api',"request failed for $code, using the last close");
+			return json_encode(["data" => last_close_rows($symbol)]);
+		}
+
+		$decoded = json_decode($body,true);
+		$rows = ($provider === 'fmp')
+		      ? fmp_quote_to_rows($decoded,$symbol)
+		      : eodhd_quote_to_rows($decoded,$symbol);
+
+		if (count($rows) === 0) {
+			write_log('call_stock_api',"no quote for $code, using the last close");
+			$rows = last_close_rows($symbol);
+		}
+
+		return json_encode(["data" => $rows]);
+	}
+
+	/**
+	 * Normalise an FMP stable-API quote into the rows lookup() reads.
+	 *
+	 * Separated from the HTTP call so the mapping can be tested without a key.
+	 * The stable API answers with a list even for one symbol, and returns an
+	 * empty list rather than an error for a ticker it does not carry - which
+	 * must read as "no quote", not as a price of zero.
+	 */
+	function fmp_quote_to_rows($quote,$symbol) {
+
+		//list of one, or a bare object if that ever changes
+		if (is_array($quote) && isset($quote[0]) && is_array($quote[0])) {
+			$quote = $quote[0];
+		}
+		if (!is_array($quote) || !isset($quote['price'])) {
+			return [];
+		}
+
+		$price=$quote['price'];
+		if ($price===null||$price===''||!is_numeric($price)){
+			return [];
+		}
+
+		return [[
+			"symbol" => $symbol,
+			"close"  => $price,
+			"date"   => isset($quote['timestamp'])&&is_numeric($quote['timestamp'])
+			            ? date('Y-m-d',(int)$quote['timestamp']) : null,
+		]];
+	}
+
+	/**
+	 * Normalise an EODHD real-time quote into the rows lookup() reads.
+	 *
+	 * Separated from the HTTP call so the mapping can be tested without a key.
+	 * EODHD reports "NA" for a field it has no value for, which must not be
+	 * mistaken for a price.
+	 */
+	function eodhd_quote_to_rows($quote,$symbol) {
+
+		if (!is_array($quote)||!isset($quote['close'])){
+			return [];
+		}
+
+		$close=$quote['close'];
+		if ($close===null||$close===''||$close==='NA'||!is_numeric($close)){
+			return [];
+		}
+
+		return [[
+			"symbol" => $symbol,
+			"close"  => $close,
+			"date"   => isset($quote['timestamp'])&&is_numeric($quote['timestamp'])
+			            ? date('Y-m-d',(int)$quote['timestamp']) : null,
+		]];
+	}
     
     //Get Last Update
+    /**
+     * The date the statistics are current as of: the last trading day the
+     * nightly job calculated for.
+     *
+     * A date, with no time of day. The marker used to carry the time the job
+     * started, so the dashboard printed the previous day's date next to this
+     * morning's clock and called the pair "Statistics Refreshed". They are
+     * two different facts and the page now shows them as two.
+     */
     function get_last_update(){
-        $data = query("SELECT job_date FROM jobs where job_name='get_statistics' and job_date=(select max(job_date) from jobs where job_name='get_statistics')");
-        return $data[0]['job_date'];
+        $data = query("SELECT date(max(job_date)) asof FROM jobs where job_name='get_statistics_asof'");
+        return count($data) ? $data[0]['asof'] : null;
+    }
+
+    /**
+     * When the nightly job last ran. log_job() writes NOW under this name,
+     * which is the other half of what the dashboard reports.
+     */
+    function get_last_run(){
+        $data = query("SELECT max(job_date) ran FROM jobs where job_name='get_statistics'");
+        return count($data) ? $data[0]['ran'] : null;
     }
 
     //Log job

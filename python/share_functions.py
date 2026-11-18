@@ -1,4 +1,7 @@
-import yfinance as yf
+# insert_statistic is all this module provides. get_key_ratios lived here too,
+# a yfinance call that nothing invoked, and its import pulled yfinance into
+# every script that imported this one - including get_api_stats.py, which then
+# could not start on a server without it.
 from functions import insert, query
 
 def insert_statistic (symbol,exchange,indicator,date,value):
@@ -16,27 +19,3 @@ def insert_statistic (symbol,exchange,indicator,date,value):
     except Exception as error:
         print("Error in insert_statistic:"+str(error))
         return None
-
-
-
-def get_key_ratios(session,exchange, symbol):
-    try:
-        ticker = yf.Ticker(symbol,session=session)
-        info = ticker.info
-
-        key_ratios = {}  # Empty dictionary
-        
-        print (info.keys())
-
-        for key in info.keys():
-            #print ("key="+key)
-            #print  ("key_ratio="+str(info[key]) )
-            # Adding elements to the dictionary by assigning values to keys
-            key_ratios[key] = info[key]
-
-        return key_ratios
-            
-    except Exception as error:
-        print("Error in get_key_ratios:"+str(error))
-        return None
-

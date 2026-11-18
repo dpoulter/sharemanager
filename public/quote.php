@@ -1,21 +1,55 @@
 <?php
 
     // configuration
-    require("../includes/config.php"); 
+    require("../includes/config.php");
+    require_once("../includes/rns.php");
+    require_once("../includes/quote_view.php");
+    /* For the Strategies view and the "held by" tags: which strategies
+       hold this share, under the names the Strategies page gives them. */
+    require_once("../includes/strategy_functions.php");
 
 	
 	// if form was submitted
     if ($_SERVER["REQUEST_METHOD"] == "POST")
     {
         // validate submission
-        if (empty($_POST["symbol"]))
+        //is_string, because symbol[] in the request body makes this an array
+        //and casting one to string is a warning rather than a search term.
+        if (empty($_POST["symbol"]) || !is_string($_POST["symbol"]))
         {
             apologize("You must enter a symbol.");
         }
 		else
-			//symbol
-			$symbol=substr($_POST["symbol"],0,strpos($_POST["symbol"],' '));
-			//echo "Symbol=$symbol";
+		{
+			/* What was typed in the navbar search box.
+			
+			   This used to be substr($term, 0, strpos($term, ' ')) - the text
+			   before the first space. A bare symbol has no space, strpos()
+			   returns false, substr() reads that as 0 and the symbol came out
+			   empty, so "III" was an invalid symbol and only "III 3i Group"
+			   worked. find_symbols() accepts a bare ticker in any case, the
+			   "SYMBOL Name" the suggestions produce, the dotted form London
+			   tickers are written in, or part of a company name. */
+			$matches=find_symbols($_POST["symbol"]);
+			
+			if (count($matches)==0)
+			{
+				apologize("Invalid Symbol.");
+			}
+			
+			/* More than one share fits. Offering the choice beats guessing:
+			   picking the first would show a quote for a share nobody asked
+			   for, which is worse than one more click. */
+			if (count($matches)>1)
+			{
+				render("symbol_matches.php",
+				       ["title"=>"Search","term"=>trim($_POST["symbol"]),"matches"=>$matches]);
+				exit;
+			}
+			
+			//Exactly one, so the term named a share.
+			$symbol=$matches[0]["symbol"];
+			
 			//timespan
 			if (isset($_POST["timespan"]))
 				$timespan=$_POST["timespan"];
@@ -26,6 +60,7 @@
 				$type=$_POST["type"];
 			else
 				$type="l";
+		}
 	}
 	
 	//Check if symbol was passed to form
@@ -67,34 +102,23 @@
 			write_log("quote.php","4");
 			
 			
-			//$income_statement=income_statement($symbol);
-			$income_statement=null;
-			write_log("quote.php","5");
-			//$balance_sheet=balance_sheet($symbol);
-			$balance_sheet=null;
-			write_log("quote.php","6");
-			//$cash_flow_statement=cash_flow_statement($symbol);
-			$cash_flow_statement=null;
-			write_log("quote.php","7");
-			//$ratings=ratings($symbol);
-			$ratings=null;
+			/* The Financial Statements and Ratings panes are gone, and with
+			   them seven queries a page. Neither was reachable: the tab list
+			   offers Profile, News and Ratios, and those two panes sat in
+			   the markup with nothing to open them. The functions behind
+			   them - income_statement(), ratings(), get_value_statistics()
+			   and the rest - are still in share_functions.php, so a tab can
+			   be given back to them in a line. */
 			$valuation=get_valuation($symbol);
 			$industry_valuation=get_industry_valuation($symbol);
 			write_log("quote.php","8");
-			$momentum_statistics=get_momentum_statistics($symbol);
-			//$momentum_statistics=null;
-			write_log("quote.php","9");
-			//$growth_statistics=get_growth_statistics($symbol);
-			$growth_statistics=null;
-			write_log("quote.php","10");
-			//$value_statistics=get_value_statistics($symbol);
-			$value_statistics=null;
-			write_log("quote.php","11");
-			$quality_statistics=get_quality_statistics($symbol);
-			//$quality_statistics=null;
-			write_log("quote.php","12");
 			$scores = get_scores($symbol);
 			//$scores = null;
+			/* Null for a sterling reporter: nothing was converted, so the page
+			   says nothing. For everyone else the ratios on this page have
+			   been multiplied by the rate on the way in, and a figure that has
+			   been adjusted should say so. */
+			$currency_note = report_currency_note($symbol);
 			write_log("quote.php","13");
 			$valueranks=get_value_rank($symbol);
 			//$valueranks=null;
@@ -105,20 +129,9 @@
 			$qualityranks=get_quality_rank($symbol);
 			//$qualityranks=null;
 			write_log("quote.php","16");
-			//$piotroski_fscore=get_piotroski_fscore($symbol);
-			$piotroski_fscore=null;
-			//$piotroski_variables=get_piotroski_variables($symbol);
-			$piotroski_variables=null;
-			write_log("quote.php","17");
-			//$altman_zscore=get_altman_zscore($symbol);
-			$altman_zscore=null;
-			
-			//$altman_variables=get_altman_variables($symbol);
-			$altman_variables=null;
-			//$altman_nonman_variables=get_altman_nonman_variables($symbol);
-			$altman_nonman_variables=null;
-			//$altman_zscore_nonman=get_altman_zscore_nonman($symbol);
-			$altman_zscore_nonman=null;
+/* Piotroski and Altman come from the provider now; the local
+			   calculations that used to fill them read an empty table. */
+			$health_scores=get_health_scores($symbol);
 
 			write_log("quote.php","Get relative_sector_valuations");
 			$relative_sector_valuations=get_relative_to_sector($symbol); 
@@ -130,42 +143,111 @@
 			write_log("quote.php","Get category_indicators");
 			$category_indicators=get_indicators();
 
+			/* The News tab. Stored regulatory announcements, newest first -
+			   the company's own words, already read and scored by the nightly
+			   job - rather than a live Google News call on every page load.
+			   Nothing is fetched while somebody waits for the page, and the
+			   tab shows the same rows as the "In the news" page. */
+			$announcements = rns_recent($symbol, 10);
+
+			/* The band under the company name. Stored closes rather than the
+			   live quote, so the price above the chart is the price the chart
+			   ends on, and the three figures that were blank on every share -
+			   capitalisation, shares, the 52 week range - are derived from
+			   the price history. */
+			$head = quote_header($symbol);
+
+			/* The four ratios in that band come out of the same structure the
+			   Ratios tab reads, so the two cannot disagree. */
+			$pe         = quote_indicator_value($quote, 'pe');
+			$price_book = quote_indicator_value($quote, 'price_book_ratio');
+			$div_yield  = quote_indicator_value($quote, 'div_yield');
+
+			/* ---- the one-screen report, 18 Nov 2026 ----
+
+			   The panels are assembled in includes/quote_view.php so the
+			   template is markup: what the price has done and where it
+			   stands, the policy rules that can be checked for this share,
+			   who holds it, and the three tables of measures against their
+			   sector and the market. */
+			$momentum     = quote_momentum($symbol, $head);
+			$policy       = quote_policy($head, $momentum);
+			$held         = quote_held_by($symbol, $_SESSION['id'] ?? null);
+			$value_rows   = quote_panel_rows($symbol, quote_value_wanted());
+			$quality_rows = quote_panel_rows($symbol, quote_quality_wanted());
+			$growth_rows  = quote_panel_rows($symbol, quote_growth_wanted());
+			/* Five years of accounts, where they have been loaded. */
+			$accounts     = quote_accounts($symbol);
+
+			/* Which of the page's views is open. Each is its own address,
+			   so a view can be bookmarked and a link can point at one -
+			   and the report, which is the page, is the default for
+			   anything unknown. Accounts is not offered until the yearly
+			   figures are loaded: a tab that opens an empty panel is a tab
+			   nobody clicks twice. */
+			$tabs = ['report' => 'Report'];
+			/* Offered once there are accounts to show, and not before:
+			   a tab that opens an empty panel is a tab nobody clicks
+			   twice. */
+			if (count($accounts['periods'])) { $tabs['accounts'] = 'Accounts'; }
+			$tabs += ['announcements' => 'Announcements',
+			         'outlook' => 'Outlook', 'strategies' => 'Strategies',
+			         /* Company keeps what the old Profile and Ratios tabs
+			            held - the business summary, the company's own
+			            facts, both peer valuations and every measure the
+			            nightly job stores, including the categories the
+			            report has no panel for. The brief's tab list does
+			            not have it; dropping the content silently is worse
+			            than one more tab. */
+			         'company' => 'Company'];
+			$tab  = isset($_GET['tab']) ? strtolower(trim((string) $_GET['tab'])) : 'report';
+			if (!isset($tabs[$tab])) { $tab = 'report'; }
+
 
 			//render form
 			write_log("quote.php","Start render form");
 
-			 if(isset($screen_id))
-				render("quote.php", ["title" => $_SESSION['exchange'].":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
-					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
-					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations,"share_info"=> $share_info
-					, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"screen_id"=>$screen_id,"incomestatement"=>$income_statement
-					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"momentum_statistics"=>$momentum_statistics,"growth_statistics"=>$growth_statistics
-					,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks
-					,"qualityranks"=>$qualityranks,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman]);
-			 else
-				render("quote.php", ["title" => $_SESSION['exchange'].":".$symbol,"symbol"=>$symbol,"valuation"=>$valuation,"industry_valuation"=>$industry_valuation
-					,"piotroski_variables"=>$piotroski_variables,"altman_variables"=>$altman_variables,"altman_nonman_variables"=>$altman_nonman_variables
-					,"relative_sector_valuations"=>$relative_sector_valuations,"relative_industry_valuations"=>$relative_industry_valuations
-					,"share_info"=> $share_info, "quote" => $quote,"chart"=>$chart,"timespan"=>$timespan,"type"=>$type,"incomestatement"=>$income_statement
-					,"balancesheet"=>$balance_sheet,"cashflowstatement"=>$cash_flow_statement,"momentum_statistics"=>$momentum_statistics
-					,"growth_statistics"=>$growth_statistics,"value_statistics"=>$value_statistics,"quality_statistics"=>$quality_statistics
-					,"scores"=>$scores,"valueranks"=>$valueranks,"momentumranks"=>$momentumranks,"qualityranks"=>$qualityranks
-					,"piotroski_fscore"=>$piotroski_fscore,"altman_zscore"=>$altman_zscore,"altman_zscore_nonman"=>$altman_zscore_nonman]);
+			$view = ["title" => session_exchange().":".$symbol, "symbol"=>$symbol,
+			         "head"=>$head, "pe"=>$pe, "price_book"=>$price_book, "div_yield"=>$div_yield,
+			         "valuation"=>$valuation, "industry_valuation"=>$industry_valuation,
+			         "relative_sector_valuations"=>$relative_sector_valuations,
+			         "relative_industry_valuations"=>$relative_industry_valuations,
+			         "share_info"=> $share_info, "quote" => $quote, "chart"=>$chart,
+			         "timespan"=>$timespan, "type"=>$type,
+			         "scores"=>$scores, "valueranks"=>$valueranks, "momentumranks"=>$momentumranks,
+			         "qualityranks"=>$qualityranks, "announcements"=>$announcements,
+			         "health_scores"=>$health_scores, "currency_note"=>$currency_note,
+			         "momentum"=>$momentum, "policy"=>$policy, "held"=>$held,
+			         "value_rows"=>$value_rows, "quality_rows"=>$quality_rows,
+			         "growth_rows"=>$growth_rows, "accounts"=>$accounts,
+			         "tabs"=>$tabs, "tab"=>$tab];
 
+			/* screen_id used to pick between two copies of this list that
+			   differed in one key. The Back button it fed is gone - the
+			   browser and the navbar already do that - so it is carried only
+			   so a screen can link here and be linked back from. */
+			if (isset($screen_id)) { $view["screen_id"] = $screen_id; }
+
+			render("quote.php", $view);
 			
 			write_log("quote.php","End render form");
 		
 		}
 		else
-			render("quote_form.php", ["title" => "Stock Quote"]);
+			//quote_form.php is the dashboard template and needs five variables
+			//index.php builds for it. Rendering it from here passed only a
+			//title, so every panel foreach'd over an undefined variable.
+			//index.php apologises for an unknown symbol; do the same.
+			apologize("Invalid Symbol.");
     }
 
 	else {  
 		 //get stock symbols
         //$stock_symbols = query("SELECT symbol, description FROM stock_symbols where enabled='Y'");
         // else render form
-        //render("quote_form.php", ["title" => "Stock Quote","symbols" => $stock_symbols]);
-		  render("quote_form.php", ["title" => "Stock Quote"]);
+        //No symbol to quote. The dashboard lives at index.php, which knows how
+		//to populate it; rendering its template from here cannot.
+		  redirect("index.php");
     }
 
 ?>

@@ -1,0 +1,1564 @@
+/*
+ * app.css - the application's own stylesheet.
+ *
+ * Copied to public/css/app.css by tools/fetch_assets.sh, because public/css
+ * is in .gitignore (it holds downloaded third-party libraries). Loaded last
+ * in templates/header.php, so it wins against Bootstrap and against
+ * styles1.css, the older stylesheet that exists only on the server.
+ *
+ * The colours here are the same values as view_palette() and
+ * view_text_colours() in includes/view.php. They are in two places because
+ * PHP cannot read a stylesheet and a stylesheet cannot call PHP; a test
+ * checks that the two agree, so a colour changed in one place and not the
+ * other fails the suite rather than quietly giving one page its own scheme.
+ */
+
+/* ---------------------------------------------------------------------------
+   Colour.
+
+   Every token is light-dark(), so the page follows the system setting with no
+   second set of rules and no media query to keep in step. color-scheme on
+   :root is what makes light-dark() work and what makes the browser's own
+   widgets - scrollbars, form controls, the date picker - match.
+
+   data-bs-theme is Bootstrap 5.3's switch and is set from the user's own
+   preference; pinning color-scheme to match it is what keeps light-dark()
+   and Bootstrap saying the same thing. With "system" the attribute is set
+   from the media query by the small script in header.php, so Bootstrap
+   follows too.
+   --------------------------------------------------------------------------- */
+
+:root {
+	color-scheme: light dark;
+
+	/* The status badges keep one colour in both schemes. They carry white
+	   text on their own background, so what they have to clear is the
+	   contrast against that text, not against the page - and lightening
+	   them for dark mode took PAPER to 3.7:1 and "rebalance tonight" to
+	   3.2:1, which is a badge nobody can read on either. */
+	--sm-score-none:   #4b5563;
+	--sm-status-paper: #1d4ed8;
+	--sm-status-off:   #4b5563;
+	--sm-status-halt:  #b91c1c;
+	--sm-status-due:   #b45309;
+	/* Green, for a strategy with nothing outstanding. Dark enough to carry
+	   white text at the same contrast as the other four. */
+	--sm-status-ok:    #15803d;
+	/* Violet, for a live account, and for nothing else anywhere in this
+	   stylesheet: real money is the one thing on these pages a reader
+	   should never mistake for something else. */
+	--sm-status-live:  #6d28d9;
+
+	/* ---------------------------------------------------------------
+	   The house style, approved 18 Nov 2026.
+
+	   A research page, not a dashboard: a near-white ground, white
+	   panels, hairline rules, and colour kept for the data. Every pair
+	   that carries text measures 4.5:1 or better in both schemes, and
+	   every bar and dot 3:1 against the surface behind it; the suite
+	   checks both rather than trusting the eye.
+	   --------------------------------------------------------------- */
+
+	--sm-ground:    light-dark(#f1f3f6, #14181d);  /* the page behind the panels */
+	--sm-panel:     light-dark(#ffffff, #1c2229);  /* a panel */
+	--sm-band:      light-dark(#f5f7f9, #222a32);  /* header rows, sub-headers, the score box */
+	--sm-rule:      light-dark(#dde2e8, #323b45);  /* panel borders and the title rule */
+	--sm-rule-soft: light-dark(#e6eaef, #2a323b);  /* under a header row */
+	--sm-rule-hair: light-dark(#eef1f4, #262e36);  /* between two rows of a table */
+
+	--sm-ink:    light-dark(#1b2430, #e3e8ee);     /* text */
+	--sm-ink-2:  light-dark(#3a4553, #c2cad4);     /* secondary text, tags */
+	--sm-muted:  light-dark(#4e5968, #9ba6b4);     /* labels, comparison figures */
+
+	--sm-nav:       light-dark(#17212b, #10161c);  /* the navbar */
+	--sm-nav-ink:   #d8dee6;                       /* its links, white when current */
+	--sm-link:      light-dark(#0b5a70, #6fc6dd);
+	--sm-link-hover:light-dark(#083f4f, #9bdcec);
+
+	/* Three signals, and nothing else carries meaning by colour alone: a
+	   dot sits beside a number or a word, and a change has a sign. */
+	--sm-pos:     light-dark(#1a7f4b, #4ade80);
+	--sm-neg:     light-dark(#b4322a, #f87171);
+	--sm-caution: light-dark(#9a6200, #e0a42b);
+
+	/* A broken rule or a halt. */
+	--sm-alert-bg:   light-dark(#fbf1ef, #3a1f1c);
+	--sm-alert-rule: light-dark(#ebcfcb, #5b2e29);
+	--sm-alert-ink:  light-dark(#7a1f19, #f3b4ae);
+
+	/* Every price chart in the application draws in these three. */
+	--sm-chart-close: light-dark(#0b5a70, #6fc6dd);
+	--sm-chart-ma50:  light-dark(#c26a00, #e5a34a);
+	--sm-chart-ma200: light-dark(#7a4fb5, #b79af0);
+
+	/* The names the rest of the stylesheet and the three chart scripts
+	   already use, pointed at the house tokens so there is one set of
+	   colours rather than two. */
+	--sm-up:    var(--sm-pos);
+	--sm-down:  var(--sm-neg);
+	--sm-flat:  var(--sm-muted);
+	--sm-page:  var(--sm-ground);
+	--sm-card:  var(--sm-panel);
+	--sm-chart-text:   var(--sm-muted);
+	--sm-chart-grid:   var(--sm-rule-hair);
+	--sm-chart-border: var(--sm-rule);
+}
+
+/* The two pinned settings. Without these light-dark() follows the system
+   while Bootstrap follows the attribute, and on a machine set to dark with
+   the app set to light the page comes out half of each. */
+:root[data-bs-theme="light"] { color-scheme: light; }
+:root[data-bs-theme="dark"]  { color-scheme: dark; }
+
+/* ---------------------------------------------------------------------------
+   Type.
+
+   Inter, served from this site. The house style is set in it, and asking
+   fonts.googleapis.com for it would tell Google which pages a private site
+   serves and leave every page in a fallback face while the request is slow.
+   tools/fetch_assets.sh puts the four weights in public/fonts/.
+
+   Small and tight on purpose: the point of the redesign is a whole company
+   on one screen, which 16px cannot do. 13px with tabular figures is the
+   size a research page is set in.
+   --------------------------------------------------------------------------- */
+
+@font-face {
+	font-family: "Inter";
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url("/fonts/inter-400.woff2") format("woff2");
+}
+@font-face {
+	font-family: "Inter";
+	font-style: normal;
+	font-weight: 500;
+	font-display: swap;
+	src: url("/fonts/inter-500.woff2") format("woff2");
+}
+@font-face {
+	font-family: "Inter";
+	font-style: normal;
+	font-weight: 600;
+	font-display: swap;
+	src: url("/fonts/inter-600.woff2") format("woff2");
+}
+@font-face {
+	font-family: "Inter";
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src: url("/fonts/inter-700.woff2") format("woff2");
+}
+
+/* ---------------------------------------------------------------------------
+   Page frame.
+
+   The old fixed container stopped at 1140px and left a third of a wide screen
+   empty while the tables inside it scrolled sideways. Wider, but not edge to
+   edge: a table 2,000px across is unreadable in a different way.
+   --------------------------------------------------------------------------- */
+
+body {
+	background: var(--sm-page);
+	color: var(--sm-ink);
+	/* The fallback is the machine's own interface face rather than a
+	   serif: a page whose font has not arrived should look early, not
+	   like a different application. */
+	font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+	font-size: 13px;
+	line-height: 1.35;
+	/* Figures of one width, everywhere. A column of prices in
+	   proportional digits does not line up on the decimal point, and a
+	   reader scanning for the largest number finds the widest one. */
+	font-variant-numeric: tabular-nums;
+}
+
+.sm-page {
+	max-width: 1360px;
+	margin: 0 auto;
+	padding: 0 1rem 3rem;
+}
+
+/* The Strategies page keeps the width its tables were measured against. */
+.sm-page-wide {
+	max-width: 1400px;
+}
+
+/* The navbar is fixed, so the first element on every page needs clearing. */
+.sm-page-top {
+	padding-top: 4.5rem;
+}
+
+/* 20px/700 for the page title, 13px/600 for a panel title: a heading says
+   where you are, and on a page of twelve panels it should not shout. */
+.sm-page h1 {
+	font-size: 20px;
+	font-weight: 700;
+	line-height: 1.2;
+	margin-bottom: 0.25rem;
+}
+
+.sm-page h2 {
+	font-size: 15px;
+	font-weight: 600;
+}
+
+.sm-page h3 {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.sm-sub {
+	color: var(--sm-muted);
+	margin-bottom: 1.25rem;
+}
+
+/* One card style, so a panel on Home looks like a panel on the quote page. */
+.card {
+	border: 1px solid var(--sm-rule);
+	border-radius: 0.5rem;
+	box-shadow: none;
+	margin-bottom: 1rem;
+	background: var(--sm-card);
+	/* Each card is its own container, so what is inside it lays out on the
+	   card's width rather than the window's. The same card then works in the
+	   dashboard's two-column grid and on a phone without either knowing
+	   about the other. */
+	container-type: inline-size;
+}
+
+.card-header {
+	background: var(--sm-card);
+	border-bottom: 1px solid var(--sm-rule);
+	font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+   Numbers.
+
+   tabular-nums is the whole reason this block exists: in the proportional
+   figures Bootstrap inherits, a column of prices does not line up on the
+   decimal point, and a reader scanning for the largest number is reading the
+   widest one instead.
+   --------------------------------------------------------------------------- */
+
+.sm-num,
+td.sm-num,
+th.sm-num,
+.table td.sm-num,
+.table th.sm-num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.sm-up    { color: var(--sm-up); }
+.sm-down  { color: var(--sm-down); }
+.sm-flat  { color: var(--sm-flat); }
+.sm-muted { color: var(--sm-muted); }
+
+.sm-missing {
+	color: var(--sm-muted);
+	cursor: help;
+	border-bottom: 1px dotted var(--sm-muted);
+}
+
+/* Except where the missing thing is a score in a row of them: the dotted
+   underline under an empty track is a mark nobody can read as "no score". */
+.sm-score-cell.sm-missing { border-bottom: 0; }
+
+/* ---------------------------------------------------------------------------
+   Badges and swatches.
+   --------------------------------------------------------------------------- */
+
+.sm-badge {
+	display: inline-block;
+	min-width: 2.25rem;
+	padding: 0.15rem 0.4rem;
+	border-radius: 0.3rem;
+	font-size: 0.8125rem;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+	color: #fff;
+	cursor: help;
+}
+
+/* A score in a table cell: a short bar with the number beside it, which is
+   what replaced the coloured block. Narrow enough for three of them in one
+   cell on the screens and the portfolio. */
+.sm-score-cell {
+	display: inline-grid;
+	grid-template-columns: 42px 24px;
+	gap: 6px;
+	align-items: center;
+	cursor: help;
+}
+
+.sm-score-number {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+/* Three in one cell, each a little tighter. */
+.sm-badges-tight .sm-score-cell {
+	grid-template-columns: 30px 20px;
+	gap: 4px;
+	margin-right: 6px;
+}
+
+.sm-sentiment {
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.sm-score-none   { background: var(--sm-score-none); }
+.sm-status-paper { background: var(--sm-status-paper); cursor: default; }
+.sm-status-off   { background: var(--sm-status-off);   cursor: default; }
+.sm-status-halt  { background: var(--sm-status-halt);  cursor: default; }
+.sm-status-due   { background: var(--sm-status-due);   cursor: default; }
+.sm-status-ok    { background: var(--sm-status-ok);    cursor: default; }
+.sm-status-live  { background: var(--sm-status-live);  cursor: default; }
+
+/* Smaller, for three of them in a table cell. */
+.sm-badges-tight .sm-badge {
+	min-width: 1.9rem;
+	padding: 0.1rem 0.25rem;
+	font-size: 0.75rem;
+}
+
+.sm-key div {
+	margin-bottom: 0.25rem;
+}
+
+/* ---------------------------------------------------------------------------
+   The freshness indicator in the navbar.
+   --------------------------------------------------------------------------- */
+
+.sm-fresh,
+.sm-fresh-amber,
+.sm-fresh-red {
+	display: inline-block;
+	padding: 0.2rem 0.5rem;
+	border-radius: 0.3rem;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+/* Plain text when the prices are today's: a pill on the navbar reads as a
+   warning, and "the prices are up to date" is not news. The two states
+   that are news keep their colour. */
+.sm-fresh       { background: transparent; color: var(--sm-nav-ink); padding-left: 0; }
+.sm-fresh-amber { background: #b45309; color: #fff; }
+.sm-fresh-red   { background: #b91c1c; color: #fff; }
+
+/* The search box, in the navbar's own colours rather than a white field
+   cut out of a dark bar. */
+.navbar .form-control {
+	height: 30px;
+	border-radius: 4px;
+	border: 1px solid #3a4553;
+	background: #0f1720;
+	color: #ffffff;
+	font-size: 12px;
+}
+
+.navbar .form-control::placeholder { color: #8c97a4; opacity: 1; }
+
+.navbar .form-control:focus {
+	background: #0f1720;
+	color: #ffffff;
+	border-color: var(--sm-nav-ink);
+	box-shadow: none;
+}
+
+.navbar .btn-outline-light {
+	--bs-btn-border-color: #3a4553;
+	--bs-btn-color: #ffffff;
+	--bs-btn-hover-bg: #ffffff;
+	--bs-btn-hover-color: var(--sm-nav);
+	min-height: 30px;
+	font-size: 12px;
+}
+
+/* ---------------------------------------------------------------------------
+   Tables.
+
+   A table that is too wide scrolls inside its own card. Letting the page
+   scroll sideways instead moves the navbar off screen, which is how a phone
+   ends up with no way back to Home.
+   --------------------------------------------------------------------------- */
+
+.table-responsive {
+	-webkit-overflow-scrolling: touch;
+}
+
+.table > :not(caption) > * > * {
+	padding: 0.45rem 0.5rem;
+}
+
+.table thead th {
+	border-bottom: 2px solid var(--sm-rule);
+	font-size: 0.8125rem;
+	text-transform: none;
+	white-space: nowrap;
+}
+
+.sm-table-sort th[data-sort] {
+	cursor: pointer;
+	user-select: none;
+}
+
+.sm-table-sort th[data-sort]::after {
+	content: "\2195";
+	opacity: 0.3;
+	margin-left: 0.25rem;
+}
+
+.sm-table-sort th[data-sort].sm-sorted-asc::after  { content: "\2191"; opacity: 0.9; }
+.sm-table-sort th[data-sort].sm-sorted-desc::after { content: "\2193"; opacity: 0.9; }
+
+.sm-total-row td {
+	border-top: 2px solid var(--sm-rule);
+	font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+   Summary strips: the figures at the top of Home and Portfolio.
+   --------------------------------------------------------------------------- */
+
+.sm-strip {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 0.75rem 1.25rem;
+}
+
+/* The column count comes from a container query, so it answers to the width
+   of the card the strip is in rather than to the width of the window. The
+   same card then reads the same way in the dashboard's two-column desktop
+   layout, in one column on a phone, and in the quote page's narrow right
+   hand column - none of which has to know about the others. */
+@container (min-width: 360px) {
+	.sm-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@container (min-width: 760px) {
+	.sm-strip { grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); }
+}
+
+/* A browser with no container query support lays them out on the window
+   width instead, which is what it would have had before. */
+@supports not (container-type: inline-size) {
+	.sm-strip { grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); }
+}
+
+.sm-strip-item {
+	min-width: 0;
+}
+
+.sm-strip-label {
+	color: var(--sm-muted);
+	font-size: 0.8125rem;
+}
+
+.sm-strip-value {
+	font-size: 1.35rem;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	line-height: 1.2;
+}
+
+/* A horizontal bar showing where today's price sits in the 52-week range. */
+.sm-range {
+	position: relative;
+	height: 6px;
+	border-radius: 3px;
+	background: linear-gradient(90deg, #e5e7eb, #cbd5e1);
+	margin: 0.35rem 0 0.2rem;
+}
+
+.sm-range-mark {
+	position: absolute;
+	top: -3px;
+	width: 2px;
+	height: 12px;
+	background: #111827;
+}
+
+/* ---------------------------------------------------------------------------
+   Phones. Everything in this stylesheet has to work at 390px.
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 575.98px) {
+
+	.sm-page {
+		padding-left: 0.75rem;
+		padding-right: 0.75rem;
+	}
+
+	.sm-page-top {
+		padding-top: 4rem;
+	}
+
+	.sm-strip {
+		gap: 1rem;
+	}
+
+	.sm-strip-item {
+		min-width: 6rem;
+	}
+
+	.sm-strip-value {
+		font-size: 1.1rem;
+	}
+
+	/* Nothing may make the page itself scroll sideways. */
+	.table-responsive {
+		max-width: 100%;
+	}
+}
+
+/* ---------------------------------------------------------------------------
+   Things that fold away.
+
+   <details> rather than a JavaScript collapse: the browser opens and closes
+   it, so it works with scripting off, needs no id tying a control to a panel,
+   and cannot get stuck half open because a script did not load.
+
+   The marker is drawn here because the browser's default triangle sits at a
+   different size and colour in every engine, and these are links in prose.
+   --------------------------------------------------------------------------- */
+
+/* interpolate-size lets a height animate to and from auto. Where it is not
+   supported the details still opens, just without the slide. */
+:root {
+	interpolate-size: allow-keywords;
+}
+
+.sm-reveal > summary {
+	cursor: pointer;
+	list-style: none;
+	color: var(--bs-link-color, #0d6efd);
+	font-size: 0.875rem;
+	width: fit-content;
+}
+
+/* Safari draws its own marker through this pseudo-element. */
+.sm-reveal > summary::-webkit-details-marker {
+	display: none;
+}
+
+.sm-reveal > summary::before {
+	content: "\25B8";
+	display: inline-block;
+	margin-right: 0.35rem;
+	transition: transform 0.15s ease;
+}
+
+.sm-reveal[open] > summary::before {
+	transform: rotate(90deg);
+}
+
+.sm-reveal > summary:hover,
+.sm-reveal > summary:focus-visible {
+	text-decoration: underline;
+}
+
+/* The summaries inside the announcements table are the company's own words
+   rather than a link, so they are set as text. */
+.table .sm-reveal > summary {
+	color: inherit;
+	font-size: inherit;
+}
+
+.sm-reveal-body {
+	overflow: hidden;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.sm-reveal::details-content {
+		block-size: 0;
+		overflow: hidden;
+		transition: block-size 0.2s ease, content-visibility 0.2s allow-discrete;
+	}
+	.sm-reveal[open]::details-content {
+		block-size: auto;
+	}
+}
+
+.sm-routine {
+	margin-top: 1rem;
+}
+
+/* Charts are given their height by the page and their width by the column. */
+.sm-chart {
+	width: 100%;
+	min-height: 260px;
+}
+
+/* The company logo beside the name on the quote page, when the provider
+   supplied one. Bounded so a 600px PNG does not become the headline. */
+.sm-logo {
+	max-height: 36px;
+	max-width: 120px;
+	object-fit: contain;
+}
+
+/* ---------------------------------------------------------------------------
+   The strategies page: a menu on the left, one view on the right.
+   --------------------------------------------------------------------------- */
+
+/* About 240px, and it stays in view while the right-hand side scrolls: the
+   point of the menu is to move between strategies without hunting for it. */
+.sm-side-menu {
+	width: 240px;
+	position: sticky;
+	top: 1rem;
+	align-self: flex-start;
+	/* No scrollbar, ever. overflow-y:auto put one under the menu as soon
+	   as the list was taller than the window, and on a narrow column the
+	   browser drew a horizontal one with it. A menu of five entries does
+	   not need to scroll; a menu of fifty can scroll the page. */
+	overflow: visible;
+}
+
+.sm-side-menu .nav-link {
+	padding: 0.35rem 0.5rem;
+	border-radius: 0.3rem;
+	color: inherit;
+	line-height: 1.25;
+}
+
+/* A tint of whatever the text colour is, so it works in both schemes
+   without a second set of values. Mixed in oklab, like every other mix in
+   this file: sRGB interpolation wanders in lightness. */
+.sm-side-menu .nav-link:hover {
+	background: color-mix(in oklab, currentColor 8%, transparent);
+}
+
+.sm-side-menu .nav-link.active {
+	background: color-mix(in oklab, currentColor 14%, transparent);
+	font-weight: 600;
+}
+
+/* A strategy's entry is two lines: the name with its dot, then the mode and
+   the return. Three things on one line at 240px wrap into a muddle. */
+.sm-menu-line {
+	display: flex;
+	align-items: baseline;
+	gap: 0.35rem;
+	min-width: 0;
+}
+
+.sm-menu-meta {
+	margin-top: 0.15rem;
+	padding-left: 1rem;
+	font-size: 0.8125rem;
+}
+
+.sm-menu-return {
+	font-variant-numeric: tabular-nums;
+}
+
+/* Wrapped, not truncated. "Trend following (Trading 212 pr" is not a
+   strategy anybody can recognise, and the three characters an ellipsis
+   saves are worth less than the name. */
+.sm-menu-name {
+	overflow-wrap: anywhere;
+	hyphens: auto;
+}
+
+.sm-menu-heading {
+	margin: 0.6rem 0 0.1rem;
+	padding: 0 0.5rem;
+	font-size: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--sm-muted);
+}
+
+/* A stopped strategy is the one somebody needs to look at, so it says so
+   without being opened. */
+.sm-menu-halted .sm-menu-name { color: var(--sm-status-halt); font-weight: 600; }
+
+.sm-menu-disabled { font-size: 0.8125rem; }
+
+/* The status dot: the badge's colour where a badge would not fit. */
+.sm-dot {
+	display: inline-block;
+	width: 0.6rem;
+	height: 0.6rem;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	background: var(--sm-status-off);
+}
+
+.sm-dot-ok     { background: var(--sm-status-ok); }
+.sm-dot-due    { background: var(--sm-status-due); }
+.sm-dot-halted { background: var(--sm-status-halt); }
+
+/* The right-hand column holds tables of eleven columns. A flex item will
+   not shrink below its content unless it is told it may, so without this
+   the view is as wide as its widest table, the menu cannot fit beside it,
+   and the two columns stack - which looks exactly like the CSS not having
+   loaded. */
+.sm-view-col {
+	min-width: 0;
+}
+
+/* Below 768px nothing sits side by side: the menu is one control above the
+   content. Bootstrap's d-md-block does the hiding; this is the width, which
+   would otherwise still be 240px. */
+@media (max-width: 767.98px) {
+	.sm-side-menu {
+		width: auto;
+		position: static;
+		max-height: none;
+	}
+}
+
+/* A table that would rather scroll than squash.
+ *
+ * Inside .table-responsive a table still shrinks to the column it is in,
+ * and a twelve column table in a 1,000px column puts one word per line in
+ * every cell. A floor on the width makes the scroll container do its job
+ * instead. Below 768px .sm-stack takes over and the floor is lifted. */
+/* Enough that the columns do not become one word per line, and little
+   enough that the table fits a 1,280px window beside the 240px menu
+   without scrolling. */
+.sm-table-wide {
+	min-width: 46rem;
+}
+
+/* And its headings may wrap. .table thead th holds every heading on one
+   line, which is right for a narrow table and was what pushed the eleven
+   column summary 47px past a 1,280px window: "Next rebalance" on one line
+   is 127px of a 984px column. Over two lines it is still "Next
+   rebalance". The figures below it still never wrap - a number broken
+   over two lines is a different number - because .sm-num says so. */
+.sm-table-wide thead th {
+	white-space: normal;
+}
+
+/* And its columns sit a little closer together. Eleven columns pay the
+   horizontal padding twenty-two times, so 0.1rem off each side is 35px of
+   a 984px column - the difference between a table that fits a laptop and
+   one that has to be dragged sideways to read its last column. */
+.sm-table-wide > :not(caption) > * > * {
+	padding-left: 0.35rem;
+	padding-right: 0.35rem;
+}
+
+/* And a badge in one of its cells may wrap rather than set the floor for
+   its column. A badge is nowrap everywhere else because it is usually a
+   word; "Not agreed with broker" in an eleven column table is a column
+   wider than the figures it sits beside. */
+.sm-table-wide .sm-badge {
+	white-space: normal;
+}
+
+@media (max-width: 767.98px) {
+	.sm-table-wide { min-width: 0; }
+}
+
+/* A wide table as one block per row on a phone.
+ *
+ * Eleven columns at 390px is a table scrolled sideways to read, with the
+ * column headings off the screen by the time the figures are on it. Below
+ * 768px each row becomes a small block and every cell carries its own
+ * label, which is the heading it lost.
+ *
+ * The cells say what they are through data-label, written by the template:
+ * a heading read out of the thead with JavaScript would leave the page
+ * unreadable without one.
+ */
+@media (max-width: 767.98px) {
+
+	.sm-stack thead {
+		/* Not display:none, which takes the headings out of the accessible
+		   tree as well as off the screen. */
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+	}
+
+	.sm-stack,
+	.sm-stack tbody,
+	.sm-stack tr,
+	.sm-stack td {
+		display: block;
+		width: auto;
+	}
+
+	.sm-stack tr {
+		margin-bottom: 0.75rem;
+		padding: 0.25rem 0.5rem;
+		border: 1px solid var(--bs-border-color, #dee2e6);
+		border-radius: 0.375rem;
+	}
+
+	.sm-stack td {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.2rem 0;
+		border: 0;
+		text-align: right;
+	}
+
+	.sm-stack td::before {
+		content: attr(data-label);
+		flex: 0 0 auto;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--sm-muted);
+		text-align: left;
+	}
+
+	/* A cell with no label is a spacer in the stacked layout, not a row of
+	   its own. */
+	.sm-stack td:not([data-label]) {
+		display: none;
+	}
+}
+
+/* ===========================================================================
+   The house components, approved 18 Nov 2026.
+
+   One class each, so a panel on Home is the panel on the quote page and a
+   comparison bar means the same thing wherever it is drawn. Every page uses
+   these rather than its own markup, and no template sets a colour or a font
+   size of its own.
+   =========================================================================== */
+
+/* --- Links ----------------------------------------------------------------
+   Not underlined inside a table, a menu or a panel, where the underline is
+   noise on every row; underlined in running text, where it is the only
+   thing that says a word is a link. */
+
+a {
+	color: var(--sm-link);
+	text-decoration: none;
+}
+
+a:hover,
+a:focus-visible {
+	color: var(--sm-link-hover);
+	text-decoration: underline;
+}
+
+p a,
+li a,
+.sm-prose a {
+	text-decoration: underline;
+}
+
+/* --- 1. Panel ------------------------------------------------------------- */
+
+.sm-panel {
+	background: var(--sm-panel);
+	border: 1px solid var(--sm-rule);
+	border-radius: 6px;
+	overflow: hidden;
+	/* Its own container, so what is inside lays out on the panel's width
+	   rather than the window's: the same panel works in a three column
+	   grid and on a phone without either knowing about the other. */
+	container-type: inline-size;
+}
+
+/* The title row, with room for a link or a button on the right. */
+.sm-panel-title {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin: 0;
+	padding: 9px 12px;
+	font-size: 13px;
+	font-weight: 600;
+	border-bottom: 1px solid var(--sm-rule);
+}
+
+.sm-panel-title a,
+.sm-panel-title .sm-panel-action {
+	font-weight: 500;
+}
+
+/* Anything that is not a table: prose, a chart, a pair of scales. */
+.sm-panel-body {
+	padding: 10px 12px;
+}
+
+/* --- 2. Sub-header row ----------------------------------------------------
+   Two labels, left and right, over the block they describe: "Price change"
+   on the left and "Rank in FTSE 350" on the right says what both columns
+   are without a header row in every table. */
+
+.sm-subhead {
+	display: flex;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 5px 12px;
+	background: var(--sm-band);
+	border-bottom: 1px solid var(--sm-rule-soft);
+	color: var(--sm-muted);
+	font-size: 11.5px;
+	font-weight: 600;
+}
+
+/* --- 3. Data table --------------------------------------------------------
+   A band header row, hairline rules between rows, no outer border and no
+   zebra stripes: the rules are what the eye needs to stay on a row, and
+   stripes are a second grid fighting the first. */
+
+.sm-data {
+	width: 100%;
+	border-collapse: collapse;
+	margin: 0;
+}
+
+.sm-data th,
+.sm-data td {
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--sm-rule-hair);
+	text-align: left;
+	font-weight: 400;
+	vertical-align: middle;
+}
+
+.sm-data tbody tr:last-child th,
+.sm-data tbody tr:last-child td {
+	border-bottom: 0;
+}
+
+.sm-data thead th {
+	background: var(--sm-band);
+	border-bottom: 1px solid var(--sm-rule-soft);
+	color: var(--sm-muted);
+	font-size: 11.5px;
+	font-weight: 600;
+	/* Headings wrap. "Cheapness, 0 to 100" over a 374px column is two
+	   lines of heading or a heading with its end cut off, and the figures
+	   under it still never wrap because .sm-num says so. */
+	white-space: normal;
+}
+
+/* A figure that is not the share's own: the sector and market medians it is
+   read against. Muted, so the share's own column reads first. */
+.sm-data .sm-against {
+	color: var(--sm-muted);
+}
+
+/* The right-hand note beside a figure - a rank, a level in pence. */
+.sm-note {
+	color: var(--sm-muted);
+	text-align: right;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+/* --- 4. Comparison bar ----------------------------------------------------
+   A 6px track from 0 to 100 with the number beside it. The fill is banded,
+   because a continuous scale cannot be read off a 6px bar: under 30 is bad,
+   30 to 59 is middling, 60 and over is good - and the number says the rest.
+
+   Never shorter than 3%: a score of 1 must still be visible as a mark, or
+   the row reads as missing rather than as poor. */
+
+.sm-bar {
+	display: block;
+	height: 6px;
+	border-radius: 3px;
+	background: var(--sm-rule-soft);
+	overflow: hidden;
+}
+
+.sm-bar-fill {
+	display: block;
+	height: 6px;
+	border-radius: 3px;
+	min-width: 3%;
+	background: var(--sm-caution);
+}
+
+.sm-bar-low  .sm-bar-fill, .sm-bar-fill.sm-bar-low  { background: var(--sm-neg); }
+.sm-bar-mid  .sm-bar-fill, .sm-bar-fill.sm-bar-mid  { background: var(--sm-caution); }
+.sm-bar-high .sm-bar-fill, .sm-bar-fill.sm-bar-high { background: var(--sm-pos); }
+
+/* Name, bar, number: the row a bar is always drawn in. */
+.sm-bar-row {
+	display: grid;
+	grid-template-columns: 86px minmax(0, 1fr) 28px;
+	gap: 8px;
+	align-items: center;
+}
+
+.sm-bar-row .sm-bar-value {
+	text-align: right;
+	font-weight: 600;
+}
+
+/* --- 5. Signal dot --------------------------------------------------------
+   9px, always beside a number or a word. Never the only thing that says
+   whether a figure is good: colour-blind readers and printed pages both
+   lose it. */
+
+.sm-dot {
+	display: inline-block;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	background: var(--sm-muted);
+}
+
+.sm-dot-pos     { background: var(--sm-pos); }
+.sm-dot-caution { background: var(--sm-caution); }
+.sm-dot-neg     { background: var(--sm-neg); }
+
+/* --- 6. Tag --------------------------------------------------------------- */
+
+.sm-tag {
+	display: inline-block;
+	border: 1px solid var(--sm-rule);
+	border-radius: 999px;
+	padding: 2px 9px;
+	font-size: 11.5px;
+	color: var(--sm-ink-2);
+	background: var(--sm-panel);
+	white-space: nowrap;
+}
+
+.sm-tag-band {
+	background: var(--sm-band);
+	font-weight: 600;
+}
+
+/* --- 7. Scale -------------------------------------------------------------
+   Red to amber to green with a marker: for a score whose meaning is where
+   it sits between two ends rather than a rank - Piotroski 0 to 9, Altman's
+   distress and safe zones. The end labels say what the ends mean. */
+
+.sm-scale {
+	position: relative;
+	height: 8px;
+	border-radius: 4px;
+	background: linear-gradient(90deg, var(--sm-neg) 0%, var(--sm-caution) 50%, var(--sm-pos) 100%);
+}
+
+.sm-scale-mark {
+	position: absolute;
+	top: -3px;
+	width: 3px;
+	height: 14px;
+	border-radius: 1px;
+	background: var(--sm-ink);
+}
+
+.sm-scale-ends {
+	display: flex;
+	justify-content: space-between;
+	margin-top: 4px;
+	color: var(--sm-muted);
+	font-size: 11.5px;
+}
+
+/* --- 8. Tabs -------------------------------------------------------------- */
+
+.sm-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 22px;
+	padding: 0 16px;
+	border-top: 1px solid var(--sm-rule-soft);
+}
+
+.sm-tabs a {
+	display: inline-block;
+	padding: 10px 2px;
+	color: var(--sm-ink-2);
+	font-weight: 600;
+	font-size: 12.5px;
+	border-bottom: 2px solid transparent;
+	text-decoration: none;
+}
+
+.sm-tabs a.sm-tab-on,
+.sm-tabs a[aria-current="page"] {
+	color: var(--sm-link);
+	border-bottom-color: var(--sm-link);
+}
+
+/* --- 9. Alert strip -------------------------------------------------------
+   One sentence and a dot, in the alert colours. The green form is the same
+   strip saying the rule is met: a policy that only ever speaks when it is
+   broken leaves a reader unsure whether it was checked. */
+
+.sm-alert {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	padding: 8px 16px;
+	background: var(--sm-alert-bg);
+	border-top: 1px solid var(--sm-alert-rule);
+	color: var(--sm-alert-ink);
+}
+
+.sm-alert .sm-dot { background: var(--sm-neg); align-self: center; }
+
+.sm-alert-ok {
+	background: light-dark(#eef7f1, #15241c);
+	border-top-color: light-dark(#cfe5d8, #27402f);
+	color: light-dark(#14532d, #86efac);
+}
+
+.sm-alert-ok .sm-dot { background: var(--sm-pos); }
+
+/* --- 10. Score box --------------------------------------------------------
+   The four scores as rows of name, bar and number, with ShareRank last
+   under a rule: it is the other three put together, not a fourth of them. */
+
+.sm-scorebox {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	justify-content: center;
+	padding: 8px 12px;
+	background: var(--sm-band);
+	border: 1px solid var(--sm-rule-soft);
+	border-radius: 6px;
+}
+
+.sm-scorebox .sm-scorebox-total {
+	border-top: 1px solid var(--sm-rule);
+	padding-top: 6px;
+	font-weight: 700;
+}
+
+/* --- Buttons --------------------------------------------------------------
+   An outline in the link colour for a secondary action, the navbar colour
+   filled for the one primary action on a page. 28px tall on a desktop and
+   44px at phone width, which is the smallest a finger can hit. */
+
+.sm-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	min-height: 28px;
+	padding: 3px 12px;
+	border-radius: 4px;
+	border: 1px solid var(--sm-link);
+	background: var(--sm-panel);
+	color: var(--sm-link);
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.sm-btn:hover,
+.sm-btn:focus-visible {
+	color: var(--sm-link-hover);
+	border-color: var(--sm-link-hover);
+	text-decoration: none;
+}
+
+.sm-btn-primary {
+	background: var(--sm-nav);
+	border-color: var(--sm-nav);
+	color: #ffffff;
+}
+
+.sm-btn-primary:hover,
+.sm-btn-primary:focus-visible {
+	background: var(--sm-ink);
+	border-color: var(--sm-ink);
+	color: #ffffff;
+}
+
+@media (max-width: 575.98px) {
+	.sm-btn { min-height: 44px; padding: 6px 14px; }
+}
+
+/* --- The navbar -----------------------------------------------------------
+   The saturated blue is gone. Bootstrap's own classes are still on the
+   element until every template has been moved over, so these override
+   them rather than waiting for that. */
+
+.navbar.bg-primary {
+	background: var(--sm-nav) !important;
+}
+
+.navbar .navbar-brand {
+	color: #ffffff;
+	font-weight: 700;
+	font-size: 15px;
+}
+
+.navbar .nav-link {
+	color: var(--sm-nav-ink);
+	font-weight: 500;
+}
+
+.navbar .nav-link:hover,
+.navbar .nav-link:focus-visible,
+.navbar .nav-link.active,
+.navbar .nav-link[aria-current="page"] {
+	color: #ffffff;
+}
+
+/* --- Bootstrap, brought to the house style ---------------------------------
+   Every page still uses Bootstrap's own classes - .card, .table,
+   .table-striped - and will until each has been moved over to the
+   components above. Rather than leave the application looking like two
+   applications in the meantime, those classes are given the house look
+   here. When a page is moved, the markup changes and nothing below has to.
+   --------------------------------------------------------------------------- */
+
+.card {
+	border: 1px solid var(--sm-rule);
+	border-radius: 6px;
+	background: var(--sm-panel);
+}
+
+.card-header {
+	background: var(--sm-panel);
+	border-bottom: 1px solid var(--sm-rule);
+	padding: 9px 12px;
+	font-size: 13px;
+	font-weight: 600;
+}
+
+/* The data table's look, on Bootstrap's table. Hairline rules between the
+   rows, a band behind the header, and no stripes: the stripes are a second
+   grid arguing with the first, and on a page of twelve panels they are the
+   loudest thing on it. */
+.table {
+	--bs-table-bg: transparent;
+	--bs-table-striped-bg: transparent;
+	--bs-table-striped-color: var(--sm-ink);
+	--bs-table-color: var(--sm-ink);
+	--bs-table-border-color: var(--sm-rule-hair);
+	color: var(--sm-ink);
+	margin-bottom: 0;
+}
+
+.table > :not(caption) > * > * {
+	background: transparent;
+	box-shadow: none;
+	border-bottom-color: var(--sm-rule-hair);
+}
+
+.table thead th {
+	background: var(--sm-band);
+	color: var(--sm-muted);
+	border-bottom: 1px solid var(--sm-rule-soft);
+	font-size: 11.5px;
+	font-weight: 600;
+}
+
+/* A total row is the one place a heavier rule earns its keep. */
+.sm-total-row td,
+.sm-total-row th {
+	border-top: 1px solid var(--sm-rule);
+	font-weight: 600;
+}
+
+/* Bootstrap's own buttons, in the house colours, so a page that has not
+   been moved over does not keep the old blue. */
+.btn-primary {
+	--bs-btn-bg: var(--sm-nav);
+	--bs-btn-border-color: var(--sm-nav);
+	--bs-btn-hover-bg: var(--sm-ink);
+	--bs-btn-hover-border-color: var(--sm-ink);
+	--bs-btn-active-bg: var(--sm-ink);
+	--bs-btn-active-border-color: var(--sm-ink);
+}
+
+.btn-outline-primary,
+.btn-outline-secondary {
+	--bs-btn-color: var(--sm-link);
+	--bs-btn-border-color: var(--sm-link);
+	--bs-btn-hover-bg: var(--sm-link);
+	--bs-btn-hover-border-color: var(--sm-link);
+	--bs-btn-hover-color: #ffffff;
+	--bs-btn-active-bg: var(--sm-link-hover);
+	--bs-btn-active-border-color: var(--sm-link-hover);
+}
+
+.btn {
+	min-height: 28px;
+}
+
+/* A finger is 44px wide whatever the design says. */
+@media (max-width: 575.98px) {
+	.btn,
+	.sm-tabs a,
+	.navbar .nav-link {
+		min-height: 44px;
+		display: inline-flex;
+		align-items: center;
+	}
+}
+
+/* Bootstrap 5.3 sets its own link colour from --bs-link-color; pointing it
+   at the house token means a link inside a Bootstrap component is the same
+   colour as a link anywhere else. */
+:root {
+	--bs-link-color: var(--sm-link);
+	--bs-link-hover-color: var(--sm-link-hover);
+	--bs-body-bg: var(--sm-ground);
+	--bs-body-color: var(--sm-ink);
+	--bs-border-color: var(--sm-rule);
+	--bs-emphasis-color: var(--sm-ink);
+	--bs-secondary-color: var(--sm-muted);
+	--bs-body-font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+	--bs-body-font-size: 13px;
+	--bs-body-line-height: 1.35;
+}
+
+/* .text-body-secondary and .text-muted are all over the templates. */
+.text-body-secondary,
+.text-muted {
+	color: var(--sm-muted) !important;
+}
+
+/* ===========================================================================
+   The quote page: one company on one screen.
+
+   A header panel, then three columns - the chart and what has been said on
+   the left, the price's own behaviour in the middle, the valuation on the
+   right. The widths are 1.45 : 1 : 1, which is what fits a 640px chart
+   beside two tables of four columns at 1,360px.
+   =========================================================================== */
+
+.sm-cols {
+	display: grid;
+	grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 1fr);
+	gap: 14px;
+	align-items: start;
+}
+
+.sm-col {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	min-width: 0;
+}
+
+/* The header: who it is, the facts, the scores. */
+.sm-head {
+	display: flex;
+	gap: 24px;
+	padding: 14px 16px;
+	align-items: stretch;
+	flex-wrap: wrap;
+}
+
+.sm-head-who {
+	display: flex;
+	gap: 14px;
+	flex: 1.5;
+	min-width: 0;
+}
+
+.sm-head-name {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+}
+
+/* The logo, or a dark square with the code in it where the provider has
+   none: a grey box with the company name written across it, which is what
+   the page used to draw, says only that something is missing. */
+.sm-logo-box {
+	width: 52px;
+	height: 52px;
+	border-radius: 6px;
+	background: var(--sm-nav);
+	color: #ffffff;
+	font-weight: 700;
+	font-size: 17px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	overflow: hidden;
+}
+
+.sm-logo-box img {
+	max-width: 100%;
+	max-height: 100%;
+	object-fit: contain;
+}
+
+.sm-price-line {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.sm-price {
+	font-size: 24px;
+	font-weight: 700;
+}
+
+.sm-price-move {
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.sm-tags {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+/* The key facts, against a rule rather than in a box: they are the same
+   kind of thing as the price beside them. */
+.sm-facts {
+	flex: 1;
+	min-width: 200px;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 8px;
+	border-left: 1px solid var(--sm-rule-soft);
+	padding-left: 20px;
+}
+
+.sm-fact {
+	display: flex;
+	justify-content: space-between;
+	gap: 10px;
+}
+
+.sm-head .sm-scorebox {
+	flex: 1;
+	min-width: 220px;
+}
+
+/* The 52-week range: where the close sits between the two ends. */
+.sm-range {
+	position: relative;
+	height: 6px;
+	border-radius: 3px;
+	background: var(--sm-rule-soft);
+	margin: 5px 0 0;
+}
+
+.sm-range-mark {
+	position: absolute;
+	top: -3px;
+	width: 3px;
+	height: 12px;
+	border-radius: 1px;
+	background: var(--sm-ink);
+}
+
+/* The implied-price sentence under the Value table, and anything else that
+   is a sentence rather than a row. */
+.sm-strip-note {
+	padding: 8px 12px;
+	border-top: 1px solid var(--sm-rule-soft);
+	background: var(--sm-band);
+	color: var(--sm-ink-2);
+}
+
+.sm-strip-note-alert {
+	background: var(--sm-alert-bg);
+	border-top-color: var(--sm-alert-rule);
+	color: var(--sm-alert-ink);
+}
+
+/* The chart's own legend: three lines and the level each is at. */
+.sm-legend {
+	display: flex;
+	gap: 16px;
+	margin-top: 8px;
+	flex-wrap: wrap;
+	color: var(--sm-ink-2);
+	font-size: 12px;
+}
+
+.sm-legend-mark {
+	display: inline-block;
+	width: 14px;
+	height: 2px;
+	vertical-align: middle;
+}
+
+/* Below 900px there are no columns. The panels are laid out in the order a
+   reader wants them on a phone rather than in the order the desktop grid
+   puts them: the chart, then what the price has done, then what it is
+   worth, and the long reading last. display: contents takes the three
+   column boxes out of the way so the panels themselves are the grid's
+   children and can be ordered. */
+@media (max-width: 900px) {
+
+	.sm-cols {
+		grid-template-columns: 1fr;
+	}
+
+	.sm-col {
+		display: contents;
+	}
+
+	.qp-chart    { order: 1; }
+	.qp-momentum { order: 2; }
+	.qp-value    { order: 3; }
+	.qp-quality  { order: 4; }
+	.qp-health   { order: 5; }
+	.qp-growth   { order: 6; }
+	.qp-outlook  { order: 7; }
+	.qp-news     { order: 8; }
+	.qp-summary  { order: 9; }
+
+	.sm-head {
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	.sm-facts {
+		border-left: 0;
+		border-top: 1px solid var(--sm-rule-soft);
+		padding-left: 0;
+		padding-top: 12px;
+	}
+}
+
+/* A browser without display: contents - or with it disabled for a grid -
+   still gets three stacked columns rather than a mess. */
+@supports not (display: contents) {
+	@media (max-width: 900px) {
+		.sm-col { display: flex; }
+	}
+}
+
+/* Cells that carry something other than a figure: a dot, a bar, the number
+   beside a bar. Widths so the columns line up down the table rather than
+   each row deciding for itself. */
+.sm-data .sm-dot-cell  { width: 14px; padding-left: 0; }
+.sm-data .sm-bar-cell  { width: 28%; }
+.sm-data .sm-bar-number { width: 34px; }
+.sm-nowrap { white-space: nowrap; }
+
+/* The chart's legend marks, one class per line, because a colour belongs in
+   the stylesheet and not in an attribute on the page. */
+.sm-legend-close { background: var(--sm-chart-close); }
+.sm-legend-ma50  { background: var(--sm-chart-ma50); }
+.sm-legend-ma200 { background: var(--sm-chart-ma200); }
+
+/* A strip figure that is a sentence rather than a number. */
+.sm-strip-value-small { font-size: 1.05rem; }
+
+/* A column wide enough for a sentence: the backtest table's Settings. */
+.sm-col-wide { min-width: 14rem; }

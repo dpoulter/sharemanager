@@ -38,9 +38,8 @@
     }
 	else if ($_SERVER["REQUEST_METHOD"] == "GET"){
 		if (!empty($_GET["action"])&&$_GET["action"]=="reset"){		
-			$encrypt = $_GET['encrypt'];
-        	$Results = query("SELECT id FROM users where md5(90*13+id)=?",$encrypt);
-        	if(count($Results)>=1)
+			$encrypt = $_GET['encrypt'] ?? '';
+        	if(reset_token_user($encrypt) !== null)
         	{
  				render("password_form.php",["title" => "New Password","encrypt"=> $encrypt]);	
  				//echo "Reset password";
