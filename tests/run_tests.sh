@@ -149,6 +149,14 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_fills.sql" > /dev/null || exit 1
 echo "applying sql/broker_environment.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_environment.sql" > /dev/null || exit 1
 
+# The figures the one-screen quote page shows: the one month return, the two
+# ends of the year, return on capital, operating margin, the lines of the
+# yearly accounts, and the in_score column that keeps a new measure out of
+# the scores until somebody asks for it. After the files above, because it
+# edits rows they create.
+echo "applying sql/quote_report.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/quote_report.sql" > /dev/null || exit 1
+
 # After sql/report_currency.sql, which adds the column this one sits after.
 echo "applying sql/strategy_prices.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_prices.sql" > /dev/null || exit 1
@@ -197,7 +205,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       strategy_backtest strategy_backtest_overrides strategy_backtest_costs \
                       strategy_prices \
                       broker broker_account_fields broker_mapping broker_trading \
-                      broker_fills broker_environment; do
+                      broker_fills broker_environment quote_report; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
      done
 

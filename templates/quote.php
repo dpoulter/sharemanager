@@ -466,9 +466,41 @@ $code      = strtoupper(preg_replace('/\..*$/', '', (string) $symbol));
 			<?php endforeach ?>
 		</section>
 
-		<?php /* The five year accounts are not loaded yet. An empty panel
-		         saying so is a panel somebody reads twice before believing
-		         it, so there is no panel until there are figures. */ ?>
+		<?php /* The five year accounts, where they have been loaded. No
+		         panel until there are figures: an empty table of five
+		         years reads as a company with no accounts rather than as
+		         a loader that has not run. */ ?>
+		<?php if (count($accounts['periods'])): ?>
+		<section class="sm-panel qp-summary">
+			<h2 class="sm-panel-title">Financial summary
+				<a href="<?= e($q_link('accounts')) ?>">Five years</a></h2>
+			<table class="sm-data">
+				<thead>
+					<tr><th>Year</th>
+						<?php foreach ($accounts['periods'] as $period): ?>
+							<th class="sm-num"><?= e($period['label']) ?></th>
+						<?php endforeach ?>
+						<th class="sm-num">Change</th></tr>
+				</thead>
+				<tbody>
+				<?php foreach ($accounts['rows'] as $row): ?>
+					<tr>
+						<th scope="row"><?= e($row['label']) ?></th>
+						<?php foreach ($row['figures'] as $figure): ?>
+							<td class="sm-num"><?= $figure === null ? e(VIEW_DASH)
+								: e(quote_account_figure($row['name'], $figure)) ?></td>
+						<?php endforeach ?>
+						<td class="sm-num"><?= $row['growth'] === null
+							? e(VIEW_DASH) : move_pct_html($row['growth']) ?></td>
+					</tr>
+				<?php endforeach ?>
+				</tbody>
+			</table>
+			<div class="sm-strip-note"><small>As reported, in the currency the
+				company keeps its accounts in. Change is the last year against the
+				one before it.</small></div>
+		</section>
+		<?php endif ?>
 	</div>
 </div>
 
@@ -577,6 +609,46 @@ $code      = strtoupper(preg_replace('/\..*$/', '', (string) $symbol));
 				<?php endforeach ?>
 				</tbody>
 			</table>
+		<?php endif ?>
+	</section>
+
+<?php elseif ($tab === 'accounts'): ?>
+
+	<?php /* The same five years, with room for every line the loader
+	         writes rather than the handful the report has space for. */ ?>
+	<section class="sm-panel">
+		<h2 class="sm-panel-title">Five years of accounts</h2>
+		<?php if (!count($accounts['periods'])): ?>
+			<div class="sm-panel-body sm-muted">
+				No accounts have been loaded for <?= e($symbol) ?>.
+			</div>
+		<?php else: ?>
+			<table class="sm-data">
+				<thead>
+					<tr><th>Line</th>
+						<?php foreach ($accounts['periods'] as $period): ?>
+							<th class="sm-num"><?= e($period['label']) ?>
+								<span class="sm-muted"><?= e(fmt_date($period['end_date'])) ?></span></th>
+						<?php endforeach ?>
+						<th class="sm-num">Change</th></tr>
+				</thead>
+				<tbody>
+				<?php foreach ($accounts['rows'] as $row): ?>
+					<tr>
+						<th scope="row"><?= e($row['label']) ?></th>
+						<?php foreach ($row['figures'] as $figure): ?>
+							<td class="sm-num"><?= $figure === null ? e(VIEW_DASH)
+								: e(quote_account_figure($row['name'], $figure)) ?></td>
+						<?php endforeach ?>
+						<td class="sm-num"><?= $row['growth'] === null
+							? e(VIEW_DASH) : move_pct_html($row['growth']) ?></td>
+					</tr>
+				<?php endforeach ?>
+				</tbody>
+			</table>
+			<div class="sm-strip-note"><small>As reported, in the currency the company
+				keeps its accounts in; per-share figures as reported. Change is the last
+				year against the one before it.</small></div>
 		<?php endif ?>
 	</section>
 

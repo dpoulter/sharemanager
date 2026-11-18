@@ -734,9 +734,20 @@
 	 */
 	function share_fundamentals($symbol) {
 
+		/* Two spellings for the same figure, because the provider changed.
+		   EODHD wrote Highlights.MarketCapitalization and
+		   SharesStats.SharesOutstanding; FMP writes neither, and
+		   python/fmp.py derives both under Derived - the capitalisation in
+		   the unit the price is quoted in, the share count from the
+		   profile or the quote. Only the old names were read here, so the
+		   quote page has shown a dash for the market capitalisation and
+		   for the shares in issue since the day the provider changed.
+		   The provider's own name is preferred where both exist. */
 		$wanted = [
-			"market_cap"       => "Highlights.MarketCapitalization",
-			"shares"           => "SharesStats.SharesOutstanding",
+			"market_cap"       => "Derived.marketCapInQuoteCurrency",
+			"market_cap_eodhd" => "Highlights.MarketCapitalization",
+			"shares"           => "Derived.sharesOutstanding",
+			"shares_eodhd"     => "SharesStats.SharesOutstanding",
 			"52w_high"         => "Technicals.52WeekHigh",
 			"52w_low"          => "Technicals.52WeekLow",
 			"pe"               => "Valuation.TrailingPE",
@@ -758,6 +769,13 @@
 		foreach ($wanted as $key => $attribute) {
 			$out[$key] = isset($found[$attribute]) ? $found[$attribute] : "";
 		}
+
+		//The older provider's figure where this one wrote nothing.
+		foreach (["market_cap" => "market_cap_eodhd", "shares" => "shares_eodhd"] as $key => $older) {
+			if (trim((string) $out[$key]) === "") { $out[$key] = $out[$older]; }
+			unset($out[$older]);
+		}
+
 		return $out;
 	}
 

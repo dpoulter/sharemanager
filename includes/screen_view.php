@@ -279,9 +279,17 @@
 		if (in_array($indicator, ['close_price', 'ma50', 'ma200'], true)) {
 			return htmlspecialchars(fmt_pence($value), ENT_QUOTES);
 		}
-		if (in_array($indicator, ['3mnth', '6mnth', '12mnth', 'revenue_growth',
-		                          'earnings_growth'], true)) {
+		if (in_array($indicator, ['1mnth', '3mnth', '6mnth', '12mnth'], true)) {
+			//The momentum series is stored in per cent: -15.2 is -15.2%.
 			return move_pct_html($value);
+		}
+		/* The growth rates are not. FMP reports them as fractions - 0.122
+		   for 12.2%, 1.300 for an EPS that has more than doubled - and
+		   this column printed them as they stood, so every growth figure
+		   on a screen was a hundredth of itself and RR's EPS growth read
+		   "+1.3%". */
+		if (in_array($indicator, ['revenue_growth', 'earnings_growth'], true)) {
+			return move_pct_html(view_blank($value) ? null : (float) $value * 100);
 		}
 		if (substr($indicator, -6) === '_score' || $indicator === 'piotroski_score') {
 			return score_badge_html($value, $indicator);

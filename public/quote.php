@@ -173,9 +173,11 @@
 			$momentum     = quote_momentum($symbol, $head);
 			$policy       = quote_policy($head, $momentum);
 			$held         = quote_held_by($symbol, $_SESSION['id'] ?? null);
-			$value_rows   = quote_panel_rows($quote, quote_value_wanted());
-			$quality_rows = quote_panel_rows($quote, quote_quality_wanted());
-			$growth_rows  = quote_panel_rows($quote, quote_growth_wanted());
+			$value_rows   = quote_panel_rows($symbol, quote_value_wanted());
+			$quality_rows = quote_panel_rows($symbol, quote_quality_wanted());
+			$growth_rows  = quote_panel_rows($symbol, quote_growth_wanted());
+			/* Five years of accounts, where they have been loaded. */
+			$accounts     = quote_accounts($symbol);
 
 			/* Which of the page's views is open. Each is its own address,
 			   so a view can be bookmarked and a link can point at one -
@@ -183,7 +185,12 @@
 			   anything unknown. Accounts is not offered until the yearly
 			   figures are loaded: a tab that opens an empty panel is a tab
 			   nobody clicks twice. */
-			$tabs = ['report' => 'Report', 'announcements' => 'Announcements',
+			$tabs = ['report' => 'Report'];
+			/* Offered once there are accounts to show, and not before:
+			   a tab that opens an empty panel is a tab nobody clicks
+			   twice. */
+			if (count($accounts['periods'])) { $tabs['accounts'] = 'Accounts'; }
+			$tabs += ['announcements' => 'Announcements',
 			         'outlook' => 'Outlook', 'strategies' => 'Strategies',
 			         /* Company keeps what the old Profile and Ratios tabs
 			            held - the business summary, the company's own
@@ -212,7 +219,8 @@
 			         "health_scores"=>$health_scores, "currency_note"=>$currency_note,
 			         "momentum"=>$momentum, "policy"=>$policy, "held"=>$held,
 			         "value_rows"=>$value_rows, "quality_rows"=>$quality_rows,
-			         "growth_rows"=>$growth_rows, "tabs"=>$tabs, "tab"=>$tab];
+			         "growth_rows"=>$growth_rows, "accounts"=>$accounts,
+			         "tabs"=>$tabs, "tab"=>$tab];
 
 			/* screen_id used to pick between two copies of this list that
 			   differed in one key. The Back button it fed is gone - the

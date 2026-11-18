@@ -27,6 +27,11 @@
     //Stage 2: the orders a T212_DEMO account sends. Loading it sends
     //nothing; only broker_send_orders() does, and only to the demo host.
     require_once("broker_orders.php");
+    //The quote page's own arithmetic: the header, the panels and the
+    //accounts. Loading it does nothing on its own.
+    require_once("quote_view.php");
+    //The screens page's formatters, for the unit checks.
+    require_once("screen_view.php");
 
     $INCLUDES = dirname(__DIR__) . '/includes';
     $passed = 0; $failed = 0; $failures = [];
@@ -7516,6 +7521,229 @@
     check('and the peer medians say the share is left out of them',
           strpos($mn_quote, 'leaves this share out') !== false,
           substr($mn_quote, max(0, strpos($mn_quote, 'leaves this share out') - 150), 300));
+
+    echo "\n--- the figures the report needed and the database did not have ---\n";
+
+    /* sql/quote_report.sql, and the four calculations behind it. The page
+       was working the one month return out from the closes on every view,
+       with no rank to show for it, and scanning a year of prices to find
+       the ends of the range. */
+
+    $nd_asof = asof_date();
+
+    check('the one month return is an indicator like the other three, and ranked',
+          (string) scalar("select screen_function from screen_indicators where name='1mnth'")
+            === 'calc_momentum_1mnth'
+          && (string) scalar("select calc_rank from screen_indicators where name='1mnth'") === 'Y'
+          && (string) scalar("select enabled from screen_indicators where name='1mnth'") === 'Y');
+    check('and the two ends of the year are indicators rather than a scan',
+          (string) scalar("select screen_function from screen_indicators where name='high_52w'")
+            === 'high_52w'
+          && (string) scalar("select screen_function from screen_indicators where name='low_52w'")
+            === 'low_52w');
+    check('the nightly job calculates all three, because every enabled indicator is',
+          (int) scalar("select count(*) from screen_indicators
+                         where enabled='Y' and screen_function in
+                               ('calc_momentum_1mnth','high_52w','low_52w')") === 3);
+
+    /* The calculations themselves, against prices written for them. */
+    $nd = 'NDT';
+    foreach (['historical_prices', 'statistics', 'stock_symbols'] as $nd_table) {
+        db()->prepare("delete from $nd_table where symbol=?")->execute([$nd]);
+    }
+    db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector,market)
+                   values (?,'New Data PLC','New Data PLC','XLON','Y','Industrials','FTSE 250')")
+        ->execute([$nd]);
+    $nd_price = db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                               values (?,'XLON',?,?)");
+    /* Daily closes for the last two months, because calc_momentum() walks
+       forward a day at a time from the date a month back until it finds a
+       price - which is the nightly job's own behaviour and not something to
+       work around in a fixture. 100p two months ago, 120p now. */
+    for ($nd_back = 0; $nd_back <= 62; $nd_back++) {
+        $nd_day = date('Y-m-d', strtotime($nd_asof . ' -' . $nd_back . ' day'));
+        if ($nd_day === $nd_asof) { continue; }
+        $nd_price->execute([$nd, $nd_day, $nd_back <= 31 ? 100.0 : 90.0]);
+    }
+    $nd_price->execute([$nd, $nd_asof, 120.0]);
+    $nd_price->execute([$nd, date('Y-m-d', strtotime($nd_asof . ' -200 day')), 150.0]);
+    $nd_price->execute([$nd, date('Y-m-d', strtotime($nd_asof . ' -300 day')), 80.0]);
+    /* Older than a year: outside the window, and the thing a scan with the
+       wrong bounds gets wrong. */
+    $nd_price->execute([$nd, date('Y-m-d', strtotime($nd_asof . ' -400 day')), 500.0]);
+
+    calc_momentum_1mnth($nd_asof, $nd);
+    high_52w($nd_asof, $nd);
+    low_52w($nd_asof, $nd);
+
+    $nd_value = function ($indicator) use ($nd, $nd_asof) {
+        $rows = rows("select value from statistics where symbol=? and indicator=? and date=?",
+                     [$nd, $indicator, $nd_asof]);
+        return count($rows) ? (float) $rows[0]['value'] : null;
+    };
+
+    check('a one month return is the close against the close a month back',
+          $nd_value('1mnth') !== null && abs($nd_value('1mnth') - 20.0) < 0.1,
+          json_encode($nd_value('1mnth')));
+    check('the 52 week high is the highest close of the year, not of all history',
+          $nd_value('high_52w') !== null && abs($nd_value('high_52w') - 150.0) < 0.001,
+          json_encode($nd_value('high_52w')));
+    check('and the low is the lowest of the same year',
+          $nd_value('low_52w') !== null && abs($nd_value('low_52w') - 80.0) < 0.001,
+          json_encode($nd_value('low_52w')));
+
+    /* A share whose prices have gone leaves no stale answer behind: a 52
+       week low of nought reads as a share that went to zero. */
+    db()->prepare("delete from historical_prices where symbol=?")->execute([$nd]);
+    high_52w($nd_asof, $nd);
+    low_52w($nd_asof, $nd);
+    check('a share with no prices in the year has no range rather than a zero one',
+          $nd_value('high_52w') === null && $nd_value('low_52w') === null);
+
+    /* And the page reads the stored ends rather than scanning for them. */
+    $nd_price->execute([$nd, $nd_asof, 120.0]);
+    db()->prepare("insert into statistics (symbol,exchange,date,indicator,value)
+                   values (?,'XLON',?,'high_52w',?), (?,'XLON',?,'low_52w',?)")
+        ->execute([$nd, $nd_asof, 999.0, $nd, $nd_asof, 11.0]);
+    $nd_head = quote_header($nd, 'XLON');
+    check('the quote header takes the range from the stored indicators',
+          $nd_head['high_52w'] !== null && abs($nd_head['high_52w'] - 999.0) < 0.001
+          && abs($nd_head['low_52w'] - 11.0) < 0.001,
+          json_encode([$nd_head['low_52w'], $nd_head['high_52w']]));
+    db()->prepare("delete from statistics where symbol=? and indicator in ('high_52w','low_52w')")
+        ->execute([$nd]);
+    $nd_head = quote_header($nd, 'XLON');
+    check('and falls back to the prices where the job has not run yet',
+          $nd_head['high_52w'] !== null && abs($nd_head['high_52w'] - 120.0) < 0.001,
+          json_encode([$nd_head['low_52w'], $nd_head['high_52w']]));
+
+    /* The market capitalisation, which has read as a dash since the
+       provider changed: the old attribute names were the only ones looked
+       for, and FMP writes neither of them. */
+    db()->prepare("delete from stock_info where symbol=?")->execute([$nd]);
+    db()->prepare("insert into stock_info (symbol,asofdate,attribute,value) values
+                   (?,?,'Derived.marketCapInQuoteCurrency','1234500000'),
+                   (?,?,'Derived.sharesOutstanding','1000000')")
+        ->execute([$nd, $nd_asof, $nd, $nd_asof]);
+    db()->prepare("update stock_symbols set quote_ccy='GBp' where symbol=?")->execute([$nd]);
+    $nd_fundamentals = share_fundamentals($nd);
+    check('the provider\'s own capitalisation and share count are read again',
+          (float) $nd_fundamentals['market_cap'] == 1234500000.0
+          && (float) $nd_fundamentals['shares'] == 1000000.0,
+          json_encode([$nd_fundamentals['market_cap'], $nd_fundamentals['shares']]));
+
+    /* A share with no share count: the capitalisation is the provider's,
+       converted from the pence the price is quoted in. */
+    db()->prepare("delete from stock_info where symbol=? and attribute='Derived.sharesOutstanding'")
+        ->execute([$nd]);
+    $nd_head = quote_header($nd, 'XLON');
+    check('and a capitalisation in pence is shown in pounds',
+          $nd_head['market_cap'] !== null && abs($nd_head['market_cap'] - 12345000.0) < 1,
+          json_encode($nd_head['market_cap']));
+
+    foreach (['historical_prices', 'statistics', 'stock_symbols', 'stock_info'] as $nd_table) {
+        db()->prepare("delete from $nd_table where symbol=?")->execute([$nd]);
+    }
+
+    /* The scores are built from a column now, so a measure can be shown and
+       ranked without joining one. Return on capital and operating margin
+       arrived with the report; neither is in the quality score, and the
+       night they were added nobody's ShareRank moved. */
+    check('a new measure is ranked but out of the score until somebody asks',
+          (string) scalar("select calc_rank from screen_indicators where name='roce'") === 'Y'
+          && (string) scalar("select in_score from screen_indicators where name='roce'") === 'N'
+          && (string) scalar("select in_score from screen_indicators where name='operating_margin'") === 'N');
+    check('and everything that was in a score before is still in it',
+          (int) scalar("select count(*) from screen_indicators
+                         where category in (10,12) and calc_rank='Y' and in_score='N'
+                           and name not in ('roce','operating_margin')") === 0);
+    check('the score query reads the column, and does without it where it is missing',
+          strpos(score_membership_sql('si'), "si.in_score='Y'") !== false,
+          score_membership_sql('si'));
+
+    /* The quality panel asks for measures by name rather than by scoring
+       category, so a measure that is shown but not scored is still drawn. */
+    check('the quality panel asks for the measures the house style lists',
+          array_keys(quote_quality_wanted())
+            === ['roe_ttm', 'roce', 'operating_margin', 'piotroski_score', 'altman_z'],
+          implode(', ', array_keys(quote_quality_wanted())));
+    check('and the value panel for the six the mockup shows',
+          array_keys(quote_value_wanted())
+            === ['pe', 'price_book_ratio', 'ev_ebitda', 'price_cash_flow',
+                 'price_sales_ratio', 'div_yield'],
+          implode(', ', array_keys(quote_value_wanted())));
+
+    /* Units. The growth rates and the returns arrive as fractions: 0.122 is
+       12.2% and 1.300 is an EPS that has more than doubled. Printed as they
+       stood they were a hundredth of themselves, on this page and on the
+       screens. */
+    check('a growth rate is printed as the percentage it is',
+          strpos(quote_measure_html('revenue_growth', 0.122), '+12.2%') !== false
+          && strpos(quote_measure_html('earnings_growth', 1.300), '+130.0%') !== false,
+          quote_measure_html('earnings_growth', 1.300));
+    check('and so is a return on equity',
+          strpos(quote_measure_html('roe_ttm', 1.089), '108.9%') !== false,
+          quote_measure_html('roe_ttm', 1.089));
+    check('the screens page prints them the same way',
+          strpos(screen_cell_html('revenue_growth', 0.122), '+12.2%') !== false
+          && strpos(screen_cell_html('6mnth', 14.6), '+14.6%') !== false,
+          screen_cell_html('revenue_growth', 0.122) . ' ' . screen_cell_html('6mnth', 14.6));
+
+    /* The yearly accounts. */
+    check('the lines the panel shows are in the statement catalogue',
+          (int) scalar("select count(*) from financial_statement_items
+                         where name in ('revenue','operating_income','net_income','eps',
+                                        'dividend_per_share','free_cash_flow','net_debt')") === 7,
+          (string) scalar("select group_concat(name) from financial_statement_items"));
+
+    $na = 'NAT';
+    db()->prepare("delete from financial_statement_values where symbol=?")->execute([$na]);
+    $na_periods = [];
+    foreach (['2024-12-31', '2025-12-31', '2026-12-31'] as $na_end) {
+        /* scalar() hands back false where there is no row, not null. */
+        $na_id = scalar("select period_id from financial_statement_periods where end_date=?",
+                        [$na_end]);
+        if (!$na_id) {
+            db()->prepare("insert into financial_statement_periods (end_date,period_name)
+                           values (?,?)")->execute([$na_end, substr($na_end, 0, 4)]);
+            $na_id = db()->lastInsertId();
+        }
+        $na_periods[$na_end] = (int) $na_id;
+    }
+    $na_value = db()->prepare("insert into financial_statement_values (symbol,period_id,item_name,value)
+                               values (?,?,?,?)");
+    foreach ([['2024-12-31', 1000.0, 0.10], ['2025-12-31', 1200.0, 0.12],
+              ['2026-12-31', 1500.0, 0.15]] as [$na_end, $na_revenue, $na_eps]) {
+        $na_value->execute([$na, $na_periods[$na_end], 'revenue', $na_revenue]);
+        $na_value->execute([$na, $na_periods[$na_end], 'eps', $na_eps]);
+    }
+
+    $na_accounts = quote_accounts($na);
+    /* Oldest first, and each period keeps whatever it is called: the
+       seeded ones are "FY2024", a loader writes "2026", and the panel
+       prints the name rather than deciding what a year should be called. */
+    check('five years of accounts come back oldest first, so the years read left to right',
+          count($na_accounts['periods']) === 3
+          && strpos($na_accounts['periods'][0]['label'], '2024') !== false
+          && strpos($na_accounts['periods'][2]['label'], '2026') !== false,
+          json_encode(array_column($na_accounts['periods'], 'label')));
+    check('with one row per line and the figures in the same order',
+          count($na_accounts['rows']) === 2
+          && $na_accounts['rows'][0]['name'] === 'revenue'
+          && $na_accounts['rows'][0]['figures'] === [1000.0, 1200.0, 1500.0],
+          json_encode($na_accounts['rows'][0] ?? null));
+    check('and the growth from the year before the last to the last',
+          abs($na_accounts['rows'][0]['growth'] - 25.0) < 0.001,
+          json_encode($na_accounts['rows'][0]['growth']));
+    check('a company with nothing loaded has no periods, so the panel is not drawn',
+          count(quote_accounts('NO_SUCH_SYMBOL')['periods']) === 0);
+    check('a revenue is printed in millions and an EPS in pence of a share',
+          quote_account_figure('revenue', 16486000000.0) === '16.5bn'
+          && quote_account_figure('eps', 0.19) === '0.19',
+          quote_account_figure('revenue', 16486000000.0) . ' / '
+          . quote_account_figure('eps', 0.19));
+
+    db()->prepare("delete from financial_statement_values where symbol=?")->execute([$na]);
 
     echo "\n--- the as of date is the last trading day, not yesterday ---\n";
 

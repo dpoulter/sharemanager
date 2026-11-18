@@ -466,6 +466,132 @@ def buyback_yield(periods, market_cap, cap=BUYBACK_YIELD_CAP, log=None):
     return yield_
 
 
+# The three annual statements the Financial summary panel is drawn from, and
+# how many years of each. Five is what the panel shows.
+STATEMENTS = (
+    ("income",  "income-statement"),
+    ("cash",    "cash-flow-statement"),
+    ("balance", "balance-sheet-statement"),
+)
+STATEMENT_YEARS = 5
+
+# What each line of the panel is called in a response. More than one spelling
+# per line because the field names are the provider's and have moved before:
+# the first one present wins, and a line with none of them is left out rather
+# than written as a zero. python/fmp_probe.py prints what a response actually
+# carries.
+STATEMENT_FIELDS = {
+    "income": {
+        "revenue":          ("revenue", "totalRevenue"),
+        "operating_income": ("operatingIncome", "operatingProfit", "ebit"),
+        "net_income":       ("netIncome", "netIncomeApplicableToCommonShares"),
+        "eps":              ("eps", "epsBasic", "epsdiluted", "epsDiluted"),
+    },
+    "cash": {
+        "free_cash_flow":   ("freeCashFlow",),
+    },
+    "balance": {
+        "net_debt":         ("netDebt",),
+    },
+}
+
+# Dividend per share is not a line any of the three carries. It is the
+# dividends the company actually paid, out of the cash flow statement, over
+# the share count the income statement reports for the same year - which is
+# the dividend an owner of one share received, and the figure the panel wants.
+DIVIDEND_PAID_FIELDS = ("commonDividendsPaid", "dividendsPaid", "netDividendsPaid",
+                        "commonStockDividendsPaid")
+SHARE_COUNT_FIELDS = ("weightedAverageShsOut", "weightedAverageShsOutDil")
+
+
+def fetch_statements(symbol, years=STATEMENT_YEARS, session=None):
+    """The three annual statements for one symbol: {kind: [periods]}.
+
+    Three calls. The accounts change two to four times a year, so the loader
+    asks only when a company has none stored or when a year has passed since
+    its last reported period - see fetch_fmp_fundamentals.py.
+    """
+    code = fmp_symbol(symbol)
+    out = {}
+    for kind, path in STATEMENTS:
+        rows = _get(path, session=session, symbol=code,
+                    period="annual", limit=int(years))
+        out[kind] = rows if isinstance(rows, list) else []
+    return out
+
+
+def _field(record, names):
+    """The first of these fields the record carries as a number, or None."""
+    if not isinstance(record, dict):
+        return None
+    for name in names:
+        value = record.get(name)
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def statement_rows(statements):
+    """{kind: [periods]} -> [(end_date, item_name, value)].
+
+    Keyed by the date a period ends, because that is what identifies a year
+    across the three statements: the income statement and the balance sheet
+    for the same year carry the same date, and that is how the two halves of
+    one row of the panel find each other.
+    """
+    rows = []
+    dividends = {}
+    shares = {}
+
+    for kind, _path in STATEMENTS:
+        for period in (statements.get(kind) or []):
+            end = _period_end(period)
+            if end is None:
+                continue
+            for item, names in STATEMENT_FIELDS.get(kind, {}).items():
+                value = _field(period, names)
+                if value is not None:
+                    rows.append((end, item, value))
+            if kind == "cash":
+                paid = _field(period, DIVIDEND_PAID_FIELDS)
+                if paid is not None:
+                    #Reported as a negative: money leaving the company.
+                    dividends[end] = abs(paid)
+            if kind == "income":
+                count = _field(period, SHARE_COUNT_FIELDS)
+                if count:
+                    shares[end] = count
+
+    for end, paid in dividends.items():
+        count = shares.get(end)
+        if count:
+            rows.append((end, "dividend_per_share", paid / count))
+
+    return rows
+
+
+def unmapped_fields(flat, wanted):
+    """The provider fields an indicator asks for and the response has not.
+
+    wanted is {indicator: provider_field}. A field name that is wrong - or
+    one the provider has renamed - leaves a column of dashes on the quote
+    page and nothing anywhere to say why, which is how operating_margin sat
+    mapped and empty for a month. Reported by name on the first night
+    instead.
+    """
+    missing = {}
+    for indicator, field in (wanted or {}).items():
+        if not field:
+            continue
+        if field not in flat:
+            missing[indicator] = field
+    return missing
+
+
 def flatten(sections, log=None):
     """{section: record} -> {"Section.field": value} ready for stock_info.
 

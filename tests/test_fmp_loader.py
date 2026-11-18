@@ -158,7 +158,16 @@ def load_loader(query_result):
         return {"Quote": {"symbol": symbol, "price": 1.0}}
 
     fmp.fetch_sections = fetch_sections
-    fmp.flatten = lambda sections: {"Quote.price": 1.0}
+    fmp.flatten = lambda sections, log=None: {"Quote.price": 1.0}
+    # The yearly accounts. Stubbed to nothing here for the same reason as
+    # the currency above: statement_rows() is tested against real response
+    # shapes in test_fmp.py, and this module is about what the loader does
+    # with the rows query() returns.
+    fmp.fetch_statements = lambda symbol, years=5, session=None: {}
+    fmp.statement_rows = lambda statements: []
+    fmp.unmapped_fields = lambda flat, wanted: dict(
+        (name, field) for name, field in (wanted or {}).items()
+        if field and field not in flat)
     fmp.FmpError = type("FmpError", (Exception,), {})
     sys.modules["fmp"] = fmp
 
@@ -269,6 +278,77 @@ with contextlib.redirect_stdout(said):
     loader.store_fx_rates(cursor, FakeConnection(), "2026-11-13")
 check("an all-sterling universe needs no rates and asks for none",
       cursor.writes == [] and "no rates needed" in said.getvalue(), said.getvalue())
+
+print("\n--- the yearly accounts ---")
+
+import datetime                                              # noqa: E402
+
+# When a company's accounts are asked for. Three calls each, so the rule is
+# the difference between 1,050 calls a night and a few hundred.
+today = datetime.date(2026, 11, 18)
+check("a company with no accounts stored is asked for them",
+      loader.statements_due(None, today) is True)
+check("one whose year has not turned is not",
+      loader.statements_due(datetime.date(2026, 3, 31), today) is False)
+check("one whose year has turned is asked again, until the new one arrives",
+      loader.statements_due(datetime.date(2025, 10, 31), today) is True)
+check("and a stored date that is not a date is treated as nothing stored",
+      loader.statements_due("2026-03-31", today) is True)
+
+
+class StatementCursor(object):
+    """Enough of a cursor for store_statements(): periods, then values."""
+
+    def __init__(self, existing=None):
+        self.existing = dict(existing or {})      # end_date -> period_id
+        self.writes = []
+        self.next_id = 100
+        self._last = None
+
+    def execute(self, sql, params=None):
+        self.writes.append((sql, params))
+        if "select period_id from financial_statement_periods" in sql:
+            self._last = (self.existing.get(params[0]),) if params[0] in self.existing else None
+        elif "insert into financial_statement_periods" in sql:
+            self.next_id += 1
+            self.existing[params[0]] = self.next_id
+            self.lastrowid = self.next_id
+            self._last = None
+
+    def fetchone(self):
+        return self._last
+
+
+rows = [(datetime.date(2026, 3, 31), "revenue", 37448000000.0),
+        (datetime.date(2026, 3, 31), "eps", 0.0452),
+        (datetime.date(2025, 3, 31), "revenue", 36717000000.0)]
+
+cursor = StatementCursor()
+written = loader.store_statements(cursor, FakeConnection(), "VOD", rows)
+check("every line is written", written == 3, str(written))
+periods = [params for sql, params in cursor.writes
+           if "insert into financial_statement_periods" in sql]
+check("one period per end date, not one per line",
+      len(periods) == 2 and sorted(str(p[0]) for p in periods)
+      == ["2025-03-31", "2026-03-31"], str(periods))
+check("and the period is named for its year",
+      sorted(p[1] for p in periods) == ["2025", "2026"], str(periods))
+deletes = [params for sql, params in cursor.writes
+           if "delete from financial_statement_values" in sql]
+check("a value replaces rather than adds, so a re-run is not a second copy",
+      len(deletes) == 3 and deletes[0][0] == "VOD", str(deletes[:1]))
+
+# The second night. The periods are there, so none is created again - which
+# is the bug this shape is here to stop: the table has no unique key on the
+# date and would otherwise collect a row per symbol per night.
+cursor = StatementCursor({datetime.date(2026, 3, 31): 101,
+                          datetime.date(2025, 3, 31): 102})
+loader.store_statements(cursor, FakeConnection(), "VOD", rows)
+check("a period that already exists is used rather than inserted again",
+      [params for sql, params in cursor.writes
+       if "insert into financial_statement_periods" in sql] == [])
+check("and nothing is written for a symbol with no lines",
+      loader.store_statements(StatementCursor(), FakeConnection(), "VOD", []) == 0)
 
 print()
 if failed:

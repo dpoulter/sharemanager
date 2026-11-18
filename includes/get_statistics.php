@@ -321,7 +321,7 @@
 
 		   not_fund_sql() leaves investment funds out: no value_score row is
 		   written for a fund at all. See sql/fund_sectors.sql. */
-		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and si.enabled='Y' and si.category=12 and si.calc_rank='Y' ".not_fund_sql('s.symbol').not_sector_excluded_sql('s.symbol','s.indicator')."  group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		$sql      =   "SELECT symbol,  stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and s.exchange=? and si.enabled='Y' and si.category=12 and si.calc_rank='Y' ".score_membership_sql('si')."".not_fund_sql('s.symbol').not_sector_excluded_sql('s.symbol','s.indicator')."  group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/6) as percentile
@@ -345,8 +345,16 @@
 		   one, and a company whose Altman Z is not ranked - every bank and
 		   insurer - would otherwise sum over two where its peers sum over
 		   three and score lower for the gap. si.enabled='Y' and calc_rank='Y'
-		   so a disabled or unranked row cannot drag it either. */
-		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and si.category = 10 and si.enabled='Y' and si.calc_rank='Y' and s.exchange=? ".not_fund_sql('s.symbol').not_sector_excluded_sql('s.symbol','s.indicator')." group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
+		   so a disabled or unranked row cannot drag it either.
+
+		   in_score='Y' is the last of the four. A measure can be shown on
+		   the quote page and ranked against the market without being part
+		   of the score: return on capital and operating margin arrived
+		   with the report of 18 Nov 2026, and adding them to the score
+		   would have moved every share's ShareRank on the same night for
+		   a reason nobody asked for. Dale turns either on with one
+		   update. See sql/quote_report.sql. */
+		$sql      =   "SELECT symbol, stat_rank,round(100-(stat_rank/@rownum*100)) percentile FROM (SELECT case when @prev_value=value then @rownum when @prev_value:=value then @rownum := @rownum + 1 else @rownum:=@rownum+1 end AS stat_rank, value, symbol FROM (select round(sum(if(percentile is null,50,percentile))/count(*)) as value,symbol FROM statistics s, screen_indicators si where s.indicator=si.name and date= ? and si.category = 10 and si.enabled='Y' and si.calc_rank='Y' ".score_membership_sql('si')." and s.exchange=? ".not_fund_sql('s.symbol').not_sector_excluded_sql('s.symbol','s.indicator')." group by symbol) s, (SELECT @rownum :=0,@prev_value := NULL) r  ORDER BY value DESC) as result";
 		
 		/* $sql      =   "
 		SELECT  symbol, round(sum(if(percentile is null,50,percentile))/1) as percentile

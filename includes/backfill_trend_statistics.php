@@ -64,7 +64,7 @@
 	     window gets the return over what history it has, under the same
 	     name - which is the nightly job's behaviour, not an improvement
 	     on it. */
-	$months=['3mnth'=>3,'6mnth'=>6,'12mnth'=>12];
+	$months=['1mnth'=>1,'3mnth'=>3,'6mnth'=>6,'12mnth'=>12];
 
 	$from=isset($argv[1]) ? $argv[1] : null;
 	$to  =isset($argv[2]) ? $argv[2] : null;

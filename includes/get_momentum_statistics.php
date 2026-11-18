@@ -83,6 +83,7 @@
 
 			debug_log("get_momentum_statistics", "Asofdate=".$as_of_date."\r\n");
 
+			indicator_stats($as_of_date,'1mnth',$symbol);
 			indicator_stats($as_of_date,'3mnth',$symbol);
 			indicator_stats($as_of_date,'6mnth',$symbol);
 			indicator_stats($as_of_date,'12mnth',$symbol);

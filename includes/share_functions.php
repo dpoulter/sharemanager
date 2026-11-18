@@ -38,6 +38,31 @@
  * Checked once per process: get_statistics.php asks per indicator and per
  * symbol, and this is information_schema, not a cheap lookup.
  */
+/**
+ * "and si.in_score='Y'", or nothing where that column does not exist yet.
+ *
+ * Membership of the value and quality scores is a column rather than
+ * "everything in the category that is ranked", so a measure can be shown on
+ * the quote page and ranked against the market without moving every share's
+ * ShareRank the night it arrives. The column comes with
+ * sql/quote_report.sql; until that has been applied the scores are built the
+ * way they were, which is what every row in a database without the column
+ * would say anyway.
+ */
+function score_membership_sql($alias = 'si') {
+
+	static $ready = null;
+
+	if ($ready === null) {
+		$column = query("select count(*) n from information_schema.columns
+		                  where table_schema=database() and table_name='screen_indicators'
+		                    and column_name='in_score'");
+		$ready = count($column) && (int) $column[0]['n'] === 1;
+	}
+
+	return $ready ? " and " . $alias . ".in_score='Y' " : " ";
+}
+
 function fund_config_ready() {
 
 	static $ready = null;
@@ -802,6 +827,14 @@ function time_to_decimal($time) {
 			}	
 	}
 	
+	/* One month, which the quote page shows beside three, six and twelve.
+	   The same calculation and the same rank: a return with no rank is a
+	   number with nothing to read it against, and the page used to work
+	   this one out from the closes for want of a stored indicator. */
+	function calc_momentum_1mnth($asOfDate,$symbol){
+		calc_momentum($asOfDate,1,$symbol);
+	}
+
 	//Calculate 3mnth Momentum
     function calc_momentum_3mnth($asOfDate,$symbol){
 		debug_log("calc_momentum_3mnth","Call calc_momentum");
@@ -926,45 +959,14 @@ function time_to_decimal($time) {
     			//update price momentum
 				 //write_log("calc_momentum", "update price momentum");
 			    //write_log("calc_momentum", "symbol=$symbol, date=$max_date, indicator=$mnth");
-			if ($mnth==3){
-    				//$rows=query("select 3mnth from price_momentum where symbol=?",$symbol);
-					$rows=query("select 1 from statistics where symbol=? and indicator='3mnth' and date=? and exchange=?",$symbol,$asOfDate,session_exchange());
-				if (count($rows)==0){
-					//query("insert into price_momentum (symbol, 3mnth) values (?,?)",$symbol,$perc_change);
-					query("insert into statistics (symbol, indicator, value,date,exchange) values (?,?,?,?,?)",$symbol,"3mnth",$perc_change,$asOfDate,session_exchange());
-					
-				}
-				else {
-					//query("update price_momentum set 3mnth=? where symbol=?",$perc_change, $symbol);
-					query("update statistics set value=? where symbol=? and indicator='3mnth' and date=? and exchange=? ",$perc_change, $symbol,$asOfDate,session_exchange());
-				}
-			}
-			elseif ($mnth==6){
-				//$rows=query("select 6mnth from price_momentum where symbol=?",$symbol);
-				  $rows=query("select 1 from statistics where symbol=? and indicator='6mnth' and date=? and exchange=?",$symbol,$asOfDate,session_exchange());
-				  if (count($rows)==0){
-                                        //query("insert into price_momentum (symbol, 6mnth) values (?,?)",$symbol,$perc_change);
-										query("insert into statistics (symbol, indicator, value, date, exchange) values (?,?,?,?,?)",$symbol,"6mnth",$perc_change,$asOfDate,session_exchange());
-                                }
-                                else {
-                                        //query("update price_momentum set 6mnth=? where symbol=?",$perc_change, $symbol);
-										query("update statistics set value=? where symbol=? and indicator='6mnth' and date=? and exchange=?",$perc_change, $symbol,$asOfDate,session_exchange());
-                                }
-			}
-			elseif ($mnth==12){
-                                //$rows=query("select 12mnth from price_momentum where symbol=?",$symbol);
-								$rows=query("select 1 from statistics where symbol=? and indicator='12mnth' and date=? and exchange=?",$symbol,$asOfDate,session_exchange());
-								//write_log("calc_momentum", "No of rows=".count($rows));
-                                if (count($rows)==0){
-                                       // query("insert into price_momentum (symbol, 12mnth) values (?,?)",$symbol,$perc_change);
-									   			//write_log("calc_momentum", "insert into statistics (symbol, indicator, value,date) values ($symbol,12mnth,$perc_change,$asOfDate)");
-									   query("insert into statistics (symbol, indicator, value,date,exchange) values (?,?,?,?,?)",$symbol,"12mnth",$perc_change,$asOfDate,session_exchange());
-                                }
-                                else {
-                                        //query("update price_momentum set 12mnth=? where symbol=?",$perc_change, $symbol);
-										query("update statistics set value=? where symbol=? and indicator='12mnth' and date=? and exchange=?",$perc_change, $symbol,$asOfDate,session_exchange());
-                                }
-                        }
+			/* One row, whatever the window. This was three copies of the
+			   same six lines, one each for 3, 6 and 12, chained on the
+			   month count - so calling it with any other window worked
+			   out the return and then wrote nothing at all, which is
+			   what a one month return did on the night it was added.
+			   The indicator is named after the window, which is what
+			   the three copies did between them. */
+			upsert_statistic($symbol,$mnth."mnth",$asOfDate,$perc_change);
 	 		}
 	 		
 	 	}
@@ -1015,6 +1017,55 @@ function time_to_decimal($time) {
 	//200 day simple moving average
 	function ma200 ($asOfDate,$symbol){
 		calc_moving_avg("ma200",200,$asOfDate,$symbol);
+	}
+
+	/* The highest and lowest close of the year ending at the as-of date.
+	 *
+	 * The quote page scanned a year of historical_prices on every view to
+	 * find these - a hundred thousand rows a page on this universe - and
+	 * the figures do not change between nightly runs. Stored in pence,
+	 * like close_price, ma50 and ma200.
+	 */
+	function high_52w ($asOfDate,$symbol){
+		calc_52w_extreme("high_52w","max",$asOfDate,$symbol);
+	}
+
+	function low_52w ($asOfDate,$symbol){
+		calc_52w_extreme("low_52w","min",$asOfDate,$symbol);
+	}
+
+	/**
+	 * One end of the 52 week range, written to statistics.
+	 *
+	 * A share with no prices in the year gets no row rather than a zero,
+	 * and any stale value is cleared: a 52 week low of nought reads as a
+	 * share that went to zero rather than as a share nobody has priced.
+	 */
+	function calc_52w_extreme($indicator,$which,$asOfDate,$symbol){
+
+		$aggregate = ($which === 'min') ? 'min' : 'max';
+
+		if (isset($symbol))
+			$symbols = query("select symbol from stock_symbols where enabled='Y' and symbol=? and exchange=?",$symbol,session_exchange());
+		else
+			$symbols = query("select symbol from stock_symbols where enabled='Y' and exchange=? order by symbol",session_exchange());
+
+		foreach ($symbols as $row){
+
+			$symbol=$row['symbol'];
+
+			$rows=query("select ".$aggregate."(price) value from historical_prices
+			              where symbol=? and exchange=? and price is not null
+			                and date > date_sub(?, interval 1 year) and date <= ?",
+			            $symbol,session_exchange(),$asOfDate,$asOfDate);
+
+			if (!count($rows)||$rows[0]['value']===null){
+				clear_statistic($symbol,$indicator,$asOfDate);
+				continue;
+			}
+
+			upsert_statistic($symbol,$indicator,$asOfDate,(float)$rows[0]["value"]);
+		}
 	}
 
 	/**

@@ -448,6 +448,87 @@ check("market cap is normalised on the quote currency, not the reporting one",
       fmp.normalise_market_cap(100.0, "GBp") == 10000.0
       and fmp.normalise_market_cap(100.0, "USD") == 100.0)
 
+print("\n--- the yearly accounts ---")
+
+# Annual statements, trimmed to the fields the panel reads. Real shapes: the
+# dividends paid are negative because the money left the company, and the
+# three statements carry the same end date for the same year, which is what
+# ties a row of the panel together.
+INCOME = [
+    {"date": "2026-03-31", "symbol": "VOD.L", "reportedCurrency": "EUR",
+     "revenue": 37448000000, "operatingIncome": 3600000000,
+     "netIncome": 1140000000, "eps": 0.0452, "weightedAverageShsOut": 25200000000},
+    {"date": "2025-03-31", "symbol": "VOD.L", "reportedCurrency": "EUR",
+     "revenue": 36717000000, "operatingIncome": 3200000000,
+     "netIncome": 1050000000, "eps": 0.0390, "weightedAverageShsOut": 26900000000},
+]
+CASH = [
+    {"date": "2026-03-31", "freeCashFlow": 2500000000, "commonDividendsPaid": -1260000000},
+    {"date": "2025-03-31", "freeCashFlow": 2100000000, "commonDividendsPaid": -1345000000},
+]
+BALANCE = [
+    {"date": "2026-03-31", "netDebt": 33200000000},
+    {"date": "2025-03-31", "netDebt": 36200000000},
+]
+
+rows = fmp.statement_rows({"income": INCOME, "cash": CASH, "balance": BALANCE})
+by_year = {}
+for end, item, value in rows:
+    by_year.setdefault(str(end), {})[item] = value
+
+check("every line of the panel comes out of the three statements",
+      sorted(by_year["2026-03-31"]) == ["dividend_per_share", "eps", "free_cash_flow",
+                                        "net_debt", "net_income", "operating_income",
+                                        "revenue"],
+      str(sorted(by_year.get("2026-03-31", {}))))
+check("and both years do",
+      len(by_year) == 2 and by_year["2025-03-31"]["revenue"] == 36717000000,
+      str(sorted(by_year)))
+check("the figures are the provider's own",
+      by_year["2026-03-31"]["operating_income"] == 3600000000
+      and by_year["2026-03-31"]["net_debt"] == 33200000000)
+
+# Dividend per share is not a line any statement carries: it is what was
+# paid over the shares it was paid on, and what was paid is negative.
+check("the dividend per share is the cash paid over the share count",
+      abs(by_year["2026-03-31"]["dividend_per_share"] - (1260000000 / 25200000000)) < 1e-12,
+      str(by_year["2026-03-31"]["dividend_per_share"]))
+check("and it is positive, whichever sign the statement used",
+      by_year["2025-03-31"]["dividend_per_share"] > 0)
+
+check("a year with no share count has no dividend per share rather than a wrong one",
+      "dividend_per_share" not in [item for end, item, _v in
+                                   fmp.statement_rows({"income": [{"date": "2024-03-31",
+                                                                   "revenue": 1}],
+                                                       "cash": [{"date": "2024-03-31",
+                                                                 "commonDividendsPaid": -5}],
+                                                       "balance": []})
+                                   if str(end) == "2024-03-31"])
+check("a period with no date at all is skipped rather than keyed on nothing",
+      fmp.statement_rows({"income": [{"revenue": 1}], "cash": [], "balance": []}) == [])
+check("and a symbol with no statements yields nothing",
+      fmp.statement_rows({"income": [], "cash": [], "balance": []}) == [])
+
+# A field the provider renamed. The panel reads one line per name, and the
+# first spelling present wins.
+alt = fmp.statement_rows({"income": [{"date": "2026-03-31", "totalRevenue": 42,
+                                      "ebit": 7}],
+                          "cash": [], "balance": []})
+check("a line is found under either of the names it goes by",
+      sorted((item, value) for _e, item, value in alt)
+      == [("operating_income", 7.0), ("revenue", 42.0)],
+      str(alt))
+
+print("\n--- an indicator mapped to a field nothing sends ---")
+flat_sample = {"Ratios.dividendYieldTTM": 0.03, "KeyMetrics.evToEBITDATTM": 9.1}
+missing = fmp.unmapped_fields(flat_sample,
+                              {"div_yield": "Ratios.dividendYieldTTM",
+                               "ev_ebitda": "KeyMetrics.evToEBITDATTM",
+                               "roce": "KeyMetrics.returnOnCapitalEmployedTTM",
+                               "1mnth": None})
+check("the one the response did not carry is named, and nothing else is",
+      missing == {"roce": "KeyMetrics.returnOnCapitalEmployedTTM"}, str(missing))
+
 print("\n--- a symbol the provider has nothing for ---")
 empty = fmp.flatten({"Quote": {}, "Profile": {}, "KeyMetrics": {}, "Ratios": {}})
 check("yields nothing rather than raising", empty == {})

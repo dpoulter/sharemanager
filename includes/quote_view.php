@@ -63,15 +63,36 @@
 			}
 		}
 
-		/* The 52 week range, from the stored history rather than from the
-		   provider's Technicals block, which this plan does not return. A
-		   year of closes is a year of closes. */
+		/* The 52 week range. The nightly job stores both ends as
+		   indicators (sql/quote_report.sql), which is a row each rather
+		   than a scan of a year of closes on every view; a database where
+		   that job has not run yet falls back to the scan, so the page
+		   never loses the figure waiting for a migration. */
 		if ($head['as_of'] !== null) {
-			$range = query("select min(price) low, max(price) high
+
+			$ends = query("select s.indicator, s.value
+			                 from statistics s
+			                 join (select indicator, max(date) d from statistics
+			                        where symbol=? and exchange=?
+			                          and indicator in ('high_52w','low_52w')
+			                        group by indicator) latest
+			                   on latest.indicator=s.indicator and latest.d=s.date
+			                where s.symbol=? and s.exchange=?",
+			              $symbol, $exchange, $symbol, $exchange);
+
+			$stored = [];
+			foreach ($ends as $end) {
+				if ($end['value'] !== null) { $stored[(string) $end['indicator']] = (float) $end['value']; }
+			}
+
+			$range = (isset($stored['high_52w']) && isset($stored['low_52w']))
+			       ? [['low' => $stored['low_52w'], 'high' => $stored['high_52w']]]
+			       : query("select min(price) low, max(price) high
 			                  from historical_prices
 			                 where symbol=? and exchange=? and price is not null
 			                   and date > date_sub(?, interval 1 year) and date <= ?",
 			               $symbol, $exchange, $head['as_of'], $head['as_of']);
+
 			if (count($range) && $range[0]['low'] !== null) {
 				$head['low_52w']  = (float) $range[0]['low'];
 				$head['high_52w'] = (float) $range[0]['high'];
@@ -104,7 +125,23 @@
 			$head['market_cap'] = $shares * $head['price'] / 100;
 		}
 		else if (isset($fundamentals['market_cap']) && is_numeric($fundamentals['market_cap'])) {
-			$head['market_cap'] = (float) $fundamentals['market_cap'];
+			/* The provider's own figure, in the unit the price is quoted
+			   in: python/fmp.py normalises it so the two can be compared,
+			   which for a London line means pence. A capitalisation in
+			   pence is a number nobody has ever wanted, so it comes back
+			   to pounds here - and a share quoted in pounds is already
+			   there. */
+			$cap = (float) $fundamentals['market_cap'];
+			$quote_ccy = query("select quote_ccy from stock_symbols where symbol=? and exchange=?",
+			                   $symbol, $exchange);
+			/* "GBp" and "GBP" are the same three letters a hundred times
+			   apart, so the case is the data - see sql/strategy_prices.sql.
+			   A London line with nothing stored is pence, which is what
+			   every one of them has turned out to be. */
+			$pence = !count($quote_ccy)
+			      || trim((string) $quote_ccy[0]['quote_ccy']) === ''
+			      || in_array(trim((string) $quote_ccy[0]['quote_ccy']), ['GBp', 'GBX'], true);
+			$head['market_cap'] = $pence ? $cap / 100 : $cap;
 		}
 
 		return $head;
@@ -426,38 +463,65 @@
 	}
 
 	/**
-	 * Named indicators out of share_lookup()'s structure, in the order the
-	 * panel wants them rather than the order the database returns them.
+	 * The measures a panel shows, by name, each against its two medians.
 	 *
-	 * An indicator the provider has not supplied for this share is kept,
-	 * with nulls: a Value panel of four rows where another share has six
-	 * reads as a different panel, and the dash is the honest answer.
+	 * Read straight from statistics rather than out of share_lookup(),
+	 * for two reasons. share_lookup() groups by scoring category, so a
+	 * measure that is shown but not scored - return on capital, say -
+	 * appears in no category and could not be drawn at all; and it joins
+	 * its medians, so an indicator with no sector median stored drops out
+	 * of the page entirely rather than showing its own figure with a dash
+	 * beside it. A panel of four rows where another share has six reads
+	 * as a different panel.
+	 *
+	 * Returns one row per name asked for, in that order, with nulls where
+	 * there is nothing: the dash is the honest answer and the row is part
+	 * of the page's shape.
 	 */
-	function quote_panel_rows($quote, $wanted) {
+	function quote_panel_rows($symbol, $wanted, $exchange = null) {
+
+		$exchange = $exchange === null ? session_exchange() : $exchange;
+		$names    = array_keys($wanted);
+		if (!count($names)) { return []; }
+
+		$marks = implode(',', array_fill(0, count($names), '?'));
+		$args  = array_merge([$symbol, $exchange], $names, [$symbol, $exchange]);
 
 		$found = [];
-		if (is_array($quote)) {
-			foreach ($quote as $category) {
-				foreach ($category['indicators'] as $indicator) {
-					$found[(string) $indicator['name']] = $indicator;
-				}
-			}
+		foreach (query(
+			"select s.indicator, s.value, s.percentile, s.date,
+			        (select a.value from statistic_averages a
+			          where a.indicator=s.indicator and a.date=s.date and a.type='MEDIAN'
+			            and a.category='SECTOR' and a.sector=ss.sector
+			            and (a.exchange=s.exchange or a.exchange is null) limit 1) sector_value,
+			        (select a.value from statistic_averages a
+			          where a.indicator=s.indicator and a.date=s.date and a.type='MEDIAN'
+			            and a.category='MARKET'
+			            and (a.exchange=s.exchange or a.exchange is null) limit 1) market_value
+			   from statistics s
+			   join (select indicator, max(date) d from statistics
+			          where symbol=? and exchange=? and indicator in (" . $marks . ")
+			          group by indicator) latest
+			     on latest.indicator=s.indicator and latest.d=s.date
+			   join stock_symbols ss on ss.symbol=s.symbol and ss.exchange=s.exchange
+			  where s.symbol=? and s.exchange=?", ...$args) as $row) {
+			$found[(string) $row['indicator']] = $row;
 		}
 
 		$rows = [];
 		foreach ($wanted as $name => $label) {
-			$indicator = isset($found[$name]) ? $found[$name] : null;
+			$row = isset($found[$name]) ? $found[$name] : null;
 			$rows[] = [
-				'name'        => $name,
-				'label'       => $label,
-				'value'       => ($indicator === null || !is_numeric($indicator['value']))
-				               ? null : (float) $indicator['value'],
-				'sector'      => ($indicator === null || !is_numeric($indicator['sector_average']))
-				               ? null : (float) $indicator['sector_average'],
-				'market'      => ($indicator === null || !is_numeric($indicator['market_average']))
-				               ? null : (float) $indicator['market_average'],
-				'percentile'  => ($indicator === null || !is_numeric($indicator['percentile']))
-				               ? null : (float) $indicator['percentile'],
+				'name'       => $name,
+				'label'      => $label,
+				'value'      => ($row === null || $row['value'] === null)
+				              ? null : (float) $row['value'],
+				'sector'     => ($row === null || $row['sector_value'] === null)
+				              ? null : (float) $row['sector_value'],
+				'market'     => ($row === null || $row['market_value'] === null)
+				              ? null : (float) $row['market_value'],
+				'percentile' => ($row === null || $row['percentile'] === null)
+				              ? null : (float) $row['percentile'],
 			];
 		}
 
@@ -468,12 +532,14 @@
 	function quote_value_wanted() {
 		return ['pe' => 'P/E', 'price_book_ratio' => 'Price to book',
 		        'ev_ebitda' => 'EV / EBITDA', 'price_cash_flow' => 'Price to cash flow',
-		        'price_sales' => 'Price to sales', 'div_yield' => 'Dividend yield'];
+		        'price_sales_ratio' => 'Price to sales', 'div_yield' => 'Dividend yield'];
 	}
 
-	/** And the Quality panel's. */
+	/** And the Quality panel's. roce and operating_margin arrive with
+	    sql/quote_report.sql; a database without them shows two dashes
+	    rather than two fewer rows. */
 	function quote_quality_wanted() {
-		return ['roe' => 'Return on equity', 'roce' => 'Return on capital',
+		return ['roe_ttm' => 'Return on equity', 'roce' => 'Return on capital',
 		        'operating_margin' => 'Operating margin',
 		        'piotroski_score' => 'Piotroski F-Score', 'altman_z' => 'Altman Z-Score'];
 	}
@@ -482,6 +548,111 @@
 	function quote_growth_wanted() {
 		return ['revenue_growth' => 'Revenue growth', 'earnings_growth' => 'Earnings growth',
 		        'buyback_yield' => 'Buyback yield', 'shareholder_yield' => 'Shareholder yield'];
+	}
+
+	/**
+	 * Five years of accounts: the periods, and the lines the panel shows.
+	 *
+	 * Returns ['periods' => [...oldest first...], 'rows' => [...]], or
+	 * periods empty where nothing has been loaded for this company - the
+	 * panel is not drawn at all then, because an empty table of five
+	 * years reads as a company with no accounts rather than as a loader
+	 * that has not run.
+	 *
+	 * Each row carries the figures in the same order as the periods and
+	 * the growth from the year before the last to the last, which is the
+	 * comparison a reader makes anyway.
+	 */
+	function quote_accounts($symbol, $years = 5) {
+
+		$out = ['periods' => [], 'rows' => []];
+
+		$periods = query("select fsp.period_id, fsp.end_date, fsp.period_name
+		                    from financial_statement_values fsv
+		                    join financial_statement_periods fsp
+		                      on fsp.period_id = fsv.period_id
+		                   where fsv.symbol=?
+		                   group by fsp.period_id, fsp.end_date, fsp.period_name
+		                   order by fsp.end_date desc limit " . max(1, min(10, (int) $years)),
+		                 $symbol);
+
+		if (!count($periods)) { return $out; }
+
+		//Oldest first: a row of years reads left to right.
+		$periods = array_reverse($periods);
+		foreach ($periods as $period) {
+			$out['periods'][] = ['period_id' => (int) $period['period_id'],
+			                     'end_date'  => (string) $period['end_date'],
+			                     'label'     => ($period['period_name'] === null
+			                                     || trim((string) $period['period_name']) === '')
+			                                  ? date('Y', strtotime((string) $period['end_date']))
+			                                  : (string) $period['period_name']];
+		}
+
+		$ids   = array_column($out['periods'], 'period_id');
+		$marks = implode(',', array_fill(0, count($ids), '?'));
+
+		$values = [];
+		foreach (query("select item_name, period_id, value
+		                  from financial_statement_values
+		                 where symbol=? and period_id in (" . $marks . ")",
+		               ...array_merge([$symbol], $ids)) as $row) {
+			$values[(string) $row['item_name']][(int) $row['period_id']]
+				= ($row['value'] === null) ? null : (float) $row['value'];
+		}
+
+		/* The lines, in the catalogue's own order. The catalogue is the
+		   list of what a statement holds; this is the handful of it a
+		   reader checks first. */
+		$wanted = ['revenue' => 'Revenue', 'operating_income' => 'Operating profit',
+		           'net_income' => 'Net profit', 'eps' => 'EPS',
+		           'dividend_per_share' => 'Dividend per share',
+		           'free_cash_flow' => 'Free cash flow', 'net_debt' => 'Net debt'];
+
+		foreach ($wanted as $name => $label) {
+
+			if (!isset($values[$name])) { continue; }
+
+			$figures = [];
+			foreach ($ids as $id) {
+				$figures[] = isset($values[$name][$id]) ? $values[$name][$id] : null;
+			}
+
+			/* Year on year, last against the one before. Not shown where
+			   the earlier year was nought or negative: a growth rate
+			   measured from a loss is a number with no meaning. */
+			$growth = null;
+			$count  = count($figures);
+			if ($count > 1 && $figures[$count - 1] !== null
+			    && $figures[$count - 2] !== null && $figures[$count - 2] > 0) {
+				$growth = (($figures[$count - 1] / $figures[$count - 2]) - 1) * 100;
+			}
+
+			$out['rows'][] = ['name' => $name, 'label' => $label,
+			                  'figures' => $figures, 'growth' => $growth];
+		}
+
+		return $out;
+	}
+
+	/**
+	 * One figure from the accounts.
+	 *
+	 * A revenue and an earnings per share are both numbers out of the
+	 * same table and nothing else about them is alike: one is billions
+	 * and the other is pennies, and one formatter for both prints
+	 * "16,486,000,000.00" beside "0.19".
+	 */
+	function quote_account_figure($name, $value) {
+
+		if (view_blank($value)) { return VIEW_DASH; }
+
+		//Per share, as reported: a few units, to two places.
+		if (in_array($name, ['eps', 'dividend_per_share'], true)) {
+			return number_format((float) $value, 2);
+		}
+
+		return fmt_money_compact((float) $value, '');
 	}
 
 	/**
@@ -502,8 +673,14 @@
 		if (in_array($name, ['div_yield', 'buyback_yield', 'shareholder_yield'], true)) {
 			return htmlspecialchars(fmt_yield((float) $value * 100), ENT_QUOTES);
 		}
+		/* Fractions, every one of them: FMP reports a growth rate as 0.122
+		   for 12.2% and a return on equity as 1.089 for 108.9%, and the
+		   loader stores what it is sent. Printed as they stand they come
+		   out a hundred times too small - "+1.3%" for an EPS that
+		   more than doubled - which is the unit mistake this application
+		   has made before with pence. */
 		if (in_array($name, ['revenue_growth', 'earnings_growth'], true)) {
-			return move_pct_html($value);
+			return move_pct_html((float) $value * 100);
 		}
 		if (substr($name, 0, 15) === 'news_sentiment_') {
 			return htmlspecialchars(fmt_sentiment($value), ENT_QUOTES);
@@ -511,8 +688,8 @@
 		if (substr($name, 0, 11) === 'news_count_') {
 			return htmlspecialchars(fmt_quantity($value), ENT_QUOTES);
 		}
-		if (in_array($name, ['roe', 'roce', 'operating_margin'], true)) {
-			return htmlspecialchars(fmt_pct((float) $value), ENT_QUOTES);
+		if (in_array($name, ['roe', 'roe_ttm', 'roce', 'operating_margin'], true)) {
+			return htmlspecialchars(fmt_pct((float) $value * 100), ENT_QUOTES);
 		}
 		if ($name === 'piotroski_score') {
 			return htmlspecialchars(fmt_score($value) . ' of 9', ENT_QUOTES);
@@ -537,9 +714,9 @@
 		if (in_array($name, ['div_yield', 'buyback_yield', 'shareholder_yield'], true)) {
 			return htmlspecialchars(fmt_yield((float) $value * 100), ENT_QUOTES);
 		}
-		if (in_array($name, ['revenue_growth', 'earnings_growth', 'roe', 'roce',
-		                     'operating_margin'], true)) {
-			return htmlspecialchars(fmt_pct((float) $value), ENT_QUOTES);
+		if (in_array($name, ['revenue_growth', 'earnings_growth', 'roe', 'roe_ttm',
+		                     'roce', 'operating_margin'], true)) {
+			return htmlspecialchars(fmt_pct((float) $value * 100), ENT_QUOTES);
 		}
 		return htmlspecialchars(fmt_ratio($value, 1), ENT_QUOTES);
 	}
