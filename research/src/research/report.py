@@ -99,6 +99,9 @@ def write_report(cfg: Config, result: dict, trials: int, period_label: str | Non
                     "by year. A company with a missing field is skipped, never scored as zero.</p>"
                     f"<table><tr><th>Year</th>{head}</tr>{body}</table>")
     caveats = list(cfg.get("caveats", []))
+    caveats.insert(0, "Price basis: " + ("raw closes, no dividends credited (as the N100 prices); benchmarks on the same basis."
+                                        if rec.get("price_basis") == "raw" else
+                                        "dividend-adjusted closes (total return); benchmarks on the same basis."))
     if period_label:
         caveats.insert(0, period_label)
     if rec.get("touches_holdout"):
@@ -121,7 +124,7 @@ code{{font-size:12px;word-break:break-all}}.mut{{color:var(--mut)}}
 </style></head><body>
 <h1>{html.escape(rec['strategy'])}</h1>
 <p class="mut">Run {rec['run_id']} · {rec['start']} to {rec['end']} · universe {html.escape(str(rec['universe']))} ·
-commit {rec['git_commit']} · strategy file {rec['strategy_hash']} · costs checked {rec['costs_checked_on']}</p>
+price basis {rec.get('price_basis', 'adjusted')} · commit {rec['git_commit']} · strategy file {rec['strategy_hash']} · costs checked {rec['costs_checked_on']}</p>
 <div class="caveats"><ul>{''.join(f'<li>{html.escape(c)}</li>' for c in caveats)}</ul></div>
 <h2>Value against the benchmarks</h2>{chart}
 <h2>Results</h2><table>{''.join(f'<tr><td>{k}</td><td>{v}</td></tr>' for k, v in rows)}</table>

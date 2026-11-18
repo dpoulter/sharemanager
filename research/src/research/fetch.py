@@ -437,6 +437,15 @@ def consolidate(data: Path) -> None:
         p[["symbol", "date", "close", "adj_close", "volume"]].to_parquet(data / "prices.parquet")
     m = gather("market_cap")
     if len(m):
+        # Pence read as pounds for part of a series: rescale here, at the source,
+        # so nothing downstream sees a cap 100 times too big.
+        from .clean import fix_cap_steps
+        m["date"] = pd.to_datetime(m["date"])
+        m, rescaled = fix_cap_steps(m[["symbol", "date", "market_cap"]])
+        rescaled.to_parquet(data / "cap_rescaled.parquet")
+        if len(rescaled):
+            log.info("market cap: %d symbols, %d rows rescaled by 100 (pence read as pounds)",
+                     len(rescaled), int(rescaled["rows"].sum()))
         m.to_parquet(data / "market_cap.parquet")
     d = gather("dividends")
     if len(d):

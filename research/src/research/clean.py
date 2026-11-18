@@ -59,3 +59,56 @@ def clean_prices(data: Path) -> pd.DataFrame:
     ticks = find_bad_ticks(pd.read_parquet(p, columns=["symbol", "date", "close"]))
     ticks.to_parquet(data / "bad_ticks.parquet")
     return ticks
+
+
+# ---------------------------------------------------------------- market caps 100x out
+STEP_LO, STEP_HI = 70.0, 140.0
+
+
+def cap_step_factors(cap: np.ndarray) -> np.ndarray:
+    """Multipliers that line every segment of one cap series up with its latest level.
+
+    A one-day ratio between 70 and 140 (or its inverse) is pence read as pounds,
+    not a market move. Walking back from the latest value, each such step
+    rescales everything before it by 100, so the latest level is taken as right.
+    """
+    f = np.ones(len(cap))
+    idx = np.where(np.isfinite(cap) & (cap > 0))[0]
+    if len(idx) < 2:
+        return f
+    v = cap[idx]
+    r = v[1:] / v[:-1]                       # ratio at each step, later / earlier
+    step = np.ones(len(v))
+    up = (r >= STEP_LO) & (r <= STEP_HI)     # earlier 100x too small
+    down = (r >= 1 / STEP_HI) & (r <= 1 / STEP_LO)   # earlier 100x too big
+    step[1:][up] = 100.0
+    step[1:][down] = 0.01
+    # factor for position k = product of steps after k
+    cum = np.cumprod(step[::-1])[::-1]
+    fk = np.r_[cum[1:], 1.0]
+    f[idx] = fk
+    return f
+
+
+def fix_cap_steps(caps: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """caps: symbol, date, market_cap. Returns the corrected frame and one row per rescaled run."""
+    caps = caps.sort_values(["symbol", "date"]).reset_index(drop=True)
+    out = caps["market_cap"].to_numpy(dtype=float).copy()
+    log_rows = []
+    for sym, g in caps.groupby("symbol", sort=False):
+        ix = g.index.to_numpy()
+        f = cap_step_factors(out[ix])
+        if (f != 1).any():
+            changed = f != 1
+            before = out[ix][changed]
+            out[ix] = out[ix] * f
+            dates = g["date"].to_numpy()[changed]
+            log_rows.append({"symbol": sym, "rows": int(changed.sum()), "from": pd.Timestamp(dates.min()),
+                             "to": pd.Timestamp(dates.max()), "factor_min": float(f[changed].min()),
+                             "factor_max": float(f[changed].max()),
+                             "largest_before": float(np.nanmax(before)),
+                             "largest_after": float(np.nanmax(out[ix][changed])),
+                             "correction": float(np.nanmax(np.abs(before - out[ix][changed])))})
+    fixed = caps.copy()
+    fixed["market_cap"] = out
+    return fixed, pd.DataFrame(log_rows)

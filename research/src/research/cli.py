@@ -91,8 +91,21 @@ def cmd_universe(cfg, a):
                  0 if trust_caps is None else trust_caps.shape[1])
     uni = build_universe(m, u["size"], u["large_size"], u["start"], include_aim, eligible=elig,
                          trust_caps=trust_caps)
+    counted, top_trusts = dict(uni.attrs.get("trusts_counted", {})), dict(uni.attrs.get("trusts_top", {}))
+    uni.attrs = {}
     uni.to_parquet(cfg.data_dir / "universe.parquet")
     last = uni[uni["date"] == uni["date"].max()]
+    if counted:
+        latest_d = max(counted)
+        n_tr = counted[latest_d]
+        names = m.master.get("name", pd.Series(dtype=object))
+        rep["trusts_counted_in_top_latest"] = n_tr
+        rep["trusts_counted_by_rebuild"] = {str(k.date()): v for k, v in counted.items()}
+        rep["trusts_top_20_latest"] = {s: str(names.get(s)) for s in top_trusts.get(latest_d, [])}
+        print(f"trusts counted inside the top {u['size']} on {latest_d.date()}: {n_tr} (live index: 92)")
+        if not 80 <= n_tr <= 100:
+            for s, nm in rep["trusts_top_20_latest"].items():
+                print(f"  trust counted: {s} {nm}")
     rep["universe_basis_latest"] = last["basis"].value_counts().to_dict()
     stp = cfg.data_dir / "lse_status.parquet"
     if stp.exists():
@@ -105,8 +118,17 @@ def cmd_universe(cfg, a):
         m_names = m.master.get("name", pd.Series(dtype=object))
         aimish = [s for s in last["symbol"] if s in st_last.index and str(st_last.at[s, "market"]) == "AIM"]
         rep["universe_members_latest_on_aim (should be none)"] = aimish
+        import difflib
+        from .lse import norm_name
+        lm = cfg.data_dir / "lse_matched.parquet"
+        latest_names = []
+        if lm.exists():
+            mt = pd.read_parquet(lm)
+            latest_names = sorted(set(mt.loc[mt["month"] == mt["month"].max(), "norm"].dropna()))
         rep["universe_members_latest_without_lse_match"] = {
-            s: str(m_names.get(s)) for s in last.loc[last["basis"] != "LSE list", "symbol"]}
+            s: {"fmp_name": str(m_names.get(s)), "normalised": norm_name(m_names.get(s)),
+                "closest_lse_names": difflib.get_close_matches(norm_name(m_names.get(s)), latest_names, n=3, cutoff=0.6)}
+            for s in last.loc[last["basis"] != "LSE list", "symbol"]}
     rep["universe_members_latest_not_in_lse_lists"] = sorted(last.loc[last["basis"] == "ISIN fallback", "symbol"])
     gaps = cap_check(uni, cfg.data_dir)
     if len(gaps):
@@ -231,6 +253,16 @@ def cmd_validate(cfg, a):
     orders = Path(a.orders) if a.orders else v / "n100_run9_orders.csv"
     values = Path(a.values) if a.values else v / "n100_run9_values.csv"
     rep = run9(Workspace(cfg), uni, orders if orders.exists() else None, values if values.exists() else None)
+    pct = lambda x: "-" if x is None else f"{x * 100:+.2f}%"
+    print(f"| | N100 run 9 | Research engine ({rep.get('price_basis')}) |\n|---|---|---|")
+    print(f"| Total return | {pct(rep.get('n100_total_return'))} | {pct(rep.get('ours_total_return'))} |")
+    print(f"| Fills | {rep.get('n100_fills', '-')} | {rep.get('ours_fills')} |")
+    print(f"| First value | {rep.get('n100_first_value', '-')} | {rep.get('ours_first_value', '-')} |")
+    print(f"| Months with identical holdings | {rep.get('months_with_identical_holdings', '-')} | |")
+    print(f"return gap {rep.get('return_gap_pp', float('nan')):+.2f} pp, fill gap {rep.get('fill_gap_pct', float('nan')):+.1f}%: "
+          f"{'PASSED' if rep.get('passed') else 'FAILED'}\n")
+    out = cfg.data_dir / "validation" / "run9_check.json"
+    out.write_text(json.dumps(rep, indent=1, default=str))
     print(json.dumps(rep, indent=1, default=str))
     sys.exit(0 if rep.get("passed") else 1)
 

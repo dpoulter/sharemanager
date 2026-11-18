@@ -7,6 +7,7 @@
     rebalance: monthly           # monthly | weekly | quarterly
     hold_rank: null              # keep a holding while it ranks inside this
     exit: null                   # or below_ma200_2d
+    price_basis: adjusted        # or raw: raw closes, no dividends (the N100's basis)
     universe: ftse350            # ftse350 | ftse100 | ftse250 | list:<csv of symbols>
     costs: {}                    # overrides of costs.py, e.g. {spread_large_bp: 10}
     start_cash: 100000
@@ -90,6 +91,26 @@ class Workspace:
         self.universe = universe
         self.log = RunLog(cfg.p("run_log"))
 
+    def price_basis(self, spec: "Spec") -> str:
+        basis = str(spec.raw.get("price_basis") or self.cfg.get("engine", {}).get("price_basis", "adjusted")).lower()
+        if basis not in ("adjusted", "raw"):
+            raise ValueError(f"price_basis must be adjusted or raw, not {basis!r}")
+        return basis
+
+    def market_for(self, basis: str) -> Market:
+        """The market on a price basis.
+
+        adjusted: returns, averages and valuations on the dividend-adjusted
+        close (total return). raw: everything on the raw close and no
+        dividends credited, as the N100 prices (historical_prices.price).
+        """
+        if basis == "adjusted":
+            return self.m
+        if getattr(self, "_raw_market", None) is None:
+            from dataclasses import replace
+            self._raw_market = replace(self.m, adj=self.m.close, _ma200=None)
+        return self._raw_market
+
     def universe_for(self, which: str) -> pd.DataFrame:
         u = self.universe
         large = int(self.cfg["universe"]["large_size"])
@@ -125,7 +146,9 @@ class Workspace:
         member, large = membership(uni, self.m.dates)
         member = member.reindex(columns=self.m.close.columns, fill_value=False)
         large = large.reindex(columns=self.m.close.columns, fill_value=False)
-        ctx = Context(self.m, self.f, member)
+        basis = self.price_basis(spec)
+        mk = self.market_for(basis)
+        ctx = Context(mk, self.f, member)
         rules = spec.rules()
         dates = self.m.dates[(self.m.dates >= start) & (self.m.dates <= end)]
         flags = engine.rebalance_flags(dates, rules.rebalance)
@@ -146,11 +169,11 @@ class Workspace:
             line["scored"] = int(scores[d].notna().sum())
             cover.append(line)
         coverage = pd.DataFrame(cover).set_index("date")
-        exit_flags = engine.ma200_below_twice(self.m.adj, self.m.ma200) if rules.exit_ma200 else None
+        exit_flags = engine.ma200_below_twice(mk.adj, mk.ma200) if rules.exit_ma200 else None
         costs = from_dict(spec.raw.get("costs"))
-        res = engine.simulate(self.m, member, large, scores, rules, costs, start, end, exit_flags)
-        free = engine.simulate(self.m, member, large, scores, rules, costs.free(), start, end, exit_flags)
-        bench = engine.benchmarks(self.m, member, start, end)
+        res = engine.simulate(mk, member, large, scores, rules, costs, start, end, exit_flags)
+        free = engine.simulate(mk, member, large, scores, rules, costs.free(), start, end, exit_flags)
+        bench = engine.benchmarks(mk, member, start, end)          # same basis as the strategy
         out = metrics.summarise(res.values["total"], bench, res.fills, res.values["holdings"], res.pnl,
                                 free.values["total"])
         share = coverage["scored"] / coverage["members"].replace(0, np.nan)
@@ -177,12 +200,14 @@ class Workspace:
             "parameters": {k: v for k, v in spec.raw.items() if k not in ("name", "family", "signals")},
             "universe": spec.raw.get("universe", "ftse350"), "period": period,
             "final": bool(final), "touches_holdout": bool(touches), "costs_checked_on": CHECKED_ON,
+            "price_basis": basis,
             **out,
         }
         self.log.append(record)
         if final and kind == "research":
             self.log.freeze(spec.name, spec.hash, run_id)
         result = {"record": record, "result": res, "zero_cost": free, "bench": bench, "coverage": coverage,
+                  "scores": scores, "member": member, "market": mk,
                   "yearly": metrics.yearly(res.values["total"], bench)}
         if write_report:
             from .report import write_report as wr

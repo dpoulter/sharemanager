@@ -52,13 +52,58 @@ HOME = {"UNITED KINGDOM", "UK", "GREAT BRITAIN", "ENGLAND", "ENGLAND AND WALES",
         "NORTHERN IRELAND", "JERSEY", "GUERNSEY", "ISLE OF MAN", "CHANNEL ISLANDS"}
 
 
-def norm_name(name) -> str:
+LEGAL = {"PLC", "LTD", "LIMITED"}
+DESCRIPTIONS = {"ORD", "ORDS", "ORDINARY", "SHARES", "SHS", "NEW", "DI", "CDI", "REG", "REGD", "NPV"}
+
+
+def norm_name(name, keep_form: bool = False) -> str:
+    """Upper case, punctuation and the words PLC, LTD, LIMITED, GROUP, HOLDINGS dropped.
+
+    The LSE writes some names its own way: "SAINSBURY (J) PLC" for J Sainsbury,
+    "WETHERSPOON (J.D.) PLC", "SMITH (W.H.) PLC". Bracketed initials move to the
+    front, and trailing share descriptions (ORD, NEW, DI) go. keep_form=True keeps
+    PLC/LTD so Investec plc and Investec Ltd stay apart.
+    """
     if not isinstance(name, str):
         return ""
-    s = name.upper().replace("&", " AND ")
-    s = re.sub(r"[.'`’]", "", s)               # P.L.C. -> PLC, Fuller's -> FULLERS
+    s = name.upper().replace("&", " AND ").replace("PUBLIC LIMITED COMPANY", "PLC")
+    s = re.sub(r"\bP\.?\s?L\.?\s?C\.?(?=\s|$)", "PLC", s)
+    m = re.match(r"^(.*?)\s*\(([A-Z][A-Z .]{0,8})\)\s*(.*)$", s)
+    if m and m.group(2).replace(".", "").replace(" ", "").isalpha() and len(m.group(2).replace(".", "").replace(" ", "")) <= 4:
+        s = f"{m.group(2)} {m.group(1)} {m.group(3)}"
+    s = re.sub(r"[.'`’]", "", s)               # J.D. -> JD, Fuller's -> FULLERS
     s = re.sub(r"[^A-Z0-9 ]+", " ", s)
-    return " ".join(t for t in s.split() if t not in STOP)
+    toks = s.split()
+    # Nothing after the legal form is part of the name ("MORGAN ADVANCED MATERIALS PLC ORD 25P").
+    legal_at = [i for i, t in enumerate(toks) if t in LEGAL]
+    if legal_at and legal_at[0] < len(toks) - 1 and legal_at[0] > 0:
+        toks = toks[: legal_at[0] + 1]
+    while toks and toks[-1] in DESCRIPTIONS:
+        toks.pop()
+    drop = (STOP - LEGAL) if keep_form else STOP
+    toks = [t for t in toks if t not in drop and t != "THE"]
+    if keep_form:
+        toks = ["LTD" if t == "LIMITED" else t for t in toks]
+    # "J D WETHERSPOON" and "JD WETHERSPOON": single letters run together.
+    out, buf = [], ""
+    for t in toks:
+        if len(t) == 1 and t.isalpha():
+            buf += t
+            continue
+        if buf:
+            out.append(buf)
+            buf = ""
+        out.append(t)
+    if buf:
+        out.append(buf)
+    return " ".join(out)
+
+
+def _clean_text(v):
+    if v is None or (not isinstance(v, str) and pd.isna(v)):
+        return None
+    s = str(v).strip().upper()
+    return s or None
 
 
 def _find_header(raw: pd.DataFrame) -> int | None:
@@ -77,6 +122,8 @@ def _columns(cols) -> dict:
             out.setdefault("company", c)
         elif l == "market":
             out["market"] = c
+        elif l in ("sector", "icb super-sector", "icb supersector") or (l == "icb industry" and "sector" not in out):
+            out["sector"] = c
         elif "country of incorporation" in l:
             out["country"] = c
         elif "cap" in l:
@@ -176,9 +223,11 @@ def read_issuer_lists(folder: Path, today: dt.date | None = None) -> tuple[pd.Da
             out = pd.DataFrame({k: df[v] for k, v in cmap.items()})
             out = out[out["company"].notna()]
             out["company"] = out["company"].astype(str).str.strip()
-            for k in ("market", "country", "category", "intl_main", "intl_issuer"):
+            for k in ("market", "country", "category", "intl_main", "intl_issuer", "sector"):
                 if k in out:
-                    out[k] = out[k].astype("string").str.strip().str.upper()
+                    # Plain str or None, never pd.NA: a blank market cell as pd.NA
+                    # made every comparison on it raise "boolean value of NA is ambiguous".
+                    out[k] = out[k].map(_clean_text).astype(object)
             if "cap_m" in out:
                 out["cap_m"] = pd.to_numeric(out["cap_m"], errors="coerce")
             out["month"] = month
@@ -190,11 +239,15 @@ def read_issuer_lists(folder: Path, today: dt.date | None = None) -> tuple[pd.Da
         return pd.DataFrame(columns=["month", "company", "market"]), info
     allm = pd.concat(frames, ignore_index=True)
     allm["norm"] = allm["company"].map(norm_name)
+    # Two companies in one month with the same name but for PLC/LTD (Investec
+    # plc and Investec Ltd): tell them apart by keeping the legal form.
+    clash = allm.duplicated(["month", "norm"], keep=False)
+    allm.loc[clash, "norm"] = allm.loc[clash, "company"].map(lambda x: norm_name(x, keep_form=True))
     # One row per company and month. Where one name has two rows (Investec plc
     # and Investec Ltd both normalise to INVESTEC), the plain Main Market row wins
     # over "MAIN MARKET / ADMISSION TO TRADING ONLY", then AIM, then the rest.
-    rank = allm["market"].map(lambda x: 0 if x == "MAIN MARKET" else 1 if str(x).startswith("MAIN MARKET")
-                              else 2 if x == "AIM" else 3)
+    rank = allm["market"].fillna("").astype(str).map(
+        lambda x: 0 if x == "MAIN MARKET" else 1 if x.startswith("MAIN MARKET") else 2 if x == "AIM" else 3)
     allm = allm.assign(_r=rank).sort_values(["month", "norm", "_r"]).drop_duplicates(["month", "norm"]).drop(columns="_r")
     counts = allm.groupby("month").size()
     med = float(counts.median())
@@ -207,9 +260,16 @@ def read_issuer_lists(folder: Path, today: dt.date | None = None) -> tuple[pd.Da
 
 def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFrame | None = None) -> tuple[pd.DataFrame, dict]:
     """Add `symbol` to each issuer row by normalised name; report match rates and doubles."""
-    lines = master[master["included"].fillna(False).astype(bool)].copy()
+    from .fetch import TRUST_REASONS
+    # Companies, and the investment trusts the universe ranks alongside them.
+    keep = master["included"].fillna(False).astype(bool) | master.get(
+        "exclude_reason", pd.Series(index=master.index, dtype=object)).isin(TRUST_REASONS)
+    lines = master[keep].copy()
     lines["norm"] = lines["name"].map(norm_name)
+    lines["norm_form"] = lines["name"].map(lambda x: norm_name(x, keep_form=True))
     by_norm = lines.groupby("norm")["symbol"].apply(list).to_dict()
+    for k, v in lines.groupby("norm_form")["symbol"].apply(list).to_dict().items():
+        by_norm.setdefault(k, v)
     by_norm.pop("", None)
     # A looser second try: one name is the other's leading words, either way
     # round ("DCC" in 2016 and "DCC ENERGY" now; "BAE SYSTEMS" and "BAE SYSTEMS ORD").
@@ -240,7 +300,8 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
             lse_cap = getattr(row, "cap_m", np.nan)
             if cap_at is not None and pd.notna(lse_cap) and row.month in cap_at.index:
                 gaps = {s: abs(cap_at.at[row.month, s] / (lse_cap * 1e6) - 1)
-                        for s in cand if s in cap_at.columns and pd.notna(cap_at.at[row.month, s])}
+                        for s in cand if s in cap_at.columns and pd.notna(cap_at.at[row.month, s])
+                        and lse_cap > 0}
                 close = [s for s, g in gaps.items() if g <= 0.2]
                 if len(close) == 1:
                     pick = close[0]
@@ -302,7 +363,7 @@ def monthly_status(matched: pd.DataFrame, months: pd.DatetimeIndex) -> pd.DataFr
     if not rows:
         return pd.DataFrame(columns=["symbol", "month", "market", "country", "home", "premium", "basis"])
     st = pd.concat(rows, ignore_index=True).rename(columns={"category_used": "category"})
-    st["home"] = st["country"].isin(list(HOME)).fillna(False).astype(bool)
+    st["home"] = st["country"].fillna("").astype(str).isin(list(HOME))
     prem = st["category"].map(_is_premium)
     st["premium"] = prem
     # The International Main Market / International Issuer flag is Y for DCC,
@@ -314,8 +375,20 @@ def monthly_status(matched: pd.DataFrame, months: pd.DatetimeIndex) -> pd.DataFr
     return st
 
 
+def apply_cap_corrections(caps_wide: pd.DataFrame, corr: pd.DataFrame) -> None:
+    """Divide the listed symbol-months of a date x symbol cap frame, in place."""
+    if corr is None or corr.empty:
+        return
+    months = caps_wide.index.to_period("M").to_timestamp()
+    for sym, g in corr.groupby("symbol"):
+        if sym not in caps_wide.columns:
+            continue
+        rows = months.isin(pd.DatetimeIndex(g["month"]))
+        caps_wide.loc[rows, sym] = caps_wide.loc[rows, sym] * 0.01
+
+
 def eligible(st: pd.DataFrame, include_aim: bool) -> pd.Series:
-    mk = st["market"].fillna("")
+    mk = st["market"].fillna("").astype(str)
     on_market = (mk == "MAIN MARKET") | (include_aim & (mk == "AIM"))
     overseas_ok = st["home"] | st["overseas_rule"].eq("premium listing")
     return (on_market & overseas_ok).astype(bool)
@@ -339,6 +412,7 @@ def build_status(data: Path, master: pd.DataFrame, caps_wide: pd.DataFrame | Non
         return None, {"lse_issuer_lists": "not found"}
     issuers, cols = read_issuer_lists(folder)
     matched, rep = match_to_master(issuers, master.reset_index() if "symbol" not in master else master, caps_wide)
+    matched[["month", "company", "norm", "market", "symbol"]].to_parquet(Path(data) / "lse_matched.parquet")
     st = monthly_status(matched, months)
     st["eligible"] = eligible(st, include_aim)
     # LSE market cap beside FMP's, per matched company and month.
@@ -355,7 +429,24 @@ def build_status(data: Path, master: pd.DataFrame, caps_wide: pd.DataFrame | Non
         mcap = caps_wide.groupby(caps_wide.index.to_period("M").to_timestamp()).last()
         st["fmp_cap"] = [mcap.at[m_, s_] if (m_ in mcap.index and s_ in mcap.columns) else np.nan
                          for m_, s_ in zip(st["month"], st["symbol"])]
-    inflated = (st["fmp_cap"] > 3 * st["cap_m"] * 1e6).fillna(False).astype(bool)
+    lse_cap = pd.to_numeric(st["cap_m"], errors="coerce").where(lambda x: x > 0)
+    # Z, second pass: still 50 to 200 times the LSE's in a month -> pence read as
+    # pounds that the step check missed. Divide that month by 100 and record it.
+    ratio = pd.to_numeric(st["fmp_cap"], errors="coerce") / (lse_cap * 1e6)
+    hundred = ((ratio >= 50) & (ratio <= 200)).fillna(False).astype(bool)
+    corr = st.loc[hundred, ["symbol", "month"]].assign(factor=0.01, ratio=ratio[hundred])
+    # The market was loaded with earlier corrections already applied, so they are
+    # not found again: keep them in the file alongside today's.
+    corr_path = Path(data) / "cap_lse_corrections.parquet"
+    earlier = pd.read_parquet(corr_path) if corr_path.exists() else corr.iloc[0:0]
+    pd.concat([earlier, corr]).drop_duplicates(["symbol", "month"]).to_parquet(corr_path)
+    if len(corr):
+        log.info("market cap: %d symbol-months divided by 100 against the LSE's cap", len(corr))
+        st.loc[hundred, "fmp_cap"] = st.loc[hundred, "fmp_cap"] / 100
+        if caps_wide is not None:
+            apply_cap_corrections(caps_wide, corr)
+    ratio = pd.to_numeric(st["fmp_cap"], errors="coerce") / (lse_cap * 1e6)
+    inflated = (ratio > 3).fillna(False).astype(bool)
     st["inflated_cap"] = inflated
     ov = load_overrides(data)
     st["override"] = None
@@ -375,6 +466,7 @@ def build_status(data: Path, master: pd.DataFrame, caps_wide: pd.DataFrame | Non
         if len(st) else {},
         "basis_counts": st["basis"].value_counts().to_dict() if len(st) else {},
         "overrides": ov.to_dict("records"),
+        "cap_lse_corrections": {"symbol_months": int(len(corr)), "symbols": int(corr["symbol"].nunique()) if len(corr) else 0},
         "lines_with_fmp_cap_over_3x_lse (reported only)": sorted(st.loc[st["inflated_cap"], "symbol"].unique().tolist()),
         "issuer_rows": int(len(issuers)), "matched_rows": int(matched["symbol"].notna().sum()),
     })

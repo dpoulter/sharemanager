@@ -122,7 +122,11 @@ def load_market(data: Path, symbols: list[str] | None = None) -> Market:
         else:
             ccy = quote_currency(master.loc[close.columns]).replace({"GBp": "GBP", "GBX": "GBP", "GBx": "GBP"})
         cap_factor = to_pounds_factor(pd.DataFrame({"c": ccy}), fx, close.index, column="c")
+        corr_path = data / "cap_lse_corrections.parquet"
         mcap = mcap * cap_factor
+        if corr_path.exists():
+            from .lse import apply_cap_corrections
+            apply_cap_corrections(mcap, pd.read_parquet(corr_path))
 
     statements = pd.DataFrame()
     if (data / "statements.parquet").exists():

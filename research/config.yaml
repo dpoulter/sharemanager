@@ -27,6 +27,12 @@ point_in_time:
   annual_lag_months: 4
   half_year_lag_months: 3
 
+engine:
+  # adjusted: signals, averages, fills and valuations on the dividend-adjusted
+  # close (total return). raw: on the raw close, no dividends credited, as the
+  # N100 prices. Research runs use adjusted; validate uses raw.
+  price_basis: adjusted
+
 universe:
   size: 350
   large_size: 100            # FTSE 100-like = top 100, FTSE 250-like = 101..350

@@ -104,6 +104,27 @@ def md(df: pd.DataFrame, index: bool = True) -> str:
     return "\n".join(rows)
 
 
+def cap_rescale_section(data: Path, member) -> list[str]:
+    """Z: market caps rescaled by 100 (pence read as pounds), counts and the 20 largest."""
+    data = Path(data)
+    out = ["## Market caps rescaled by 100 (pence read as pounds)", ""]
+    p = data / "cap_rescaled.parquet"
+    r = pd.read_parquet(p) if p.exists() else pd.DataFrame()
+    if r.empty:
+        out += ["Step check: none.", ""]
+    else:
+        out += [f"Step check (a one-day ratio of 70 to 140, or its inverse; the earlier segment lined up with the "
+                f"latest level): {len(r)} symbols, {int(r['rows'].sum())} rows.", "",
+                "The 20 largest corrections:", "",
+                md(r.sort_values("correction", ascending=False).head(20)[
+                    ["symbol", "rows", "from", "to", "largest_before", "largest_after"]], index=False), ""]
+    q = data / "cap_lse_corrections.parquet"
+    c = pd.read_parquet(q) if q.exists() else pd.DataFrame()
+    out += [f"LSE check (FMP still 50 to 200 times the LSE's cap in a month, divided by 100): "
+            f"{c['symbol'].nunique() if len(c) else 0} symbols, {len(c)} symbol-months.", ""]
+    return out
+
+
 def moves_by_scope(moves: pd.DataFrame, member: pd.DataFrame | None) -> dict:
     out = {"overall": int(len(moves))}
     if member is not None and len(moves):
@@ -164,6 +185,7 @@ def write_data_report(m: Market, data: Path) -> Path:
              f"{', '.join(msum.get('profile_currency_not_quote', [])[:60]) or 'none'}",
              f"- AIM file: {msum.get('aim_file') or 'NOT LOADED - put the LSE AIM companies file in data/reference/aim_companies.*'}; "
              f"lines marked AIM: {msum.get('aim_marked', 0)}. {msum.get('aim_caveat', '')}", "",
+             *cap_rescale_section(data, member),
              f"## Price gaps over 10 trading days ({len(gaps)})", "", md(gaps.head(200), index=False) if len(gaps) else "none", "",
              "## Day moves over 50%", "",
              f"Bad ticks dropped (a move over 50% back within 20% of the earlier price inside 3 sessions): {len(ticks)} "

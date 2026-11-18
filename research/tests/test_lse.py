@@ -248,3 +248,76 @@ def test_xls_2016_categories_reach_today(tmp_path):
     assert "2016" in rep["listing_category_years"]
     assert bool(elig.at[pd.Timestamp("2026-11-01"), "DCC.L"]) is True       # Y flag does not exclude
     assert bool(elig.at[pd.Timestamp("2026-11-01"), "BHP.L"]) is False
+
+
+def test_blank_market_cell_does_not_crash(tmp_path):
+    """Y: a row with a blank Market reads as None, not pd.NA."""
+    rows = pd.DataFrame([{"Admission Date": "2001-01-01", "Company Name": "Alpha plc", "Country of Incorporation": "UNITED KINGDOM",
+                          "Market": None}, {"Admission Date": "2001-01-01", "Company Name": "Beta plc",
+                                            "Country of Incorporation": None, "Market": "MAIN MARKET "}])
+    (tmp_path / "2026").mkdir()
+    _write_book(tmp_path / "2026" / "list.xlsx", {"Nov": rows}, 6)
+    df, _ = read_issuer_lists(tmp_path)
+    assert pd.isna(df.loc[df["company"] == "Alpha plc", "market"].iloc[0])
+    assert df.loc[df["company"] == "Beta plc", "market"].iloc[0] == "MAIN MARKET"
+
+
+def test_investec_plc_and_ltd_kept_apart(tmp_path):
+    """Investec plc (Main Market) and Investec Ltd (admission to trading only) must not merge."""
+    rows = [("Investec Limited", "SOUTH AFRICA", "MAIN MARKET / ADMISSION TO TRADING ONLY", 3000.0, "N"),
+            ("Investec plc", "UNITED KINGDOM", "Main Market", 3000.0, "N")]
+    (tmp_path / "2026").mkdir()
+    _write_book(tmp_path / "2026" / "list.xlsx", {"Nov": _rows_2020(rows)}, 6)
+    df, _ = read_issuer_lists(tmp_path)
+    plc = df[df["company"] == "Investec plc"].iloc[0]
+    assert plc["market"] == "MAIN MARKET" and plc["norm"] == "INVESTEC PLC"
+    assert len(df) == 2
+
+
+def test_lse_names_in_its_own_style():
+    assert norm_name("SAINSBURY (J) PLC") == norm_name("J Sainsbury plc")
+    assert norm_name("WETHERSPOON (J.D.) PLC") == norm_name("J D Wetherspoon plc")
+    assert norm_name("MORGAN ADVANCED MATERIALS PLC ORD 25P") == norm_name("Morgan Advanced Materials plc")
+    for a, b in [("SHELL PLC", "Shell plc"), ("TATE & LYLE PLC", "Tate & Lyle plc"),
+                 ("CHEMRING GROUP PLC", "Chemring Group PLC"), ("AUTO TRADER GROUP PLC", "Auto Trader Group plc"),
+                 ("BARRATT REDROW PLC", "Barratt Redrow plc")]:
+        assert norm_name(a) == norm_name(b)
+
+
+def test_cap_steps_of_100x_rescaled_bcg_case():
+    """Z: BCG.L at £156.9bn on 20 Nov 2024 and ~£1bn in 2026: pence read as pounds."""
+    from research.clean import fix_cap_steps
+    d = pd.bdate_range("2024-06-03", "2026-09-30")
+    cap = np.where(d < pd.Timestamp("2025-03-03"), 1.5e11, 1.5e9) * np.linspace(1.04, 0.7, len(d))
+    caps = pd.DataFrame({"symbol": "BCG.L", "date": d, "market_cap": cap})
+    other = pd.DataFrame({"symbol": "OK.L", "date": d, "market_cap": np.linspace(1e9, 3e9, len(d))})
+    fixed, log = fix_cap_steps(pd.concat([caps, other]))
+    b = fixed[fixed["symbol"] == "BCG.L"].set_index("date")["market_cap"]
+    assert 1.2e9 < b.loc["2024-12-02"] < 1.8e9
+    assert b.loc["2026-09-30"] == pytest.approx(cap[-1])
+    assert list(log["symbol"]) == ["BCG.L"]
+    assert (fixed[fixed["symbol"] == "OK.L"]["market_cap"].to_numpy() == other["market_cap"].to_numpy()).all()
+
+
+def test_trust_candidates_closed_ended_only_one_line_per_issuer():
+    """AA: no 0P codes, ETFs or open-ended classes; one line per issuer, the largest; Main Market only."""
+    from research.universe import trust_candidates
+    prices = {f"C{i}.L": [100.0] * 15 for i in range(10)}
+    caps = {f"C{i}.L": 1e9 * (10 - i) for i in range(10)}
+    names = {"SMT.L": "Scottish Mortgage Investment Trust PLC", "0P0000ABC.L": "Some Fund Acc",
+             "ISF.L": "iShares Core FTSE 100 UCITS ETF", "FCIT.L": "F&C Investment Trust PLC",
+             "FCIT-B.L": "F&C Investment Trust PLC", "AIMT.L": "Small AIM Trust plc"}
+    m = make_market(prices, start="2026-11-02", caps=caps)
+    for s, nm in names.items():
+        m.master.loc[s, ["name", "exclude_reason", "included", "is_etf", "overseas_isin"]] = \
+            [nm, "FMP isFund", False, s == "ISF.L", False]
+    cands = set(trust_candidates(m.master))
+    assert cands == {"SMT.L", "FCIT.L", "FCIT-B.L", "AIMT.L"}
+    trusts = pd.DataFrame({"SMT.L": 9.5e9, "FCIT.L": 5.5e9, "FCIT-B.L": 5.4e9, "AIMT.L": 8.5e9}, index=m.dates)
+    month = pd.Timestamp("2026-11-01")
+    elig = pd.DataFrame({s: [True] for s in list(prices) + ["SMT.L", "FCIT.L", "FCIT-B.L"]}, index=[month])
+    elig["AIMT.L"] = False                                              # on AIM per the LSE list
+    u = build_universe(m, size=10, large=5, start="2026-11-01", eligible=elig, trust_caps=trusts)
+    first = set(u["symbol"])
+    assert first == {f"C{i}.L" for i in range(8)}                      # SMT and one F&C line counted
+    assert u.attrs["trusts_counted"][u["date"].min()] == 2

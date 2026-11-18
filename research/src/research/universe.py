@@ -8,6 +8,7 @@ rebuild, not before. There is no universe before market cap history starts
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +43,12 @@ def build_universe(m: Market, size: int = 350, large: int = 100, start="2007-01-
         ok &= ~aim
     cols = [c for c in m.close.columns if ok.get(c, False)]
     norm = master.get("norm", pd.Series(index=master.index, dtype=object)).reindex(cols)
+    trusts_counted, trusts_top = {}, {}
+    trust_norm = pd.Series(dtype=object)
+    if trust_caps is not None:
+        from .lse import norm_name
+        trust_norm = master.get("name", pd.Series(index=master.index, dtype=object)) \
+            .reindex(trust_caps.columns).map(norm_name).replace("", np.nan)
     if m.volume is not None:
         traded = (m.close[cols] * m.volume.reindex(columns=cols)).rolling(63, min_periods=5).mean()
     else:
@@ -74,31 +81,64 @@ def build_universe(m: Market, size: int = 350, large: int = 100, start="2007-01-
         if trust_caps is not None and len(trust_caps.columns):
             # Count the trusts in the top `size`, then leave them out.
             t = trust_caps.loc[:d].iloc[-stale_days:].ffill().iloc[-1] if d >= trust_caps.index[0] else pd.Series(dtype=float)
-            t = t[t > 0].dropna()
+            t = t[t > 0].dropna().sort_values(ascending=False)
+            if eligible is not None:
+                # Main Market only, from the LSE lists: a trust the lists do not
+                # place is not counted (open-ended funds are not on them at all).
+                month = pd.Timestamp(d.year, d.month, 1)
+                te = eligible.loc[month].reindex(t.index) if month in eligible.index else pd.Series(np.nan, index=t.index)
+                t = t[te.fillna(False).astype(bool)]
+            # One line per issuer: the largest.
+            tn = trust_norm.reindex(t.index)
+            if tn.notna().any():
+                t = t.sort_values(ascending=False)
+                t = t[~(tn.reindex(t.index).notna() & tn.reindex(t.index).duplicated())]
             both = pd.concat([c.rename("cap"), t.rename("cap")]).sort_values(ascending=False).head(size)
+            n_trusts = int(both.index.isin(t.index).sum())
+            trusts_counted[d] = n_trusts
+            trusts_top[d] = list(t.index[t.index.isin(both.index)][:20])
             c = c[c.index.isin(both.index)]
         c = c.sort_values(ascending=False).head(size)
         for r, (sym, v) in enumerate(c.items(), 1):
             rows.append((d, sym, r, "large" if r <= large else "mid", float(v), bool(aim.get(sym, False)),
                          basis.get(sym)))
-    return pd.DataFrame(rows, columns=["date", "symbol", "rank", "tier", "market_cap", "is_aim", "basis"])
+    out = pd.DataFrame(rows, columns=["date", "symbol", "rank", "tier", "market_cap", "is_aim", "basis"])
+    out.attrs["trusts_counted"] = trusts_counted
+    out.attrs["trusts_top"] = trusts_top
+    return out
+
+
+OPEN_ENDED = re.compile(r"\b(acc|inc|accumulation|income units?|class [a-z0-9]+|oeic|sicav|ucits|etf|etc|"
+                        r"exchange traded|tracker|hedged|dist|distributing|units?)\b", re.I)
+
+
+def trust_candidates(master: pd.DataFrame) -> list[str]:
+    """Closed-ended investment companies and REIT-like trusts the FTSE 350 counts.
+
+    Out: Morningstar 0P... codes (open-ended fund share classes), ETFs and
+    ETCs, open-ended share classes by name (Acc, Inc, Class B, UCITS, OEIC),
+    and overseas ISINs. Whether a candidate is on the Main Market is decided
+    month by month from the LSE lists in build_universe.
+    """
+    from .fetch import TRUST_REASONS
+    reason = master.get("exclude_reason", pd.Series(index=master.index, dtype=object))
+    names = master.get("name", pd.Series(index=master.index, dtype=object)).fillna("").astype(str)
+    etf = master.get("is_etf", pd.Series(False, index=master.index)).fillna(False).astype(bool)
+    over = master.get("overseas_isin", pd.Series(False, index=master.index)).fillna(False).astype(bool)
+    sel = reason.isin(TRUST_REASONS) & ~etf & ~over
+    sel &= ~pd.Series(master.index.astype(str).str.upper().str.startswith("0P"), index=master.index)
+    sel &= ~names.str.contains(OPEN_ENDED)
+    return list(master.index[sel])
 
 
 def load_trust_caps(data: Path, m: Market) -> pd.DataFrame | None:
-    """date x symbol market caps (pounds) of the investment trusts and funds the
-    FTSE 350 ranks alongside companies: lines the master excluded as funds,
-    main-market and home-incorporated by ISIN where it is known."""
-    from .fetch import TRUST_REASONS
+    """date x symbol market caps (pounds) of the trust candidates (see trust_candidates)."""
     p = Path(data) / "market_cap.parquet"
     if not p.exists():
         return None
-    master = m.master
-    reason = master.get("exclude_reason", pd.Series(index=master.index, dtype=object))
-    trusts = reason[reason.isin(TRUST_REASONS)].index
-    if "overseas_isin" in master:
-        trusts = [s for s in trusts if not bool(master.at[s, "overseas_isin"] if pd.notna(master.at[s, "overseas_isin"]) else False)]
+    trusts = trust_candidates(m.master)
     caps = pd.read_parquet(p)
-    caps = caps[caps["symbol"].isin(list(trusts))]
+    caps = caps[caps["symbol"].isin(trusts)]
     if caps.empty:
         return None
     caps["date"] = pd.to_datetime(caps["date"])

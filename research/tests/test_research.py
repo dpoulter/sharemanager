@@ -407,3 +407,62 @@ def test_trend_strategy_builds_on_day_one_with_gaps_in_the_panel():
                           engine.ma200_below_twice(m.adj))
     first = res.fills[res.fills["date"] == m.dates[261]]
     assert len(first) == 15 and (first["side"] == "BUY").all()
+
+
+# ---------------------------------------------------------------- X: price basis
+def _ws_with_dividends(cfg):
+    n = 420
+    rng = np.random.default_rng(9)
+    raw = {f"S{i}.L": list(100 * np.cumprod(1 + rng.normal(0.001, 0.01, n))) for i in range(6)}
+    adj = {k: list(np.array(v) * np.linspace(0.85, 1.0, n)) for k, v in raw.items()}   # dividends lift the adjusted series
+    m = make_market(raw, start="2024-01-01", adj=adj)
+    u = build_universe(m, size=6, large=3, start="2024-01-01")
+    cfg.raw["universe"]["start"] = "2024-01-01"
+    return Workspace(cfg, market=m, universe=u), m
+
+
+def test_raw_basis_credits_no_dividends(cfg):
+    ws, m = _ws_with_dividends(cfg)
+    base = {"signals": {"momentum_12_1": 1}, "holdings": 6, "drift_band": 1.0}
+    a = ws.run(spec_from_dict({"name": "adj", **base}), start="2025-02-03", end="2025-05-16", write_report=False)
+    r = ws.run(spec_from_dict({"name": "raw", **base, "price_basis": "raw"}), start="2025-02-03", end="2025-05-16",
+               write_report=False)
+    assert a["record"]["price_basis"] == "adjusted" and r["record"]["price_basis"] == "raw"
+    assert a["record"]["total_return"] > r["record"]["total_return"]
+    # Raw: the value moves with raw closes only, and the benchmark is on the same basis.
+    eq_raw = (m.close.loc["2025-02-03":"2025-05-16"].iloc[-1] / m.close.loc["2025-02-03":"2025-05-16"].iloc[0]).mean() - 1
+    assert r["record"]["bench_equal_weight_return"] == pytest.approx(eq_raw, abs=0.01)
+
+
+def test_validate_reports_identical_months_and_passes_on_itself(cfg, tmp_path):
+    """Export our own raw-basis run as if it were the N100's: validate must pass with every month identical,
+    and with one share swapped in a month it must name that month and the shares."""
+    from research.validate import run9
+    ws, m = _ws_with_dividends(cfg)
+    lst = tmp_path / "n100.tsv"
+    lst.write_text("symbol\tis_fund\tsector\n" + "".join(f"{s[:-2]}\tN\tX, Y\n" for s in m.close.columns))
+    kw = dict(start="2025-02-03", end="2025-09-30")
+    first = run9(ws, lst, None, None, **kw)
+    assert first["price_basis"] == "raw"
+    from research.strategy import spec_from_dict
+    out = ws.run(spec_from_dict({**__import__("research.validate", fromlist=["RUN9"]).RUN9,
+                                 "universe": f"list:{cfg.data_dir / 'validation' / 'run9_universe_no_funds.csv'}"}),
+                 kind="engine_validation", start=kw["start"], end=kw["end"], write_report=False)
+    fills = out["result"].fills
+    orders = tmp_path / "orders.csv"
+    fills[["date", "symbol", "side", "quantity", "price"]].to_csv(orders, index=False)
+    values = tmp_path / "values.csv"
+    out["result"].values["total"].rename("total").reset_index().to_csv(values, index=False)
+    rep = run9(ws, lst, orders, values, **kw)
+    assert rep["passed"] and abs(rep["return_gap_pp"]) < 0.01 and rep["fill_gap_pct"] == 0
+    n = rep["months_with_identical_holdings"].split(" of ")
+    assert n[0] == n[1]
+    # Swap one share in the first month: the first differing month and the two shares are named.
+    bad = fills.copy()
+    first_buy = bad.index[bad["side"] == "BUY"][0]
+    bad.loc[bad["symbol"] == bad.at[first_buy, "symbol"], "symbol"] = "NOTOURS.L"
+    bad[["date", "symbol", "side", "quantity", "price"]].to_csv(orders, index=False)
+    rep2 = run9(ws, lst, orders, values, **kw)
+    diff = rep2["first_month_holdings_differ"]
+    assert "NOTOURS.L" in diff["only_n100"] and len(diff["only_ours"]) == 1
+    assert {r["symbol"] for r in diff["shares"]} == set(diff["only_n100"]) | set(diff["only_ours"])
