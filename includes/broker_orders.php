@@ -49,6 +49,11 @@
 	   docroot, and it died on "Cannot redeclare apologize()". */
 	require_once(__DIR__ . "/broker.php");
 	require_once("strategy_functions.php");
+	/* Arming, approval, the caps and the live log. Required here, not only
+	   by the pages: broker_halt_strategy() below disarms a live account,
+	   and a halt that left one armed would be a halt that only stopped the
+	   half of the application somebody was looking at. */
+	require_once(__DIR__ . "/broker_live.php");
 
 	/** Whether sql/broker_trading.sql has been applied. */
 	function broker_trading_ready() {
@@ -105,6 +110,15 @@
 		      substr((string) $reason, 0, 255), date('Y-m-d H:i:s'), $strategy);
 
 		write_log("broker_orders", "HALTED " . $strategy . ": " . $reason);
+
+		/* A halt disarms. A live strategy stops when something about it
+		   needs a person, and arming is the permission to trade without
+		   one: leaving it armed through a halt would mean the moment the
+		   halt was cleared, real orders could go out again without anybody
+		   having said so since. Re-arming is the same form it always was. */
+		if (function_exists('broker_live_disarm')) {
+			broker_live_disarm($strategy, null, "halted: " . substr((string) $reason, 0, 200));
+		}
 	}
 
 	/**
@@ -299,7 +313,11 @@
 			return $out;
 		}
 
-		$cap = (float) T212_MAX_RUN_VALUE;
+		/* The live account's run cap is its own, and lower: GBP 150 against
+		   the practice account's GBP 1,000. Picked from the mode rather
+		   than from a setting, because the figure is the limit on what one
+		   run of real money may do. */
+		$cap = $mode['live'] ? (float) T212_LIVE_MAX_RUN_VALUE : (float) T212_MAX_RUN_VALUE;
 
 		foreach ($orders as $order) {
 
@@ -841,7 +859,7 @@
 
 		$out = ['state' => 'unchecked', 'words' => 'Not checked today',
 		        'tone' => 'due', 'as_of' => null, 'read_at' => null,
-		        'differences' => [], 'waiting' => [],
+		        'differences' => [], 'waiting' => [], 'extra' => [], 'own_only' => false,
 		        'our_cash' => null, 'their_cash' => null, 'sync' => null];
 
 		$account = strategy_account($strategy);
@@ -858,6 +876,10 @@
 		$out['read_at']     = $check['read_at'];
 		$out['differences'] = $check['differences'];
 		$out['waiting']     = $check['waiting'];
+		/* What the account holds that is not this strategy's, on a live
+		   account where that is a normal thing rather than a difference. */
+		$out['extra']       = $check['extra'];
+		$out['own_only']    = $check['own_only'];
 
 		/* Whether anybody has asked comes first. The reconciler reports
 		   "never been read" and "not read today" in the same list as a real
@@ -880,8 +902,14 @@
 		else {
 			$out['state'] = 'agreed';
 			$out['tone']  = 'ok';
-			$out['words'] = 'Agrees with ' . broker_name($mode['broker']) . ' as at '
-			              . ($check['read_at'] === null ? $check['as_of'] : $check['read_at']);
+			/* "Holds what it bought" rather than "agrees" for a live
+			   account: the two books are not meant to be the same, because
+			   one of them is Dale's whole account, and saying they agree
+			   would be claiming a check that was not made. */
+			$when = ($check['read_at'] === null) ? $check['as_of'] : $check['read_at'];
+			$out['words'] = $check['own_only']
+			              ? ('Holds what it bought, at ' . $when)
+			              : ('Agrees with ' . broker_name($mode['broker']) . ' as at ' . $when);
 		}
 
 		$values = query("select cash, as_of_date from broker_account_values
@@ -985,8 +1013,8 @@
 		   Strategies page shows whether the two books agree, and a page
 		   that halts a strategy because somebody loaded it is not a page. */
 
-		$out = ['checked' => 0, 'differences' => [], 'waiting' => [], 'halted' => false,
-		        'as_of' => null, 'read_at' => null];
+		$out = ['checked' => 0, 'differences' => [], 'waiting' => [], 'extra' => [],
+		        'halted' => false, 'as_of' => null, 'read_at' => null, 'own_only' => false];
 
 		$account = strategy_account($strategy);
 		if ($account === null) { return $out; }
@@ -1094,7 +1122,30 @@
 			}
 		}
 
-		foreach (array_unique(array_merge(array_keys($ours), array_keys($theirs))) as $symbol) {
+		/* WHOSE POSITIONS ARE BEING COMPARED.
+		 *
+		 * The practice account is this application's and nothing else's, so
+		 * every difference either way is a difference: a holding at the
+		 * broker that the engine does not have is as wrong as one it has
+		 * and the broker does not.
+		 *
+		 * Dale's live account is his. He holds shares he bought himself, and
+		 * the practice rule would halt the strategy the moment it looked -
+		 * every one of his holdings reading as a position this application
+		 * has lost. So a live strategy reconciles its OWN positions: every
+		 * share it holds has to be at the broker in at least that quantity.
+		 * More of it, or anything else in the account, is his and is
+		 * reported rather than halted on. Less of it is a real difference
+		 * and halts: somebody has sold our position by hand, and the next
+		 * rebalance would size against shares that are not there.
+		 */
+		$out['own_only'] = (bool) $mode['live'];
+
+		$symbols = $out['own_only']
+		         ? array_keys($ours)
+		         : array_unique(array_merge(array_keys($ours), array_keys($theirs)));
+
+		foreach ($symbols as $symbol) {
 
 			$out['checked']++;
 
@@ -1102,6 +1153,9 @@
 			$yours = isset($theirs[$symbol]) ? $theirs[$symbol] : 0.0;
 
 			if (abs($mine - $yours) < 0.00000001) { continue; }
+			/* A shortfall is a difference; a surplus in a live account is
+			   not ours to have an opinion about. */
+			if ($out['own_only'] && $yours > $mine) { continue; }
 			if (isset($in_flight[$symbol])) { continue; }
 
 			if (isset($not_read_back[$symbol])) {
@@ -1111,17 +1165,34 @@
 				continue;
 			}
 
-			$out['differences'][] = $symbol . ": this application holds " . $mine
-			                      . ", the broker holds " . $yours;
+			$out['differences'][] = $out['own_only']
+			                      ? ($symbol . ": this strategy holds " . $mine
+			                         . " and the broker holds " . $yours
+			                         . ", which is less than it bought")
+			                      : ($symbol . ": this application holds " . $mine
+			                         . ", the broker holds " . $yours);
 		}
 
-		/* The broker holds things this strategy never bought. That is only a
-		   disagreement if this is the only account on the key - which it is,
-		   one key to one Trading 212 account - but it is the sort of
-		   difference somebody should see rather than one to halt on, so it
-		   is reported without stopping anything.
+		/* What is in the account that is not this strategy's. Said, not
+		   acted on: it is how a reader tells "the strategy holds nothing in
+		   that share" from "the strategy has lost track of it". */
+		if ($out['own_only']) {
+			foreach ($theirs as $symbol => $quantity) {
+				$mine = isset($ours[$symbol]) ? $ours[$symbol] : 0.0;
+				if ($quantity - $mine < 0.00000001) { continue; }
+				$out['extra'][] = $symbol . ": the account holds " . $quantity
+				                . ($mine > 0 ? (", of which this strategy bought " . $mine)
+				                             : ", none of it this strategy's");
+			}
+		}
 
-		   A difference in a share the strategy does hold is a halt. */
+		/* A difference in a share the strategy holds is a halt, in either
+		   account. On the practice account a holding the engine never
+		   bought is one too: nothing else trades that key.
+
+		   On the live account it is not - see above - which is why the halt
+		   here reads from $out['differences'] rather than deciding anything
+		   of its own. */
 		if (count($out['differences']) && empty($options['report_only'])) {
 			broker_halt_strategy($strategy,
 			    "the broker and this application disagree about what is held: "

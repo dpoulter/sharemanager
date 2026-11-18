@@ -12,8 +12,18 @@
 	 * on a trade: they are configuration somebody can edit, which makes
 	 * them input.
 	 *
-	 * PAPER AND PRACTICE ONLY, and the page says so where somebody can see
-	 * it. The one button here runs a dry run, which writes nothing.
+	 * WHAT THE PAGE PROMISES. It used to say that no real money was ever at
+	 * risk. From 18 November 2026 one account trades real money, so the
+	 * promise is replaced by the condition behind it, in the same place: no
+	 * order goes to a live account unless that account has been armed here,
+	 * by somebody logged in, with a cap and an expiry. The live account's
+	 * own panel says whether it is armed, what its caps are, and which of
+	 * the six conditions is not met - so the page answers "could this place
+	 * an order right now" rather than asserting that nothing ever could.
+	 *
+	 * The buttons here are a dry run, which writes nothing, and the forms
+	 * that arm, disarm, approve and reject. All four post to
+	 * public/strategy_live.php; none of them sends an order.
 	 */
 
 	/* Money, percentages and dates, through the shared formatters from
@@ -88,12 +98,47 @@
 
 	<?php /* One line, and the explanation behind a menu entry rather than a
 	         paragraph and a fold at the top of every view. */ ?>
+	<?php /* The sentence that used to be here said no real money was ever at
+	         risk. Dale decided on 18 November 2026 to run trend following
+	         with the GBP 250 in his Trading 212 account, so the page says
+	         what is true now instead of a promise it can no longer keep.
+	         The part that sends a live order does not exist yet; what does
+	         exist is everything that has to be true before one can, and the
+	         live account's own panel says which of it is. */ ?>
 	<p class="sm-sub mb-3">
 		Strategies run by the nightly job.
-		<strong>No real money is ever at risk</strong>: nothing here can place an
-		order against a live account.
+		<strong>No order goes to a live account unless that account is
+		armed</strong> on its own page, by somebody logged in, with a cap and an
+		expiry - and nothing in this application can send one yet at all.
 		<a href="<?= e(s_link(['s' => '_how'], $show_disabled)) ?>">How this works</a>
 	</p>
+
+	<?php /* What the last arm, disarm, approval or refusal said. Read out of
+	         the session by the controller, so a reload does not repeat it. */ ?>
+	<?php if (!empty($live_message)): ?>
+	<div class="alert <?= $live_message['ok'] ? 'alert-success' : 'alert-danger' ?>">
+		<?= e((string) $live_message['text']) ?>
+	</div>
+	<?php endif ?>
+
+	<?php /* A live batch nobody has decided about. At the top of the page
+	         rather than inside the strategy, because an exit waiting for an
+	         approval is costing money while it waits. */ ?>
+	<?php foreach (($live_waiting ?? []) as $waiting): ?>
+	<div class="alert <?= count($waiting['exits']) ? 'alert-danger' : 'alert-warning' ?>">
+		<strong>Live orders waiting for your approval.</strong>
+		<?= e(fmt_quantity($waiting['orders'])) ?> order<?= $waiting['orders'] === 1 ? '' : 's' ?>
+		for <?= e($waiting['name']) ?>, planned on <?= s_date($waiting['as_of']) ?>.
+		<?php if (count($waiting['exits'])): ?>
+			<strong>One of them is an exit (<?= e(implode(', ', $waiting['exits'])) ?>):
+			a late exit costs money.</strong>
+		<?php endif ?>
+		<?php if (!$waiting['armed']): ?>
+			The account is not armed, so nothing goes out until it is.
+		<?php endif ?>
+		<a href="<?= e(s_link(['s' => $waiting['strategy'], 'tab' => 'orders'], $show_disabled)) ?>">Look at them</a>
+	</div>
+	<?php endforeach ?>
 
 	<?php if ($halted): ?>
 	<div class="alert alert-danger">
@@ -570,6 +615,128 @@
 					</div>
 					<?php endif ?>
 
+					<?php /* ----------------------------------------------------
+					         The live account: armed or not, its caps, and the
+					         batch waiting for an approval.
+
+					         Nothing here is drawn for a paper or practice
+					         account: broker_live_state() is null for both.
+					         ---------------------------------------------------- */ ?>
+					<?php if (!empty($card['live'])): ?>
+					<?php $live = $card['live']; ?>
+					<div class="alert <?= $live['armed'] ? 'alert-warning' : 'alert-secondary' ?> py-2">
+						<strong><?= e($live['words']) ?></strong>
+
+						<?php if ($live['armed'] && $live['caps'] !== null): ?>
+						<br><small>
+							At most <?= s_money($live['caps']['per_order'], 2) ?> in one order,
+							<?= s_money($live['caps']['per_run'], 0) ?> in one run,
+							<?= s_money($live['caps']['per_day'], 0) ?> of buys a day and
+							<?= e(fmt_quantity($live['caps']['orders_per_day'])) ?> orders a day.
+							<?= s_money($live['committed']['committed'], 2) ?> of the
+							<?= s_money($live['caps']['capital'], 0) ?> cap is invested or
+							reserved.
+							<?php if ($live['today']['orders'] > 0): ?>
+								<?= e(fmt_quantity($live['today']['orders'])) ?> order(s) today,
+								<?= s_money($live['today']['bought'], 2) ?> of buys.
+							<?php endif ?>
+						</small>
+						<?php endif ?>
+
+						<?php /* What is stopping an order going out, in the order
+						         the conditions are checked. Said plainly: this page
+						         used to promise that no real order could ever be
+						         placed, and the truth now is a list. */ ?>
+						<?php if (count($live['conditions']['failed'])): ?>
+						<br><small class="text-body-secondary">
+							An order would not be sent:
+							<?= e(implode('; ', $live['conditions']['failed'])) ?>.
+						</small>
+						<?php endif ?>
+
+						<br><small>
+							<?= $live['approval']
+								? 'Every batch waits for your approval.'
+								: 'This account sends what it plans without asking.' ?>
+						</small>
+
+						<?php /* And the switch. Off means "send what you plan
+						         without asking me", which is a decision about
+						         real money, so it needs the password like
+						         arming does - and it is recorded with who and
+						         when. */ ?>
+						<form method="post" action="strategy_live.php"
+						      class="mt-1 d-flex gap-2 align-items-end flex-wrap">
+							<input type="hidden" name="do" value="approval">
+							<input type="hidden" name="strategy" value="<?= e($card['strategy']) ?>">
+							<input type="hidden" name="on" value="<?= $live['approval'] ? '0' : '1' ?>">
+							<div>
+								<label class="form-label mb-0"><small>Password</small></label>
+								<input type="password" name="password" class="form-control form-control-sm"
+								       autocomplete="current-password" required>
+							</div>
+							<button type="submit" class="btn btn-sm btn-outline-secondary">
+								<?= $live['approval'] ? 'Send without asking' : 'Ask me every time' ?>
+							</button>
+						</form>
+
+						<?php if ($live['armed']): ?>
+						<form method="post" action="strategy_live.php" class="mt-2">
+							<input type="hidden" name="do" value="disarm">
+							<input type="hidden" name="strategy" value="<?= e($card['strategy']) ?>">
+							<button type="submit" class="btn btn-sm btn-outline-danger">Disarm</button>
+							<small class="text-body-secondary ms-2">
+								One click, no password: off is the safe direction.
+							</small>
+						</form>
+						<?php else: ?>
+						<?php /* Arming. The password again and the name in full,
+						         because a password is something a browser fills in
+						         and the name of the strategy about to trade real
+						         money is something a person has to mean. */ ?>
+						<form method="post" action="strategy_live.php" class="mt-2 row g-2 align-items-end">
+							<input type="hidden" name="do" value="arm">
+							<input type="hidden" name="strategy" value="<?= e($card['strategy']) ?>">
+							<div class="col-auto">
+								<label class="form-label mb-0"><small>Type
+									&ldquo;<?= e($live['name']) ?>&rdquo;</small></label>
+								<input type="text" name="name" class="form-control form-control-sm"
+								       autocomplete="off" required>
+							</div>
+							<div class="col-auto">
+								<label class="form-label mb-0"><small>Password</small></label>
+								<input type="password" name="password" class="form-control form-control-sm"
+								       autocomplete="current-password" required>
+							</div>
+							<div class="col-auto">
+								<label class="form-label mb-0"><small>Cap &pound;</small></label>
+								<input type="number" name="cap" step="0.01" min="1"
+								       max="<?= e((string) $live['cap_max']) ?>"
+								       value="<?= e((string) number_format((float) $card['cash'], 2, '.', '')) ?>"
+								       class="form-control form-control-sm" required>
+							</div>
+							<div class="col-auto">
+								<label class="form-label mb-0"><small>Days</small></label>
+								<input type="number" name="days" min="1"
+								       max="<?= e((string) (int) T212_LIVE_ARM_DAYS_MAX) ?>"
+								       value="<?= e((string) (int) $live['arm_days']) ?>"
+								       class="form-control form-control-sm">
+							</div>
+							<div class="col-auto">
+								<button type="submit" class="btn btn-sm btn-danger">Arm this account</button>
+							</div>
+							<div class="col-12">
+								<small class="text-body-secondary">
+									At most <?= s_money($live['cap_max'], 0) ?>, which is a
+									constant in this application rather than a setting.
+									Arming expires by itself, and a halt disarms.
+								</small>
+							</div>
+						</form>
+						<?php endif ?>
+					</div>
+					<?php endif ?>
+
 					<?php /* What the broker says, for an account that has one. The
 					         figures above are this application's; the line below is
 					         whether the broker agrees with them. */ ?>
@@ -589,6 +756,19 @@
 						<br><small class="text-body-secondary">
 							<?php foreach ($agree['waiting'] as $waiting): ?>
 								<?= e($waiting) ?><br>
+							<?php endforeach ?>
+						</small>
+						<?php endif ?>
+						<?php /* On a live account, what is in it that this strategy
+						         did not buy. Dale's own holdings are not a
+						         disagreement, and saying nothing about them would
+						         leave a reader wondering whether they had been
+						         noticed. */ ?>
+						<?php if (count($agree['extra'])): ?>
+						<br><small class="text-body-secondary">
+							Also in the account, bought outside this application:<br>
+							<?php foreach ($agree['extra'] as $extra): ?>
+								<?= e($extra) ?><br>
 							<?php endforeach ?>
 						</small>
 						<?php endif ?>
@@ -844,6 +1024,145 @@
 									}
 								}
 							?>
+							<?php /* ------------------------------------------------
+							         A live account's batch, and the decision.
+
+							         The nightly run plans; this is where Dale
+							         says yes. Approving needs the password:
+							         it is the moment real money is allowed to
+							         move. Rejecting does not, for the same
+							         reason disarming does not.
+							         ------------------------------------------------ */ ?>
+							<?php if (!empty($card['live']) && $card['live']['batch'] !== null): ?>
+							<?php $batch = $card['live']['batch']; ?>
+							<div class="card mb-3">
+								<div class="card-body py-2">
+									<p class="mb-1">
+										<strong>Batch <?= e((string) $batch['batch']) ?></strong>
+										&mdash; <?= e(strtolower((string) $batch['status'])) ?>,
+										planned on <?= s_date($batch['as_of_date']) ?>,
+										<?= e(fmt_quantity(count($batch['orders']))) ?>
+										order<?= count($batch['orders']) === 1 ? '' : 's' ?>.
+										<?php if ($batch['decided_by'] !== null): ?>
+											<?= e(ucfirst(strtolower((string) $batch['status']))) ?>
+											by <?= e((string) $batch['decided_by']) ?>
+											on <?= s_when($batch['decided_at']) ?>.
+										<?php endif ?>
+									</p>
+
+									<?php if (count($batch['exits']) && $batch['waiting']): ?>
+									<p class="mb-1 text-danger">
+										<strong>This batch sells
+										<?= e(implode(', ', $batch['exits'])) ?>.</strong>
+										A late exit costs money.
+									</p>
+									<?php endif ?>
+
+									<?php /* What approving it would do, on the same screen
+									         as the button: every order at the last close,
+									         the stamp duty a buy pays, and the totals.
+									         Estimates, and said to be - these are market
+									         orders and they get what the market gives
+									         them. */ ?>
+									<?php if (count($batch['orders'])): ?>
+									<div class="table-responsive">
+										<table class="table table-sm sm-table-wide mb-1 sm-stack">
+											<thead>
+												<tr>
+													<th>Side</th><th>Share</th>
+													<th class="sm-num">Quantity</th>
+													<th class="sm-num">Est. value</th>
+													<th class="sm-num">Est. stamp duty</th>
+													<th>Reason</th>
+												</tr>
+											</thead>
+											<tbody>
+											<?php foreach ($batch['orders'] as $order): ?>
+												<tr>
+													<td data-label="Side"><?= e((string) $order['side']) ?></td>
+													<td data-label="Share"><a href="quote.php?symbol=<?=
+														urlencode((string) $order['symbol']) ?>"><?=
+														e((string) $order['symbol']) ?></a></td>
+													<td class="sm-num" data-label="Quantity"><?=
+														s_shares($order['quantity'], $card) ?></td>
+													<td class="sm-num" data-label="Est. value"><?=
+														s_money($order['value'], 2) ?></td>
+													<td class="sm-num" data-label="Est. stamp duty"><?=
+														s_money($order['stamp_duty'], 2) ?></td>
+													<td data-label="Reason"><?= e((string) $order['note']) ?></td>
+												</tr>
+											<?php endforeach ?>
+											</tbody>
+											<tfoot>
+												<tr class="sm-total-row">
+													<td data-label="Side">Totals</td>
+													<td data-label="Share"></td>
+													<td class="sm-num" data-label="Quantity"></td>
+													<td class="sm-num" data-label="Est. value"><?=
+														s_money($batch['totals']['buys']
+														        - $batch['totals']['sells'], 2) ?></td>
+													<td class="sm-num" data-label="Est. stamp duty"><?=
+														s_money($batch['totals']['stamp_duty'], 2) ?></td>
+													<td data-label="Reason">
+														<?= s_money($batch['totals']['buys'], 2) ?> of buys,
+														<?= s_money($batch['totals']['sells'], 2) ?> of sells,
+														<?= s_money_signed($batch['totals']['net'], 2) ?> to the cash
+														<?php if ($batch['totals']['unpriced']): ?>
+															(<?= e(fmt_quantity($batch['totals']['unpriced'])) ?>
+															with no price to estimate from)
+														<?php endif ?>
+													</td>
+												</tr>
+											</tfoot>
+										</table>
+									</div>
+									<?php endif ?>
+
+									<?php if ($batch['waiting'] && $card['live']['approval']): ?>
+									<div class="d-flex flex-wrap gap-3 align-items-end">
+										<form method="post" action="strategy_live.php"
+										      class="d-flex gap-2 align-items-end">
+											<input type="hidden" name="do" value="approve">
+											<input type="hidden" name="strategy" value="<?= e($card['strategy']) ?>">
+											<input type="hidden" name="batch" value="<?= e((string) $batch['batch']) ?>">
+											<div>
+												<label class="form-label mb-0"><small>Password</small></label>
+												<input type="password" name="password"
+												       class="form-control form-control-sm"
+												       autocomplete="current-password" required>
+											</div>
+											<button type="submit" class="btn btn-sm btn-danger">Approve these orders</button>
+										</form>
+										<form method="post" action="strategy_live.php"
+										      class="d-flex gap-2 align-items-end">
+											<input type="hidden" name="do" value="reject">
+											<input type="hidden" name="strategy" value="<?= e($card['strategy']) ?>">
+											<input type="hidden" name="batch" value="<?= e((string) $batch['batch']) ?>">
+											<div>
+												<label class="form-label mb-0"><small>Reason</small></label>
+												<input type="text" name="reason"
+												       class="form-control form-control-sm"
+												       placeholder="why not">
+											</div>
+											<button type="submit" class="btn btn-sm btn-outline-secondary">Reject</button>
+										</form>
+									</div>
+									<small class="text-body-secondary">
+										Approved orders are sent in this session and expire at the
+										close if they are not. An unapproved batch is recorded as
+										expired and tonight plans afresh.
+									</small>
+									<?php elseif ($batch['waiting']): ?>
+									<small class="text-body-secondary">
+										This account sends what it plans without asking, so this
+										batch needs no approval. It still needs the account to be
+										armed, and still obeys every cap.
+									</small>
+									<?php endif ?>
+								</div>
+							</div>
+							<?php endif ?>
+
 							<?php if (!count($card['pending']) && !count($today_orders)): ?>
 								<p class="text-body-secondary">No orders outstanding.</p>
 							<?php else: ?>
@@ -1134,11 +1453,34 @@
 					<p>
 						A <strong>practice</strong> strategy sends its orders to a Trading
 						212 practice account during the London session, and fills at
-						whatever the market gives it. The money there is not real either.
-						<strong>No real money is ever at risk</strong>: nothing in this
-						application can place an order against a live account, and the
-						part of it that sends orders refuses to run unless it is pointed
-						at the practice account.
+						whatever the market gives it. The money there is not real either:
+						the part of this application that sends orders refuses to run
+						unless it is pointed at the practice account.
+					</p>
+					<p>
+						A <strong>live</strong> strategy is real money - the GBP 250 Dale
+						decided on 18 November 2026 to run trend following with. It plans
+						like the others and sends nothing of its own accord.
+						<strong>Six things have to be true before one of its orders can
+						go out</strong>: the account is a live one, the live orders switch
+						is on with a key of its own, the account has been
+						<em>armed</em> on its own page by somebody logged in - with the
+						password typed again, the strategy's name typed in full, a cap in
+						pounds and an expiry - the night's batch has been
+						<em>approved</em>, every cap holds, and neither the kill switch
+						nor a halt is in the way. A halt disarms, arming expires by
+						itself, and the part that would actually send is not built yet.
+					</p>
+					<p>
+						The caps are constants rather than settings: at most
+						<?= s_money((float) T212_LIVE_CAPITAL_CAP_MAX, 0) ?> armed,
+						<?= e(round((float) T212_LIVE_PER_ORDER_FRACTION * 100)) ?>% of
+						the cap in one order,
+						<?= s_money((float) T212_LIVE_MAX_RUN_VALUE, 0) ?> in one run and
+						<?= e((string) (int) T212_LIVE_ORDERS_PER_DAY) ?> orders a day. A
+						live strategy also reconciles only what it bought: Dale's own
+						holdings in that account are not a disagreement, and a shortfall
+						in one of the strategy's own is.
 					</p>
 					<p>
 						The difference between a paper strategy and a practice one running

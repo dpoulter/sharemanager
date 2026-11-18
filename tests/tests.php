@@ -1649,6 +1649,627 @@
 
     s_drop($LV);
 
+
+    echo "\n--- live orders, stage B: arming, approval, the caps and the log ---\n";
+
+    /* Dale decided on 18 November 2026 to run trend following with the GBP
+       250 in his Trading 212 Invest account. The sentence this application
+       used to be able to make - no real order can ever be placed - becomes
+       a narrower one, and everything below is what makes the narrower one
+       true: NO REAL ORDER UNLESS DALE HAS ARMED THAT ACCOUNT.
+
+       Stage B builds the whole of the gate and none of the door: there is
+       still no code path that sends a live order, which the stage A checks
+       above still prove. These are about what will have to be true when
+       there is. */
+
+    $LB  = 'test_live_b';
+    $LB2 = 'test_live_b_two';
+    s_drop($LB); s_drop($LB2);
+    s_rules($LB, ['holdings' => 5]);
+    s_reset($LB, 250.00, 'Y', 'T212_LIVE');
+
+    check('the live tables are there after sql/strategy_live.sql',
+          broker_live_ready() === true);
+
+    /* ---------------- arming ---------------- */
+
+    check('an account nobody has armed is not armed',
+          broker_live_armed($LB) === false
+          && broker_live_arming($LB) === null
+          && broker_live_capital_cap($LB) === null);
+    check('and the page says so in the words a reader needs',
+          stripos(broker_live_words($LB), 'not armed') !== false
+          && stripos(broker_live_words($LB), 'planned and not sent') !== false,
+          broker_live_words($LB));
+    check('an unarmed account has no caps, rather than small ones',
+          broker_live_caps($LB) === null);
+
+    /* THE ONE THAT MATTERS. Arming is a person's decision in their own
+       logged in session, so the function refuses the command line outright
+       - which is the only thing a deploy, a cron job or a script can be. */
+    $lb_cli = broker_live_arm($LB, ['user_id' => 1, 'password' => 'testpass',
+                                    'typed_name' => strategy_display_name($LB),
+                                    'capital_cap' => 250]);
+    check('arming from the command line is refused, password and name notwithstanding',
+          $lb_cli['ok'] === false
+          && stripos($lb_cli['why'], 'command line') !== false
+          && (int) scalar("select count(*) from strategy_live_arming where strategy=?", [$LB]) === 0,
+          json_encode($lb_cli));
+    check('and the refusal is in the log, because a refusal is a thing that happened',
+          (int) scalar("select count(*) from strategy_live_log
+                         where strategy=? and event='REFUSED'", [$LB]) > 0);
+
+    /* No other code path writes an armed row. A check on the source rather
+       than on a run: the guarantee is that there is nowhere else, and a
+       test that calls the places it knows about cannot say that. */
+    $lb_files = array_merge(glob(dirname(__DIR__) . '/includes/*.php'),
+                            glob(dirname(__DIR__) . '/public/*.php'),
+                            glob(dirname(__DIR__) . '/templates/*.php'),
+                            glob(dirname(__DIR__) . '/tools/*.php'));
+    $lb_writers = [];
+    $lb_log_deleters = [];
+    foreach ($lb_files as $lb_file) {
+        $lb_text = (string) file_get_contents($lb_file);
+        if (preg_match('~insert\s+into\s+strategy_live_arming~i', $lb_text)) {
+            $lb_writers[] = basename($lb_file);
+        }
+        if (preg_match('~(delete\s+from|truncate\s+(table\s+)?|update)\s+strategy_live_log~i', $lb_text)) {
+            $lb_log_deleters[] = basename($lb_file);
+        }
+    }
+    check('exactly one file in the application arms an account, and it is the gate',
+          $lb_writers === ['broker_live.php'], json_encode($lb_writers));
+    check('and it does it in one function',
+          substr_count((string) file_get_contents(dirname(__DIR__) . '/includes/broker_live.php'),
+                       'insert into strategy_live_arming') === 1);
+    /* The log is the record of who allowed real money to move. A record
+       somebody can tidy up is a record of what they wanted to have
+       happened. */
+    check('nothing in the application deletes or rewrites a line of the live log',
+          $lb_log_deleters === [], json_encode($lb_log_deleters));
+
+    /* Armed, as the form would leave it. Written here rather than through
+       broker_live_arm(), which this process cannot call: it is a POST from
+       a browser or nothing. The page checks later drive the real form. */
+    $lb_arm = function ($strategy, $cap = 250.00, $days = 35, $who = 'dale') {
+        db()->prepare("update strategy_live_arming set disarmed_at=now(), disarmed_by='test'
+                        where strategy=? and disarmed_at is null")->execute([$strategy]);
+        db()->prepare("insert into strategy_live_arming
+                         (strategy,armed_by,armed_user_id,armed_at,capital_cap,expires_at)
+                       values (?,?,1,now(),?,date_add(now(), interval ? day))")
+          ->execute([$strategy, $who, $cap, $days]);
+    };
+
+    $lb_arm($LB);
+
+    check('an armed account is armed',
+          broker_live_armed($LB) === true
+          && broker_live_capital_cap($LB) === 250.00);
+    check('and the page says who armed it, until when, and the cap',
+          stripos(broker_live_words($LB), 'Armed by dale') !== false
+          && stripos(broker_live_words($LB), 'until') !== false
+          && strpos(broker_live_words($LB), '250') !== false,
+          broker_live_words($LB));
+
+    /* A forgotten account disarms itself. */
+    db()->prepare("update strategy_live_arming set expires_at=date_sub(now(), interval 1 day)
+                    where strategy=?")->execute([$LB]);
+    check('arming expires by itself',
+          broker_live_armed($LB) === false);
+    check('and the page says it ran out rather than that it was never armed',
+          stripos(broker_live_words($LB), 'ran out') !== false,
+          broker_live_words($LB));
+
+    $lb_arm($LB);
+    $lb_off = broker_live_disarm($LB, 'dale', 'done for now');
+    check('disarming takes no password and stands the account down',
+          $lb_off['disarmed'] === 1 && broker_live_armed($LB) === false);
+    check('and is in the log',
+          (int) scalar("select count(*) from strategy_live_log
+                         where strategy=? and event='DISARM'", [$LB]) === 1);
+
+    /* A halt disarms. A strategy that has stopped for a person to look at
+       must not still be armed when they do: otherwise clearing the halt
+       lets real orders out again without anybody having said so since. */
+    $lb_arm($LB);
+    broker_halt_strategy($LB, 'something a person has to look at');
+    check('a halt disarms the account',
+          broker_live_armed($LB) === false
+          && (int) scalar("select count(*) from strategy_live_log
+                            where strategy=? and event='DISARM'
+                              and detail like 'halted%'", [$LB]) === 1);
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+      ->execute([$LB]);
+
+    /* Two live strategies in one Trading 212 account would both reconcile
+       against the same positions, and a share they both held would look
+       like a shortfall to each. Until that is designed properly, the second
+       one cannot be armed. */
+    s_rules($LB2, ['holdings' => 5]);
+    s_reset($LB2, 100.00, 'Y', 'T212_LIVE');
+    $lb_arm($LB);
+    $lb_second = broker_live_can_arm($LB2);
+    check('a second live strategy cannot be armed while the first one is',
+          $lb_second['ok'] === false
+          && stripos($lb_second['why'], 'already armed') !== false,
+          json_encode($lb_second));
+    broker_live_disarm($LB, 'test', 'making room');
+    check('and can be once the first is disarmed',
+          broker_live_can_arm($LB2)['ok'] === true);
+    check('a paper account cannot be armed at all',
+          broker_live_can_arm($S)['ok'] === false
+          && stripos(broker_live_can_arm($S)['why'], 'only a live account') !== false);
+    s_drop($LB2);
+
+    /* ---------------- the caps ---------------- */
+
+    $lb_arm($LB, 250.00);
+    $lb_caps = broker_live_caps($LB);
+    check('the caps come from the cap arming set, and the constants',
+          $lb_caps['capital'] === 250.00
+          && $lb_caps['per_order'] === 37.50
+          && $lb_caps['per_run'] === 150.00
+          && $lb_caps['per_day'] === 250.00
+          && $lb_caps['orders_per_day'] === 30,
+          json_encode($lb_caps));
+
+    /* No environment variable widens any of them: they are literals in
+       constants.php, which is the difference between a cap and a setting. */
+    $lb_consts = (string) file_get_contents(dirname(__DIR__) . '/includes/constants.php');
+    check('the live caps are constants rather than settings',
+          preg_match('~define\("T212_LIVE_CAPITAL_CAP_MAX",\s*500\.00\)~', $lb_consts) === 1
+          && preg_match('~define\("T212_LIVE_MAX_RUN_VALUE",\s*150\.00\)~', $lb_consts) === 1
+          && preg_match('~define\("T212_LIVE_ORDERS_PER_DAY",\s*30\)~', $lb_consts) === 1
+          && preg_match('~T212_LIVE_(CAPITAL_CAP_MAX|PER_ORDER_FRACTION|MAX_RUN_VALUE|ORDERS_PER_DAY)"?,\s*\(?float\)?\s*\(?getenv~', $lb_consts) === 0);
+
+    $lb_order = ['symbol' => 'AAA', 'exchange' => 'XLON', 'side' => 'BUY',
+                 'quantity' => 1, 'as_of_date' => $SASOF];
+
+    check('an order inside every cap is allowed',
+          broker_live_cap_check($LB, $lb_order, ['value' => 16.67])['ok'] === true);
+
+    $lb_big = broker_live_cap_check($LB, $lb_order, ['value' => 40.00]);
+    check('one over 15% of the cap is refused, with the reason',
+          $lb_big['ok'] === false && $lb_big['key'] === 'per_order'
+          && stripos($lb_big['why'], 'over the') !== false, json_encode($lb_big));
+
+    $lb_run = broker_live_cap_check($LB, $lb_order, ['value' => 20.00, 'run_value' => 140.00]);
+    check('a run over GBP 150 stops there',
+          $lb_run['ok'] === false && $lb_run['key'] === 'per_run', json_encode($lb_run));
+
+    /* The strategy's cash is its own ledger. A deposit into the Trading 212
+       account does not raise what the strategy may put at risk - which is
+       the whole point of a capital cap rather than "whatever is in the
+       account". */
+    db()->prepare("delete from broker_account_values where broker=? and environment='live'")
+      ->execute([BROKER_T212]);
+    db()->prepare("insert into broker_account_values (broker,environment,as_of_date,cash,total,synced_at)
+                   values (?,'live',?,10000,10000,now())")->execute([BROKER_T212, asof_date()]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$LB]);
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',1,240,now())")->execute([$LB]);
+    $lb_committed = broker_live_committed($LB);
+    $lb_capital = broker_live_cap_check($LB, $lb_order, ['value' => 30.00]);
+    check('GBP 10,000 of broker cash does not raise a GBP 250 strategy\'s cap',
+          $lb_committed['committed'] === 240.0
+          && $lb_capital['ok'] === false && $lb_capital['key'] === 'capital'
+          && stripos($lb_capital['why'], 'does not raise') !== false,
+          json_encode([$lb_committed, $lb_capital]));
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$LB]);
+    db()->prepare("delete from broker_account_values where broker=? and environment='live'")
+      ->execute([BROKER_T212]);
+
+    /* Thirty orders in a day is a whole rebalance twice over. */
+    $lb_insert = db()->prepare("insert into strategy_orders
+                                  (client_order_id,strategy,as_of_date,symbol,exchange,side,
+                                   quantity,status,created_at,sent_at,note)
+                                values (?,?,?,'AAA','XLON','BUY',1,'SENT',now(),now(),'cap test')");
+    for ($lb_i = 0; $lb_i < 30; $lb_i++) { $lb_insert->execute([$LB . ':day:' . $lb_i, $LB, $SASOF]); }
+    $lb_day = broker_live_cap_check($LB, $lb_order, ['value' => 10.00]);
+    check('the thirty-first order of a day is refused',
+          $lb_day['ok'] === false && $lb_day['key'] === 'orders_per_day', json_encode($lb_day));
+    db()->prepare("delete from strategy_orders where strategy=? and note='cap test'")->execute([$LB]);
+
+    /* A sale is never capped: the caps limit what can be put at risk, and
+       selling is the direction that reduces it. */
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'AAA','XLON',100,2.40,now())")->execute([$LB]);
+    check('a sale is not held back by the day\'s spending',
+          broker_live_cap_check($LB, ['symbol' => 'AAA', 'exchange' => 'XLON', 'side' => 'SELL',
+                                      'quantity' => 100, 'as_of_date' => $SASOF],
+                                ['value' => 240.00])['ok'] === true);
+
+    /* ---------------- only its own positions ---------------- */
+
+    check('a strategy may sell what it holds',
+          broker_live_sale_allowed($LB, 'AAA', 100)['ok'] === true
+          && broker_live_sale_allowed($LB, 'AAA', 40)['ok'] === true);
+    $lb_over = broker_live_sale_allowed($LB, 'AAA', 101);
+    check('and never more of a share than it bought',
+          $lb_over['ok'] === false
+          && stripos($lb_over['why'], 'never sells more') !== false, json_encode($lb_over));
+    $lb_none = broker_live_sale_allowed($LB, 'BBB', 1);
+    check('and never a share it did not buy',
+          $lb_none['ok'] === false
+          && stripos($lb_none['why'], 'not one of this strategy') !== false, json_encode($lb_none));
+
+    /* The reconciliation. Dale's live account holds shares he bought
+       himself, and the practice rule - any difference either way halts -
+       would stop the strategy the moment it looked. */
+    db()->prepare("delete from broker_positions where broker=? and environment='live'")
+      ->execute([BROKER_T212]);
+    $lb_theirs = db()->prepare("insert into broker_positions
+                                  (broker,environment,as_of_date,symbol,broker_ticker,quantity,
+                                   average_price,synced_at)
+                                values (?,'live',?,?,?,?,1,now())");
+    /* The strategy's 100 of AAA are there, with more of it besides, and the
+       account holds a share of Dale's that the strategy never bought. */
+    $lb_theirs->execute([BROKER_T212, date('Y-m-d'), 'AAA', 'AAAl_EQ', 150]);
+    $lb_theirs->execute([BROKER_T212, date('Y-m-d'), 'ZZZ', 'ZZZl_EQ', 7]);
+    db()->prepare("insert into broker_sync_runs (broker,environment,as_of_date,status,started_at,finished_at)
+                   values (?,'live',?,'OK',now(),now())")->execute([BROKER_T212, date('Y-m-d')]);
+
+    $lb_own = broker_reconcile_positions($LB, ['report_only' => true]);
+    check('a live strategy reconciles its own positions, not the whole account',
+          $lb_own['own_only'] === true
+          && $lb_own['differences'] === []
+          && $lb_own['halted'] === false,
+          json_encode($lb_own));
+    check('and says what is in the account that it did not buy',
+          count($lb_own['extra']) === 2
+          && stripos(implode(' ', $lb_own['extra']), 'ZZZ') !== false,
+          json_encode($lb_own['extra']));
+
+    /* Less of a share than the strategy bought IS a difference: somebody
+       has sold our position by hand, and the next rebalance would size
+       against shares that are not there. */
+    db()->prepare("update broker_positions set quantity=60
+                    where broker=? and environment='live' and symbol='AAA'")->execute([BROKER_T212]);
+    $lb_short = broker_reconcile_positions($LB, ['report_only' => true]);
+    check('a shortfall in one of its own holdings is a difference',
+          count($lb_short['differences']) === 1
+          && stripos($lb_short['differences'][0], 'less than it bought') !== false,
+          json_encode($lb_short['differences']));
+    $lb_halt = broker_reconcile_positions($LB);
+    check('and halts the strategy',
+          $lb_halt['halted'] === true
+          && scalar("select halted from strategy_accounts where strategy=?", [$LB]) === 'Y');
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+      ->execute([$LB]);
+    db()->prepare("delete from broker_positions where broker=? and environment='live'")
+      ->execute([BROKER_T212]);
+    db()->prepare("delete from broker_sync_runs where broker=? and environment='live'")
+      ->execute([BROKER_T212]);
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$LB]);
+
+    /* ---------------- approval ---------------- */
+
+    $lb_arm($LB, 250.00);
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$LB]);
+    db()->prepare("delete from strategy_order_batches where strategy=?")->execute([$LB]);
+
+    $lb_id = strategy_record_order($LB, $SASOF,
+                 ['symbol' => 'AAA', 'exchange' => 'XLON', 'side' => 'BUY', 'quantity' => 1],
+                 'rebalance');
+    $lb_batch_id = broker_live_batch_id($LB, $SASOF);
+    check('a live account\'s order is recorded into a batch',
+          $lb_id !== null
+          && scalar("select batch from strategy_orders where client_order_id=?", [$lb_id])
+             === $lb_batch_id
+          && scalar("select status from strategy_order_batches where batch=?", [$lb_batch_id])
+             === 'UNAPPROVED',
+          json_encode([$lb_id, $lb_batch_id]));
+    check('and is not approved by being planned',
+          broker_live_order_approved($lb_id) === false);
+
+    /* An exit is in the same batch as the buys: a batch that could be half
+       approved is a portfolio nobody chose. */
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'BBB','XLON',10,1,now())")->execute([$LB]);
+    $lb_exit = strategy_record_order($LB, $SASOF,
+                   ['symbol' => 'BBB', 'exchange' => 'XLON', 'side' => 'SELL', 'quantity' => 10],
+                   'below_ma200_2d');
+    check('an exit waits for the same approval as the buys',
+          scalar("select batch from strategy_orders where client_order_id=?", [$lb_exit])
+          === $lb_batch_id
+          && in_array('BBB', broker_live_batch($LB, $SASOF)['exits'], true));
+
+    /* An approval is a decision about money, so what approving it would
+       cost is on the same screen as the button: every order at the last
+       close, the stamp duty a buy pays, and the totals. */
+    $lb_figures = broker_live_batch($LB, $SASOF);
+    $lb_totals  = $lb_figures['totals'];
+    $lb_duty = [];
+    foreach ($lb_figures['orders'] as $lb_line) { $lb_duty[$lb_line['side']] = $lb_line['stamp_duty']; }
+    check('the batch carries every order\'s value, its stamp duty and the totals',
+          $lb_totals['priced'] === 2 && $lb_totals['unpriced'] === 0
+          && $lb_totals['buys'] > 0 && $lb_totals['sells'] > 0
+          && abs($lb_totals['stamp_duty'] - $lb_totals['buys'] * STRATEGY_STAMP_DUTY_RATE) < 0.0001
+          && $lb_duty['BUY'] > 0 && (float) $lb_duty['SELL'] === 0.0,
+          json_encode([$lb_totals, $lb_duty]));
+
+    $lb_no_pw = broker_live_approve($LB, $lb_batch_id, ['user_id' => 1, 'password' => 'wrong']);
+    check('approving needs the password',
+          $lb_no_pw['ok'] === false
+          && stripos($lb_no_pw['why'], 'password') !== false
+          && broker_live_order_approved($lb_id) === false, json_encode($lb_no_pw));
+
+    $lb_yes = broker_live_approve($LB, $lb_batch_id, ['user_id' => 1, 'password' => 'testpass']);
+    check('and with it the batch is approved, once',
+          $lb_yes['ok'] === true && $lb_yes['orders'] === 2
+          && broker_live_order_approved($lb_id) === true
+          && broker_live_approve($LB, $lb_batch_id,
+                                 ['user_id' => 1, 'password' => 'testpass'])['ok'] === false,
+          json_encode($lb_yes));
+    check('who approved it and when are recorded',
+          scalar("select decided_by from strategy_order_batches where batch=?", [$lb_batch_id])
+          === 'tester'
+          && (int) scalar("select count(*) from strategy_live_log
+                            where strategy=? and event='APPROVE'", [$LB]) === 1);
+
+    /* An approval is worth nothing without an arming, and saying so now is
+       better than at the close. */
+    $lb_arm_first = (function () use ($LB, $SASOF) {
+        broker_live_disarm($LB, 'test', 'to prove the order of things');
+        db()->prepare("update strategy_order_batches set status='UNAPPROVED', decided_at=null,
+                              decided_by=null where strategy=?")->execute([$LB]);
+        return broker_live_approve($LB, broker_live_batch_id($LB, $SASOF),
+                                   ['user_id' => 1, 'password' => 'testpass']);
+    })();
+    check('an unarmed account cannot have its batch approved',
+          $lb_arm_first['ok'] === false
+          && stripos($lb_arm_first['why'], 'not armed') !== false, json_encode($lb_arm_first));
+    $lb_arm($LB, 250.00);
+
+    /* Rejecting cancels. An order nobody approved must not be picked up by
+       the next run as though it were waiting for the market to open. */
+    $lb_reject = broker_live_reject($LB, $lb_batch_id, ['user_id' => 1, 'reason' => 'not today']);
+    check('rejecting a batch cancels its orders, with the reason',
+          $lb_reject['ok'] === true
+          && scalar("select status from strategy_orders where client_order_id=?", [$lb_id])
+             === 'CANCELLED'
+          && stripos((string) scalar("select note from strategy_orders where client_order_id=?",
+                                     [$lb_id]), 'not today') !== false);
+
+    /* And a batch nobody decided about expires with the session it was
+       planned for. */
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$LB]);
+    db()->prepare("delete from strategy_order_batches where strategy=?")->execute([$LB]);
+    $lb_old = strategy_record_order($LB, $SASOF,
+                  ['symbol' => 'CCC', 'exchange' => 'XLON', 'side' => 'BUY', 'quantity' => 1],
+                  'rebalance');
+    $lb_expired = broker_live_expire_batches(['as_of' => $SNEXT]);
+    check('an unapproved batch expires and is recorded as expired, not sent',
+          $lb_expired['expired'] === 1 && $lb_expired['cancelled'] === 1
+          && scalar("select status from strategy_order_batches where batch=?",
+                    [broker_live_batch_id($LB, $SASOF)]) === 'EXPIRED'
+          && scalar("select status from strategy_orders where client_order_id=?", [$lb_old])
+             === 'CANCELLED',
+          json_encode($lb_expired));
+    check('and the expiry is in the log',
+          (int) scalar("select count(*) from strategy_live_log
+                         where strategy=? and event='EXPIRE'", [$LB]) === 1);
+
+    /* An approval is for the session it was given in. Carrying it over
+       would mean orders going out two days after somebody looked at them,
+       which is not what they looked at. */
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$LB]);
+    db()->prepare("delete from strategy_order_batches where strategy=?")->execute([$LB]);
+    $lb_stale = strategy_record_order($LB, $SASOF,
+                    ['symbol' => 'DDD', 'exchange' => 'XLON', 'side' => 'BUY', 'quantity' => 1],
+                    'rebalance');
+    broker_live_approve($LB, broker_live_batch_id($LB, $SASOF),
+                        ['user_id' => 1, 'password' => 'testpass']);
+    broker_live_expire_batches(['as_of' => $SNEXT]);
+    check('an approved batch that was not sent in its own session expires too',
+          scalar("select status from strategy_order_batches where batch=?",
+                 [broker_live_batch_id($LB, $SASOF)]) === 'EXPIRED'
+          && scalar("select status from strategy_orders where client_order_id=?", [$lb_stale])
+             === 'CANCELLED');
+
+    /* Sending without asking: Dale's own setting, with the password, per
+       account, and recorded. */
+    check('approval is required unless somebody says otherwise',
+          broker_live_approval_required($LB) === true);
+    check('switching it off needs the password',
+          broker_live_set_approval($LB, false, ['user_id' => 1, 'password' => 'nope'])['ok'] === false
+          && broker_live_approval_required($LB) === true);
+    check('and with it, an account sends what it plans',
+          broker_live_set_approval($LB, false,
+                                   ['user_id' => 1, 'password' => 'testpass'])['ok'] === true
+          && broker_live_approval_required($LB) === false
+          && scalar("select approval_set_by from strategy_accounts where strategy=?", [$LB])
+             === 'tester'
+          && (int) scalar("select count(*) from strategy_live_log
+                            where strategy=? and event='APPROVAL_OFF'", [$LB]) === 1);
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$LB]);
+    db()->prepare("delete from strategy_order_batches where strategy=?")->execute([$LB]);
+    $lb_free = strategy_record_order($LB, $SASOF,
+                   ['symbol' => 'EEE', 'exchange' => 'XLON', 'side' => 'BUY', 'quantity' => 1],
+                   'rebalance');
+    check('an order on such an account is approved as far as approval goes',
+          broker_live_order_approved($lb_free) === true);
+    broker_live_set_approval($LB, true, ['user_id' => 1, 'password' => 'testpass']);
+    check('and asking again puts it back',
+          broker_live_approval_required($LB) === true
+          && broker_live_order_approved($lb_free) === false);
+
+    /* ---------------- the six conditions ---------------- */
+
+    /* Removed one at a time. The switch is off in the suite and stays off -
+       there is no key here with Orders - Execute and there is not going to
+       be - so the whole verdict can never be true; what is asserted is each
+       condition's own answer, which is what the order function reads. */
+    $lb_state = function ($options = []) use ($LB) {
+        $out = [];
+        foreach (broker_live_conditions($LB, array_merge(['explain' => true], $options))['checks']
+                 as $check) { $out[$check['key']] = $check['ok']; }
+        return $out;
+    };
+
+    db()->prepare("delete from strategy_orders where strategy=?")->execute([$LB]);
+    db()->prepare("delete from strategy_order_batches where strategy=?")->execute([$LB]);
+    $lb_six = strategy_record_order($LB, $SASOF,
+                  ['symbol' => 'FFF', 'exchange' => 'XLON', 'side' => 'BUY', 'quantity' => 1],
+                  'rebalance');
+    broker_live_approve($LB, broker_live_batch_id($LB, $SASOF),
+                        ['user_id' => 1, 'password' => 'testpass']);
+    $lb_row = rows("select * from strategy_orders where client_order_id=?", [$lb_six])[0];
+
+    $lb_all = $lb_state(['order' => $lb_row, 'value' => 16.67]);
+    check('with everything in place, five of the six conditions hold',
+          $lb_all['mode'] === true && $lb_all['armed'] === true
+          && $lb_all['approved'] === true && $lb_all['caps'] === true
+          && $lb_all['kill_switch'] === true && $lb_all['running'] === true,
+          json_encode($lb_all));
+    check('and the sixth is the switch, which is off here and refuses everything',
+          $lb_all['switch'] === false
+          && broker_live_conditions($LB, ['explain' => true,
+                                          'order' => $lb_row])['ok'] === false);
+
+    broker_live_disarm($LB, 'test', 'condition 3');
+    /* Asked twice: once as the page asks, which explains and writes
+       nothing, and once as the order function asks, which records why it
+       refused - "why did nothing go out last night" is a question somebody
+       asks the next morning. */
+    $lb_unarmed = broker_live_conditions($LB, ['order' => $lb_row]);
+    check('not armed: condition 3 fails and the reason is recorded',
+          $lb_state(['order' => $lb_row])['armed'] === false
+          && $lb_unarmed['ok'] === false
+          && stripos($lb_unarmed['why'], 'not armed') !== false
+          && (int) scalar("select count(*) from strategy_live_log
+                            where strategy=? and event='REFUSED'
+                              and detail like '%not armed%'", [$LB]) > 0,
+          json_encode($lb_unarmed['failed']));
+    check('and asking from a page records nothing at all',
+          (int) scalar("select count(*) from strategy_live_log
+                         where strategy=? and event='REFUSED'", [$LB])
+          === (int) (function () use ($LB, $lb_row) {
+                  broker_live_conditions($LB, ['explain' => true, 'order' => $lb_row]);
+                  return scalar("select count(*) from strategy_live_log
+                                  where strategy=? and event='REFUSED'", [$LB]);
+              })());
+    $lb_arm($LB, 250.00);
+
+    db()->prepare("update strategy_order_batches set status='UNAPPROVED' where strategy=?")
+      ->execute([$LB]);
+    check('not approved: condition 4 fails',
+          $lb_state(['order' => $lb_row])['approved'] === false);
+    broker_live_approve($LB, broker_live_batch_id($LB, $SASOF),
+                        ['user_id' => 1, 'password' => 'testpass']);
+
+    check('over a cap: condition 5 fails',
+          $lb_state(['order' => $lb_row, 'value' => 400.00])['caps'] === false);
+
+    db()->prepare("update strategy_accounts set halted='Y', halt_reason='by hand' where strategy=?")
+      ->execute([$LB]);
+    check('halted: condition 6 fails',
+          $lb_state(['order' => $lb_row])['running'] === false);
+    db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")
+      ->execute([$LB]);
+
+    db()->prepare("update strategy_accounts set mode='T212_DEMO' where strategy=?")->execute([$LB]);
+    check('a practice account is not on the live path at all',
+          $lb_state(['order' => $lb_row])['mode'] === false
+          && broker_live_state($LB) === null);
+    db()->prepare("update strategy_accounts set mode='T212_LIVE' where strategy=?")->execute([$LB]);
+
+    /* ---------------- planning inside the caps ---------------- */
+
+    /* The plan is sized inside the same limits the send path enforces:
+       planning fifteen orders and refusing eleven of them would leave a
+       book nobody chose. */
+    s_reset($LB, 1000.00, 'Y', 'T212_LIVE');
+    $lb_arm($LB, 250.00);
+    $lb_targets = [];
+    foreach (['AAA', 'BBB', 'CCC', 'DDD', 'EEE'] as $lb_symbol) {
+        $lb_targets[] = ['symbol' => $lb_symbol, 'exchange' => 'XLON', 'target_weight' => 0.1];
+    }
+    $lb_plan = strategy_plan_orders($LB, $SASOF, $lb_targets);
+    check('a live plan is sized against the capital cap, not the cash in the ledger',
+          $lb_plan['account_value'] === 250.00
+          && stripos(implode(' ', $lb_plan['notes']), 'capital cap') !== false
+          /* Said, not counted: a cap doing its job must not make the
+             nightly job report a problem. */
+          && $lb_plan['errors'] === [],
+          json_encode([$lb_plan['account_value'], $lb_plan['notes'], $lb_plan['errors']]));
+
+    /* 0.2 rather than anything larger: the engine refuses a target over
+       STRATEGY_MAX_POSITION_WEIGHT before it prices anything, and what is
+       being tested here is the live cap, not that one. 20% of GBP 250 is
+       GBP 50, which is over the GBP 37.50 a single live order may be. */
+    $lb_plan_big = strategy_plan_orders($LB, $SASOF,
+        [['symbol' => 'AAA', 'exchange' => 'XLON', 'target_weight' => 0.2]]);
+    $lb_plan_skipped = '';
+    foreach ($lb_plan_big['skipped'] as $lb_miss) { $lb_plan_skipped .= $lb_miss['reason'] . ' '; }
+    check('and no single planned order is over 15% of it',
+          count($lb_plan_big['orders']) === 0
+          && stripos($lb_plan_skipped, 'a single live order may be') !== false,
+          json_encode($lb_plan_big));
+
+    /* The practice account is untouched by all of it: same plan, no cap, no
+       batch. */
+    s_reset($LB, 1000.00, 'Y', 'T212_DEMO');
+    $lb_demo_plan = strategy_plan_orders($LB, $SASOF, $lb_targets);
+    $lb_demo_id = strategy_record_order($LB, $SASOF,
+                      ['symbol' => 'GGG', 'exchange' => 'XLON', 'side' => 'BUY', 'quantity' => 1],
+                      'rebalance');
+    check('a practice account is planned against its own cash and needs no batch',
+          $lb_demo_plan['account_value'] === 1000.00
+          && count($lb_demo_plan['orders']) === 5
+          && scalar("select batch from strategy_orders where client_order_id=?",
+                    [$lb_demo_id]) === null,
+          json_encode([$lb_demo_plan['account_value'], count($lb_demo_plan['orders'])]));
+
+    /* ---------------- what the reporter says ---------------- */
+
+    s_reset($LB, 250.00, 'Y', 'T212_LIVE');
+    $lb_arm($LB, 250.00);
+
+    [$lb_check_off] = run_script('live_check.php', [$LB]);
+    check('the state reporter says the switch is off and nothing can send',
+          stripos($lb_check_off, 'SM_T212_LIVE_ORDERS is off') !== false
+          && stripos($lb_check_off, 'no live order path yet') !== false
+          && stripos($lb_check_off, 'Armed by dale') !== false,
+          $lb_check_off);
+
+    [$lb_check_on] = run_script('live_check.php', [$LB],
+        ['SM_T212_LIVE_ORDERS' => 'on', 'SM_T212_LIVE_ORDERS_API_KEY' => 'k',
+         'SM_T212_LIVE_ORDERS_API_SECRET' => 's']);
+    check('with the switch on it says so, and still that there is no path',
+          stripos($lb_check_on, 'SM_T212_LIVE_ORDERS is on') !== false
+          && stripos($lb_check_on, '[yes] switch') !== false
+          && stripos($lb_check_on, 'no live order path yet') !== false,
+          $lb_check_on);
+
+    /* The kill switch, which stops a live order on its own. In a
+       subprocess because the constant is fixed when this process starts:
+       the suite cannot create /var/lib/sharemanager, and a test that
+       quietly did nothing would be worse than one that runs the real
+       script with the switch pointed somewhere it can write. */
+    $lb_ks_file = sys_get_temp_dir() . '/sharemanager_live_stop' . getmypid();
+    touch($lb_ks_file);
+    [$lb_check_ks] = run_script('live_check.php', [$LB],
+        ['SM_T212_LIVE_ORDERS' => 'on', 'SM_T212_LIVE_ORDERS_API_KEY' => 'k',
+         'STRATEGY_KILL_SWITCH_FILE' => $lb_ks_file]);
+    unlink($lb_ks_file);
+    check('the kill switch alone stops a live order',
+          stripos($lb_check_ks, '[NO ] kill_switch') !== false
+          && stripos($lb_check_ks, 'would an order be sent: no') !== false,
+          $lb_check_ks);
+
+    /* And the reporter arms nothing: it is a read, which is the whole of
+       what Jarvis does with a live account. */
+    check('the reporter has no way to arm anything',
+          preg_match('~broker_live_(arm|approve|disarm|set_approval)\s*\(~',
+                     (string) file_get_contents(dirname(__DIR__) . '/includes/live_check.php')) === 0);
+
+    s_drop($LB);
+    db()->prepare("delete from strategy_live_arming where strategy in (?,?)")->execute([$LB, $LB2]);
+    db()->prepare("delete from strategy_live_log where strategy in (?,?)")->execute([$LB, $LB2]);
+    db()->prepare("delete from strategy_order_batches where strategy in (?,?)")->execute([$LB, $LB2]);
+
     echo "\n--- fix M: a share the broker does not list is not selected ---\n";
 
     /* OCI (Oakley Capital Investments) is in the FTSE 250, so the universe
@@ -12466,15 +13087,24 @@
     check('and the chart names its lines the same way',
           strpos($st_tpl, 'strategy_display_name($card[\'strategy\'])') !== false);
 
-    /* Eight lines of explanation, with the thing a reader must know - that
-       no real money is at risk - in the middle of it. It is one line now,
-       and the explanation is a view of its own in the menu. */
+    /* Eight lines of explanation, with the thing a reader must know in the
+       middle of it. It is one line now, and the explanation is a view of
+       its own in the menu.
+
+       What the line says changed on 18 November 2026. It used to promise
+       that no real money was ever at risk; Dale decided to run trend
+       following with the GBP 250 in his Trading 212 account, so the promise
+       is replaced by the condition that makes it narrow and true - no order
+       goes to a live account unless that account is armed. A page still
+       claiming the old sentence would be a page lying to its reader. */
     check('the opening is one line, with the explanation behind a link',
-          strpos($st_tpl, 'No real money is ever at risk') !== false
+          strpos($st_tpl, 'unless that account is') !== false
+          && strpos($st_tpl, 'armed') !== false
           && strpos($st_tpl, 'How this works') !== false
-          && strpos($st_tpl, 'No real money is ever at risk')
-             < strpos($st_tpl, 'How this works')
+          && strpos($st_tpl, 'armed') < strpos($st_tpl, 'How this works')
           && strpos($st_tpl, '<summary>How this works</summary>') === false);
+    check('and the old promise is gone from the page, because it is no longer true',
+          strpos($st_tpl, 'No real money is ever at risk') === false);
 
     /* A row of dashes reads as a strategy that lost everything rather than
        one that has not started. */
@@ -14836,8 +15466,11 @@ STUB
               substr($sp_card, max(0, stripos($sp_card, 'waiting to fill')) - 200, 500));
         check('the dealing costs paid are at the top of the trades',
               stripos($sp_card, 'Dealing costs paid') !== false);
-        check('it says in plain words that no real money is at risk',
-              stripos($sp_page, 'No real money is ever at risk') !== false);
+        check('it says in plain words what stands between it and a real order',
+              stripos($sp_page, 'unless that account is') !== false
+              && stripos($sp_page, 'armed') !== false
+              && stripos($sp_page, 'No real money is ever at risk') === false,
+              substr($sp_page, max(0, stripos($sp_page, 'nightly job') - 100), 500));
         /* And which of the two kinds of account each card is, because what
            an order does depends on it - in the words a reader has seen on
            the broker's own site, not as the column value. */
@@ -15349,6 +15982,177 @@ STUB
               stripos($sp_anon_body, 'quote.php?symbol=AAA') === false
               && strpos($sp_anon_body, '105,000') === false,
               substr($sp_anon_body, 0, 200));
+
+
+        /* ---------------- Arming and approving, through the form ---------------- */
+
+        /* The guarantee is that arming happens on this page, in a logged in
+           session, with the password typed again and the strategy's name
+           typed in full - and nowhere else. The checks in the engine section
+           prove that no other code path writes an armed row and that the
+           command line is refused outright; these drive the form itself,
+           which is the only thing that is allowed to work. */
+
+        $spl = 'test_page_live';
+        foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values',
+                  'strategy_rules','strategy_accounts'] as $spl_table) {
+            db()->prepare("delete from $spl_table where strategy=?")->execute([$spl]);
+        }
+        foreach (['strategy_live_arming','strategy_live_log','strategy_order_batches'] as $spl_table) {
+            db()->prepare("delete from $spl_table where strategy=?")->execute([$spl]);
+        }
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                       values (?,250,'GBP','T212_LIVE','Y',now())")->execute([$spl]);
+        db()->prepare("insert into strategy_rules (strategy,selection,score_indicator,rank_by,holdings,
+                                                   rebalance,exit_rules,exclude_funds,updated_at)
+                       values (?,'score','momentum_score','momentum_score',15,'monthly','','Y',now())")
+          ->execute([$spl]);
+        $spl_batch = $spl . ':' . $sp_asof;
+        db()->prepare("insert into strategy_order_batches (batch,strategy,as_of_date,status,created_at)
+                       values (?,?,?,'UNAPPROVED',now())")->execute([$spl_batch, $spl, $sp_asof]);
+        db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,batch,symbol,exchange,side,quantity,
+                          status,created_at,note)
+                       values (?,?,?,?,'AAA','XLON','BUY',5,'PENDING',now(),'rebalance')")
+          ->execute([$spl . '-1', $spl, $sp_asof, $spl_batch]);
+
+        $spl_name = strategy_display_name($spl);
+
+        /* A GET arms nothing: a link somebody can be sent, or a preview
+           fetch, must not be able to do this. */
+        $spl_get = trim((string) shell_exec('curl -s -o /dev/null -w "%{http_code}" -m 30 -b '
+                        . escapeshellarg($jar) . ' '
+                        . escapeshellarg("$base/strategy_live.php?do=arm&strategy=$spl")));
+        check('the arming endpoint refuses a GET',
+              $spl_get === '405'
+              && (int) scalar("select count(*) from strategy_live_arming where strategy=?",
+                              [$spl]) === 0, $spl_get);
+
+        $spl_page = (string) $curl("$base/strategies.php?s=" . urlencode($spl));
+        check('an unarmed live account says so on its page, and offers the form',
+              stripos($spl_page, 'Not armed') !== false
+              && stripos($spl_page, 'planned and not sent') !== false
+              && stripos($spl_page, 'Arm this account') !== false
+              && stripos($spl_page, 'Type') !== false,
+              substr($spl_page, max(0, stripos($spl_page, 'Not armed') - 200), 900));
+        check('and the form asks for the name and the password, not a single click',
+              preg_match('~name="password"[^>]*~', $spl_page) === 1
+              && strpos($spl_page, 'name="name"') !== false
+              && strpos($spl_page, 'value="arm"') !== false);
+
+        /* The orders waiting for a decision, on the page somebody opens
+           first as well as on the strategy's own. */
+        check('the strategies page says live orders are waiting for an approval',
+              stripos($spl_page, 'waiting for your approval') !== false);
+        check('and shows what approving them would cost, down to the stamp duty',
+              stripos($spl_page, 'Est. stamp duty') !== false
+              && stripos($spl_page, 'of buys') !== false
+              && stripos($spl_page, 'Approve these orders') !== false,
+              substr($spl_page, max(0, stripos($spl_page, 'Est. stamp duty') - 400), 900));
+        check('and so does the dashboard',
+              stripos((string) $curl("$base/index.php"), 'waiting for your approval') !== false);
+
+        $spl_arm = function ($fields) use ($curl, $base, $spl) {
+            return (string) $curl("$base/strategy_live.php",
+                                  'do=arm&strategy=' . urlencode($spl) . '&' . $fields);
+        };
+
+        $spl_wrong_pw = $spl_arm('name=' . urlencode($spl_name) . '&password=wrong&cap=250&days=35');
+        check('the wrong password arms nothing, and the page says why',
+              stripos($spl_wrong_pw, 'Not armed') !== false
+              && stripos($spl_wrong_pw, 'password was wrong') !== false
+              && (int) scalar("select count(*) from strategy_live_arming where strategy=?",
+                              [$spl]) === 0,
+              substr($spl_wrong_pw, max(0, stripos($spl_wrong_pw, 'Not armed') - 100), 400));
+
+        $spl_wrong_name = $spl_arm('name=something+else&password=testpass&cap=250&days=35');
+        check('and so does the wrong name, however right the password is',
+              stripos($spl_wrong_name, 'typed in full') !== false
+              && (int) scalar("select count(*) from strategy_live_arming where strategy=?",
+                              [$spl]) === 0);
+
+        $spl_too_big = $spl_arm('name=' . urlencode($spl_name) . '&password=testpass&cap=600&days=35');
+        check('a cap over the constant maximum is refused',
+              stripos($spl_too_big, 'most a live strategy may be armed with') !== false
+              && (int) scalar("select count(*) from strategy_live_arming where strategy=?",
+                              [$spl]) === 0);
+
+        $spl_armed = $spl_arm('name=' . urlencode($spl_name) . '&password=testpass&cap=250&days=35');
+        check('the password and the name together arm the account',
+              (int) scalar("select count(*) from strategy_live_arming
+                             where strategy=? and disarmed_at is null", [$spl]) === 1
+              && scalar("select armed_by from strategy_live_arming where strategy=?", [$spl])
+                 === 'tester'
+              && (float) scalar("select capital_cap from strategy_live_arming where strategy=?",
+                                [$spl]) === 250.00,
+              substr($spl_armed, max(0, stripos($spl_armed, 'Armed') - 100), 400));
+        check('and the page says who armed it, until when, and the caps',
+              stripos($spl_armed, 'Armed by tester') !== false
+              && stripos($spl_armed, 'in one order') !== false
+              && stripos($spl_armed, 'Disarm') !== false,
+              substr($spl_armed, max(0, stripos($spl_armed, 'Armed by tester') - 100), 700));
+        check('the arming is in the log, with who did it',
+              scalar("select who from strategy_live_log where strategy=? and event='ARM'", [$spl])
+              === 'tester');
+
+        /* Approving. The password again, because this is the moment real
+           money is allowed to move. */
+        $spl_appr = (string) $curl("$base/strategy_live.php",
+                        'do=approve&strategy=' . urlencode($spl) . '&batch=' . urlencode($spl_batch)
+                        . '&password=wrong');
+        check('approving with the wrong password approves nothing',
+              stripos($spl_appr, 'password was wrong') !== false
+              && scalar("select status from strategy_order_batches where batch=?", [$spl_batch])
+                 === 'UNAPPROVED');
+
+        $spl_appr_ok = (string) $curl("$base/strategy_live.php",
+                           'do=approve&strategy=' . urlencode($spl) . '&batch=' . urlencode($spl_batch)
+                           . '&password=testpass');
+        check('and with it the batch is approved by name',
+              scalar("select status from strategy_order_batches where batch=?", [$spl_batch])
+              === 'APPROVED'
+              && scalar("select decided_by from strategy_order_batches where batch=?", [$spl_batch])
+                 === 'tester'
+              && stripos($spl_appr_ok, 'approved') !== false,
+              substr($spl_appr_ok, max(0, stripos($spl_appr_ok, 'approved') - 150), 400));
+        check('the page stops asking once it has been decided',
+              stripos((string) $curl("$base/strategies.php?s=" . urlencode($spl)),
+                      'waiting for your approval') === false);
+
+        /* Sending without asking, and back again. */
+        $curl("$base/strategy_live.php",
+              'do=approval&strategy=' . urlencode($spl) . '&on=0&password=testpass');
+        check('approval can be switched off from the same page, with the password',
+              scalar("select approval_required from strategy_accounts where strategy=?", [$spl])
+              === 'N'
+              && scalar("select approval_set_by from strategy_accounts where strategy=?", [$spl])
+                 === 'tester');
+        $curl("$base/strategy_live.php",
+              'do=approval&strategy=' . urlencode($spl) . '&on=1&password=testpass');
+        check('and back on',
+              scalar("select approval_required from strategy_accounts where strategy=?", [$spl])
+              === 'Y');
+
+        /* Disarming is one click. Off is the safe direction, so it is the
+           easy one. */
+        $spl_off = (string) $curl("$base/strategy_live.php",
+                       'do=disarm&strategy=' . urlencode($spl));
+        check('disarming takes no password at all',
+              (int) scalar("select count(*) from strategy_live_arming
+                             where strategy=? and disarmed_at is null", [$spl]) === 0
+              && stripos($spl_off, 'Disarmed') !== false,
+              substr($spl_off, max(0, stripos($spl_off, 'Disarmed') - 100), 300));
+
+        /* And none of it is anywhere near a paper account. */
+        check('a paper strategy has no arming on its page',
+              stripos((string) $curl("$base/strategies.php?s=" . urlencode($sp)),
+                      'Arm this account') === false);
+
+        foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values',
+                  'strategy_rules','strategy_accounts','strategy_live_arming','strategy_live_log',
+                  'strategy_order_batches'] as $spl_table) {
+            db()->prepare("delete from $spl_table where strategy=?")->execute([$spl]);
+        }
 
         /* ---------------- The dry run popup ---------------- */
 

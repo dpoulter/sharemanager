@@ -180,6 +180,24 @@
 </div>
 
 <?php /* ---------------- 4. strategies ---------------- */ ?>
+
+<?php /* A live account's orders, waiting for Dale to approve them. Above
+         the table rather than in it: an exit waiting for an approval is
+         costing money while it waits, and this is the page he opens
+         first. */ ?>
+<?php foreach (($live_waiting ?? []) as $waiting): ?>
+<div class="alert <?= count($waiting['exits']) ? 'alert-danger' : 'alert-warning' ?>">
+	<strong>Live orders waiting for your approval.</strong>
+	<?= e(fmt_quantity($waiting['orders'])) ?> order<?= $waiting['orders'] === 1 ? '' : 's' ?>
+	for <?= e($waiting['name']) ?>.
+	<?php if (count($waiting['exits'])): ?>
+		<strong>One of them is an exit (<?= e(implode(', ', $waiting['exits'])) ?>):
+		a late exit costs money.</strong>
+	<?php endif ?>
+	<a href="strategies.php?s=<?= urlencode((string) $waiting['strategy']) ?>&amp;tab=orders">Look at them</a>
+</div>
+<?php endforeach ?>
+
 <?php if (count($strategies)): ?>
 <div class="card">
 	<div class="card-header d-flex justify-content-between align-items-center">
@@ -211,6 +229,13 @@
 							e(strategy_display_name($card['strategy'])) ?></a>
 						<?= status_badge_html($card['broker'] === null ? 'paper' : 'due',
 						                      strategy_mode_name($card['mode'])) ?>
+						<?php /* And whether a live account is armed. The badge says
+						         which kind of account it is; this says whether it
+						         can actually trade, which is the thing somebody
+						         wants to know at a glance. */ ?>
+						<?php if (!empty($card['live_words'])): ?>
+						<br><small class="text-body-secondary"><?= e((string) $card['live_words']) ?></small>
+						<?php endif ?>
 					</td>
 					<td class="sm-num"><?= e(fmt_pounds($card['total'])) ?></td>
 					<?php /* Fractions, as strategy_card() returns them: -0.008 is

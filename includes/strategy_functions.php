@@ -502,7 +502,11 @@
 	 */
 	function strategy_plan_orders($strategy,$as_of_date,$targets=null,$options=[]) {
 
-		$plan=['orders'=>[],'errors'=>[],'skipped'=>[],'account_value'=>null,
+		/* 'notes' is for something a reader should know that is not a
+		   problem: the live capital cap binding a plan is the system doing
+		   what it was told, and reporting it as an error would make the
+		   nightly job exit 1 on a night when nothing went wrong. */
+		$plan=['orders'=>[],'errors'=>[],'skipped'=>[],'notes'=>[],'account_value'=>null,
 		       'mode'=>STRATEGY_MODE_PAPER,'nothing_to_do'=>false];
 
 		$account=strategy_account($strategy);
@@ -528,6 +532,35 @@
 		if ($account_value===null){ $plan['errors'][]="cannot value the account, refusing to trade"; return $plan; }
 		if ($account_value<=0){ $plan['errors'][]="account value is not positive"; return $plan; }
 		$plan['account_value']=$account_value;
+
+		/* THE LIVE ACCOUNT'S CAPITAL CAP.
+		 *
+		 * The strategy's cash is its own ledger - what Dale assigned at
+		 * arming - and the cap is what it may ever have invested plus
+		 * reserved. Sizing against the ledger would already respect it, but
+		 * only while the two agree: a deposit into the Trading 212 account,
+		 * or a cash row somebody edited, must not make the plan bigger.
+		 * So the plan is sized against the smaller of the two, and says so
+		 * when the cap is what bound it.
+		 *
+		 * An unarmed live account is sized against the constant ceiling in
+		 * constants.php. It can send nothing either way; what this buys is
+		 * that the orders waiting for an arming are the orders that arming
+		 * would allow. */
+		$live_limits=null;
+		if (!empty($mode['live'])&&function_exists('broker_live_plan_limits')){
+			$live_limits=broker_live_plan_limits($strategy);
+			if ($account_value>$live_limits['capital']){
+				$plan['notes'][]="sized against the ".$live_limits['capital']
+				                 ." capital cap rather than the ".round($account_value,2)
+				                 ." in the account"
+				                 .($live_limits['armed'] ? "" : " (nothing is armed, so this"
+				                                               ." is the ceiling in"
+				                                               ." constants.php)");
+				$account_value=$live_limits['capital'];
+				$plan['account_value']=$account_value;
+			}
+		}
 
 		/* Targets come from the table unless the caller hands them over. The
 		   override is what makes a dry run on a rebalance date possible: the
@@ -648,6 +681,24 @@
 				                    'value'=>0.0,
 				                    'reason'=>'the target rounds to nothing at '
 				                             .round($price,2).' a share'];
+			}
+
+			/* And no single live order over its share of the capital cap.
+			   Fifteen names of a GBP 250 account are 6.7% each, so an order
+			   over 15% is a sizing bug rather than a big position - and the
+			   send path refuses it, so planning it would only mean a plan
+			   that cannot be carried out.
+
+			   Buys only. The caps limit what can be put at risk, and
+			   selling is the direction that reduces it: a sale held back
+			   for being large would leave a position the strategy has
+			   decided to be out of. */
+			if ($live_limits!==null&&$delta>0&&$value>$live_limits['per_order']+0.0001){
+				$plan['skipped'][]=['symbol'=>$symbol,'side'=>'BUY',
+				                    'quantity'=>abs($delta),'value'=>$value,
+				                    'reason'=>'over the '.$live_limits['per_order']
+				                             .' a single live order may be'];
+				continue;
 			}
 
 			if (abs($delta)>0&&$value>=$mode['minimum_order']){
@@ -800,14 +851,44 @@
 			return null;
 		}
 
+		/* WHICH BATCH, for a live account.
+		 *
+		 * A live account's orders are planned into one batch a night and
+		 * the batch waits for Dale to approve it; the order carries which
+		 * batch it was in, so "was this approved" has an answer years
+		 * later. An exit is in the same batch as the buys, deliberately:
+		 * a batch that could be half approved is a portfolio nobody chose.
+		 *
+		 * When includes/broker_live.php is not loaded - the nightly job
+		 * does not need the broker layer to plan a paper account - a live
+		 * order gets no batch, and an order with no batch can never be
+		 * approved, so nothing can be sent. Failing closed is the only
+		 * acceptable direction for this one.
+		 */
+		$batch=null;
+		if (function_exists('broker_live_batch_open')){
+			$account=strategy_account($strategy);
+			if ($account!==null&&strategy_mode_is_live($account['mode'])){
+				$batch=broker_live_batch_open($strategy,$as_of_date);
+			}
+		}
+
 		/* The note is why, in the order's own row: 'rebalance' or the name
 		   of the exit rule that sold it. The strategy page reads it back as
 		   the reason column, so a trade can be accounted for a year later
 		   without re-deriving the signal. */
-		$written=query("insert into strategy_orders
+		$written=($batch===null)
+		       ? query("insert into strategy_orders
 			(client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,note,created_at)
 			values (?,?,?,?,?,?,?,'PENDING',?,?)",
 			$client_order_id,$strategy,$as_of_date,$order['symbol'],$order['exchange'],
+			$order['side'],$order['quantity'],
+			$note===null ? null : substr((string)$note,0,255),
+			date('Y-m-d H:i:s'))
+		       : query("insert into strategy_orders
+			(client_order_id,strategy,as_of_date,batch,symbol,exchange,side,quantity,status,note,created_at)
+			values (?,?,?,?,?,?,?,?,'PENDING',?,?)",
+			$client_order_id,$strategy,$as_of_date,$batch,$order['symbol'],$order['exchange'],
 			$order['side'],$order['quantity'],
 			$note===null ? null : substr((string)$note,0,255),
 			date('Y-m-d H:i:s'));
@@ -2656,6 +2737,9 @@
 		$report['orders']=$plan['orders'];
 		$report['not_placed']=isset($plan['skipped']) ? $plan['skipped'] : [];
 		foreach ($plan['errors'] as $error) { $report['errors'][]=$error; }
+		/* Said, not counted. A live plan bound by its capital cap is the
+		   cap working. */
+		foreach ((isset($plan['notes']) ? $plan['notes'] : []) as $note) { $say($note); }
 
 		/* What was deliberately not ordered, and why. Cash left idle because
 		   an order would have been too small is a decision, and a decision

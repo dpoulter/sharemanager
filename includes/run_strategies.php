@@ -18,7 +18,10 @@
 	 * Then the daily valuation, for every strategy and for the benchmark, so
 	 * the page can draw a line.
 	 *
-	 * PAPER ONLY. Nothing here can place a real order.
+	 * THIS PLANS; IT DOES NOT SEND. A broker account's orders are recorded
+	 * PENDING and go out during the session, and a live account's are put in
+	 * a batch that waits for Dale to approve it on the page. Nothing here
+	 * places an order anywhere.
 	 *
 	 * One strategy failing must not stop the others, and none of them may
 	 * stop the rest of the nightly job: every strategy is run inside
@@ -34,6 +37,12 @@
 	   plain include of a file that is already loaded, and the second copy
 	   of screen() is a fatal. */
 	include("strategy_functions.php");
+	/* Arming, approval and the live caps. The engine does not need the
+	   broker layer to plan a paper account, so strategy_functions.php does
+	   not require this - but a night that plans a live account's orders has
+	   to put them in a batch for Dale to approve, and has to stand down the
+	   batch nobody approved yesterday. */
+	include("broker_live.php");
 
 	$_SESSION["exchange"]='XLON';
 	$exchange='XLON';
@@ -85,6 +94,15 @@
 
 	echo "run_strategies ".$as_of.($dry_run?" (dry run)":"")
 	     .": ".count($strategies)." strategy(ies)\r\n";
+
+	/* Yesterday's unapproved batch, stood down before tonight is planned.
+	   An unapproved batch is good for the session it was planned for and no
+	   longer: tomorrow's selection is a different selection, and sending
+	   yesterday's at today's prices is sending orders nobody looked at. */
+	if (!$dry_run&&function_exists('broker_live_expire_batches')){
+		$expired=broker_live_expire_batches(['as_of'=>$as_of]);
+		foreach ($expired['lines'] as $line){ echo "  ".$line."\r\n"; }
+	}
 
 	$problems=0;
 

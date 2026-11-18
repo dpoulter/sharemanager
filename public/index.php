@@ -19,6 +19,10 @@
     require_once("../includes/rns.php");
     require_once("../includes/ai_outlook.php");
     require_once("../includes/strategy_functions.php");
+    /* For the live account's line on the strategies row, and for the
+       orders waiting for an approval at the top: the dashboard is the page
+       somebody opens first, so it is where a waiting exit has to be said. */
+    require_once("../includes/broker_live.php");
 
     $symbol = null;
     if ($_SERVER["REQUEST_METHOD"] === "POST") {
@@ -65,6 +69,7 @@
         "news"             => home_news_week($news_from, $as_of, 5, $exchange),
         "news_from"        => $news_from,
         "strategies"       => home_strategy_rows($exchange),
+        "live_waiting"     => home_live_waiting(),
         "scores"           => home_scores(),
         "ranked"           => $ranked,
     ]);

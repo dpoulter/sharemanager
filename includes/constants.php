@@ -456,6 +456,49 @@
     define("T212_POLL_AFTER_SECONDS",   (int) (getenv("SM_T212_POLL_AFTER") ?: 30));
     define("T212_UNKNOWN_AFTER_SECONDS",(int) (getenv("SM_T212_UNKNOWN_AFTER") ?: 900));
 
+    // ---------------------------------------------------------------------
+    // The live account's caps.
+    //
+    // These are literals, with no getenv() in front of them, and that is
+    // the point: a cap an environment variable can widen is a cap that a
+    // typo in a cron wrapper can remove. Everything else about Trading 212
+    // here is a setting; the most real money this application may ever put
+    // at risk is not.
+    //
+    // Nothing is sent unless the account has been armed from its page
+    // (includes/broker_live.php), and arming states its own capital cap -
+    // GBP 250 for the account Dale opened this for. The figure below is the
+    // ceiling on what arming may state, not the amount.
+    // ---------------------------------------------------------------------
+
+    // The most a live strategy may ever have invested plus reserved,
+    // whatever cash the Trading 212 account holds. A deposit does not raise
+    // it: the strategy's cash is its own ledger.
+    define("T212_LIVE_CAPITAL_CAP_MAX", 500.00);
+
+    // The most one order may be, as a fraction of the capital cap. Fifteen
+    // names of a GBP 250 account are about 6.7% each, so 15% is twice the
+    // size of anything the engine should be planning: an order above it is
+    // a sizing bug rather than a big position.
+    define("T212_LIVE_PER_ORDER_FRACTION", 0.15);
+
+    // The most one sending run may send, in pounds of consideration. The
+    // practice account's figure is T212_MAX_RUN_VALUE (GBP 1,000); a live
+    // run that wants more than this is wrong about something, and the right
+    // answer is to stop with the orders still PENDING.
+    define("T212_LIVE_MAX_RUN_VALUE", 150.00);
+
+    // How many live orders may be sent in one day, counting every strategy's
+    // and whatever became of them. A rebalance of fifteen names is thirty
+    // orders at its very worst (fifteen sells and fifteen buys).
+    define("T212_LIVE_ORDERS_PER_DAY", 30);
+
+    // How long arming lasts unless a shorter time is asked for, and the
+    // longest it may ever last. A forgotten account disarms itself: the
+    // safe direction is off.
+    define("T212_LIVE_ARM_DAYS", 35);
+    define("T212_LIVE_ARM_DAYS_MAX", 90);
+
     //Where the probe writes the raw responses it was run to collect. Outside
     //the web root: the file holds the account's positions.
     define("T212_PROBE_DIR", getenv("SM_T212_PROBE_DIR") ?: "/var/lib/sharemanager/probe");

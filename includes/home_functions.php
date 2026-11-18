@@ -429,9 +429,30 @@
 		if (!function_exists('strategy_rules_ready') || !strategy_rules_ready()) { return []; }
 		$rows = [];
 		foreach (strategy_strategies() as $strategy) {
-			$rows[] = strategy_card($strategy, $exchange);
+			$card = strategy_card($strategy, $exchange);
+			/* And what a live account's state is, in the same words the
+			   strategies page uses: "Armed by dale until 25 Dec 2026, cap
+			   GBP 250", or "Not armed: orders are planned and not sent".
+			   Empty for every other account, and empty when the broker
+			   layer is not loaded - the dashboard is not the place to find
+			   out that a migration has not been applied. */
+			$card['live_words'] = function_exists('broker_live_words')
+			                    ? broker_live_words($strategy) : '';
+			$rows[] = $card;
 		}
 		return $rows;
+	}
+
+	/**
+	 * The live batches waiting for an approval, for the top of the
+	 * dashboard.
+	 *
+	 * Here rather than in the template so that a host without
+	 * includes/broker_live.php - or without the migration behind it - gets
+	 * an empty list instead of a fatal.
+	 */
+	function home_live_waiting() {
+		return function_exists('broker_live_waiting') ? broker_live_waiting() : [];
 	}
 
 ?>

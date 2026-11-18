@@ -1,8 +1,10 @@
 # Paper execution
 
 Runs the screen as if it were trading, against historical prices, so the code
-path and the costs can be measured before any money is involved. Nothing here
-talks to a broker and nothing supports `mode = 'LIVE'`.
+path and the costs can be measured before any money is involved. The paper
+engine talks to no broker at all; a `T212_DEMO` account sends the same plan to
+Trading 212's practice account, and a `T212_LIVE` account is real money and
+sends nothing without being armed first - see **Live orders** at the end.
 
 ## Running it
 
@@ -262,3 +264,64 @@ compare against *the broker*, which is the only source of truth for positions
 and cash, and a `PENDING` order must be resolved by querying the broker by
 `client_order_id` rather than assumed unfilled — hence the `mode` check in
 `strategy_resume_pending()`.
+
+## Live orders
+
+Dale decided on 18 November 2026 to run trend following with the £250 in his
+Trading 212 Invest account. A `T212_LIVE` account plans like any other and
+**no order goes out unless that account has been armed**, which is a decision
+he makes himself on the strategy's page. Jarvis deploys, tests on practice and
+reports; Jarvis does not arm and does not approve.
+
+```sh
+mysql sharemanager < sql/strategy_live.sql   # arming, batches, the log
+php includes/live_check.php                  # what each live account could do, reads only
+```
+
+Six things have to be true before a live order can be sent, and
+`broker_live_conditions()` in `includes/broker_live.php` is where they are
+checked - from inside the order function, not by its caller:
+
+1. the account's mode is `T212_LIVE`;
+2. `SM_T212_LIVE_ORDERS=on` with its own key, which has Orders - Execute;
+3. the account is armed: a live row in `strategy_live_arming`;
+4. the order's batch has been approved, unless approval is switched off for
+   that account;
+5. every cap holds;
+6. the kill switch is off and the strategy is not halted.
+
+**Arming** is a form on the strategy's page: the app password typed again and
+the strategy's display name typed in full, with a cap in pounds and an expiry
+(35 days by default). `broker_live_arm()` refuses the command line outright, so
+nothing a deploy or a cron job runs can arm an account, and the suite checks
+that no other file in the tree writes an armed row. Disarming is one click and
+needs no password - off is the safe direction - and a halt disarms.
+
+**Approval**: a live account's orders are planned into one batch a night, which
+starts unapproved. The Orders tab shows the batch with each order's estimated
+value and stamp duty and the totals, and approving needs the password. An
+unapproved batch is recorded as expired at the next night's run and its orders
+cancelled, and so is an approved one that was not sent in its own session: the
+next run plans afresh. Per account, approval can be switched off ("send
+without asking"), with the password, and who did it is recorded.
+
+**The caps** are literals in `constants.php` rather than settings, because a
+cap an environment variable can widen is not a cap: £500 the most arming may
+state, 15% of the armed cap in one order, £150 in one run, the cap again as a
+day's buys, and 30 orders a day. The strategy's cash is its own ledger - cash
+in the Trading 212 account does not raise what the strategy may put at risk.
+
+**Only its own positions**: the account is Dale's and holds shares he bought
+himself, so a live strategy reconciles what it bought. Extra holdings at the
+broker are reported and not a difference; less of a share than the strategy
+holds is a difference and halts it. It never sells more of a share than it
+bought, and never one it did not buy. Two live strategies cannot be armed on
+the same account.
+
+**The log**: `strategy_live_log` holds every arm, disarm, approval, rejection,
+expiry and refusal. The application only inserts into it; there is no code path
+that deletes or rewrites a row, and the suite checks that there is none.
+
+As at stage B there is still **no code path that sends a live order**: an
+armed, approved, within-caps live account has its orders planned and left
+waiting, and `includes/live_check.php` says so every time it runs.

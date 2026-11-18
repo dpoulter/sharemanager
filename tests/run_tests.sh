@@ -157,6 +157,13 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_environment.sql" > /dev/null || exit 1
 echo "applying sql/quote_report.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/quote_report.sql" > /dev/null || exit 1
 
+# Live orders, stage B: arming, the batches a live account's orders wait in,
+# the approval column and the log that is only ever added to. After
+# sql/broker_trading.sql, which is what makes strategy_orders a broker table
+# at all, and after sql/paper_trading.sql's accounts.
+echo "applying sql/strategy_live.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_live.sql" > /dev/null || exit 1
+
 # After sql/report_currency.sql, which adds the column this one sits after.
 echo "applying sql/strategy_prices.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_prices.sql" > /dev/null || exit 1
@@ -205,7 +212,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       strategy_backtest strategy_backtest_overrides strategy_backtest_costs \
                       strategy_prices \
                       broker broker_account_fields broker_mapping broker_trading \
-                      broker_fills broker_environment quote_report; do
+                      broker_fills broker_environment strategy_live quote_report; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null
      done
 

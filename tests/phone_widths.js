@@ -294,9 +294,15 @@ function skip(why) {
 		}
 
 		await barePage.goto(`${BASE}/strategies.php?s=_how`, { waitUntil: 'domcontentloaded' });
+		/* It used to look for "No real money is ever at risk". From 18
+		   November 2026 one account trades real money, so the explanation
+		   says what stands in the way of a live order instead - and a page
+		   still carrying the old promise would be a page lying to its
+		   reader. */
 		check('and the strategies page\'s explanation is a page of its own',
 		      (await barePage.locator('text=How this works').count()) > 0
-		      && (await barePage.locator('text=No real money is ever at risk').count()) > 0);
+		      && (await barePage.locator('text=armed').count()) > 0
+		      && (await barePage.locator('text=No real money is ever at risk').count()) === 0);
 
 		/* The strategies page at 390px: one control above the content, not
 		   two columns side by side, and every view reachable from it. The

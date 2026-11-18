@@ -139,6 +139,15 @@
     define("T212_MIN_ORDER_VALUE", (float) (getenv("SM_T212_MIN_ORDER") ?: 10.00));
     define("T212_QUANTITY_DECIMALS", (int) (getenv("SM_T212_QUANTITY_DECIMALS") ?: 2));
     define("T212_MAX_RUN_VALUE", (float) (getenv("SM_T212_MAX_RUN_VALUE") ?: 1000.00));
+    // The live account's caps: literals in the application too, because a
+    // cap an environment variable can widen is not a cap. The suite uses
+    // the same figures the server does.
+    define("T212_LIVE_CAPITAL_CAP_MAX", 500.00);
+    define("T212_LIVE_PER_ORDER_FRACTION", 0.15);
+    define("T212_LIVE_MAX_RUN_VALUE", 150.00);
+    define("T212_LIVE_ORDERS_PER_DAY", 30);
+    define("T212_LIVE_ARM_DAYS", 35);
+    define("T212_LIVE_ARM_DAYS_MAX", 90);
     define("T212_MARKET_OPEN",  getenv("SM_T212_MARKET_OPEN")  ?: "08:00");
     define("T212_MARKET_SHUT",  getenv("SM_T212_MARKET_SHUT")  ?: "16:30");
     define("T212_MARKET_TZ",    getenv("SM_T212_MARKET_TZ")    ?: "Europe/London");

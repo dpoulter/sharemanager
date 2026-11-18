@@ -18,9 +18,15 @@
      * The view is in the address, so it can be bookmarked, the back button
      * works, and the dashboard can link straight at a strategy.
      *
-     * PAPER AND PRACTICE ONLY. Nothing reachable from this page can place a
-     * real order. The dry run endpoint computes a plan and writes nothing at
-     * all, and the kill switch stops even that.
+     * NO ORDER GOES TO A LIVE ACCOUNT FROM HERE. What this page does reach
+     * is the form that arms one (public/strategy_live.php) and the form
+     * that approves a night's batch, which is the point: arming is a
+     * decision a person makes in their own logged in session, with the
+     * password typed again and the strategy's name typed in full, and this
+     * is the only place in the application where it can be made. The
+     * sending itself is somewhere else and does not exist yet. The dry run
+     * endpoint computes a plan and writes nothing at all, and the kill
+     * switch stops even that.
      *
      * config.php applies the same authentication gate as every other page
      * here. There is no second copy of it to drift out of step with the
@@ -33,6 +39,10 @@
        for the broker layer, so strategy_functions.php does not require it;
        a page that wants to say whether the two books agree does. */
     require_once("../includes/broker_orders.php");
+    /* Arming, approval and the live caps, for the live account's panel.
+       broker_orders.php requires this too; named here because this page is
+       what draws it. */
+    require_once("../includes/broker_live.php");
 
     $exchange = session_exchange();
 
@@ -70,6 +80,8 @@
             "halted"     => strategy_halted(),
             "switch_file" => STRATEGY_KILL_SWITCH_FILE,
             "switch_readable" => strategy_kill_switch_readable(),
+            "live_waiting" => [],
+            "live_message" => null,
         ]);
         exit;
     }
@@ -204,6 +216,10 @@
            rebalance from today. */
         $card['starts_on'] = ($card['start'] === null && $card['rules'] !== null)
                            ? strategy_next_rebalance($card['rules'], $as_of) : null;
+        /* Arming, the batch waiting for an approval, and the caps - null
+           for every account that is not a live one, so the paper and
+           practice cards draw none of it. */
+        $card['live'] = broker_live_state($chosen);
     }
 
     render("strategies.php", [
@@ -230,6 +246,19 @@
         "halted"    => strategy_halted(),
         "switch_file" => STRATEGY_KILL_SWITCH_FILE,
         "switch_readable" => strategy_kill_switch_readable(),
+        /* Every live account with a batch nobody has decided about, for the
+           line at the top of the page: an exit waiting for an approval is
+           costing money while it waits. */
+        "live_waiting" => broker_live_waiting(),
+        /* What the last arm, disarm, approval or refusal said. Read once:
+           a message that survived a reload would be a message about
+           something that happened a reload ago. */
+        "live_message" => (function () {
+            if (!isset($_SESSION['sm_live_message'])) { return null; }
+            $message = $_SESSION['sm_live_message'];
+            unset($_SESSION['sm_live_message']);
+            return $message;
+        })(),
     ]);
 
 ?>
