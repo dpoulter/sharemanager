@@ -242,7 +242,7 @@
 			<tbody>
 			<?php foreach ($orders as $order): ?>
 				<tr>
-					<td style="white-space: nowrap"><?= b_when($order['filled_at'] === null
+					<td class="sm-nowrap"><?= b_when($order['filled_at'] === null
 						? $order['placed_at'] : $order['filled_at']) ?></td>
 					<td><?= $order['symbol'] === null
 						? '<small>' . e((string) $order['broker_ticker']) . '</small>'
@@ -285,7 +285,7 @@
 			<tbody>
 			<?php foreach ($dividends as $dividend): ?>
 				<tr>
-					<td style="white-space: nowrap"><?= b_when($dividend['paid_on']) ?></td>
+					<td class="sm-nowrap"><?= b_when($dividend['paid_on']) ?></td>
 					<td><?= $dividend['symbol'] === null
 						? '<small>' . e((string) $dividend['broker_ticker']) . '</small>'
 						: '<a href="quote.php?symbol=' . urlencode((string) $dividend['symbol']) . '">'

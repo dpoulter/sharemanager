@@ -73,9 +73,14 @@
 		}
 	});
 
-	var priceLine = chart.addLineSeries({ color: "#0d6efd", lineWidth: 2, title: "Close" });
-	var ma50Line  = chart.addLineSeries({ color: "#fd7e14", lineWidth: 1, title: "50 day" });
-	var ma200Line = chart.addLineSeries({ color: "#6f42c1", lineWidth: 1, title: "200 day" });
+	/* The house chart colours, the same three on every price chart in the
+	   application: the close, the 50 day and the 200 day. */
+	var priceLine = chart.addLineSeries({ color: token("--sm-chart-close", "#0b5a70"),
+	                                      lineWidth: 2, title: "Close" });
+	var ma50Line  = chart.addLineSeries({ color: token("--sm-chart-ma50", "#c26a00"),
+	                                      lineWidth: 1, title: "50 day" });
+	var ma200Line = chart.addLineSeries({ color: token("--sm-chart-ma200", "#7a4fb5"),
+	                                      lineWidth: 1, title: "200 day" });
 
 	var loaded = { markers: [] };
 	var chosenImpact = "";

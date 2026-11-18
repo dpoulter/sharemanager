@@ -87,7 +87,7 @@
 						<td><a href="quote.php?symbol=<?= urlencode($mover['symbol']) ?>"><?= e($mover['symbol']) ?></a></td>
 						<td><?= e($mover['company']) ?></td>
 						<td class="sm-num"><?= e(fmt_quantity($mover['announcements'])) ?></td>
-						<td style="white-space: nowrap"><?= sentiment_html($mover['average']) ?></td>
+						<td class="sm-nowrap"><?= sentiment_html($mover['average']) ?></td>
 						<?php /* What the share has done since it announced. The
 						         score says how the news read; this says what the
 						         market did about it, and they are not the same
@@ -193,8 +193,8 @@
 			<?php foreach ($groups as $group): ?>
 				<?php $lead = $group['strongest']; ?>
 				<tr>
-					<td style="white-space: nowrap"><?= e(fmt_date_short($group['published'])) ?></td>
-					<td style="white-space: nowrap">
+					<td class="sm-nowrap"><?= e(fmt_date_short($group['published'])) ?></td>
+					<td class="sm-nowrap">
 						<a href="quote.php?symbol=<?= urlencode($group['symbol']) ?>"><?= e($group['symbol']) ?></a>
 						<br><small class="text-muted"><?= e($group['company']) ?></small>
 					</td>
@@ -207,7 +207,7 @@
 							</span>
 						<?php endif ?>
 					</td>
-					<td style="white-space: nowrap"><?= sentiment_html($lead['sentiment']) ?></td>
+					<td class="sm-nowrap"><?= sentiment_html($lead['sentiment']) ?></td>
 					<td><?= e($lead['vs_expectations']) ?></td>
 					<td>
 						<details class="sm-reveal">

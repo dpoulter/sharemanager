@@ -613,7 +613,7 @@
 						<div class="sm-strip mb-3">
 							<div class="sm-strip-item">
 								<div class="sm-strip-label">Not started</div>
-								<div class="sm-strip-value" style="font-size:1.1rem">
+								<div class="sm-strip-value sm-strip-value-small">
 									<?php if ($card['enabled'] !== 'Y'): ?>
 										Switched off, so it never will
 									<?php elseif ($card['starts_on'] !== null): ?>

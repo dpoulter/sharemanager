@@ -63,8 +63,11 @@
 		}
 	});
 
-	var mine = chart.addLineSeries({ color: "#0d6efd", lineWidth: 2, title: "Portfolio" });
-	var bench = chart.addLineSeries({ color: "#6f42c1", lineWidth: 1, title: "FTSE 350 equal weight" });
+	//The house chart colours, as on the quote page.
+	var mine = chart.addLineSeries({ color: token("--sm-chart-close", "#0b5a70"),
+	                                 lineWidth: 2, title: "Portfolio" });
+	var bench = chart.addLineSeries({ color: token("--sm-chart-ma200", "#7a4fb5"),
+	                                  lineWidth: 1, title: "FTSE 350 equal weight" });
 
 	function resize() { chart.applyOptions({ width: root.clientWidth }); }
 	window.addEventListener("resize", resize);

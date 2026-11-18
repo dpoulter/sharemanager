@@ -171,7 +171,7 @@
 							<td class="sm-num" data-value="<?= e($holding['gain_pct']) ?>"><?= move_pct_html($holding['gain_pct']) ?></td>
 							<td class="sm-num" data-value="<?= e($holding['weight']) ?>"><?= e(fmt_pct($holding['weight'])) ?></td>
 							<td class="sm-num" data-value="<?= e($holding['today_pct']) ?>"><?= move_pct_html($holding['today_pct']) ?></td>
-							<td class="sm-badges-tight" style="white-space: nowrap">
+							<td class="sm-badges-tight sm-nowrap">
 								<?= score_badge_html($holding['momentum'], 'Momentum') ?>
 								<?= score_badge_html($holding['value_score'], 'Value') ?>
 								<?= score_badge_html($holding['quality'], 'Quality') ?>
@@ -180,7 +180,7 @@
 							         average, so this says three things rather than
 							         two: a holding 1% above the average may be sold
 							         this week and the table should say so. */ ?>
-							<td style="white-space: nowrap">
+							<td class="sm-nowrap">
 								<?php if ($holding['trend'] === 'above'): ?>
 									<span class="sm-up" data-bs-toggle="tooltip"
 									      title="<?= e('Above the 200 day average of ' . fmt_pence($holding['ma200'])) ?>">&#9650; above</span>

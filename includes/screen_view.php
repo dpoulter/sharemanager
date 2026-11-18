@@ -252,9 +252,12 @@
 	 * the Price beside it.
 	 */
 	function screen_extra_columns() {
+		/* ShareRank with the three it is built from: a row of results
+		   that shows momentum, value and quality and not the number that
+		   puts them together is three quarters of an answer. */
 		return ['close_price' => 'price', '6mnth' => 'change_6m',
 		        'momentum_score' => 'momentum', 'value_score' => 'value_score',
-		        'quality_score' => 'quality'];
+		        'quality_score' => 'quality', 'overall_score' => 'overall'];
 	}
 
 	/** Which of those a screen does not already have a column for. */

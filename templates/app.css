@@ -31,15 +31,6 @@
 :root {
 	color-scheme: light dark;
 
-	/* The two ends of the score scale. Every score between them is a
-	   color-mix in oklch of the two: a continuous scale rather than four
-	   steps, so 49 and 50 stop being different colours for no reason a
-	   reader can see. Mixing in oklch holds the lightness, so white text
-	   measures between 5.1:1 and 6.1:1 the whole way across - AA at every
-	   value. The same two values are in view_score_scale(). */
-	--sm-score-low:  oklch(0.52 0.18 25);
-	--sm-score-high: oklch(0.52 0.15 148);
-
 	/* The status badges keep one colour in both schemes. They carry white
 	   text on their own background, so what they have to clear is the
 	   contrast against that text, not against the page - and lightening
@@ -270,6 +261,10 @@ th.sm-num,
 	border-bottom: 1px dotted var(--sm-muted);
 }
 
+/* Except where the missing thing is a score in a row of them: the dotted
+   underline under an empty track is a mark nobody can read as "no score". */
+.sm-score-cell.sm-missing { border-bottom: 0; }
+
 /* ---------------------------------------------------------------------------
    Badges and swatches.
    --------------------------------------------------------------------------- */
@@ -287,17 +282,32 @@ th.sm-num,
 	cursor: help;
 }
 
-/* The score itself arrives as --score on the badge, and the colour is mixed
-   from it. 0 is all of the low end, 100 is all of the high end.
+/* A score in a table cell: a short bar with the number beside it, which is
+   what replaced the coloured block. Narrow enough for three of them in one
+   cell on the screens and the portfolio. */
+.sm-score-cell {
+	display: inline-grid;
+	grid-template-columns: 42px 24px;
+	gap: 6px;
+	align-items: center;
+	cursor: help;
+}
 
-   The fallback matters: a browser without color-mix() in oklch gets the
-   grey, which is legible and says nothing - rather than no background at
-   all, which is white text on white. */
-.sm-score {
-	background: var(--sm-score-none);
-	background: color-mix(in oklch,
-	                      var(--sm-score-low) calc(100% - var(--score, 50) * 1%),
-	                      var(--sm-score-high));
+.sm-score-number {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+/* Three in one cell, each a little tighter. */
+.sm-badges-tight .sm-score-cell {
+	grid-template-columns: 30px 20px;
+	gap: 4px;
+	margin-right: 6px;
+}
+
+.sm-sentiment {
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
 }
 
 .sm-score-none   { background: var(--sm-score-none); }
@@ -314,14 +324,6 @@ th.sm-num,
 	font-size: 0.75rem;
 }
 
-.sm-swatch {
-	display: inline-block;
-	width: 46px;
-	height: 12px;
-	border-radius: 3px;
-	vertical-align: middle;
-}
-
 .sm-key div {
 	margin-bottom: 0.25rem;
 }
@@ -336,13 +338,45 @@ th.sm-num,
 	display: inline-block;
 	padding: 0.2rem 0.5rem;
 	border-radius: 0.3rem;
-	font-size: 0.8125rem;
+	font-size: 12px;
 	white-space: nowrap;
 }
 
-.sm-fresh       { background: rgba(255,255,255,0.15); color: #fff; }
+/* Plain text when the prices are today's: a pill on the navbar reads as a
+   warning, and "the prices are up to date" is not news. The two states
+   that are news keep their colour. */
+.sm-fresh       { background: transparent; color: var(--sm-nav-ink); padding-left: 0; }
 .sm-fresh-amber { background: #b45309; color: #fff; }
 .sm-fresh-red   { background: #b91c1c; color: #fff; }
+
+/* The search box, in the navbar's own colours rather than a white field
+   cut out of a dark bar. */
+.navbar .form-control {
+	height: 30px;
+	border-radius: 4px;
+	border: 1px solid #3a4553;
+	background: #0f1720;
+	color: #ffffff;
+	font-size: 12px;
+}
+
+.navbar .form-control::placeholder { color: #8c97a4; opacity: 1; }
+
+.navbar .form-control:focus {
+	background: #0f1720;
+	color: #ffffff;
+	border-color: var(--sm-nav-ink);
+	box-shadow: none;
+}
+
+.navbar .btn-outline-light {
+	--bs-btn-border-color: #3a4553;
+	--bs-btn-color: #ffffff;
+	--bs-btn-hover-bg: #ffffff;
+	--bs-btn-hover-color: var(--sm-nav);
+	min-height: 30px;
+	font-size: 12px;
+}
 
 /* ---------------------------------------------------------------------------
    Tables.
@@ -1511,3 +1545,15 @@ li a,
 .sm-data .sm-bar-cell  { width: 28%; }
 .sm-data .sm-bar-number { width: 34px; }
 .sm-nowrap { white-space: nowrap; }
+
+/* The chart's legend marks, one class per line, because a colour belongs in
+   the stylesheet and not in an attribute on the page. */
+.sm-legend-close { background: var(--sm-chart-close); }
+.sm-legend-ma50  { background: var(--sm-chart-ma50); }
+.sm-legend-ma200 { background: var(--sm-chart-ma200); }
+
+/* A strip figure that is a sentence rather than a number. */
+.sm-strip-value-small { font-size: 1.05rem; }
+
+/* A column wide enough for a sentence: the backtest table's Settings. */
+.sm-col-wide { min-width: 14rem; }

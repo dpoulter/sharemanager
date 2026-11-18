@@ -73,13 +73,13 @@
 				<td title="<?= e((string) $run['strategy']) ?>" data-bs-toggle="tooltip"><?=
 					e(strategy_display_name((string) $run['strategy'])) ?></td>
 				<?php endif ?>
-				<td style="min-width: 14rem">
+				<td class="sm-col-wide">
 					<?= e((string) $run['label']) ?>
 					<?php if ($run['matches_live']): ?>
 						<span class="badge bg-success">matches live settings</span>
 					<?php endif ?>
 				</td>
-				<td style="white-space: nowrap"><?= s_date($run['from_date']) ?> to <?= s_date($run['to_date']) ?></td>
+				<td class="sm-nowrap"><?= s_date($run['from_date']) ?> to <?= s_date($run['to_date']) ?></td>
 				<td class="sm-num<?= s_colour($run['total_return']) ?>" data-value="<?= e((string) $run['total_return']) ?>"><?= s_percent($run['total_return']) ?></td>
 				<td class="sm-num<?= s_colour($run['a_year']) ?>" data-value="<?= e((string) $run['a_year']) ?>"><?= s_percent($run['a_year']) ?></td>
 				<td class="sm-num<?= s_colour($run['benchmark_return']) ?>" data-value="<?= e((string) $run['benchmark_return']) ?>"><?= s_percent($run['benchmark_return']) ?></td>

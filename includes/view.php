@@ -294,41 +294,18 @@
 	 */
 	function view_palette() {
 		return [
-			/* A score nobody has worked out. The scored ones are not here:
-			   they are a continuous scale now, mixed in oklch between the
-			   two ends below, and a browser is the only thing that can tell
-			   you what colour a score of 62 comes out as. The phone-width
-			   test asks one, in both colour schemes. */
-			'score-none'   => ['#4b5563', '#ffffff'],
-			/* Status. One style each, so "PAPER" never looks like a warning
-			   and "halted" never looks like a label. */
+			/* Status, and only status. A score is a bar from 0 to 100 with
+			   the number beside it now, drawn in the three signal colours
+			   of the house palette - view_house_tokens() holds those, and
+			   the suite measures them against what they are drawn on.
+
+			   One style each, so "PAPER" never looks like a warning and
+			   "halted" never looks like a label. */
 			'status-paper' => ['#1d4ed8', '#ffffff'],
 			'status-off'   => ['#4b5563', '#ffffff'],
 			'status-halt'  => ['#b91c1c', '#ffffff'],
 			'status-due'   => ['#b45309', '#ffffff'],
 		];
-	}
-
-	/**
-	 * The two ends of the score scale, as oklch.
-	 *
-	 * 0 is the first, 100 the second, and every value between them is
-	 * color-mix(in oklch, ...) of the two - a continuous scale rather than
-	 * four steps, so 49 and 50 stop being different colours for no reason a
-	 * reader can see.
-	 *
-	 * oklch rather than sRGB because mixing in sRGB goes through mud: red to
-	 * green passes through a dark grey-brown in the middle, and the
-	 * lightness wanders, so the text on the badge is readable at the ends
-	 * and not in the middle. In oklch the lightness is held - both ends are
-	 * L 0.52 - so white text measures between 5.1:1 and 6.1:1 the whole way
-	 * across, which is AA at every value.
-	 *
-	 * Here as well as in app.css so a test can name them; the stylesheet is
-	 * what the browser reads.
-	 */
-	function view_score_scale() {
-		return ['low' => 'oklch(0.52 0.18 25)', 'high' => 'oklch(0.52 0.15 148)'];
 	}
 
 	/**
@@ -551,31 +528,38 @@
 	}
 
 	/**
-	 * A score badge: the number, coloured, with the scale in a tooltip.
+	 * A score in a table cell: a short bar and the number beside it.
 	 *
-	 * The tooltip is not decoration. A bare 82 in green does not say what is
-	 * being scored or which way is better, and the page had four scales
-	 * where higher was better and one where it was not.
+	 * It was a coloured block with the figure written on it, mixed along
+	 * a continuous red-to-green scale. The block told a reader the colour
+	 * of a score and nothing else; where 49 sits between 0 and 100 is
+	 * what a score is, and a bar says that. The tooltip is not decoration
+	 * either: a bare 82 does not say what is being scored or which way is
+	 * better, and this application has one scale that runs the other way.
 	 */
 	function score_badge_html($score, $label = 'Score', $higher_is_better = true) {
 
-		if (score_band($score) === 'score-none') {
-			return view_missing_html($label . ' has not been scored for this share');
+		/* An empty track and a dash, rather than a dash on its own: four
+		   scores in one cell have to line up down the column, and a row
+		   where one of them is missing should read as a gap in that
+		   score rather than as a different shape of row. */
+		if (view_blank($score)) {
+			return '<span class="sm-score-cell sm-missing" title="'
+			     . htmlspecialchars($label . ' has not been scored for this share', ENT_QUOTES)
+			     . '" data-bs-toggle="tooltip">' . view_bar_html(null)
+			     . '<span class="sm-score-number">' . htmlspecialchars(VIEW_DASH)
+			     . '</span></span>';
 		}
-
-		/* The score itself, as a custom property, and the stylesheet mixes
-		   the colour from it. The four fixed bands are gone from the badge;
-		   the band word stays, in the tooltip, because "strong" is what a
-		   reader wants in words and a colour cannot say it. */
-		$value = max(0, min(100, (int) round((float) $score)));
 
 		$title = $label . ' ' . fmt_score($score) . '/100: '
 		       . ($higher_is_better ? 'higher is better' : 'lower is better')
 		       . ' (' . score_band_word($score) . ')';
 
-		return '<span class="sm-badge sm-score" style="--score: ' . $value . '" title="'
-		     . htmlspecialchars($title, ENT_QUOTES) . '" data-bs-toggle="tooltip">'
-		     . fmt_score($score) . '</span>';
+		return '<span class="sm-score-cell" title="' . htmlspecialchars($title, ENT_QUOTES)
+		     . '" data-bs-toggle="tooltip">'
+		     . view_bar_html(max(0, min(100, (float) $score)))
+		     . '<span class="sm-score-number">' . htmlspecialchars(fmt_score($score))
+		     . '</span></span>';
 	}
 
 	/** up, down or flat - the class a move or a return is printed in. */
@@ -592,6 +576,21 @@
 		if (view_blank($percent)) { return view_missing_html("no price history for this period"); }
 		return '<span class="' . move_class($percent) . '">'
 		     . htmlspecialchars(fmt_change_pct($percent, $dp)) . '</span>';
+	}
+
+	/**
+	 * A return stored as a fraction, printed as the percentage it is.
+	 *
+	 * strategy_card() returns -0.008 for a strategy down 0.8%, and the
+	 * dashboard printed it through move_pct_html() - which takes a
+	 * percentage - so every strategy on the home page read "-0.0%" while
+	 * the strategies page beside it read "-0.8%". Same figure, two
+	 * readings, and the one on the front page was the wrong one.
+	 */
+	function move_fraction_html($fraction, $dp = 1) {
+		if (view_blank($fraction)) { return view_missing_html("there is nothing to measure yet"); }
+		return '<span class="' . move_class($fraction) . '">'
+		     . htmlspecialchars(fmt_percent_of($fraction, $dp)) . '</span>';
 	}
 
 	/** Money, coloured the same way, for a gain or a day's change. */
@@ -615,23 +614,32 @@
 	}
 
 	/**
-	 * A sentiment swatch and its words, as "In the news" draws it.
+	 * Sentiment: a dot, the figure and the word.
 	 *
-	 * The swatch keeps rns_band's colours so the three pages that show
-	 * sentiment show one scale; the word beside it is the darkened tone,
-	 * because it is text.
+	 * It was a coloured swatch and the figure written in the band's own
+	 * colour - the meaning carried twice by colour and not once by a
+	 * word. The dot sits beside the number rather than instead of it, and
+	 * the word says in English what the colour says in green, so a reader
+	 * who cannot tell two greens apart reads the same thing as everybody
+	 * else.
 	 */
 	function sentiment_html($value) {
+
 		[$swatch, $word] = view_sentiment_band($value);
-		$colours = view_text_colours();
-		$text    = isset($colours[$word]) ? $colours[$word] : $colours['neutral'];
-		$out  = '<span class="sm-swatch" style="background:' . htmlspecialchars($swatch, ENT_QUOTES) . '"';
-		$out .= ' title="' . htmlspecialchars('Sentiment ' . fmt_sentiment($value)
-		                                      . ' on a scale of -1 to +1', ENT_QUOTES) . '"';
-		$out .= ' data-bs-toggle="tooltip"></span> ';
-		$out .= '<span style="color:' . htmlspecialchars($text, ENT_QUOTES) . '">'
-		      . htmlspecialchars(fmt_sentiment($value)) . '</span>';
-		return $out;
+
+		/* rns_band's five bands onto the three signals. Neutral is the
+		   middle one rather than nothing: "nobody said anything much" is
+		   an answer. */
+		$bands = ['bad' => 'low', 'poor' => 'low', 'neutral' => 'mid',
+		          'good' => 'high', 'strong' => 'high'];
+
+		/* fmt_sentiment() already writes the figure and the word -
+		   "+0.60 strong" - which is the pair the mockup shows beside the
+		   dot. */
+		return view_dot_html(isset($bands[$word]) ? $bands[$word] : 'mid',
+		                     'Sentiment ' . fmt_sentiment($value) . ' on a scale of -1 to +1')
+		     . ' <span class="sm-sentiment">' . htmlspecialchars(fmt_sentiment($value))
+		     . '</span>';
 	}
 
 	/* ---------------------------------------------------------------------
@@ -775,8 +783,9 @@
 		$rows = [[12, '0-24'], [37, '25-49'], [62, '50-74'], [88, '75-100']];
 		$body = '<div class="sm-key">';
 		foreach ($rows as [$example, $range]) {
-			$body .= '<div><span class="sm-badge sm-score" style="--score: ' . $example . '">'
-			       . $range . '</span> ' . score_band_word($example) . '</div>';
+			$body .= '<div class="sm-bar-row"><span>' . $range . '</span>'
+			       . view_bar_html($example)
+			       . '<span class="sm-bar-value">' . score_band_word($example) . '</span></div>';
 		}
 		$body .= '</div>';
 		return '<a href="#" class="sm-score-key small" role="button" tabindex="0"'

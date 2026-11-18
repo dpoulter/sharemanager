@@ -169,14 +169,11 @@ $code      = strtoupper(preg_replace('/\..*$/', '', (string) $symbol));
 				         with no levels under it is a shape; with them it is a
 				         statement about the price. */ ?>
 				<div class="sm-legend">
-					<span><span class="sm-legend-mark" aria-hidden="true"
-					            style="background: var(--sm-chart-close)"></span>
+					<span><span class="sm-legend-mark sm-legend-close" aria-hidden="true"></span>
 						Close <?= e($price_ccy === null ? VIEW_DASH : $price_ccy) ?></span>
-					<span><span class="sm-legend-mark" aria-hidden="true"
-					            style="background: var(--sm-chart-ma50)"></span>
+					<span><span class="sm-legend-mark sm-legend-ma50" aria-hidden="true"></span>
 						50-day <?= e($momentum['ma50'] === null ? VIEW_DASH : fmt_pence($momentum['ma50'])) ?></span>
-					<span><span class="sm-legend-mark" aria-hidden="true"
-					            style="background: var(--sm-chart-ma200)"></span>
+					<span><span class="sm-legend-mark sm-legend-ma200" aria-hidden="true"></span>
 						200-day <?= e($momentum['ma200'] === null ? VIEW_DASH : fmt_pence($momentum['ma200'])) ?></span>
 				</div>
 

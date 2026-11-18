@@ -57,13 +57,18 @@
     /* The same columns the table has, including the same rule about not
        repeating a figure the screen already has a column for. */
     $extras = screen_extras_wanted($columns);
+    /* A heading for every extra the page shows, so adding one to
+       screen_extra_columns() cannot leave the file a column short of its
+       own data - which is what happened the day ShareRank was added. */
     $titles = ['close_price' => 'Price (pence)', '6mnth' => '6 month change (%)',
                'momentum_score' => 'Momentum', 'value_score' => 'Value',
-               'quality_score' => 'Quality'];
+               'quality_score' => 'Quality', 'overall_score' => 'ShareRank'];
 
     $heading = ['Rank', 'Symbol', 'Company'];
     foreach ($columns as $column) { $heading[] = $column['description']; }
-    foreach ($extras as $indicator => $key) { $heading[] = $titles[$indicator]; }
+    foreach ($extras as $indicator => $key) {
+        $heading[] = isset($titles[$indicator]) ? $titles[$indicator] : $indicator;
+    }
     fputcsv($out, $heading);
 
     foreach ($rows as $i => $row) {

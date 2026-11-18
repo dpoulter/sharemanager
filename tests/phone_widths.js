@@ -155,10 +155,11 @@ function skip(why) {
 			      `${measured.overflow}px over; widest is ${measured.widest} (+${measured.widestBy}px)`);
 		}
 
-		/* The score badge is a colour mixed in oklch between two ends, so
-		   there is no list of colours to check: only a browser knows what a
-		   score of 62 comes out as. Asked here, at every quarter of the
-		   scale, in each scheme, against the text actually on it. */
+		/* The status badges carry white text on their own background,
+		   which is the one place in the house style where a colour has to
+		   clear a contrast ratio against something drawn under it rather
+		   than against the page. The scores are bars now and are measured
+		   in tests.php against the surface they sit on. */
 		await page.goto(`${BASE}/index.php`, { waitUntil: 'networkidle' });
 		const contrast = await page.evaluate(() => {
 			const probe = document.createElement('div');
@@ -185,20 +186,8 @@ function skip(why) {
 			}
 
 			const out = [];
-			for (const score of [0, 25, 50, 75, 100]) {
-				const badge = document.createElement('span');
-				badge.className = 'sm-badge sm-score';
-				badge.style.setProperty('--score', String(score));
-				badge.textContent = String(score);
-				probe.appendChild(badge);
-				const style = getComputedStyle(badge);
-				out.push({ score: score,
-				           ratio: ratio(srgb(style.backgroundColor), srgb(style.color)) });
-			}
-
-			/* And the fixed badges, which are not mixed. */
 			for (const name of ['sm-status-paper', 'sm-status-off', 'sm-status-halt',
-			                    'sm-status-due', 'sm-score-none']) {
+			                    'sm-status-due', 'sm-status-ok']) {
 				const badge = document.createElement('span');
 				badge.className = 'sm-badge ' + name;
 				badge.textContent = 'x';
@@ -213,7 +202,7 @@ function skip(why) {
 		});
 
 		const low = contrast.filter(c => c.ratio < 4.5);
-		check(`${scheme}: every badge passes AA against its own text`,
+		check(`${scheme}: every status badge passes AA against its own text`,
 		      low.length === 0,
 		      contrast.map(c => `${c.score}:${c.ratio.toFixed(2)}`).join(' '));
 

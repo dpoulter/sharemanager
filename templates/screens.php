@@ -62,7 +62,7 @@
 						    ? view_missing_html("this screen has not been run since the run stamp was added")
 						    : e(fmt_date($screen['last_run'])) ?>
 					</td>
-					<td class="text-end" style="white-space: nowrap">
+					<td class="text-end sm-nowrap">
 						<?php if (!count($screen['problems'])): ?>
 							<a class="btn btn-sm btn-outline-primary"
 							   href="screen_list.php?screen=<?= (int) $screen['id'] ?>&amp;run=1">Run</a>

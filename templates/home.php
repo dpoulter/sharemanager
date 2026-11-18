@@ -213,8 +213,12 @@
 						                      strategy_mode_name($card['mode'])) ?>
 					</td>
 					<td class="sm-num"><?= e(fmt_pounds($card['total'])) ?></td>
-					<td class="sm-num"><?= move_pct_html($card['return']) ?></td>
-					<td class="sm-num"><?= move_pct_html($card['benchmark_return']) ?></td>
+					<?php /* Fractions, as strategy_card() returns them: -0.008 is
+					         -0.8%. Printed through move_pct_html(), which takes a
+					         percentage, every strategy here read "-0.0%" while the
+					         strategies page beside it read "-0.8%". */ ?>
+					<td class="sm-num"><?= move_fraction_html($card['return']) ?></td>
+					<td class="sm-num"><?= move_fraction_html($card['benchmark_return']) ?></td>
 					<td class="sm-num"><?= e(fmt_quantity($card['holdings'])) ?></td>
 					<td><?= e(fmt_date($card['next_rebalance'])) ?></td>
 				</tr>

@@ -12,7 +12,7 @@
 	       + (float) $trade['slippage'];
 ?>
 <tr>
-	<td style="white-space: nowrap" data-value="<?= e((string) ($trade['fill_date'] === null
+	<td class="sm-nowrap" data-value="<?= e((string) ($trade['fill_date'] === null
 		? $trade['as_of_date'] : $trade['fill_date'])) ?>"><?= s_date($trade['fill_date'] === null
 		? $trade['as_of_date'] : $trade['fill_date']) ?></td>
 	<td><?= htmlspecialchars((string) $trade['side']) ?></td>

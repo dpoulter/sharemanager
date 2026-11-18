@@ -67,8 +67,8 @@
 						<th class="sm-num" data-sort="number">6 months</th>
 					<?php endif ?>
 					<?php if (isset($extras['momentum_score']) || isset($extras['value_score'])
-					          || isset($extras['quality_score'])): ?>
-						<th class="sm-badges-tight">Scores</th>
+					          || isset($extras['quality_score']) || isset($extras['overall_score'])): ?>
+						<th class="sm-badges-tight">Momentum, Value, Quality, ShareRank</th>
 					<?php endif ?>
 				</tr>
 			</thead>
@@ -94,12 +94,16 @@
 					<?php if (isset($extras['6mnth'])): ?>
 						<td class="sm-num" data-value="<?= e($row['change_6m']) ?>"><?= move_pct_html($row['change_6m']) ?></td>
 					<?php endif ?>
+					<?php /* The four scores as bars: where each sits between 0 and
+					         100, which is what a score is, rather than four
+					         coloured blocks. */ ?>
 					<?php if (isset($extras['momentum_score']) || isset($extras['value_score'])
-					          || isset($extras['quality_score'])): ?>
-						<td class="sm-badges-tight" style="white-space: nowrap">
+					          || isset($extras['quality_score']) || isset($extras['overall_score'])): ?>
+						<td class="sm-badges-tight sm-nowrap">
 							<?php if (isset($extras['momentum_score'])): ?><?= score_badge_html($row['momentum'], 'Momentum') ?><?php endif ?>
 							<?php if (isset($extras['value_score'])): ?><?= score_badge_html($row['value_score'], 'Value') ?><?php endif ?>
 							<?php if (isset($extras['quality_score'])): ?><?= score_badge_html($row['quality'], 'Quality') ?><?php endif ?>
+							<?php if (isset($extras['overall_score'])): ?><?= score_badge_html($row['overall'], 'ShareRank') ?><?php endif ?>
 						</td>
 					<?php endif ?>
 				</tr>

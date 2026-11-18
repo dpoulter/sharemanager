@@ -91,8 +91,10 @@
 		   the benchmark last so it is always the same colour whatever is above
 		   it. Grey, deliberately: it is the thing being measured against, not
 		   another contender. */
-		var colours = ["#0d6efd", "#198754", "#fd7e14", "#6f42c1", "#d63384", "#0dcaf0"];
-		var benchmarkColour = "#6c757d";
+		var colours = [token("--sm-chart-close", "#0b5a70"), "#198754",
+		               token("--sm-chart-ma50", "#c26a00"),
+		               token("--sm-chart-ma200", "#7a4fb5"), "#d63384", "#0dcaf0"];
+		var benchmarkColour = token("--sm-muted", "#6c757d");
 
 		var legend = document.createElement("div");
 		legend.className = "mt-2";

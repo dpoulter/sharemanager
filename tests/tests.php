@@ -12269,9 +12269,9 @@
           strpos(screen_cell_html('close_price', 196.8153), '196.8p') !== false
           && strpos(screen_cell_html('6mnth', 9.0568), '+9.1%') !== false,
           screen_cell_html('close_price', 196.8153) . ' / ' . screen_cell_html('6mnth', 9.0568));
-    check('a score is a badge on the one scale',
-          strpos(screen_cell_html('momentum_score', 82), 'sm-badge sm-score') !== false
-          && strpos(screen_cell_html('momentum_score', 82), '--score: 82') !== false,
+    check('a score is a bar on the one scale',
+          strpos(screen_cell_html('momentum_score', 82), 'sm-score-cell') !== false
+          && strpos(screen_cell_html('momentum_score', 82), 'width: 82%') !== false,
           screen_cell_html('momentum_score', 82));
     check('and a yield stored as a fraction is a percentage',
           strpos(screen_cell_html('div_yield', 0.0311), '3.11%') !== false,
@@ -13027,26 +13027,33 @@
     check('and the orphan controller in templates is gone',
           !file_exists(dirname(__DIR__) . '/templates/index.php'));
 
-    echo "\n--- one colour scale, mixed rather than stepped ---\n";
+    echo "\n--- one scale for a score, and it is a bar ---\n";
 
-    /* The four fixed bands made 49 and 50 different colours for no reason a
-       reader can see. The badge carries the score as a custom property and
-       the stylesheet mixes the colour from it; the band word stays, in the
-       tooltip, because "strong" is what a reader wants in words and a
-       colour cannot say it. */
-    check('the badge carries the score rather than a band class',
-          strpos(score_badge_html(62, 'Quality'), '--score: 62') !== false
-          && strpos(score_badge_html(62, 'Quality'), 'sm-score-fair') === false,
+    /* The coloured block is gone. It told a reader the colour of a score
+       and nothing else; where 49 sits between 0 and 100 is what a score
+       is, and a bar says that - in the same three signal colours as every
+       other bar and dot in the application. */
+    check('a score is a bar with the number beside it',
+          strpos(score_badge_html(62, 'Quality'), 'sm-score-cell') !== false
+          && strpos(score_badge_html(62, 'Quality'), 'sm-bar-fill') !== false
+          && strpos(score_badge_html(62, 'Quality'), '>62</span>') !== false,
           score_badge_html(62, 'Quality'));
-    check('and still says what it is and which way is better',
+    check('and no page carries a coloured block any more',
+          strpos(score_badge_html(62, 'Quality'), 'sm-badge') === false
+          && strpos(score_badge_html(62, 'Quality'), '--score') === false);
+    check('it still says what is being scored and which way is better',
           strpos(score_badge_html(62, 'Quality'), 'Quality 62/100') !== false
           && strpos(score_badge_html(62, 'Quality'), 'higher is better') !== false
           && strpos(score_badge_html(62, 'Quality'), 'above average') !== false);
     check('a score outside 0 to 100 is brought back into it',
-          strpos(score_badge_html(140, 'Quality'), '--score: 100') !== false
-          && strpos(score_badge_html(-20, 'Quality'), '--score: 0') !== false);
-    check('and an unscored share is still a dash, not a badge at nought',
-          strpos(score_badge_html(null, 'Quality'), 'sm-missing') !== false);
+          strpos(score_badge_html(140, 'Quality'), 'width: 100%') !== false
+          && strpos(score_badge_html(-20, 'Quality'), 'width: 3%') !== false,
+          score_badge_html(-20, 'Quality'));
+    check('and an unscored share is an empty track and a dash, so the column lines up',
+          strpos(score_badge_html(null, 'Quality'), 'sm-missing') !== false
+          && strpos(score_badge_html(null, 'Quality'), 'sm-score-cell') !== false
+          && strpos(score_badge_html(null, 'Quality'), 'sm-bar-fill') === false,
+          score_badge_html(null, 'Quality'));
 
     /* The band helper has not gone: the tooltip and the key use it. */
     $cs_bands = [0 => 'poor', 24 => 'poor', 25 => 'below average', 49 => 'below average',
@@ -13059,19 +13066,21 @@
           count($cs_wrong) === 0, implode(',', $cs_wrong));
 
     $cs_css = (string) file_get_contents(dirname(__DIR__) . '/templates/app.css');
-    $cs_scale = view_score_scale();
-    check('the stylesheet mixes in oklch between the two ends',
-          strpos($cs_css, 'color-mix(in oklch') !== false
-          && strpos($cs_css, $cs_scale['low']) !== false
-          && strpos($cs_css, $cs_scale['high']) !== false,
-          json_encode($cs_scale));
-    /* Mixing in sRGB goes through mud and the lightness wanders, so the text
-       is readable at the ends and not in the middle. */
-    check('and not in sRGB, which would take red to green through grey',
-          strpos($cs_css, 'color-mix(in srgb') === false);
-    /* White text on no background at all is white text on white. */
-    check('a browser without color-mix gets a legible fallback',
-          preg_match('/\.sm-score \{\s*background: var\(--sm-score-none\);/', $cs_css) === 1);
+    check('and the stylesheet no longer mixes a colour per score',
+          strpos($cs_css, 'color-mix(in oklch') === false
+          && strpos($cs_css, '--sm-score-low') === false,
+          substr($cs_css, max(0, strpos($cs_css, 'color-mix')), 200));
+
+    /* Sentiment, the same way: a dot beside the figure and the word, not a
+       swatch and a number written in the band's colour. */
+    check('sentiment is a dot, the figure and the word',
+          strpos(sentiment_html(0.6), 'sm-dot-pos') !== false
+          && strpos(sentiment_html(0.6), '+0.60 strong') !== false
+          && strpos(sentiment_html(-0.4), 'sm-dot-neg') !== false,
+          sentiment_html(0.6));
+    check('and carries no colour of its own',
+          strpos(sentiment_html(0.6), 'style="color') === false
+          && strpos(sentiment_html(0.6), 'sm-swatch') === false);
 
     echo "\n--- light, dark, or whatever the machine says ---\n";
 
@@ -13600,6 +13609,51 @@
     check('numbers are set in tabular figures, or the columns do not line up',
           strpos($app_css, 'tabular-nums') !== false);
 
+    /* Nothing outside the stylesheet decides what colour anything is, or
+       how big it is set. A page that carries its own colours is a page
+       that keeps the old look after the tokens change, and a font size in
+       an attribute is a size nobody can find when the house style moves.
+       Positions and widths are not colours: a bar's fill and a marker's
+       place on a track are data, and they have to be written where the
+       figure is. */
+    $hs_inline = [];
+    foreach (array_merge(glob(dirname(__DIR__) . '/templates/*.php'),
+                         [dirname(__DIR__) . '/includes/view.php',
+                          dirname(__DIR__) . '/includes/screen_view.php',
+                          dirname(__DIR__) . '/includes/portfolio_view.php',
+                          dirname(__DIR__) . '/includes/news_view.php',
+                          dirname(__DIR__) . '/includes/quote_view.php']) as $hs_file) {
+        $hs_text = (string) file_get_contents($hs_file);
+        if (preg_match_all('/style\s*=\s*["\']([^"\']*)["\']/', $hs_text, $hs_hits)) {
+            foreach ($hs_hits[1] as $hs_style) {
+                if (preg_match('/(^|[;\s])(color|background|background-color|font-size|font-family|border-color)\s*:/i',
+                               $hs_style)) {
+                    $hs_inline[] = basename($hs_file) . ': ' . trim($hs_style);
+                }
+            }
+        }
+    }
+    check('no page sets a colour or a font size of its own',
+          count($hs_inline) === 0, implode(' | ', $hs_inline));
+
+    /* And the styles the old look needed are gone rather than left to rot:
+       a stylesheet nobody prunes is one nobody dares change. */
+    foreach (['sm-swatch' => 'the sentiment swatch',
+              '--sm-score-low' => 'the mixed score scale',
+              'color-mix(in oklch' => 'the score colour mix'] as $hs_gone => $hs_what) {
+        check('the stylesheet has dropped ' . $hs_what,
+              strpos($app_css, $hs_gone) === false,
+              substr($app_css, max(0, strpos($app_css, $hs_gone)), 120));
+        $hs_used = [];
+        foreach (glob(dirname(__DIR__) . '/templates/*.php') as $hs_file) {
+            if (strpos((string) file_get_contents($hs_file), $hs_gone) !== false) {
+                $hs_used[] = basename($hs_file);
+            }
+        }
+        check('and no page still asks for ' . $hs_what,
+              count($hs_used) === 0, implode(', ', $hs_used));
+    }
+
     /* ---------------- the house style, 18 Nov 2026 ---------------- */
 
     /* The token table, which is the whole palette. Both halves of every
@@ -14074,17 +14128,17 @@
            the dashboard's box of the same five shares. */
         check('the week is summarised both ways',
               stripos($itn, 'Worst received') !== false && stripos($itn, 'Best received') !== false);
-        /* The swatch keeps rns_band()'s colours; its shape moved out of an
-           inline style and into app.css with everything else. */
+        /* A dot beside the figure rather than a swatch instead of it, in
+           the three signal colours the rest of the house style uses. */
         check('a sentiment band is drawn rather than a bare number',
-              strpos($itn, 'sm-swatch') !== false
-              && preg_match('/sm-swatch[^>]*background:#[0-9a-f]{6}/i', $itn) === 1,
-              substr($itn, max(0, strpos($itn, 'sm-swatch') - 40), 200));
-        /* And the number and the band word beside it, which the swatch
+              preg_match('/sm-dot sm-dot-(pos|caution|neg)/', $itn) === 1
+              && strpos($itn, 'sm-swatch') === false,
+              substr($itn, max(0, strpos($itn, 'sm-dot')), 200));
+        /* And the number and the band word beside it, which the colour
            alone never said. */
         check('with the score and the word it stands for',
               preg_match('/[+-]\d\.\d\d (bad|poor|neutral|good|strong)/', $itn) === 1,
-              substr($itn, max(0, strpos($itn, 'sm-swatch') - 40), 300));
+              substr($itn, max(0, strpos($itn, 'sm-sentiment')), 300));
 
         /* The filters. Each one is a value the page offered, and the type
            filter is the one that proves the query is parameterised rather

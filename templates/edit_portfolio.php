@@ -113,7 +113,7 @@
 						<td class="sm-num"><?= e(fmt_pence($position["price_paid"], 2)) ?></td>
 						<?php /* Pounds: commission is cash, not a share price. */ ?>
 						<td class="sm-num"><?= e(fmt_pounds($position["commission"])) ?></td>
-						<td style="white-space: nowrap"><?= e(fmt_date($position["purchase_date"])) ?></td>
+						<td class="sm-nowrap"><?= e(fmt_date($position["purchase_date"])) ?></td>
 						<td><a href="edit.php?id=<?= e($position["id"]) ?>&amp;action=edit"
 						       aria-label="Edit this transaction"><i class="fas fa-edit" aria-hidden="true"></i></a></td>
 						<td><a href="edit.php?id=<?= e($position["id"]) ?>&amp;action=delete"
