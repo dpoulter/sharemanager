@@ -415,10 +415,10 @@
 	 * its own. Returns a list of intents; an empty list means do nothing,
 	 * which is a valid and common outcome.
 	 */
-	function strategy_plan_orders($strategy,$as_of_date,$targets=null) {
+	function strategy_plan_orders($strategy,$as_of_date,$targets=null,$options=[]) {
 
 		$plan=['orders'=>[],'errors'=>[],'skipped'=>[],'account_value'=>null,
-		       'mode'=>STRATEGY_MODE_PAPER];
+		       'mode'=>STRATEGY_MODE_PAPER,'nothing_to_do'=>false];
 
 		$account=strategy_account($strategy);
 		if ($account===null){ $plan['errors'][]="no account for strategy ".$strategy; return $plan; }
@@ -452,7 +452,24 @@
 		if ($targets===null){
 			$targets=query("select * from strategy_targets where strategy=? and as_of_date=?",$strategy,$as_of_date);
 		}
-		if (count($targets)===0){ $plan['errors'][]="no targets for ".$as_of_date; return $plan; }
+		if (count($targets)===0){
+			/* On a night that is not a rebalance there are no targets, and
+			   that is the normal state of a monthly strategy on the other
+			   thirty nights of the month. It was reported as a problem,
+			   which failed the nightly job for doing exactly what it is
+			   supposed to do. The dry run and the backtest each filtered
+			   the sentence out again by matching on its text; neither has
+			   to now, because it is not said.
+
+			   On a night that IS a rebalance, no targets is a real problem
+			   and stays one: the selection found nothing. */
+			if (array_key_exists('rebalance',$options)&&$options['rebalance']===false){
+				$plan['nothing_to_do']=true;
+				return $plan;
+			}
+			$plan['errors'][]="no targets for ".$as_of_date;
+			return $plan;
+		}
 
 		$total_weight=0;
 		foreach ($targets as $target) { $total_weight += (float)$target['target_weight']; }
@@ -1763,10 +1780,21 @@
 		                   where strategy=? and quantity<>0",$strategy);
 		if (count($positions)&&(int)$positions[0]['n']>0){ return false; }
 
-		$filled=query("select count(*) n from strategy_orders
-		                where strategy=? and status='FILLED'",$strategy);
+		/* An order that has not filled yet counts. A monthly strategy built
+		   on the 16th fills at the 17th close, so on the night of the 17th
+		   it held nothing and had nothing FILLED - and this said "not built
+		   yet", which made the 17th a rebalance night. Both paper
+		   strategies rebalanced the day after they were built, sold three
+		   names apiece and planned eight orders nobody asked for.
 
-		return !(count($filled)&&(int)$filled[0]['n']>0);
+		   REJECTED and CANCELLED do not count: an order that was refused is
+		   an order that did not happen, and a strategy whose whole first
+		   build was refused has still not been built. */
+		$live=query("select count(*) n from strategy_orders
+		              where strategy=? and status in ('FILLED','PENDING','SENT','UNKNOWN')",
+		            $strategy);
+
+		return !(count($live)&&(int)$live[0]['n']>0);
 	}
 
 	/**
@@ -2244,7 +2272,7 @@
 	 * targets it should plan from so that a rebalance can be inspected
 	 * before its targets exist.
 	 */
-	function strategy_execute($strategy,$as_of,$dry_run=false,$targets=null) {
+	function strategy_execute($strategy,$as_of,$dry_run=false,$targets=null,$options=[]) {
 
 		$report=['lines'=>[],'orders'=>[],'errors'=>[],
 		         'filled'=>0,'rejected'=>0,'skipped'=>0,'pending'=>0,
@@ -2270,7 +2298,13 @@
 			return $report;
 		}
 
-		if (!$dry_run&&$mode['broker']===null){
+		/* Unless the caller has already done it. strategy_run_night()
+		   resumes before it decides whether tonight is a rebalance,
+		   because last night's fills are what say the strategy has been
+		   built - and resuming them here, after that decision, was how
+		   both paper strategies came to rebalance the night after their
+		   first build. */
+		if (!$dry_run&&$mode['broker']===null&&empty($options['resumed'])){
 			$resume=strategy_resume_pending($strategy);
 			if ($resume['halted']){
 				$report['errors'][]="pending orders exist and the account is not in PAPER mode;"
@@ -2290,7 +2324,7 @@
 			return $report;
 		}
 
-		$plan=strategy_plan_orders($strategy,$as_of,$targets);
+		$plan=strategy_plan_orders($strategy,$as_of,$targets,$options);
 		$report['account_value']=$plan['account_value'];
 		$report['orders']=$plan['orders'];
 		$report['not_placed']=isset($plan['skipped']) ? $plan['skipped'] : [];
@@ -2420,6 +2454,40 @@
 
 		try {
 
+			/* Last night's orders first, before anything is decided from
+			   what the strategy holds.
+
+			   A paper order decided on the 16th fills at the 17th close,
+			   so on the night of the 17th the book is still last night's
+			   until these are resumed - and two things read that book. The
+			   first build test saw no positions and nothing filled and
+			   said "not built yet", which made the 17th a rebalance night
+			   for a monthly strategy. The hold rank buffer saw no holdings
+			   and so had nothing to hold, and re-picked the whole book
+			   from the top of the ranking. Both paper strategies
+			   rebalanced the night after their first build, sold three
+			   names apiece and planned eight orders nobody asked for.
+
+			   A broker account's orders are not filled here at all - the
+			   sending job resolves them during the session - so there is
+			   nothing to resume for one. */
+			$mode=strategy_mode_rules($account['mode']);
+			$resumed=false;
+
+			if (!$dry_run&&$mode['broker']===null){
+				$resume=strategy_resume_pending($strategy);
+				if ($resume['halted']){
+					$night['errors'][]="pending orders exist and the account is not in PAPER"
+					                  ." mode; a human must resolve them";
+					return $night;
+				}
+				if ($resume['resumed']>0||$resume['failed']>0){
+					$night['lines'][]="resumed ".$resume['resumed']." pending order(s), "
+					                 .$resume['failed']." could not be filled";
+				}
+				$resumed=true;
+			}
+
 			$exits=strategy_place_exits($strategy,$as_of,$dry_run,$exchange);
 			$night['exits']=$exits['exits'];
 			foreach ($exits['exits'] as $exit) {
@@ -2438,7 +2506,9 @@
 				if ($dry_run){ $targets=$written['targets']; }
 			}
 
-			$report=strategy_execute($strategy,$as_of,$dry_run,$targets);
+			$report=strategy_execute($strategy,$as_of,$dry_run,$targets,
+			                         ['resumed'=>$resumed,
+			                          'rebalance'=>$night['rebalance']]);
 
 			foreach ($report['lines'] as $line) { $night['lines'][]=$line; }
 			foreach ($report['errors'] as $error) { $night['errors'][]=$error; }
@@ -3290,16 +3360,13 @@
 		$report['rebalance']=$night['rebalance'];
 		$report['lines']=$night['lines'];
 
-		/* "No targets for tonight" is the normal state of a monthly strategy
-		   on the other thirty nights of the month, not something to put in
-		   red in front of somebody. The popup says "no rebalance tonight,
-		   next on <date>" instead, which is the same fact without the
-		   alarm. On a night that IS a rebalance, no targets is a real
-		   problem and stays. */
-		foreach ($night['errors'] as $error) {
-			if (!$report['rebalance']&&strpos($error,'no targets for')===0){ continue; }
-			$report['errors'][]=$error;
-		}
+		/* "No targets for tonight" is the normal state of a monthly
+		   strategy on the other thirty nights of the month, not something
+		   to put in red in front of somebody. The popup says "no rebalance
+		   tonight, next on <date>" instead, which is the same fact without
+		   the alarm. It used to be filtered out here by matching on its
+		   text; the engine does not say it any more. */
+		foreach ($night['errors'] as $error) { $report['errors'][]=$error; }
 
 		$cash_before=(float)$account['cash'];
 		$holdings_before=0;

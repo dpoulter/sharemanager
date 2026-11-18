@@ -1409,6 +1409,162 @@
                         where symbol='BBB' and exchange='XLON' and date>?", [$gone_after])
             === count($gone_rows));
 
+    echo "\n--- strategies: the night after the first build ---\n";
+
+    /* Both paper strategies rebalanced the night after their first build.
+       The build was planned on 16 Nov and filled at the 17 Nov close; the
+       17 Nov run then logged REBALANCE for both again and planned eight
+       orders nobody asked for, on strategies that rebalance monthly.
+
+       The reason was the order of two steps. A paper order fills at the
+       NEXT close, so on the night of the 17th it was still PENDING and
+       nothing had been written to strategy_positions. The first build test
+       - no positions, nothing filled - was therefore still true, and a
+       first build is always due whatever the calendar says. The fills were
+       resumed later in the same run, after the decision had been taken.
+
+       Two symbols priced only up to the first night, so the order cannot
+       fill until the second night's price is inserted. That is the real
+       sequence: a run on the latest close has no later price to fill at. */
+    $NB = 'test_next_night';
+
+    /* The first night has to be the last session the exchange has, or the
+       order is rejected rather than left pending: an order with no price
+       after it is "not yet" only while the market has not traded since.
+       That is the real sequence - the nightly job runs at the latest
+       close, and tomorrow's prices arrive tomorrow night. The second
+       night's prices are inserted below, which is what makes it a
+       session; both are removed again at the end of this block. */
+    $nb_one = (string) scalar("select max(date) from historical_prices where exchange='XLON'");
+    $nb_two = null;
+    for ($nb_i = 1; $nb_i <= 5; $nb_i++) {
+        $nb_candidate = date('Y-m-d', strtotime($nb_one . ' +' . $nb_i . ' day'));
+        /* Not the first session of its month, or a monthly rebalance would
+           be due that night for the calendar's own reasons and the test
+           would prove nothing. A date in the same month as $nb_one never
+           is, because $nb_one is already before it. */
+        if (substr($nb_candidate, 0, 7) === substr($nb_one, 0, 7)) { $nb_two = $nb_candidate; break; }
+    }
+
+    if ($nb_one === '' || $nb_two === null) {
+        check('two nights to run the first build over', false,
+              json_encode([$nb_one, $nb_two]));
+    }
+    else {
+
+    db()->exec("delete from historical_prices where symbol like 'NB%'");
+    db()->exec("delete from stock_symbols where symbol like 'NB%'");
+    db()->exec("delete from statistics where symbol like 'NB%'");
+
+    /* Six names, so an equal weight is 16.7% and inside the 20% limit on
+       one position. Three would be a third each, which the planner
+       refuses as it should. */
+    $nb_symbols = ['NB1','NB2','NB3','NB4','NB5','NB6'];
+    foreach ($nb_symbols as $nb_i => $nb_sym) {
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                                  sector,market,industry_group,industry)
+                       values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','X')")
+            ->execute([$nb_sym, 'Night ' . $nb_sym, 'Night ' . $nb_sym]);
+        db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                       values (?,'XLON',?,?)")->execute([$nb_sym, $nb_one, 1000 + $nb_i * 100]);
+        s_stat($nb_sym, 'nb_score', $nb_one, 90 - $nb_i * 10);
+        s_stat($nb_sym, 'nb_score', $nb_two, 90 - $nb_i * 10);
+    }
+
+    s_drop($NB);
+    s_rules($NB, ['selection'=>'score','score_indicator'=>'nb_score','rank_by'=>'nb_score',
+                  'holdings'=>6,'rebalance'=>'monthly']);
+    s_reset($NB, 100000, 'Y', 'PAPER');
+
+    [$nb_out_one, $nb_rc_one] = run_script('run_strategies.php', ['--strategy=' . $NB, $nb_one]);
+
+    check('the first build is a rebalance whatever the calendar says',
+          stripos($nb_out_one, 'rebalance') !== false
+          && (int) scalar("select count(*) from strategy_orders where strategy=?", [$NB]) === 6,
+          $nb_out_one);
+    check('and its orders wait for the next close, because there is no price yet',
+          (int) scalar("select count(*) from strategy_orders
+                         where strategy=? and status='PENDING'", [$NB]) === 6,
+          $nb_out_one);
+    check('an account whose first build is out there is not a first build any more',
+          strategy_first_build($NB) === false);
+    check('and so tonight is no longer a rebalance night for it',
+          strategy_rebalance_due(strategy_rules($NB), $nb_two, 'XLON') === false);
+
+    /* The next night. The price arrives, the pending orders fill, and a
+       monthly strategy does nothing else. */
+    foreach ($nb_symbols as $nb_i => $nb_sym) {
+        db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                       values (?,'XLON',?,?)")->execute([$nb_sym, $nb_two, 1010 + $nb_i * 100]);
+    }
+
+    [$nb_out_two, $nb_rc_two] = run_script('run_strategies.php', ['--strategy=' . $NB, $nb_two]);
+
+    check('the next night fills what was waiting',
+          (int) scalar("select count(*) from strategy_orders
+                         where strategy=? and status='FILLED'", [$NB]) === 6,
+          $nb_out_two);
+    check('and does not rebalance a monthly strategy the day after it was built',
+          (int) scalar("select count(*) from strategy_orders where strategy=?", [$NB]) === 6
+          && (int) scalar("select count(*) from strategy_targets
+                            where strategy=? and as_of_date=?", [$NB, $nb_two]) === 0,
+          $nb_out_two);
+
+    /* And a night with nothing to do is not a night that failed. "No
+       targets" was reported as a problem, so the nightly job said
+       "strategies failed" for doing exactly what it is supposed to do. */
+    check('a night that is not a rebalance ends with no problems',
+          $nb_rc_two === 0 && strpos($nb_out_two, '!') === false,
+          'rc ' . $nb_rc_two . ': ' . $nb_out_two);
+
+    [$nb_out_three, $nb_rc_three] = run_script('run_strategies.php', ['--strategy=' . $NB, $nb_two]);
+    check('and running it again changes nothing and still reports nothing',
+          $nb_rc_three === 0 && strpos($nb_out_three, '!') === false
+          && (int) scalar("select count(*) from strategy_orders where strategy=?", [$NB]) === 6,
+          'rc ' . $nb_rc_three . ': ' . $nb_out_three);
+
+    /* The planner still says so when targets are missing on a night that
+       IS a rebalance: that is the selection having found nothing, which is
+       a real problem. */
+    $nb_rebalance = strategy_plan_orders($NB, $nb_two, null, ['rebalance' => true]);
+    check('missing targets on a rebalance night are still a problem',
+          stripos(implode(' ', $nb_rebalance['errors']), 'no targets') !== false,
+          json_encode($nb_rebalance['errors']));
+    $nb_quiet = strategy_plan_orders($NB, $nb_two, null, ['rebalance' => false]);
+    check('and on any other night they are not',
+          count($nb_quiet['errors']) === 0 && $nb_quiet['nothing_to_do'] === true,
+          json_encode($nb_quiet));
+
+    /* A refused order is not a build. A strategy whose whole first build
+       was rejected has still not been built. */
+    $NR = 'test_next_night_refused';
+    s_drop($NR);
+    s_rules($NR, ['holdings' => 3]);
+    s_reset($NR);
+    db()->prepare("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,
+                                                exchange,side,quantity,status,created_at)
+                   values (?,?,?,'AAA','XLON','BUY',10,'REJECTED',now())")
+        ->execute([$NR . ':r', $NR, $nb_one]);
+    check('a rejected order does not count as having been built',
+          strategy_first_build($NR) === true);
+    db()->prepare("update strategy_orders set status='SENT' where client_order_id=?")
+        ->execute([$NR . ':r']);
+    check('but one that has gone to a broker does',
+          strategy_first_build($NR) === false);
+    s_drop($NR);
+
+    s_drop($NB);
+    db()->exec("delete from historical_prices where symbol like 'NB%'");
+    db()->exec("delete from stock_symbols where symbol like 'NB%'");
+    db()->exec("delete from statistics where symbol like 'NB%'");
+    /* The second night was a session only because this block made one.
+       Everything written against it goes with it, or every later test
+       values itself at a date with one share in it. */
+    db()->prepare("delete from strategy_values where date=?")->execute([$nb_two]);
+    db()->prepare("delete from market_breadth where date=?")->execute([$nb_two]);
+
+    }
+
     echo "\n--- strategies: the turnover cap and the first build ---\n";
 
     /* Turnover is min(buys, sells), which is how much of the book is being
@@ -12145,6 +12301,77 @@
                   'holdings'=>3,'hold_rank'=>null]);
     check('and sold with none',
           !in_array('FFF', $hr_select(), true), json_encode($hr_select()));
+
+    /* And at the size the live strategy runs at, because an off-by-one in
+       a buffer of seven is hard to see and an off-by-one in a buffer of
+       twenty-six is the difference between keeping a holding and selling
+       it. Twenty-six names, fifteen holdings, the twentieth held.
+
+       Trending Value sold three of its fifteen on 17 Nov 2026 with a
+       buffer of twenty-six, which looked like the buffer not being
+       applied. It was applied; it had nothing to apply to, because the
+       previous night's fills had not been resumed when the selection ran
+       and strategy_positions was empty. The buffer itself works, and this
+       is the check that says so at that size. */
+    $hr_big = [];
+    for ($hr_i = 1; $hr_i <= 26; $hr_i++) {
+        $hr_sym = 'HR' . str_pad((string) $hr_i, 2, '0', STR_PAD_LEFT);
+        $hr_big[] = $hr_sym;
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,
+                                                  sector,market,industry_group,industry)
+                       values (?,?,?,'XLON','Y','Industrials','Main Market','Industrials','X')
+                       on duplicate key update enabled='Y'")
+            ->execute([$hr_sym, 'Big ' . $hr_i, 'Big ' . $hr_i]);
+        db()->prepare("insert into historical_prices (symbol,exchange,date,price)
+                       values (?,'XLON',?,?)
+                       on duplicate key update price=values(price)")
+            ->execute([$hr_sym, $hr_asof, 1000 + $hr_i]);
+        /* Highest score first, so HR01 is ranked first and HR20 twentieth. */
+        s_stat($hr_sym, 'hr26_score', $hr_asof, 270 - $hr_i * 10);
+    }
+
+    $HRB = 'test_hold_rank_26';
+    s_drop($HRB);
+    s_reset($HRB);
+    $hrb_select = function () use ($HRB, $hr_asof) {
+        return strategy_select_symbols(strategy_rules($HRB), $hr_asof, 'XLON')['symbols'];
+    };
+    $hrb_rules = function ($hold_rank) use ($HRB) {
+        s_rules($HRB, ['selection'=>'score','score_indicator'=>'hr26_score',
+                       'rank_by'=>'hr26_score','holdings'=>15,'hold_rank'=>$hold_rank]);
+    };
+
+    db()->prepare("delete from strategy_positions where strategy=?")->execute([$HRB]);
+    foreach (array_slice($hr_big, 0, 14) as $hrb_sym) {
+        db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                       values (?,?,'XLON',10,1.0,now())")->execute([$HRB, $hrb_sym]);
+    }
+    db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                   values (?,'HR20','XLON',10,1.0,now())")->execute([$HRB]);
+
+    $hrb_rules(26);
+    $hrb_kept = $hrb_select();
+    check('a holding ranked twentieth of twenty-six is kept by a buffer of twenty-six',
+          in_array('HR20', $hrb_kept, true) && count($hrb_kept) === 15,
+          json_encode($hrb_kept));
+    check('and the fifteenth best name is not bought over it',
+          !in_array('HR15', $hrb_kept, true), json_encode($hrb_kept));
+
+    $hrb_rules(19);
+    check('and sold by a buffer of nineteen, which it is outside',
+          !in_array('HR20', $hrb_select(), true), json_encode($hrb_select()));
+
+    $hrb_rules(null);
+    check('and by no buffer at all',
+          !in_array('HR20', $hrb_select(), true), json_encode($hrb_select()));
+
+    s_drop($HRB);
+    foreach ($hr_big as $hr_sym) {
+        db()->prepare("delete from statistics where symbol=? and indicator='hr26_score'")
+            ->execute([$hr_sym]);
+        db()->prepare("delete from historical_prices where symbol=?")->execute([$hr_sym]);
+        db()->prepare("delete from stock_symbols where symbol=?")->execute([$hr_sym]);
+    }
 
     /* Leaving the selection is not the same as slipping down it, and both
        end in the same place - which is what makes this one rule. */

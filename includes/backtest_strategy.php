@@ -463,9 +463,10 @@
 		$exits += count($night['exits']);
 
 		foreach ($night['errors'] as $error) {
-			/* "no targets" on a night that is not a rebalance is the normal
-			   state of a monthly strategy, not a problem. */
-			if (strpos($error,'no targets for')===0){ continue; }
+			/* "no targets" on a night that is not a rebalance used to be
+			   filtered out here by matching on its text. The engine does
+			   not say it any more: it knows whether tonight is a rebalance
+			   and only calls missing targets a problem when they are one. */
 			/* A rebalance the turnover cap refused is a fact about the
 			   result rather than a problem with the run, and it is the
 			   fact the first backtest could not report: it printed the
