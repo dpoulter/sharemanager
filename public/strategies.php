@@ -52,6 +52,7 @@
     if (!strategy_rules_ready()) {
         render("strategies.php", [
             "title"      => "Strategies",
+            "wide"       => true,
             "as_of"      => $as_of,
             "ready"      => false,
             "view"       => '_overview',
@@ -207,6 +208,7 @@
 
     render("strategies.php", [
         "title"     => "Strategies",
+        "wide"      => true,
         "as_of"     => $as_of,
         "ready"     => true,
         "view"      => $view,

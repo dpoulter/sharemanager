@@ -13329,12 +13329,13 @@
           count($low) === 0, implode(', ', $low));
 
     /* The same for the colours used as text rather than as a background.
-       These sit on the page, which app.css sets to #f8f9fa - the lighter the
-       background the easier this is, so it is checked against the darker of
-       the two the page can have. */
+       These sit on the page, which the house style sets to the ground
+       token - the darkest of the three surfaces a value is printed on in
+       the light scheme, so a colour that clears it clears a panel and a
+       band too. */
     $text_low = [];
     foreach (view_text_colours() as $name => $colour) {
-        $ratio = $contrast($colour, '#f8f9fa');
+        $ratio = $contrast($colour, view_token('ground'));
         if ($ratio < 4.5) { $text_low[] = sprintf('%s %.2f:1', $name, $ratio); }
     }
     check('and every value colour passes AA as text on the page',
@@ -13360,6 +13361,136 @@
 
     check('numbers are set in tabular figures, or the columns do not line up',
           strpos($app_css, 'tabular-nums') !== false);
+
+    /* ---------------- the house style, 18 Nov 2026 ---------------- */
+
+    /* The token table, which is the whole palette. Both halves of every
+       light-dark() pair have to be in the stylesheet, because the dark
+       scheme is not a tint of the light one and nothing else checks it. */
+    $ht_missing = [];
+    foreach (view_house_tokens() as $ht_name => [$ht_light, $ht_dark]) {
+        if (stripos($app_css, $ht_light) === false) { $ht_missing[] = "$ht_name light $ht_light"; }
+        if (stripos($app_css, $ht_dark) === false)  { $ht_missing[] = "$ht_name dark $ht_dark"; }
+    }
+    check('every house token is in the stylesheet, in both schemes',
+          count($ht_missing) === 0, implode(', ', $ht_missing));
+
+    /* Every pair that carries text, in both schemes. The eye is not a
+       contrast meter and a dark scheme written by hand is where this goes
+       wrong: #15803d on near-black is 3.2:1. */
+    $ht_text_pairs = [
+        ['ink', 'panel'], ['ink', 'ground'], ['ink', 'band'],
+        ['ink-2', 'panel'], ['ink-2', 'band'],
+        ['muted', 'panel'], ['muted', 'band'], ['muted', 'ground'],
+        ['link', 'panel'], ['link', 'band'], ['link', 'ground'],
+        ['link-hover', 'panel'],
+        ['pos', 'panel'], ['pos', 'band'], ['pos', 'ground'],
+        ['neg', 'panel'], ['neg', 'band'], ['neg', 'ground'],
+        ['caution', 'panel'], ['caution', 'band'], ['caution', 'ground'],
+        ['alert-ink', 'alert-bg'],
+    ];
+    $ht_low = [];
+    foreach (['light', 'dark'] as $ht_scheme) {
+        foreach ($ht_text_pairs as [$ht_fg, $ht_bg]) {
+            $ht_ratio = $contrast(view_token($ht_fg, $ht_scheme), view_token($ht_bg, $ht_scheme));
+            if ($ht_ratio < 4.5) {
+                $ht_low[] = sprintf('%s: %s on %s %.2f:1', $ht_scheme, $ht_fg, $ht_bg, $ht_ratio);
+            }
+        }
+        /* The navbar's links are white-ish on the nav colour. */
+        $ht_nav = $contrast('#d8dee6', view_token('nav', $ht_scheme));
+        if ($ht_nav < 4.5) { $ht_low[] = sprintf('%s: nav links %.2f:1', $ht_scheme, $ht_nav); }
+    }
+    check('every text pair in the house palette passes AA in both schemes',
+          count($ht_low) === 0, implode(', ', $ht_low));
+
+    /* A bar or a dot carries no text, so AA does not apply to it - but a
+       3:1 shape is the line between a signal and a smudge, and these are
+       drawn on a band or a panel. */
+    $ht_shape_low = [];
+    foreach (['light', 'dark'] as $ht_scheme) {
+        foreach (['pos', 'neg', 'caution'] as $ht_signal) {
+            foreach (['panel', 'band', 'rule-soft'] as $ht_surface) {
+                $ht_ratio = $contrast(view_token($ht_signal, $ht_scheme),
+                                      view_token($ht_surface, $ht_scheme));
+                if ($ht_ratio < 3.0) {
+                    $ht_shape_low[] = sprintf('%s: %s on %s %.2f:1',
+                                              $ht_scheme, $ht_signal, $ht_surface, $ht_ratio);
+                }
+            }
+        }
+    }
+    check('and every bar and dot colour clears 3:1 against what it is drawn on',
+          count($ht_shape_low) === 0, implode(', ', $ht_shape_low));
+
+    /* The three chart colours are one set, used by all three charts. */
+    check('the charts draw in the house colours',
+          strpos($app_css, '--sm-chart-close') !== false
+          && strpos($app_css, '--sm-chart-ma50') !== false
+          && strpos($app_css, '--sm-chart-ma200') !== false);
+
+    /* Inter, from this site. A stylesheet that asks Google for the face
+       tells Google which pages a private site serves. */
+    /* Without its comments: the comment that explains why the face is
+       self-hosted names the host it is not fetched from. */
+    $ht_css = preg_replace('#/\*.*?\*/#s', '', $app_css);
+    check('the house typeface is served from this site, not from Google',
+          strpos($ht_css, '/fonts/inter-400.woff2') !== false
+          && stripos($ht_css, 'fonts.googleapis.com') === false
+          && stripos($ht_css, 'fonts.gstatic.com') === false,
+          substr($ht_css, max(0, stripos($ht_css, 'googleapis') - 100), 200));
+    $ht_header = (string) file_get_contents(dirname(__DIR__) . '/templates/header.php');
+    check('and no page asks a third party for a font either',
+          stripos($ht_header, 'fonts.googleapis.com') === false
+          && stripos($ht_header, 'fonts.gstatic.com') === false);
+    $ht_fetcher = (string) file_get_contents(dirname(__DIR__) . '/tools/fetch_assets.sh');
+    check('the fetcher installs all four weights into public/fonts',
+          substr_count($ht_fetcher, 'inter-latin-$weight-normal.woff2') === 1
+          && strpos($ht_fetcher, 'for weight in 400 500 600 700') !== false,
+          substr($ht_fetcher, max(0, strpos($ht_fetcher, 'INTER=')), 300));
+    check('the body is set in it, at the size the house style asks for',
+          preg_match('/body\s*\{[^}]*font-family:\s*"Inter"/s', $app_css) === 1
+          && preg_match('/body\s*\{[^}]*font-size:\s*13px/s', $app_css) === 1
+          && preg_match('/body\s*\{[^}]*tabular-nums/s', $app_css) === 1);
+
+    /* The components. A bar reads 0 to 100 and is never invisible; a dot
+       is never the only thing that says a figure is bad; a scale's marker
+       stays on its track whatever the figure. */
+    check('a comparison bar is banded by value: bad, middling, good',
+          view_signal_band(0) === 'low' && view_signal_band(29.9) === 'low'
+          && view_signal_band(30) === 'mid' && view_signal_band(59.9) === 'mid'
+          && view_signal_band(60) === 'high' && view_signal_band(100) === 'high'
+          && view_signal_band(null) === 'none',
+          json_encode([view_signal_band(29.9), view_signal_band(30), view_signal_band(60)]));
+    check('and a score of 1 is still a mark on the track, not an empty one',
+          strpos(view_bar_html(1), 'width: 3%') !== false
+          && strpos(view_bar_html(1), 'sm-bar-low') !== false,
+          view_bar_html(1));
+    check('a score of 100 fills it and no more',
+          strpos(view_bar_html(100), 'width: 100%') !== false
+          && strpos(view_bar_html(140), 'width: 100%') !== false,
+          view_bar_html(140));
+    check('a score nobody has is an empty track rather than a guess',
+          strpos(view_bar_html(null), 'sm-bar-fill') === false,
+          view_bar_html(null));
+    check('a dot is drawn beside a figure and says what it means',
+          strpos(view_dot_html(10), 'sm-dot-neg') !== false
+          && strpos(view_dot_html('high'), 'sm-dot-pos') !== false
+          && strpos(view_dot_html(45), 'sm-dot-caution') !== false
+          && view_dot_html(null) === '',
+          view_dot_html(10) . view_dot_html('high'));
+    check('a scale puts its marker where the figure is, and clamps it to the track',
+          strpos(view_scale_html(7, 0, 9, '0 weak', '9 strong'), 'left: 77.8%') !== false
+          && strpos(view_scale_html(12, 0, 5, 'a', 'b'), 'left: 100%') !== false
+          && strpos(view_scale_html(-3, 0, 5, 'a', 'b'), 'left: 0%') !== false
+          && view_scale_html(null, 0, 9, 'a', 'b') === '',
+          view_scale_html(7, 0, 9, '0 weak', '9 strong'));
+    check('an alert strip says which it is in words as well as in colour',
+          strpos(view_alert_html(false, 'fails the trend rule.', 'Your policy:'), 'sm-alert-ok') === false
+          && strpos(view_alert_html(true, 'passes.'), 'sm-alert-ok') !== false
+          && strpos(view_alert_html(false, 'fails the trend rule.', 'Your policy:'),
+                    'fails the trend rule.') !== false,
+          view_alert_html(true, 'passes.'));
 
     echo "\n--- how old are these figures ---\n";
 
@@ -14567,10 +14698,16 @@ STUB
               && stripos($sp_name_css[1], 'ellipsis') === false
               && stripos($sp_name_css[1], 'nowrap') === false,
               $sp_name_css[1] ?? 'no .sm-menu-name rule');
-        preg_match('/\.sm-page\s*\{([^}]*)\}/', $sp_css, $sp_page_css);
+        /* The house frame is 1,360px; this page keeps the 1,400px its
+           eleven column table was measured against, and says so by asking
+           for it rather than by being the only page the frame fits. */
+        preg_match('/\.sm-page-wide\s*\{([^}]*)\}/', $sp_css, $sp_page_css);
         preg_match('/\.sm-table-wide\s*\{[^}]*min-width:\s*([\d.]+)rem/', $sp_css, $sp_wide_css);
-        check('the page is wider than the old container, and a wide table fits beside the menu at 1,280px',
+        check('the page keeps its own width, and a wide table fits beside the menu at 1,280px',
               isset($sp_page_css[1]) && strpos($sp_page_css[1], 'max-width: 1400px') !== false
+              && strpos((string) file_get_contents(dirname(__DIR__) . '/public/strategies.php'),
+                        '"wide"') !== false
+              && strpos($sp_both, 'sm-page-wide') !== false
               && isset($sp_wide_css[1])
               && (((float) $sp_wide_css[1] * 16) + 240 + 64) <= 1280,
               json_encode([$sp_page_css[1] ?? null, $sp_wide_css[1] ?? null]));

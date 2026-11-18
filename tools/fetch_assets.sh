@@ -114,6 +114,20 @@ fetch "$CDN/typeahead.js/0.11.1/typeahead.jquery.min.js"          "$PUBLIC/js/ty
 # check below is what turns the next dead link into a loud failure instead.
 fetch "https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js" \
       "$PUBLIC/js/lightweight-charts.standalone.production.js"                  40000 || failed=1
+# Inter, the application's own typeface, self-hosted. The house style is set
+# in it, and a stylesheet that asks fonts.googleapis.com for it would tell
+# Google which pages a private site serves - and leave the page in a fallback
+# face whenever that request is slow. Four weights, latin only: 400 body,
+# 500 navbar links, 600 headings and table headers, 700 the big figures.
+#
+# From jsdelivr, which serves npm packages: @fontsource/inter is the Inter
+# release (SIL Open Font License 1.1) packaged for self-hosting, and the
+# files below are its own, copied unchanged.
+INTER=https://cdn.jsdelivr.net/npm/@fontsource/inter@5.0.17/files
+for weight in 400 500 600 700; do
+  fetch "$INTER/inter-latin-$weight-normal.woff2" "$PUBLIC/fonts/inter-$weight.woff2" 10000 || failed=1
+done
+
 # Font Awesome 6. header.php loads this locally now rather than from the
 # fontawesome CDN, so the page needs nothing at request time from a third party.
 fetch "$CDN/font-awesome/6.5.2/css/all.min.css"                   "$PUBLIC/css/fontawesome.min.css"      20000 || failed=1

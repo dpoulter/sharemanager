@@ -199,4 +199,8 @@ $sm_user = function_exists("view_username") ? view_username() : "";
   </div>
 </nav>
 
-<main class="sm-page sm-page-top">
+<?php /* The page frame is 1,360px, which is what the house style was drawn
+         and measured at. A page that was built against a wider one - the
+         Strategies page and its eleven column table - passes wide=true
+         and keeps 1,400px. */ ?>
+<main class="sm-page sm-page-top<?= !empty($wide) ? ' sm-page-wide' : '' ?>">

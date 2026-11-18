@@ -331,21 +331,195 @@
 		return ['low' => 'oklch(0.52 0.18 25)', 'high' => 'oklch(0.52 0.15 148)'];
 	}
 
+	/**
+	 * The house palette, as the stylesheet writes it: name => [light, dark].
+	 *
+	 * Here as well as in app.css because PHP cannot read a stylesheet and a
+	 * stylesheet cannot call PHP. The suite checks that every value below
+	 * appears in app.css and that every pair that carries text measures
+	 * 4.5:1 in both schemes, so a colour changed in one place and not the
+	 * other fails the suite rather than quietly giving one page its own
+	 * scheme.
+	 */
+	function view_house_tokens() {
+		return [
+			'ground'     => ['#f1f3f6', '#14181d'],
+			'panel'      => ['#ffffff', '#1c2229'],
+			'band'       => ['#f5f7f9', '#222a32'],
+			'rule'       => ['#dde2e8', '#323b45'],
+			'rule-soft'  => ['#e6eaef', '#2a323b'],
+			'rule-hair'  => ['#eef1f4', '#262e36'],
+			'ink'        => ['#1b2430', '#e3e8ee'],
+			'ink-2'      => ['#3a4553', '#c2cad4'],
+			'muted'      => ['#4e5968', '#9ba6b4'],
+			'nav'        => ['#17212b', '#10161c'],
+			'link'       => ['#0b5a70', '#6fc6dd'],
+			'link-hover' => ['#083f4f', '#9bdcec'],
+			'pos'        => ['#1a7f4b', '#4ade80'],
+			'neg'        => ['#b4322a', '#f87171'],
+			'caution'    => ['#9a6200', '#e0a42b'],
+			'alert-bg'   => ['#fbf1ef', '#3a1f1c'],
+			'alert-rule' => ['#ebcfcb', '#5b2e29'],
+			'alert-ink'  => ['#7a1f19', '#f3b4ae'],
+			'chart-close' => ['#0b5a70', '#6fc6dd'],
+			'chart-ma50'  => ['#c26a00', '#e5a34a'],
+			'chart-ma200' => ['#7a4fb5', '#b79af0'],
+		];
+	}
+
+	/** One token's value in the scheme asked for ('light' or 'dark'). */
+	function view_token($name, $scheme = 'light') {
+		$tokens = view_house_tokens();
+		if (!isset($tokens[$name])) { return null; }
+		return $tokens[$name][$scheme === 'dark' ? 1 : 0];
+	}
+
+	/**
+	 * Which of the three signals a score out of 100 carries.
+	 *
+	 * Three bands, not four: a bar 6px high cannot show more, and the
+	 * number beside it says the rest. 0-29 is bad, 30-59 is middling,
+	 * 60 and over is good.
+	 */
+	function view_signal_band($score) {
+		if (view_blank($score)) { return 'none'; }
+		$value = (float) $score;
+		if ($value < 30) { return 'low'; }
+		if ($value < 60) { return 'mid'; }
+		return 'high';
+	}
+
+	/** The class for a signal dot in that band. */
+	function view_dot_class($score) {
+		return ['low' => 'sm-dot-neg', 'mid' => 'sm-dot-caution',
+		        'high' => 'sm-dot-pos', 'none' => ''][view_signal_band($score)];
+	}
+
+	/**
+	 * A signal dot: 9px of colour beside a figure, never instead of one.
+	 *
+	 * $band is a score out of 100, or one of 'low', 'mid', 'high' where the
+	 * caller has already decided - a close below its 200-day average is bad
+	 * news whatever percentile it is in.
+	 */
+	function view_dot_html($band, $title = null) {
+
+		$class = in_array($band, ['low', 'mid', 'high'], true)
+		       ? ['low' => 'sm-dot-neg', 'mid' => 'sm-dot-caution', 'high' => 'sm-dot-pos'][$band]
+		       : view_dot_class($band);
+
+		if ($class === '') { return ''; }
+
+		return '<span class="sm-dot ' . $class . '" aria-hidden="true"'
+		     . ($title === null ? '' : ' title="' . htmlspecialchars($title, ENT_QUOTES)
+		                               . '" data-bs-toggle="tooltip"')
+		     . '></span>';
+	}
+
+	/**
+	 * A comparison bar: a 0 to 100 track with the fill banded by value.
+	 *
+	 * The width is clamped to 3% at the bottom, so a score of 1 is a mark
+	 * rather than an empty track that reads as missing data, and to 100 at
+	 * the top. Returns the track alone; view_bar_row_html() is the row it
+	 * is usually drawn in.
+	 */
+	function view_bar_html($score) {
+
+		if (view_blank($score)) { return '<span class="sm-bar" aria-hidden="true"></span>'; }
+
+		$value = max(0, min(100, (float) $score));
+		$width = max(3, $value);
+		$class = ['low' => 'sm-bar-low', 'mid' => 'sm-bar-mid',
+		          'high' => 'sm-bar-high', 'none' => ''][view_signal_band($value)];
+
+		return '<span class="sm-bar" aria-hidden="true"><span class="sm-bar-fill ' . $class
+		     . '" style="width: ' . rtrim(rtrim(number_format($width, 1, '.', ''), '0'), '.')
+		     . '%"></span></span>';
+	}
+
+	/**
+	 * Name, bar and number on one row: the score box, and the cheapness and
+	 * rank columns of the Value and Quality tables.
+	 */
+	function view_bar_row_html($name, $score, $options = []) {
+
+		$href  = isset($options['href']) ? $options['href'] : null;
+		$total = !empty($options['total']);
+
+		$label = ($href === null)
+		       ? ($total ? '<strong>' . htmlspecialchars($name) . '</strong>'
+		                 : htmlspecialchars($name))
+		       : '<a href="' . htmlspecialchars($href, ENT_QUOTES) . '">'
+		         . htmlspecialchars($name) . '</a>';
+
+		return '<div class="sm-bar-row' . ($total ? ' sm-scorebox-total' : '') . '">'
+		     . '<span>' . $label . '</span>'
+		     . view_bar_html($score)
+		     . '<span class="sm-bar-value">'
+		     . (view_blank($score) ? htmlspecialchars(VIEW_DASH) : htmlspecialchars(fmt_score($score)))
+		     . '</span></div>';
+	}
+
+	/** An outlined tag: the index, the industry, whether it is held. */
+	function view_tag_html($text, $href = null) {
+		$inner = htmlspecialchars((string) $text);
+		return ($href === null)
+		     ? '<span class="sm-tag">' . $inner . '</span>'
+		     : '<a class="sm-tag" href="' . htmlspecialchars($href, ENT_QUOTES) . '">'
+		       . $inner . '</a>';
+	}
+
+	/**
+	 * A red to green scale with a marker, and a label at each end.
+	 *
+	 * For a figure whose meaning is where it sits between two ends rather
+	 * than a rank: Piotroski from 0 to 9, Altman's distress and safe zones.
+	 * The marker is clamped to the track, because an Altman Z of 12 is off
+	 * the end of the scale rather than a reason to draw outside the box.
+	 */
+	function view_scale_html($value, $min, $max, $left, $right) {
+
+		if (view_blank($value)) { return ''; }
+
+		$span = (float) $max - (float) $min;
+		$at   = ($span <= 0) ? 50.0
+		      : max(0, min(100, (((float) $value - (float) $min) / $span) * 100));
+
+		return '<div class="sm-scale" aria-hidden="true"><span class="sm-scale-mark" style="left: '
+		     . rtrim(rtrim(number_format($at, 1, '.', ''), '0'), '.') . '%"></span></div>'
+		     . '<div class="sm-scale-ends"><span>' . htmlspecialchars($left) . '</span>'
+		     . '<span>' . htmlspecialchars($right) . '</span></div>';
+	}
+
+	/**
+	 * The strip that says a rule is met or broken, in one sentence.
+	 *
+	 * Green when it is met: a policy that only speaks when it is broken
+	 * leaves a reader unsure whether it was checked at all.
+	 */
+	function view_alert_html($ok, $sentence, $lead = null) {
+		return '<div class="sm-alert' . ($ok ? ' sm-alert-ok' : '') . '">'
+		     . '<span class="sm-dot" aria-hidden="true"></span>'
+		     . '<span>' . ($lead === null ? '' : '<strong>' . htmlspecialchars($lead) . '</strong> ')
+		     . htmlspecialchars($sentence) . '</span></div>';
+	}
+
 	/** Moves and returns, as text on the page background rather than badges. */
 	function view_text_colours() {
 		return [
-			'up'      => '#15803d',
-			'down'    => '#b91c1c',
-			'flat'    => '#6b7280',
-			'muted'   => '#6b7280',
+			'up'      => '#1a7f4b',
+			'down'    => '#b4322a',
+			'flat'    => '#4e5968',
+			'muted'   => '#4e5968',
 			/* The sentiment bands, darkened to carry text. rns_band's own
 			   colours are the swatch on "In the news" and stay as they are;
 			   orange on white does not pass AA with a word written on it. */
 			'bad'     => '#b91c1c',
 			'poor'    => '#c2410c',
 			'neutral' => '#4b5563',
-			'good'    => '#4d7c0f',
-			'strong'  => '#15803d',
+			'good'    => '#4a7510',
+			'strong'  => '#1a7f4b',
 		];
 	}
 
