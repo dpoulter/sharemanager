@@ -369,6 +369,28 @@ removed on every way out; what stays is the run's own snapshot. A run left
 RUNNING by a crash is marked failed and is not run again. The night run skips a
 strategy that has no account, or is archived, with one line each.
 
+### Practice, the live gate, and stepping down
+
+- **Start on practice** is two requests from the strategy's page. Step one makes
+  the practice account, switched **off**, with the capital stated, and shows
+  tonight's plan - nothing is sent and nothing is recorded as an order. Step
+  two switches it on. It is refused, naming the holder, while another strategy
+  holds the single practice account, and it needs a completed backtest of the
+  current rules.
+- **Going live** needs `practice_evidence()` (`includes/practice_evidence.php`):
+  a rebalance on the practice account, under rules with the *same fingerprint*,
+  with every order resolved and one filled, planned after the rules last
+  changed, and the practice account reconciling with the broker. It may be
+  another strategy's rebalance - `trend_following_live` qualifies through
+  `trend_following_t212`. It is checked inside `broker_live_arm()` itself, so a
+  crafted POST meets it. A screen criterion edited *after* a rebalance changes
+  the fingerprint but leaves no date behind, so it is counted against the
+  criteria as they are now.
+- **Step down** (`includes/stage_stepdown.php`): stop practice switches the
+  account off (its positions stay at the broker); stop live is the existing
+  disarm; archive keeps everything and is refused while any account is on or
+  armed. None of them sells, cancels, deletes, sends or clears a halt.
+
 ### A key that cannot read orders
 
 Sending is not the same permission as finding out what became of it. On 19

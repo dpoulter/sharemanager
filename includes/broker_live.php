@@ -51,6 +51,9 @@
 	   broker layer, and reaches what is here through function_exists()
 	   where it needs it. */
 	require_once(__DIR__ . "/strategy_functions.php");
+	/* The gate in front of arming: a clean practice rebalance of these rules.
+	   By path, and it does not call the stage - the stage reads the arming. */
+	require_once(__DIR__ . "/practice_evidence.php");
 
 	/* ---------------------------------------------------------------------
 	   Printing, without the view layer.
@@ -314,6 +317,17 @@
 			return $refuse("the most a live strategy may be armed with is "
 			             . number_format((float) T212_LIVE_CAPITAL_CAP_MAX, 2)
 			             . ", which is a constant in this application rather than a setting.");
+		}
+
+		/* THE PRACTICE GATE. A strategy goes live only after its rules have
+		   completed a clean rebalance on the practice account. Checked here,
+		   in the function that writes the armed row, because arming is the
+		   only door to live: a check on the page alone is a check a crafted
+		   POST does not meet. */
+		$evidence = practice_evidence($strategy);
+		if (!$evidence['ok']) {
+			return $refuse("a strategy goes live only after a clean rebalance of its rules on the"
+			             . " practice account, and " . $evidence['why'] . ".");
 		}
 
 		$days = (int) ($options['days'] ?? T212_LIVE_ARM_DAYS);

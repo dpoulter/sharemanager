@@ -17033,6 +17033,51 @@ STUB
         check('and so does the dashboard',
               stripos((string) $curl("$base/index.php"), 'waiting for your approval') !== false);
 
+        /* PRACTICE EVIDENCE, for the arming below. Arming now needs a clean
+           rebalance of the same rules on the practice account, so the
+           fixture gives $spl a practice twin: the same rules row, a practice
+           account, a rebalance whose orders are all resolved with one
+           filled, and a broker that holds what the twin holds. $mutate lets a
+           test spoil one part of it. */
+        $pe_make = function ($twin, $source, $mutate = []) use ($sp_asof) {
+            foreach (['strategy_orders', 'strategy_positions', 'strategy_rules', 'strategy_accounts'] as $t) {
+                db()->prepare("delete from $t where strategy=?")->execute([$twin]);
+            }
+            db()->exec("delete from broker_positions where environment='demo'");
+            db()->exec("delete from broker_sync_runs where environment='demo'");
+            db()->prepare("insert into strategy_rules
+                             (strategy,selection,screen_id,score_indicator,rank_by,holdings,hold_rank,
+                              rebalance,exit_rules,exclude_funds,start_date,note,updated_at)
+                           select ?,selection,screen_id,score_indicator,rank_by,holdings,hold_rank,
+                                  rebalance,exit_rules,exclude_funds,start_date,note,
+                                  date_sub(now(), interval 3 day)
+                             from strategy_rules where strategy=?")->execute([$twin, $source]);
+            db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                           values (?,1000,'GBP','T212_DEMO','Y',date_sub(now(), interval 3 day))")->execute([$twin]);
+            $status = isset($mutate['status']) ? $mutate['status'] : 'FILLED';
+            $insert = db()->prepare("insert into strategy_orders
+                             (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,note,created_at,filled_at)
+                           values (?,?,?,?,'XLON','BUY',5,?,?,date_sub(now(), interval 1 day),date_sub(now(), interval 2 hour))");
+            $insert->execute([$twin . ':pe1', $twin, $sp_asof, 'AAA', $status, 'rebalance']);
+            $insert->execute([$twin . ':pe2', $twin, $sp_asof, 'BBB', 'REJECTED', 'rebalance']);
+            if (isset($mutate['extra_open'])) { $insert->execute([$twin . ':pe3', $twin, $sp_asof, 'CCC', $mutate['extra_open'], 'rebalance']); }
+            db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at)
+                           values (?,'AAA','XLON',5,1.00,now())")->execute([$twin]);
+            db()->prepare("insert into broker_positions (broker,environment,as_of_date,broker_ticker,symbol,quantity,price_unit,synced_at)
+                           values ('t212','demo',?,'AAAl_EQ','AAA',?,'pence',now())")
+              ->execute([date('Y-m-d'), isset($mutate['broker_qty']) ? $mutate['broker_qty'] : 5]);
+            db()->prepare("insert into broker_sync_runs (broker,environment,started_at,finished_at,status,as_of_date,positions)
+                           values ('t212','demo',now(),now(),'OK',?,1)")->execute([date('Y-m-d')]);
+        };
+        $pe_drop = function ($twin) {
+            foreach (['strategy_orders', 'strategy_positions', 'strategy_rules', 'strategy_accounts'] as $t) {
+                db()->prepare("delete from $t where strategy=?")->execute([$twin]);
+            }
+            db()->exec("delete from broker_positions where environment='demo'");
+            db()->exec("delete from broker_sync_runs where environment='demo'");
+        };
+        $PE = 'test_page_live_twin';
+
         $spl_arm = function ($fields) use ($curl, $base, $spl) {
             return (string) $curl("$base/strategy_live.php",
                                   'do=arm&strategy=' . urlencode($spl) . '&' . $fields);
@@ -17058,6 +17103,12 @@ STUB
               && (int) scalar("select count(*) from strategy_live_arming where strategy=?",
                               [$spl]) === 0);
 
+        $spl_blocked = $spl_arm('name=' . urlencode($spl_name) . '&password=testpass&cap=250&days=35');
+        check('without practice evidence even the right password and name arm nothing, and the page says why',
+              (int) scalar("select count(*) from strategy_live_arming where strategy=?", [$spl]) === 0
+              && stripos($spl_blocked, 'clean rebalance') !== false, substr(strip_tags($spl_blocked), 0, 300));
+
+        $pe_make($PE, $spl);
         $spl_armed = $spl_arm('name=' . urlencode($spl_name) . '&password=testpass&cap=250&days=35');
         check('the password and the name together arm the account',
               (int) scalar("select count(*) from strategy_live_arming
@@ -17123,6 +17174,8 @@ STUB
                              where strategy=? and disarmed_at is null", [$spl]) === 0
               && stripos($spl_off, 'Disarmed') !== false,
               substr($spl_off, max(0, stripos($spl_off, 'Disarmed') - 100), 300));
+
+        $pe_drop($PE);
 
         /* And none of it is anywhere near a paper account. */
         check('a paper strategy has no arming on its page',
@@ -17812,6 +17865,247 @@ STUB
 
         db()->exec("delete from strategy_accounts where strategy like 'bt\\_screen\\_test\\_one%' or strategy like 'bt\\_orphan%'");
         db()->exec("delete from strategy_values where strategy like 'bt\\_screen\\_test\\_one%'");
+
+        /* ---------------- Stage C: practice, the live gate, step down ---------------- */
+
+        require_once(dirname(__DIR__) . '/includes/practice_evidence.php');
+        require_once(dirname(__DIR__) . '/includes/practice_start.php');
+        require_once(dirname(__DIR__) . '/includes/stage_stepdown.php');
+
+        $pc_counts = function () {
+            return [(int) scalar("select count(*) from strategy_orders"),
+                    (int) scalar("select count(*) from strategy_positions"),
+                    (int) scalar("select count(*) from strategy_accounts"),
+                    (int) scalar("select count(*) from strategy_rules"),
+                    (int) scalar("select count(*) from strategy_backtest_runs"),
+                    (int) scalar("select count(*) from strategy_accounts where halted='Y'")];
+        };
+        $TW = 'wf_twin';
+
+        /* ---- practice_evidence ---- */
+        $pc_before = $pc_counts();
+        $pc_none = practice_evidence($WF);
+        check('with no practice strategy there is no evidence, and the answer says why',
+              $pc_none['ok'] === false && stripos($pc_none['why'], 'no practice strategy') !== false);
+
+        $pe_make($TW, $WF);
+        $pc_yes = practice_evidence($WF);
+        check('a clean rebalance of the same rules on the practice account is evidence, even another strategy\'s',
+              $pc_yes['ok'] === true && $pc_yes['strategy'] === $TW && $pc_yes['orders'] === 2, json_encode($pc_yes));
+        check('and asking changes nothing',
+              $pc_counts() === $pc_before + [] || $pc_counts()[0] === $pc_before[0] + 2 && $pc_counts()[2] === $pc_before[2] + 1);
+
+        db()->prepare("update strategy_rules set holdings=9 where strategy=?")->execute([$TW]);
+        $pc_other = practice_evidence($WF);
+        check('a rebalance under other rules does not count, and the answer names the practice strategy that differs',
+              $pc_other['ok'] === false && stripos($pc_other['why'], 'runs different rules') !== false
+              && stripos($pc_other['why'], 'Wf twin') !== false, $pc_other['why']);
+        db()->prepare("update strategy_rules set holdings=?, updated_at=date_sub(now(), interval 3 day) where strategy=?")
+          ->execute([scalar("select holdings from strategy_rules where strategy=?", [$WF]), $TW]);
+        check('and putting them back restores it', practice_evidence($WF)['ok'] === true);
+
+        db()->prepare("update strategy_rules set updated_at=now() where strategy=?")->execute([$TW]);
+        check('a rebalance from before the rules last changed does not count',
+              practice_evidence($WF)['ok'] === false
+              && stripos(practice_evidence($WF)['why'], 'since its rules last changed') !== false);
+
+        foreach (['PENDING', 'SENT', 'UNKNOWN'] as $pc_open) {
+            $pe_make($TW, $WF, ['extra_open' => $pc_open]);
+            check("an order still $pc_open means the rebalance is not complete",
+                  practice_evidence($WF)['ok'] === false && stripos(practice_evidence($WF)['why'], 'not resolved') !== false);
+        }
+        $pe_make($TW, $WF, ['status' => 'REJECTED']);
+        check('a rebalance where nothing filled is not evidence',
+              practice_evidence($WF)['ok'] === false);
+        $pe_make($TW, $WF, ['broker_qty' => 4]);
+        check('a difference from the broker afterwards is not clean',
+              practice_evidence($WF)['ok'] === false && stripos(practice_evidence($WF)['why'], 'does not agree') !== false);
+        $pe_make($TW, $WF, ['broker_qty' => 0]);
+        db()->prepare("update strategy_orders set filled_at=date_add(now(), interval 1 hour) where client_order_id=?")->execute([$TW . ':pe1']);
+        check('a fill the broker has not been read back for is not clean',
+              practice_evidence($WF)['ok'] === false && stripos(practice_evidence($WF)['why'], 'not read back') !== false);
+        $pe_make($TW, $WF);
+        db()->prepare("update strategy_accounts set halted='Y', halt_reason='x' where strategy=?")->execute([$TW]);
+        check('a halted practice strategy is not evidence', practice_evidence($WF)['ok'] === false);
+        $pe_make($TW, $WF);
+        db()->prepare("update strategy_accounts set mode='PAPER' where strategy=?")->execute([$TW]);
+        check('a paper account is not the practice account', practice_evidence($WF)['ok'] === false);
+        $pe_make($TW, $WF);
+        check('a strategy with no rules has none', practice_evidence('no_such_strategy')['ok'] === false);
+
+        /* ---- the arming gate, for a crafted POST ---- */
+        $pe_drop($TW);
+        $pc_arm_before = (int) scalar("select count(*) from strategy_live_arming");
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at) values ('wf_livex',250,'GBP','T212_LIVE','Y',now())")->execute();
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at)
+                       select 'wf_livex',selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,date_sub(now(), interval 3 day)
+                         from strategy_rules where strategy=?")->execute([$WF]);
+        $pc_crafted = (string) $curl("$base/strategy_live.php",
+            'do=arm&strategy=wf_livex&name=' . urlencode(strategy_display_name('wf_livex')) . '&password=testpass&cap=250&days=35');
+        check('a crafted POST with the right password and name still arms nothing without practice evidence',
+              (int) scalar("select count(*) from strategy_live_arming") === $pc_arm_before
+              && stripos($pc_crafted, 'clean rebalance') !== false);
+        $pe_make($TW, 'wf_livex');
+        $pc_ok = (string) $curl("$base/strategy_live.php",
+            'do=arm&strategy=wf_livex&name=' . urlencode(strategy_display_name('wf_livex')) . '&password=testpass&cap=250&days=35');
+        check('with a clean rebalance of the same rules on ANOTHER strategy\'s practice account it is accepted',
+              (int) scalar("select count(*) from strategy_live_arming where strategy='wf_livex' and disarmed_at is null") === 1,
+              substr(strip_tags($pc_ok), 0, 300));
+        $pc_refusals = (int) scalar("select count(*) from strategy_live_log where strategy='wf_livex' and event='REFUSED'");
+        check('and the refused attempt is in the live log', $pc_refusals >= 1);
+
+        /* ---- stage_stepdown: stop live is the existing disarm ---- */
+        $pc_log_before = (int) scalar("select count(*) from strategy_live_log where strategy='wf_livex'");
+        $wb_post(['do' => 'stepdown', 'step' => 'stop_live', 'strategy' => 'wf_livex']);
+        check('stop live disarms through the existing disarm, and says so in the log',
+              (int) scalar("select count(*) from strategy_live_arming where strategy='wf_livex' and disarmed_at is null") === 0
+              && (int) scalar("select count(*) from strategy_live_log where strategy='wf_livex'") > $pc_log_before);
+        $wb_out = $wb_post(['do' => 'stepdown', 'step' => 'stop_live', 'strategy' => 'wf_livex']);
+        check('stop live when it is not armed is refused',
+              stripos($wb_out, 'not stepped down') !== false);
+        $pe_drop($TW);
+        foreach (['strategy_rules', 'strategy_accounts'] as $pc_t) {
+            db()->prepare("delete from $pc_t where strategy='wf_livex'")->execute();
+        }
+        db()->exec("delete from strategy_live_arming where strategy='wf_livex'");
+        db()->exec("delete from strategy_live_log where strategy='wf_livex'");
+
+        /* ---- practice_start ---- */
+        if (strategy_stage($WF)['stage'] !== 'Backtested') {
+            db()->prepare("insert into strategy_backtest_runs (strategy,account,from_date,to_date,started_at,finished_at,status,fingerprint,rules_snapshot)
+                           values (?,'bt_wf_1',?,?,now(),now(),'DONE',?,'{}')")
+              ->execute([$WF, $bf_from, $bf_to, rules_fingerprint($WF)]);
+        }
+        check('the strategy to start is Backtested, with no account',
+              strategy_stage($WF)['stage'] === 'Backtested' && !strategy_stage($WF)['has_account']);
+
+        $pc_post = function ($fields, $session = true) use ($wb_post) { return $wb_post($fields, $session); };
+        $pc_orders = (int) scalar("select count(*) from strategy_orders");
+
+        /* A Draft strategy cannot be started. */
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at)
+                       select 'wf_draft',selection,screen_id,rank_by,9,rebalance,exit_rules,exclude_funds,now() from strategy_rules where strategy=?")->execute([$WF]);
+        $pc_out = $pc_post(['do' => 'practice_start', 'step' => '1', 'strategy' => 'wf_draft', 'capital' => '1000']);
+        check('start on practice is refused without a backtest of the current rules, and makes no account',
+              stripos($pc_out, 'Not started on practice') !== false && stripos($pc_out, 'completed backtest') !== false
+              && (int) scalar("select count(*) from strategy_accounts where strategy='wf_draft'") === 0);
+
+        /* Crafted and malformed requests. */
+        $curl("$base/strategies.php?do=practice_start&step=1&strategy=$WF&capital=1000");
+        $pc_post(['do' => 'practice_start', 'step' => '1', 'strategy' => $WF, 'capital' => '1000'], false);
+        $pc_cli = practice_start(['user_id' => 1, 'strategy' => $WF, 'step' => 1, 'capital' => 1000]);
+        $pc_post(['do' => 'practice_start', 'step' => '1', 'strategy' => $WF, 'capital' => '0']);
+        $pc_post(['do' => 'practice_start', 'step' => '3', 'strategy' => $WF, 'capital' => '1000']);
+        $pc_post(['do' => 'practice_start', 'step' => '2', 'strategy' => $WF]);
+        check('a GET, a logged-out POST, the command line, no capital, a made-up step and step 2 first all make nothing',
+              (int) scalar("select count(*) from strategy_accounts where strategy=?", [$WF]) === 0
+              && $pc_cli['ok'] === false);
+
+        /* The practice account is single: if another strategy holds it, the refusal names it. */
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at) values ('wf_holder',1000,'GBP','T212_DEMO','Y',now())")->execute();
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at)
+                       select 'wf_holder',selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,now() from strategy_rules where strategy=?")->execute([$WF]);
+        $pc_out = $pc_post(['do' => 'practice_start', 'step' => '1', 'strategy' => $WF, 'capital' => '1000']);
+        check('start on practice is refused while another strategy holds the practice account, naming it',
+              stripos($pc_out, 'Not started on practice') !== false && stripos($pc_out, 'Wf holder') !== false
+              && (int) scalar("select count(*) from strategy_accounts where strategy=?", [$WF]) === 0, substr(strip_tags($pc_out), 0, 300));
+        db()->exec("delete from strategy_accounts where strategy='wf_holder'");
+        db()->exec("delete from strategy_rules where strategy='wf_holder'");
+
+        /* Step one. */
+        $pc_out = $pc_post(['do' => 'practice_start', 'step' => '1', 'strategy' => $WF, 'capital' => '5000']);
+        $pc_acct = rows("select * from strategy_accounts where strategy=?", [$WF]);
+        check('step one makes the practice account, switched off, with the capital stated',
+              count($pc_acct) === 1 && $pc_acct[0]['mode'] === 'T212_DEMO' && $pc_acct[0]['enabled'] === 'N'
+              && (float) $pc_acct[0]['cash'] === 5000.0, json_encode($pc_acct));
+        check('it shows the plan and says nothing was sent or recorded',
+              stripos($pc_out, 'switched OFF') !== false && preg_match('~Tonight(&#0?39;|\')s plan would be~i', $pc_out) === 1
+              && stripos($pc_out, 'Nothing was sent or recorded') !== false, substr(strip_tags($pc_out), 0, 400));
+        check('and nothing is recorded as an order',
+              (int) scalar("select count(*) from strategy_orders") === $pc_orders
+              && (int) scalar("select count(*) from strategy_targets where strategy=?", [$WF]) === 0);
+        check('the strategy is now at Practice, the account off, and the page offers to switch it on',
+              strategy_stage($WF)['stage'] === 'Practice'
+              && stripos((string) $curl("$base/strategies.php?disabled=1&s=" . urlencode($WF)), 'Switch on the practice account') !== false);
+        $pc_again = $pc_post(['do' => 'practice_start', 'step' => '1', 'strategy' => $WF, 'capital' => '5000']);
+        check('step one again is refused: it is already on practice',
+              stripos($pc_again, 'Not started on practice') !== false
+              && (int) scalar("select count(*) from strategy_accounts where strategy=?", [$WF]) === 1);
+
+        /* Step two, and the holder rule at that moment too. */
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at) values ('wf_holder',1000,'GBP','T212_DEMO','Y',now())")->execute();
+        $pc_out = $pc_post(['do' => 'practice_start', 'step' => '2', 'strategy' => $WF]);
+        check('switching on is refused if somebody took the practice account in between, naming them',
+              stripos($pc_out, 'Wf holder') !== false
+              && scalar("select enabled from strategy_accounts where strategy=?", [$WF]) === 'N');
+        db()->exec("delete from strategy_accounts where strategy='wf_holder'");
+        $pc_out = $pc_post(['do' => 'practice_start', 'step' => '2', 'strategy' => $WF]);
+        check('the second request switches it on',
+              scalar("select enabled from strategy_accounts where strategy=?", [$WF]) === 'Y'
+              && stripos($pc_out, 'Switched on') !== false);
+        check('still nothing is recorded as an order, and the night run now includes it',
+              (int) scalar("select count(*) from strategy_orders") === $pc_orders
+              && in_array($WF, strategy_strategies(), true));
+
+        /* ---- step down ---- */
+        $pc_keep = $pc_counts();
+        $pc_arch = $pc_post(['do' => 'stepdown', 'step' => 'archive', 'strategy' => $WF]);
+        check('archive is refused while an account is switched on, and says why',
+              stripos($pc_arch, 'Not stepped down') !== false && stripos($pc_arch, 'switched on') !== false
+              && !strategy_archived($WF));
+        db()->prepare("update strategy_accounts set halted='Y', halt_reason='kept' where strategy=?")->execute([$WF]);
+        $pc_stop = $pc_post(['do' => 'stepdown', 'step' => 'stop_practice', 'strategy' => $WF]);
+        check('stop practice switches the account off and says the positions stay at the broker',
+              scalar("select enabled from strategy_accounts where strategy=?", [$WF]) === 'N'
+              && stripos($pc_stop, 'positions stay at the') !== false);
+        check('and it does not clear a halt',
+              scalar("select halted from strategy_accounts where strategy=?", [$WF]) === 'Y');
+        db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")->execute([$WF]);
+        $pc_stop2 = $pc_post(['do' => 'stepdown', 'step' => 'stop_practice', 'strategy' => $WF]);
+        check('stopping a practice account that is already off is refused',
+              stripos($pc_stop2, 'Not stepped down') !== false);
+        $pc_post(['do' => 'stepdown', 'step' => 'archive', 'strategy' => $WF], false);
+        $curl("$base/strategies.php?do=stepdown&step=archive&strategy=$WF");
+        check('a GET and a logged-out POST archive nothing', !strategy_archived($WF));
+        $pc_post(['do' => 'stepdown', 'step' => 'delete_everything', 'strategy' => $WF]);
+        check('and a step that is not one does nothing', !strategy_archived($WF));
+        $pc_arch = $pc_post(['do' => 'stepdown', 'step' => 'archive', 'strategy' => $WF]);
+        check('with the account off and nothing armed, archive works',
+              strategy_archived($WF) && stripos($pc_arch, 'Archived') !== false);
+        check('and nothing is deleted by any step down: the same rules, accounts, orders, positions and runs',
+              $pc_counts() === $pc_keep);
+        check('an archived strategy is listed as archived, and the night run skips it',
+              stripos((string) $curl("$base/strategies.php"), '(archived)') !== false
+              && !in_array($WF, night_skips(strategy_strategies())['run'], true));
+        check('and every move on it is closed',
+              count(array_filter(strategy_stage($WF)['moves'], function ($m) { return $m['open']; })) === 0);
+
+        /* ---- on the code ---- */
+        $pc_src = [];
+        foreach (['practice_evidence', 'practice_start', 'stage_stepdown'] as $pc_f) {
+            $pc_src[$pc_f] = (string) file_get_contents(dirname(__DIR__) . "/includes/$pc_f.php");
+        }
+        check('no new code posts to the live host or sends, cancels or approves an order',
+              !preg_match('~live\.trading212|T212_LIVE_BASE_URL|broker_live_place_order|place_market_order|broker_live_approve|broker_send_orders|broker_live_send_orders~',
+                          implode("\n", $pc_src)));
+        check('practice_evidence reads only: no insert, update or delete',
+              !preg_match('~\b(insert\s+into|update\s+\w+\s+set|delete\s+from)\b~i', $pc_src['practice_evidence']));
+        check('and does not call the stage, which reads the arming that asks it',
+              strpos($pc_src['practice_evidence'], 'strategy_stage(') === false);
+        check('stage_stepdown disarms only through the existing disarm: no second way',
+              strpos($pc_src['stage_stepdown'], 'broker_live_disarm(') !== false
+              && !preg_match('~strategy_live_arming~', $pc_src['stage_stepdown'] . $pc_src['practice_start']));
+        check('practice_start creates the account switched off and switches on only in the second step',
+              substr_count($pc_src['practice_start'], "enabled='Y' where strategy=? and mode=?") === 1
+              && strpos($pc_src['practice_start'], "'N', now(), ?)") !== false);
+        check('arming asks practice_evidence inside broker_live_arm itself',
+              preg_match('~function broker_live_arm\(.*?practice_evidence\(\$strategy\)~s',
+                         (string) file_get_contents(dirname(__DIR__) . '/includes/broker_live.php')) === 1);
+
+        foreach (['strategy_orders', 'strategy_positions', 'strategy_targets', 'strategy_rules', 'strategy_accounts'] as $pc_t) {
+            db()->exec("delete from $pc_t where strategy in ('wf_draft','wf_holder','wf_twin','wf_livex')");
+        }
+        $pe_drop($TW);
 
         foreach (['strategy_rules', 'strategy_accounts', 'strategy_orders', 'strategy_targets'] as $wf_t) {
             db()->exec("delete from $wf_t where strategy in ('screen_test_one','wf_archived','bt_screen_test_one_1','wf_holder')");

@@ -33,4 +33,43 @@ $sm_steps = strategy_stages();
 		</li>
 		<?php endforeach ?>
 	</ul>
+
+	<?php /* The moves that are open, as forms. The server asks strategy_stage()
+	         again when one is posted: a button here is a convenience. */ ?>
+	<div class="sm-move-forms d-flex flex-wrap gap-2 mt-2">
+		<?php $sm_mv = $stage['moves']; $sm_key = $stage['strategy']; ?>
+
+		<?php if ($sm_mv['start_practice']['open']): ?>
+		<form method="post" action="strategies.php" class="d-flex gap-1 align-items-end">
+			<input type="hidden" name="do" value="practice_start">
+			<input type="hidden" name="step" value="1">
+			<input type="hidden" name="strategy" value="<?= e($sm_key) ?>">
+			<div>
+				<label class="form-label mb-0"><small>Practice capital &pound;</small></label>
+				<input type="number" name="capital" class="form-control form-control-sm" min="1" step="any" required>
+			</div>
+			<button type="submit" class="btn btn-sm btn-outline-primary">Start on practice</button>
+		</form>
+		<?php endif ?>
+
+		<?php if ($stage['mode'] === 'T212_DEMO' && empty($stage['account_enabled']) && !$stage['archived']): ?>
+		<form method="post" action="strategies.php">
+			<input type="hidden" name="do" value="practice_start">
+			<input type="hidden" name="step" value="2">
+			<input type="hidden" name="strategy" value="<?= e($sm_key) ?>">
+			<button type="submit" class="btn btn-sm btn-primary">Switch on the practice account</button>
+		</form>
+		<?php endif ?>
+
+		<?php foreach (['stop_practice' => 'Stop practice', 'stop_live' => 'Stop live (disarm)', 'archive' => 'Archive'] as $sm_step => $sm_label): ?>
+		<?php if ($sm_mv[$sm_step]['open']): ?>
+		<form method="post" action="strategies.php">
+			<input type="hidden" name="do" value="stepdown">
+			<input type="hidden" name="step" value="<?= e($sm_step) ?>">
+			<input type="hidden" name="strategy" value="<?= e($sm_key) ?>">
+			<button type="submit" class="btn btn-sm btn-outline-secondary"><?= e($sm_label) ?></button>
+		</form>
+		<?php endif ?>
+		<?php endforeach ?>
+	</div>
 </div>

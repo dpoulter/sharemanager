@@ -182,6 +182,7 @@
 		        'index' => array_search($stage, strategy_stages(), true),
 		        'archived' => $archived, 'fingerprint' => $fingerprint, 'backtest' => $run,
 		        'has_account' => $account !== null, 'mode' => $mode, 'armed' => $armed,
+		        'account_enabled' => $enabled,
 		        'moves' => $moves];
 	}
 

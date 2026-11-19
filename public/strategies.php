@@ -48,6 +48,9 @@
     require_once("../includes/strategy_stage.php");
     /* Backtests asked for from this page: queued here, replayed by a job. */
     require_once("../includes/backtest_runs.php");
+    /* Starting on practice and stepping down: both POSTs handled below. */
+    require_once("../includes/practice_start.php");
+    require_once("../includes/stage_stepdown.php");
 
     /* CLEAR A HALT. The one POST this page takes: a halted strategy's form,
        with the password and the strategy's name typed again. It is handled
@@ -94,7 +97,50 @@
             'text' => $result['ok']
                     ? "Backtest queued as run " . $result['run_id'] . ". A job replays it outside the web server, one at a time."
                     : "The backtest was not queued: " . $result['why']];
-        redirect("strategies.php?s=" . urlencode($asked) . "&tab=backtest");
+        $left = strategy_account($asked);
+        redirect("strategies.php?s=" . urlencode($asked) . "&tab=backtest"
+                 . (($left !== null && $left['enabled'] !== 'Y') ? "&disabled=1" : ""));
+    }
+
+    /* START ON PRACTICE (two requests) AND STEP DOWN. Each is a POST that the
+       function decides: the move has to be open in strategy_stage() on the
+       server, so a crafted POST for a closed one fails there. None of them
+       arms, sends, sells, cancels or clears a halt. */
+    if (strtoupper((string) ($_SERVER["REQUEST_METHOD"] ?? 'GET')) === 'POST'
+        && in_array($_POST['do'] ?? null, ['practice_start', 'stepdown'], true)) {
+
+        $moved = is_string($_POST['strategy'] ?? null) ? trim($_POST['strategy']) : '';
+
+        if ($_POST['do'] === 'practice_start') {
+            $result = practice_start([
+                'user_id'  => (int) ($_SESSION['id'] ?? 0),
+                'strategy' => $moved,
+                'step'     => is_string($_POST['step'] ?? null) ? (int) $_POST['step'] : 0,
+                'capital'  => is_string($_POST['capital'] ?? null) ? trim($_POST['capital']) : '',
+            ]);
+            if (!$result['ok']) { $words = "Not started on practice: " . $result['why']; }
+            else if ($result['step'] === 1) {
+                $words = "The practice account is made and switched OFF. Nothing was sent or recorded."
+                       . " Tonight's plan would be: " . implode('; ', array_slice($result['plan'], 0, 20))
+                       . ". Press Switch on to start it.";
+            }
+            else { $words = "Switched on. The practice account trades from the next run."; }
+        }
+        else {
+            $result = stage_stepdown([
+                'user_id'  => (int) ($_SESSION['id'] ?? 0),
+                'strategy' => $moved,
+                'step'     => is_string($_POST['step'] ?? null) ? trim($_POST['step']) : '',
+            ]);
+            $words = $result['ok'] ? $result['words'] : "Not stepped down: " . $result['why'];
+        }
+
+        $_SESSION['sm_live_message'] = ['ok' => (bool) $result['ok'], 'strategy' => $moved, 'text' => $words];
+        /* A strategy whose account is switched off is listed behind the
+           disabled toggle, and this is the page its Switch on button is on. */
+        $left = strategy_account($moved);
+        redirect("strategies.php?s=" . urlencode($moved)
+                 . (($left !== null && $left['enabled'] !== 'Y') ? "&disabled=1" : ""));
     }
 
     $exchange = session_exchange();
