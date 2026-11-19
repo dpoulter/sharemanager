@@ -46,6 +46,8 @@
     /* The stage of each strategy, derived: Draft, Backtested, Practice or
        Live. New files, so nothing of it is added to strategy_functions.php. */
     require_once("../includes/strategy_stage.php");
+    /* Backtests asked for from this page: queued here, replayed by a job. */
+    require_once("../includes/backtest_runs.php");
 
     /* CLEAR A HALT. The one POST this page takes: a halted strategy's form,
        with the password and the strategy's name typed again. It is handled
@@ -69,6 +71,30 @@
                     : "The halt was not cleared: " . $result['why'],
             'strategy' => $clear_strategy];
         redirect("strategies.php?s=" . urlencode($clear_strategy));
+    }
+
+    /* ASK FOR A BACKTEST. A POST that only queues a run: the move has to be
+       open in strategy_stage() on the server, and nothing is replayed in
+       this request. */
+    if (strtoupper((string) ($_SERVER["REQUEST_METHOD"] ?? 'GET')) === 'POST'
+        && is_string($_POST['do'] ?? null) && $_POST['do'] === 'backtest') {
+
+        $asked = is_string($_POST['strategy'] ?? null) ? trim($_POST['strategy']) : '';
+
+        $result = backtest_request([
+            'user_id'    => (int) ($_SESSION['id'] ?? 0),
+            'strategy'   => $asked,
+            'from'       => is_string($_POST['from'] ?? null) ? trim($_POST['from']) : '',
+            'to'         => is_string($_POST['to'] ?? null) ? trim($_POST['to']) : '',
+            'cash'       => is_string($_POST['cash'] ?? null) ? trim($_POST['cash']) : '',
+            'cost_model' => is_string($_POST['cost_model'] ?? null) ? trim($_POST['cost_model']) : '',
+        ]);
+
+        $_SESSION['sm_live_message'] = ['ok' => (bool) $result['ok'], 'strategy' => $asked,
+            'text' => $result['ok']
+                    ? "Backtest queued as run " . $result['run_id'] . ". A job replays it outside the web server, one at a time."
+                    : "The backtest was not queued: " . $result['why']];
+        redirect("strategies.php?s=" . urlencode($asked) . "&tab=backtest");
     }
 
     $exchange = session_exchange();

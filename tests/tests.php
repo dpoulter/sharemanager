@@ -17558,6 +17558,261 @@ STUB
               && strpos($wf_src['includes/strategy_functions.php'], 'strategy_stage') === false
               && strpos($wf_src['includes/share_functions.php'], 'strategy_stage') === false);
 
+        /* ---------------- Stage B: a backtest from the page ---------------- */
+
+        /* A request from the page only queues a run. A job replays it, one at
+           a time, outside the web server, through the same engine the command
+           line uses. The run keeps the rules it was asked to test. */
+        require_once(dirname(__DIR__) . '/includes/backtest_runs.php');
+
+        foreach (['strategy_orders', 'strategy_positions', 'strategy_targets', 'strategy_values'] as $wb_t) {
+            db()->exec("delete from $wb_t where strategy like 'bt\\_screen\\_test\\_one%'");
+        }
+        db()->exec("delete from strategy_accounts where strategy like 'bt\\_%' and strategy like '%screen\\_test\\_one%'");
+        db()->exec("delete from strategy_backtest_runs where strategy='screen_test_one'");
+        db()->exec("delete from strategy_rules where strategy in ('wf_archived','bt_screen_test_one_1')");
+        db()->exec("delete from strategy_accounts where strategy='wf_archived'");
+
+        /* The data the replay needs: the trend averages over the range the
+           earlier backtest tests used. */
+        if ((int) scalar("select count(distinct date) from statistics where indicator='ma200'") < 10) {
+            run_script('backfill_trend_statistics.php', [$bf_from, $bf_to]);
+        }
+
+        check('no bt_ copy of any rules is left in the rules table by the runs so far',
+              (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 0);
+
+        $wb_post = function ($fields, $with_session = true) use ($base, $curl) {
+            $body = http_build_query($fields);
+            if ($with_session) { return (string) $curl("$base/strategies.php", $body); }
+            return (string) shell_exec('curl -s -L -m 30 -d ' . escapeshellarg($body) . ' '
+                                       . escapeshellarg("$base/strategies.php") . ' 2>/dev/null');
+        };
+        $wb_ask = ['do' => 'backtest', 'strategy' => $WF, 'from' => $bf_from, 'to' => $bf_to,
+                   'cash' => '50000', 'cost_model' => 't212'];
+        $wb_runs = function () use ($WF) {
+            return (int) scalar("select count(*) from strategy_backtest_runs where strategy=?", [$WF]);
+        };
+        $wb_last = function () use ($WF) {
+            $r = rows("select * from strategy_backtest_runs where strategy=? order by run_id desc limit 1", [$WF]);
+            return count($r) ? $r[0] : null;
+        };
+
+        /* Nothing but a logged in POST, of a request that is valid, queues one. */
+        $wb_before = $wb_runs();
+        $curl("$base/strategies.php?do=backtest&strategy=$WF&from=$bf_from&to=$bf_to");
+        $wb_post($wb_ask, false);
+        $wb_cli = backtest_request(array_merge($wb_ask, ['user_id' => 1, 'strategy' => $WF]));
+        check('a GET, a logged-out POST and the command line queue nothing',
+              $wb_runs() === $wb_before && $wb_cli['ok'] === false
+              && stripos($wb_cli['why'], 'command line') !== false);
+
+        $wb_bad = [
+            'dates the wrong way round' => ['from' => $bf_to, 'to' => $bf_from],
+            'a date that is not one'    => ['from' => '2020-13-45'],
+            'dates before the data'     => ['from' => '1990-01-01'],
+            'dates after the data'      => ['to' => '2099-01-01'],
+            'no cash'                   => ['cash' => '0'],
+            'cash that is text'         => ['cash' => 'lots'],
+            'a cost model nobody offers' => ['cost_model' => 'free'],
+            'a strategy that is not there' => ['strategy' => 'no_such_strategy'],
+            'a backtest account'        => ['strategy' => 'bt_screen_test_one_1'],
+        ];
+        foreach ($wb_bad as $wb_what => $wb_fields) {
+            $wb_n = (int) scalar("select count(*) from strategy_backtest_runs");
+            $wb_out = $wb_post(array_merge($wb_ask, $wb_fields));
+            check("a crafted POST with $wb_what queues nothing, and says why",
+                  (int) scalar("select count(*) from strategy_backtest_runs") === $wb_n
+                  && stripos($wb_out, 'not queued') !== false, substr(strip_tags($wb_out), 0, 200));
+        }
+
+        /* The good one: queued, with its rules, and not replayed in the request. */
+        $wb_start = microtime(true);
+        $wb_out = $wb_post($wb_ask);
+        $wb_run = $wb_last();
+        check('a good POST queues a run, and says so',
+              $wb_run !== null && $wb_run['status'] === 'QUEUED' && stripos($wb_out, 'Backtest queued') !== false
+              && (float) $wb_run['starting_cash'] === 50000.0 && $wb_run['cost_model'] === 't212'
+              && $wb_run['requested_by'] === 'tester', json_encode($wb_run));
+        check('it carries the rules it was asked to test, and their fingerprint',
+              $wb_run['fingerprint'] === rules_fingerprint($WF)
+              && json_decode($wb_run['rules_snapshot'], true) === rules_snapshot($WF));
+        check('nothing was replayed inside the web request: no account, no result, no rules copy',
+              (int) $wb_run['trading_days'] === 0 && $wb_run['final_value'] === null
+              && (int) scalar("select count(*) from strategy_accounts where strategy like 'bt\\_%'") === 0
+              && (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 0);
+        check('the strategy has a queued run, and the move is closed with that reason',
+              backtest_run_active($WF) === 'Queued'
+              && strategy_stage($WF)['moves']['backtest']['open'] === false
+              && stripos(strategy_stage($WF)['moves']['backtest']['reason'], 'queued') !== false);
+        $wb_n = $wb_runs();
+        $wb_out = $wb_post($wb_ask);
+        check('a second request while one is queued is refused, and queues nothing',
+              $wb_runs() === $wb_n && stripos($wb_out, 'not queued') !== false);
+        $wb_page = (string) $curl("$base/strategies.php?s=" . urlencode($WF));
+        check('the strategy\'s page shows the form and the queued run',
+              strpos($wb_page, 'id="sm-backtest-form"') !== false && strpos($wb_page, 'data-status="QUEUED"') !== false);
+        check('and the Backtests view still draws with a queued run in it',
+              stripos((string) $curl("$base/strategies.php?s=_backtests"), 'Fatal error') === false);
+
+        /* The job runs it, one at a time, through the engine. */
+        [$wb_job] = run_script('run_backtests.php');
+        $wb_done = backtest_run_get($wb_run['run_id']);
+        check('the job runs the queued run to DONE through the engine',
+              $wb_done['status'] === 'DONE' && (int) $wb_done['trading_days'] > 10
+              && strpos($wb_job, 'DONE') !== false, $wb_job);
+        check('and it still carries the snapshot and fingerprint it was queued with',
+              $wb_done['fingerprint'] === $wb_run['fingerprint'] && $wb_done['rules_snapshot'] === $wb_run['rules_snapshot']);
+        check('and it leaves no copy of the rules in the rules table',
+              (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 0);
+        check('so the strategy is Backtested',
+              strategy_stage($WF)['stage'] === 'Backtested' && strategy_stage($WF)['backtest'] !== null);
+
+        /* The same arguments on the command line give the same result. */
+        [$wb_cli_out] = run_script('backtest_strategy.php', [$WF, $bf_from, $bf_to, '--cash=50000', '--costs=t212']);
+        $wb_cli_run = $wb_last();
+        $wb_same = true; $wb_diff = [];
+        foreach (['trading_days', 'rebalances', 'exits', 'fills', 'start_value', 'final_value', 'total_return',
+                  'benchmark_return', 'max_drawdown', 'costs_paid', 'starting_cash'] as $wb_col) {
+            if ((string) $wb_cli_run[$wb_col] !== (string) $wb_done[$wb_col]) {
+                $wb_same = false; $wb_diff[$wb_col] = [$wb_done[$wb_col], $wb_cli_run[$wb_col]];
+            }
+        }
+        check('a run queued from the page gives the same result as the command line with the same arguments',
+              $wb_cli_run['run_id'] !== $wb_done['run_id'] && $wb_cli_run['status'] === 'DONE' && $wb_same,
+              json_encode($wb_diff) . substr($wb_cli_out, -300));
+        check('and the command line run carries the same rules fingerprint',
+              $wb_cli_run['fingerprint'] === $wb_done['fingerprint']);
+        check('and the engine leaves no orders, positions or rules copy behind',
+              (int) scalar("select count(*) from strategy_orders where strategy like 'bt\\_%'") === 0
+              && (int) scalar("select count(*) from strategy_positions where strategy like 'bt\\_%'") === 0
+              && (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 0);
+        check('the cash and cost model change the result, so they are really used',
+              (string) $wb_done['final_value'] !== '' && (float) $wb_done['start_value'] === 50000.0);
+
+        /* A request has to be asked again when the strategy has no run in flight. */
+        check('with the run finished a new one can be asked for',
+              backtest_run_active($WF) === null && strategy_stage($WF)['moves']['backtest']['open'] === true);
+
+        /* The rules snapshot is what is replayed, not what the strategy says later. */
+        $wb_out = $wb_post($wb_ask);
+        $wb_q2 = $wb_last();
+        db()->prepare("update strategy_rules set holdings=3 where strategy=?")->execute([$WF]);
+        run_script('run_backtests.php');
+        $wb_q2_done = backtest_run_get($wb_q2['run_id']);
+        check('a rules edit made while a run waited does not change what it tested',
+              $wb_q2_done['status'] === 'DONE' && $wb_q2_done['fingerprint'] === $wb_q2['fingerprint']
+              && (string) $wb_q2_done['final_value'] === (string) $wb_done['final_value']);
+        check('but that run is no longer of the current rules, so the strategy is Draft',
+              strategy_stage($WF)['stage'] === 'Draft');
+        db()->prepare("update strategy_rules set holdings=5 where strategy=?")->execute([$WF]);
+        db()->prepare("update strategy_rules set holdings=15 where strategy=?")->execute([$WF]);
+
+        /* A screen edited while a run waited: it would not test what it was asked to. */
+        $wb_out = $wb_post($wb_ask);
+        $wb_q3 = $wb_last();
+        db()->prepare("update screen_criteria set first_operand=concat(coalesce(first_operand,''),'9') where id=?")
+          ->execute([$wf_crit['id']]);
+        run_script('run_backtests.php');
+        db()->prepare("update screen_criteria set first_operand=? where id=?")->execute([$wf_crit['first_operand'], $wf_crit['id']]);
+        $wb_q3_done = backtest_run_get($wb_q3['run_id']);
+        check('a screen edited while a run waited fails the run, saying so, rather than testing other rules',
+              $wb_q3_done['status'] === 'FAILED' && stripos((string) $wb_q3_done['note'], 'screen was edited') !== false,
+              json_encode($wb_q3_done));
+
+        /* One at a time; a failure does not stop the next; a crash is failed, not rerun. */
+        db()->exec("delete from strategy_backtest_runs where strategy='screen_test_one'");
+        $wb_row = db()->prepare("insert into strategy_backtest_runs
+                       (strategy,account,from_date,to_date,started_at,status,rules_snapshot,fingerprint,starting_cash,cost_model,requested_at,requested_by)
+                     values (?,?,?,?,now(),?,?,?,50000,'t212',now(),'test')");
+        $wb_good = rules_snapshot($WF);
+        $wb_row->execute([$WF, '(queued)', $bf_from, $bf_to, 'QUEUED', 'not json at all', 'x']);
+        $wb_bad_id = (int) scalar("select max(run_id) from strategy_backtest_runs");
+        $wb_row->execute([$WF, '(queued)', $bf_from, $bf_to, 'QUEUED', json_encode($wb_good), rules_fingerprint_of($wb_good)]);
+        $wb_good_id = (int) scalar("select max(run_id) from strategy_backtest_runs");
+        $wb_row->execute([$WF, 'bt_screen_test_one_' . ($wb_good_id + 5), $bf_from, $bf_to, 'RUNNING', json_encode($wb_good), 'y']);
+        $wb_crash_id = (int) scalar("select max(run_id) from strategy_backtest_runs");
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at) values (?,1,'GBP','PAPER_T212','Y',now())")
+          ->execute(['bt_screen_test_one_' . ($wb_good_id + 5)]);
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at)
+                       values (?,'screen',2,'6mnth',5,'weekly','','Y',now())")->execute(['bt_screen_test_one_' . ($wb_good_id + 5)]);
+
+        $wb_lock = fopen(sys_get_temp_dir() . '/sharemanager_run_backtests.lock', 'c');
+        flock($wb_lock, LOCK_EX);
+        [$wb_locked] = run_script('run_backtests.php');
+        check('only one job runs at once: with the lock held, a second does nothing',
+              stripos($wb_locked, 'another copy is running') !== false
+              && backtest_run_get($wb_bad_id)['status'] === 'QUEUED' && backtest_run_get($wb_good_id)['status'] === 'QUEUED');
+        flock($wb_lock, LOCK_UN); fclose($wb_lock);
+
+        [$wb_job2] = run_script('run_backtests.php');
+        check('a run that fails does not stop the next: the bad one FAILED, the good one DONE',
+              backtest_run_get($wb_bad_id)['status'] === 'FAILED' && backtest_run_get($wb_good_id)['status'] === 'DONE'
+              && strpos($wb_job2, 'run ' . $wb_bad_id) < strpos($wb_job2, 'run ' . $wb_good_id), $wb_job2);
+        check('a run left RUNNING by a crash is marked failed, its leftovers removed, and it is not run again',
+              backtest_run_get($wb_crash_id)['status'] === 'FAILED'
+              && stripos((string) backtest_run_get($wb_crash_id)['note'], 'interrupted') !== false
+              && (int) scalar("select count(*) from strategy_accounts where strategy=?", ['bt_screen_test_one_' . ($wb_good_id + 5)]) === 0
+              && (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 0
+              && (int) scalar("select count(*) from strategy_backtest_runs where status in ('QUEUED','RUNNING')") === 0,
+              $wb_job2);
+        check('and the failure says why on the page',
+              stripos((string) $curl("$base/strategies.php?s=" . urlencode($WF)), 'data-status="FAILED"') !== false);
+
+        /* The one-off migration of the old bt_ copies. */
+        $wb_old = 'bt_screen_test_one_' . ($wb_good_id + 40);
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at)
+                       values (?,'screen',2,'6mnth',7,'weekly','below_ma200_2d','Y',now())")->execute([$wb_old]);
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at)
+                       values ('bt_orphan_999','screen',2,'6mnth',7,'weekly','','Y',now())")->execute();
+        db()->prepare("insert into strategy_backtest_runs (strategy,account,from_date,to_date,started_at,finished_at,status,final_value,total_return)
+                       values (?,?,?,?,now(),now(),'DONE',123456.78,0.2345)")->execute([$WF, $wb_old, $bf_from, $bf_to]);
+        $wb_old_id = (int) scalar("select max(run_id) from strategy_backtest_runs");
+        $wb_expect = rules_snapshot_of(strategy_rules($wb_old));
+
+        [$wb_dry] = run_script('migrate_bt_rules.php', ['--dry-run']);
+        check('the migration says what it would do and changes nothing on a dry run',
+              stripos($wb_dry, 'dry run') !== false
+              && (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 2
+              && scalar("select rules_snapshot from strategy_backtest_runs where run_id=?", [$wb_old_id]) === null);
+        [$wb_mig] = run_script('migrate_bt_rules.php');
+        $wb_after = backtest_run_get($wb_old_id);
+        check('after the migration no bt_ row remains in the rules table',
+              (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 0, $wb_mig);
+        check('and the old run keeps its rules as a snapshot with their fingerprint, and its result',
+              json_decode($wb_after['rules_snapshot'], true) === $wb_expect
+              && $wb_after['fingerprint'] === rules_fingerprint_of($wb_expect)
+              && (float) $wb_after['final_value'] === 123456.78,
+              json_encode($wb_after));
+        [$wb_mig2] = run_script('migrate_bt_rules.php');
+        check('running it again changes nothing',
+              backtest_run_get($wb_old_id)['rules_snapshot'] === $wb_after['rules_snapshot']
+              && stripos($wb_mig2, '0 snapshot(s) taken') !== false, $wb_mig2);
+
+        /* On the code. */
+        foreach (['includes/backtest_runs.php', 'includes/run_backtests.php', 'includes/migrate_bt_rules.php',
+                  'includes/backtest_run.sh'] as $wb_f) {
+            $wb_src[$wb_f] = (string) file_get_contents(dirname(__DIR__) . '/' . $wb_f);
+        }
+        check('the queue and the job never write a copy of a strategy into the rules table',
+              !preg_match('~(insert\s+into|update)\s+strategy_rules~i',
+                          $wb_src['includes/backtest_runs.php'] . $wb_src['includes/run_backtests.php']));
+        check('and call no broker and reach no live host',
+              !preg_match('~T212Client|trading212|broker_|equity/orders~i',
+                          $wb_src['includes/backtest_runs.php'] . $wb_src['includes/run_backtests.php']
+                          . $wb_src['includes/migrate_bt_rules.php']));
+        check('the job runs outside the web server: a command line script with its own cron wrapper',
+              strpos($wb_src['includes/run_backtests.php'], 'flock(') !== false
+              && strpos($wb_src['includes/backtest_run.sh'], 'run_backtests.php') !== false
+              && file_exists(dirname(__DIR__) . '/includes/backtest_run.sh')
+              && is_executable(dirname(__DIR__) . '/includes/backtest_run.sh'));
+        check('the engine removes its transient rules copy on every way out',
+              strpos((string) file_get_contents(dirname(__DIR__) . '/includes/backtest_strategy.php'),
+                     'register_shutdown_function(function() use ($bt){ backtest_drop_rules_copy($bt); });') !== false);
+
+        db()->exec("delete from strategy_accounts where strategy like 'bt\\_screen\\_test\\_one%' or strategy like 'bt\\_orphan%'");
+        db()->exec("delete from strategy_values where strategy like 'bt\\_screen\\_test\\_one%'");
+
         foreach (['strategy_rules', 'strategy_accounts', 'strategy_orders', 'strategy_targets'] as $wf_t) {
             db()->exec("delete from $wf_t where strategy in ('screen_test_one','wf_archived','bt_screen_test_one_1','wf_holder')");
         }

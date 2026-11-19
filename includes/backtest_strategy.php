@@ -57,6 +57,8 @@
 	include("functions.php");
 	include("share_functions.php");
 	include("strategy_functions.php");
+	/* What a run tested: the snapshot of its rules and the fingerprint of it. */
+	require_once(__DIR__ . "/rules_fingerprint.php");
 
 	/**
 	 * Whether sql/strategy_backtest_overrides.sql has been applied.
@@ -90,6 +92,12 @@
 		                 and column_name='cost_settings'");
 		$known=count($found)&&(int)$found[0]['n']>0;
 		return $known;
+	}
+
+	/** Remove the transient copy of the rules the engine reads. Only ever a bt_ name. */
+	function backtest_drop_rules_copy($account) {
+		if (strpos((string)$account,STRATEGY_BACKTEST_PREFIX)!==0){ return; }
+		query("delete from strategy_rules where strategy=?",(string)$account);
 	}
 
 	/**
@@ -199,7 +207,7 @@
 		exit(2);
 	};
 
-	$known_options=['keep','compare','rebalance','hold-rank','holdings'];
+	$known_options=['keep','compare','rebalance','hold-rank','holdings','run','cash','costs'];
 	foreach (array_keys($options) as $given) {
 		if (!in_array($given,$known_options,true)){
 			$refuse_usage("Unknown option '--".$given."'. Known: --"
@@ -216,6 +224,7 @@
 	if ($strategy===null||$from===null||$to===null){
 		$refuse_usage("Usage: php backtest_strategy.php <strategy> <from> <to>"
 		              ." [--rebalance=weekly|monthly|daily] [--hold-rank=N] [--holdings=N] [--keep]"
+		              ." [--cash=N] [--costs=t212|paper] [--run=ID]"
 		              ."\r\n   or: php backtest_strategy.php --compare [strategy]");
 	}
 
@@ -238,10 +247,80 @@
 		$refuse_usage("'".$strategy."' is a reserved name; backtest the strategy it came from");
 	}
 
-	/* The rules are the live strategy's. Nothing else about it is read, and
-	   nothing about it is written. */
-	$rules=strategy_rules($strategy);
-	if ($rules===null){ $refuse_usage("No rules for '".$strategy."'; see sql/strategy_rules.sql"); }
+	/* A run asked for from the strategy's page (--run=ID) is one the job has
+	   already claimed: its row says RUNNING, and it carries the rules it was
+	   queued with, the cash and the cost model. Those are what is replayed,
+	   not whatever the strategy says now, so an edit made while it waited
+	   cannot change what the run says it tested. Nothing but the job passes
+	   it, and the overrides below are not allowed with it. */
+	$queued=null;
+	if (isset($options['run'])){
+		foreach (['rebalance','holdings','hold-rank'] as $not_with_run) {
+			if (isset($options[$not_with_run])){
+				$refuse_usage("--".$not_with_run." cannot be used with --run: the run carries the rules it was queued with");
+			}
+		}
+		$found=query("select * from strategy_backtest_runs where run_id=?",(int)$options['run']);
+		$queued=count($found) ? $found[0] : null;
+		if ($queued===null||$queued['status']!=='RUNNING'||$queued['strategy']!==$strategy
+		    ||(string)$queued['from_date']!==$from||(string)$queued['to_date']!==$to){
+			$refuse_usage("--run=".$options['run']." is not a run the job has claimed for "
+			              .$strategy." ".$from." to ".$to);
+		}
+	}
+
+	/* The rules are the live strategy's, or the snapshot a queued run
+	   carries. Nothing else about the strategy is read, and nothing about it
+	   is written. */
+	if ($queued!==null){
+		$snapshot=json_decode((string)$queued['rules_snapshot'],true);
+		if (!is_array($snapshot)||!isset($snapshot['rules'],$snapshot['criteria'])){
+			query("update strategy_backtest_runs set status='FAILED', finished_at=?, note=? where run_id=?",
+			      date('Y-m-d H:i:s'),'the run carries no rules snapshot',(int)$queued['run_id']);
+			$refuse_usage("run ".$queued['run_id']." carries no rules snapshot");
+		}
+		$rules=rules_from_snapshot($snapshot);
+
+		/* The screen's criteria are read when the screen is built, so they
+		   have to be what they were when the run was queued. An edit since
+		   would make the replay a different strategy from the one the
+		   snapshot describes. */
+		$criteria_now=$rules['screen_id']===null ? [] : rules_screen_criteria($rules['screen_id']);
+		if ($criteria_now!==$snapshot['criteria']){
+			query("update strategy_backtest_runs set status='FAILED', finished_at=?, note=? where run_id=?",
+			      date('Y-m-d H:i:s'),
+			      'the screen was edited after this run was queued, so it would not test the rules it was asked for; queue it again',
+			      (int)$queued['run_id']);
+			echo "FAILED: the screen was edited after this run was queued\r\n";
+			exit(3);
+		}
+	}
+	else {
+		$rules=strategy_rules($strategy);
+		if ($rules===null){ $refuse_usage("No rules for '".$strategy."'; see sql/strategy_rules.sql"); }
+	}
+
+	/* The cash and the dealing model, from the run or from the command line.
+	   Unset, they are what they always were: GBP 100,000, and the dealing
+	   rules of the account being replayed. */
+	$cash_asked=(float)STRATEGY_BACKTEST_CASH;
+	$cost_model=null;
+	if ($queued!==null){
+		if ($queued['starting_cash']!==null&&(float)$queued['starting_cash']>0){ $cash_asked=(float)$queued['starting_cash']; }
+		$cost_model=$queued['cost_model'];
+	}
+	else {
+		if (isset($options['cash'])){
+			if (!is_numeric($options['cash'])||(float)$options['cash']<=0){
+				$refuse_usage("--cash must be a number above zero");
+			}
+			$cash_asked=(float)$options['cash'];
+		}
+		if (isset($options['costs'])){ $cost_model=strtolower(trim((string)$options['costs'])); }
+	}
+	if ($cost_model!==null&&!in_array($cost_model,['t212','paper'],true)){
+		$refuse_usage("--costs must be t212 or paper");
+	}
 
 	/* The overrides. Checked against the same values the stored rules may
 	   hold, so a backtest cannot be run on a configuration the live engine
@@ -294,13 +373,33 @@
 
 	/* Record the run first, so a refusal is on the record with its reason
 	   rather than only in somebody's terminal. */
-	query("insert into strategy_backtest_runs
-	         (strategy,account,from_date,to_date,started_at,status)
-	       values (?,?,?,?,?,'RUNNING')",
-	      $strategy,'(pending)',$from,$to,date('Y-m-d H:i:s'));
+	if ($queued!==null){
+		$run_id=(int)$queued['run_id'];
+		query("update strategy_backtest_runs set account=?, started_at=? where run_id=?",
+		      '(pending)',date('Y-m-d H:i:s'),$run_id);
+	}
+	else {
+		query("insert into strategy_backtest_runs
+		         (strategy,account,from_date,to_date,started_at,status)
+		       values (?,?,?,?,?,'RUNNING')",
+		      $strategy,'(pending)',$from,$to,date('Y-m-d H:i:s'));
 
-	$run=query("select max(run_id) id from strategy_backtest_runs where strategy=?",$strategy);
-	$run_id=(int)$run[0]['id'];
+		$run=query("select max(run_id) id from strategy_backtest_runs where strategy=?",$strategy);
+		$run_id=(int)$run[0]['id'];
+
+		/* What this run tested, so the stage can say whether a completed run
+		   is of the rules as they are now. The rules as overridden, so a run
+		   with an override is not mistaken for one of the stored rules. A
+		   queued run was given its snapshot when it was asked for. */
+		$has_snapshot=count(query("select 1 from information_schema.columns
+		                            where table_schema=database() and table_name='strategy_backtest_runs'
+		                              and column_name='fingerprint'"))>0;
+		if ($has_snapshot){
+			$taken=rules_snapshot_of($rules);
+			query("update strategy_backtest_runs set rules_snapshot=?, fingerprint=? where run_id=?",
+			      json_encode($taken),rules_fingerprint_of($taken),$run_id);
+		}
+	}
 	$bt=STRATEGY_BACKTEST_PREFIX.substr($strategy,0,30).'_'.$run_id;
 
 	/* Belt and braces: the engine is about to be pointed at this name, so
@@ -406,9 +505,15 @@
 	$bt_mode=strategy_backtest_mode($account_before===null
 	                                ? STRATEGY_MODE_PAPER : $account_before['mode']);
 
+	/* A model asked for - on the command line or by the run - overrides the
+	   mapping: Trading 212's dealing rules with no broker, or the paper
+	   account's. */
+	if ($cost_model==='t212'){ $bt_mode=STRATEGY_MODE_PAPER_T212; }
+	else if ($cost_model==='paper'){ $bt_mode=STRATEGY_MODE_PAPER; }
+
 	query("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at,note)
 	       values (?,?,?,?,'Y',?,?)",
-	      $bt,STRATEGY_BACKTEST_CASH,
+	      $bt,$cash_asked,
 	      $account_before===null ? 'GBP' : $account_before['currency'],
 	      $bt_mode,
 	      date('Y-m-d H:i:s'),
@@ -440,6 +545,13 @@
 	             && (int)query("select count(*) n from information_schema.columns
 	                             where table_schema=database() and table_name='strategy_rules'
 	                               and column_name='hold_rank'")[0]['n']>0;
+
+	/* The engine reads its rules back from the rules table under the
+	   account's own name, so the copy has to exist while it runs. It does not
+	   outlive the run: it is removed on every way out, including a refusal
+	   and a crash that reaches PHP's shutdown, and what remains of the run is
+	   its snapshot. */
+	register_shutdown_function(function() use ($bt){ backtest_drop_rules_copy($bt); });
 
 	if ($has_hold_rank){
 		query("insert into strategy_rules
@@ -516,7 +628,7 @@
 	   the first night, already down by the first rebalance's dealing costs
 	   - so the return was measured from a number the costs had already come
 	   out of, and the costs were understated by exactly that much. */
-	$starting_cash=(float)STRATEGY_BACKTEST_CASH;
+	$starting_cash=$cash_asked;
 	$first_night=count($series) ? $series[0]['total'] : null;
 	$start_value=$starting_cash;
 	$final_value=count($series) ? $series[count($series)-1]['total'] : null;

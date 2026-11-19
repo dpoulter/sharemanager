@@ -21,6 +21,10 @@ $sm_screen = screen_of_strategy($draft['strategy']);
 			not on practice, not live.
 		</p>
 
+		<?php if (function_exists('backtest_runs_ready') && backtest_runs_ready()): ?>
+		<?php $bt_strategy = $draft['strategy']; include __DIR__ . '/strategy_backtest_form.php'; ?>
+		<?php endif ?>
+
 		<dl class="row small mb-0">
 			<dt class="col-sm-3">Built from</dt>
 			<dd class="col-sm-9"><?= $sm_screen === null ? 'no screen' : e($sm_screen['name']) ?></dd>

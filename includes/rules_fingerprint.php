@@ -53,16 +53,14 @@
 	}
 
 	/**
-	 * What the rules are right now, as a plain array: the fields above and,
-	 * for a screen strategy, the screen's criteria. This is what a backtest
-	 * run keeps as its snapshot. Null if the strategy has no rules.
+	 * The snapshot of a rules array as strategy_rules() returns it - or as a
+	 * backtest has overridden it - with the criteria of its screen as they are
+	 * now. The one place the fields are listed.
 	 */
-	function rules_snapshot($strategy) {
+	function rules_snapshot_of(array $rules) {
 
-		$rules = strategy_rules((string) $strategy);
-		if ($rules === null) { return null; }
-
-		$exits = $rules['exit_list'];
+		$exits = isset($rules['exit_list']) ? $rules['exit_list']
+		       : array_values(array_filter(array_map('trim', explode(',', strtolower((string) $rules['exit_rules'])))));
 		sort($exits);
 
 		$screen_id = ($rules['selection'] === 'screen' && $rules['screen_id'] !== null)
@@ -82,6 +80,37 @@
 			],
 			'criteria' => $screen_id === null ? [] : rules_screen_criteria($screen_id),
 		];
+	}
+
+	/**
+	 * What the rules are right now, as a plain array: the fields above and,
+	 * for a screen strategy, the screen's criteria. This is what a backtest
+	 * run keeps as its snapshot. Null if the strategy has no rules.
+	 */
+	function rules_snapshot($strategy) {
+
+		$rules = strategy_rules((string) $strategy);
+		return $rules === null ? null : rules_snapshot_of($rules);
+	}
+
+	/**
+	 * A snapshot turned back into the array strategy_rules() returns, so an
+	 * engine can run the rules a run was queued with rather than whatever the
+	 * strategy says now.
+	 */
+	function rules_from_snapshot(array $snapshot) {
+
+		$r = $snapshot['rules'];
+		$exits = array_values(array_filter(array_map('trim', explode(',', (string) $r['exit_rules']))));
+
+		return ['selection' => (string) $r['selection'],
+		        'screen_id' => $r['screen_id'] === null ? null : (int) $r['screen_id'],
+		        'score_indicator' => $r['score_indicator'], 'rank_by' => $r['rank_by'],
+		        'holdings' => (int) $r['holdings'],
+		        'hold_rank' => $r['hold_rank'] === null ? null : (int) $r['hold_rank'],
+		        'rebalance' => (string) $r['rebalance'], 'exit_rules' => implode(',', $exits),
+		        'exit_list' => $exits, 'exclude_funds' => (string) $r['exclude_funds'],
+		        'start_date' => null, 'note' => null];
 	}
 
 	/** The value for a snapshot. Same snapshot, same value. */

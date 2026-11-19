@@ -340,6 +340,35 @@ practice account and `send_live_orders.php` can only reach the live one.
 Neither can be turned into the other by an argument, and the suite checks
 that the live host is used for a write in exactly one function.
 
+### From a screen to a strategy, and its backtests
+
+A strategy built on a screen has **rules and no account** until it is started
+on practice. Its stage - Draft, Backtested, Practice or Live - is derived each
+time by `includes/strategy_stage.php` from the rules, the runs, the accounts and
+the arming; it is never stored. Whether the rules have changed since a run
+lives only in `includes/rules_fingerprint.php`.
+
+```sh
+mysql sharemanager < sql/strategy_workflow.sql   # archived_at, and a run's snapshot and fingerprint
+mysql sharemanager < sql/backtest_queue.sql      # who asked, when, the cost model and cash
+php includes/migrate_bt_rules.php --dry-run      # once: move the old bt_ rules copies into their runs
+php includes/migrate_bt_rules.php
+```
+
+A backtest asked for on the strategy's page only **queues** a run. A job outside
+the web server replays it, one at a time, through the same engine the command
+line uses (`includes/backtest_strategy.php --run=<id>`):
+
+```
+* * * * * /var/www/sharemanager/includes/backtest_run.sh >> /var/log/sharemanager-backtest.log 2>&1
+```
+
+The engine still reads its rules from the rules table under the run's own
+`bt_` account name, so a transient copy exists while a run is replaying. It is
+removed on every way out; what stays is the run's own snapshot. A run left
+RUNNING by a crash is marked failed and is not run again. The night run skips a
+strategy that has no account, or is archived, with one line each.
+
 ### A key that cannot read orders
 
 Sending is not the same permission as finding out what became of it. On 19

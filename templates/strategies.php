@@ -942,7 +942,7 @@
 
 					<?php
 						$panes = ['holdings' => 'Holdings', 'orders' => 'Orders', 'trades' => 'Trades'];
-						if (count($card['backtests'])) { $panes['backtest'] = 'Backtest'; }
+						if (count($card['backtests']) || function_exists('backtest_runs_ready') && backtest_runs_ready()) { $panes['backtest'] = 'Backtest'; }
 						$panes['rules'] = 'Rules';
 						if (!isset($panes[$tab])) { $tab = 'holdings'; }
 					?>
@@ -1395,11 +1395,14 @@
 						</div>
 
 						<!-- Backtest -->
-						<?php if (count($card['backtests'])): ?>
+						<?php if (isset($panes['backtest'])): ?>
 						<div class="tab-pane fade<?= $tab === 'backtest' ? ' show active' : '' ?>"
 						     id="pane-backtest" role="tabpanel" aria-labelledby="tab-backtest">
-							<?php $runs = $card['backtests']; $show_strategy_column = false; ?>
+							<?php $bt_strategy = $card['strategy']; $stage = $stages[$card['strategy']] ?? null; ?>
+							<?php if ($stage !== null && function_exists('backtest_runs_ready') && backtest_runs_ready()) { include __DIR__ . '/strategy_backtest_form.php'; } ?>
+							<?php if (count($card['backtests'])): $runs = $card['backtests']; $show_strategy_column = false; ?>
 							<?php include __DIR__ . '/strategy_backtests.php' ?>
+							<?php endif ?>
 						</div>
 						<?php endif ?>
 
