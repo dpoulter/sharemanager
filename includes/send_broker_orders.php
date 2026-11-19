@@ -117,7 +117,7 @@
 
 		/* 1. What became of what has already gone. */
 		$resolved = broker_resolve_orders($strategy, ['client' => $client]);
-		echo "  resolved: " . $resolved['filled'] . " filled, " . $resolved['rejected']
+		echo "  resolved (" . $client->environment() . " key): " . $resolved['filled'] . " filled, " . $resolved['rejected']
 		   . " refused, " . $resolved['cancelled'] . " cancelled, " . $resolved['working']
 		   . " still working, " . $resolved['adopted'] . " matched up, "
 		   . $resolved['written_off'] . " never arrived\r\n";

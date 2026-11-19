@@ -340,6 +340,40 @@ practice account and `send_live_orders.php` can only reach the live one.
 Neither can be turned into the other by an argument, and the suite checks
 that the live host is used for a write in exactly one function.
 
+### A key that cannot read orders
+
+Sending is not the same permission as finding out what became of it. On 19
+November 2026 thirteen live orders filled and were never recorded, because the
+key that reads the order book answered 403 to the pending orders and to the
+order history, and nothing said so. The orders stayed SENT and the strategy
+halted "without being resolved", which reads as a slow broker.
+
+```sh
+mysql sharemanager < sql/broker_key_scopes.sql   # per-key status and the blind flag
+php includes/check_key_scopes.php                # what each live key can read, reads only
+```
+
+- `broker_resolve_orders()` marks the book **blind** when either call is
+  refused with 401 or 403, names the missing permission and leaves the orders
+  SENT. It never marks an order filled, refused or missing from a book it could
+  not read, and writes no holding from the positions alone. The flag is kept in
+  `broker_order_book_state` and renewed on every read, so a fixed key clears it.
+- `stuck_check()` in `includes/broker_orders.php` is the one stuck-order rule,
+  called by both senders. A blind book changes only the words of the halt: the
+  key cannot read orders, the orders may have filled, and the broker is to be
+  checked before the halt is cleared.
+- `refusal_reason()` in `includes/t212_client.php` is the one reader of a
+  refusal body, called by both order functions. It uses the broker's code,
+  message, title and detail, and never records "no reason" for a body that had
+  words in it.
+- `key_scopes()` makes the two GETs the resolve step relies on, once each. It
+  runs at the start of every broker run (`check_key_scopes.php`, from
+  `broker_run.sh`), prints the result, stores it in `broker_key_scopes`, and the
+  Strategies page shows "key lacks Orders - Read" or "key lacks history". An
+  environment that is off, or has no key, opens no connection.
+
+None of this sends, amends or cancels anything, and none of it clears a halt.
+
 A buy that would breach a cap is refused with the reason and left PENDING for
 the next run. Two orders in one run over a cap on their own size halts the
 strategy: that is the sizing being wrong rather than the cap being tight.

@@ -235,41 +235,19 @@
 		}
 
 		/* Nothing new goes out while something already sent is unaccounted
-		   for. A market order fills in ten to thirty seconds; one that is
-		   still unresolved minutes later is a question, and the answer to a
-		   question is not another order. */
-		$waiting = query("select client_order_id, status,
-		                         timestampdiff(second, coalesce(sent_at, created_at), now()) age
-		                    from strategy_orders
-		                   where strategy=? and status in ('SENT','UNKNOWN')
-		                   order by age desc", $strategy);
-
-		if (count($waiting)) {
-
-			$oldest = (int) $waiting[0]['age'];
-
-			if ($oldest >= (int) T212_STUCK_SECONDS) {
-				broker_halt_strategy($strategy,
-				    count($waiting) . " order(s) have been out for " . round($oldest / 60)
-				  . " minutes without being resolved, the oldest being "
-				  . $waiting[0]['client_order_id']);
-				$out['halted'] = true;
-				$out['errors'][] = "halted: an order has been unresolved for "
-				                 . round($oldest / 60) . " minutes";
-				return $out;
-			}
-
-			if ($oldest >= (int) T212_SETTLE_SECONDS) {
-				$out['errors'][] = count($waiting) . " order(s) sent earlier are still"
-				                 . " unresolved, the oldest " . round($oldest / 60)
-				                 . " minute(s) ago. Nothing more is sent until the broker"
-				                 . " has been asked what became of them.";
-				return $out;
-			}
-
-			$say(count($waiting) . " order(s) are still settling, which is normal for the"
-			     . " first " . (int) T212_SETTLE_SECONDS . " seconds");
+		   for. The rule is stuck_check()'s, below, and the live sender asks the
+		   same function: it is written once. */
+		$stuck = stuck_check($strategy);
+		if ($stuck['halted']) {
+			$out['halted'] = true;
+			$out['errors'][] = $stuck['error'];
+			return $out;
 		}
+		if ($stuck['hold']) {
+			$out['errors'][] = $stuck['error'];
+			return $out;
+		}
+		if ($stuck['say'] !== '') { $say($stuck['say']); }
 
 		/* And nothing goes out without the two books having been compared,
 		   unless there is nothing of ours to compare: a strategy that holds
@@ -462,8 +440,178 @@
 	}
 
 	/* ---------------------------------------------------------------------
+	   Orders that are out and unaccounted for.
+	   --------------------------------------------------------------------- */
+
+	/** Whether sql/broker_key_scopes.sql has been applied. */
+	function broker_book_state_ready() {
+
+		static $known = null;
+		if ($known !== null) { return $known; }
+
+		$rows = query("select count(*) n from information_schema.tables
+		                where table_schema=database() and table_name='broker_order_book_state'");
+		$known = count($rows) && (int) $rows[0]['n'] === 1;
+		return $known;
+	}
+
+	/**
+	 * Write down whether the broker's order book could be read, for the
+	 * strategy that asked.
+	 *
+	 * Written by broker_resolve_orders() every time it reads the book, blind
+	 * or not, so a key that has been fixed clears the flag on the next run
+	 * rather than leaving an old halt reason to be repeated. The row is the
+	 * only place the sender that runs after the resolve step can find out:
+	 * the two are separate calls, and the stuck check can also be reached
+	 * from the page's dry run, which resolves nothing.
+	 */
+	function broker_book_note($strategy, $environment, array $book) {
+
+		if (!broker_book_state_ready()) { return; }
+
+		$blind   = count($book['blind']) > 0;
+		$missing = implode(' and ', $book['blind']);
+
+		query("insert into broker_order_book_state (strategy, environment, blind, missing, checked_at)
+		       values (?, ?, ?, ?, now())
+		       on duplicate key update environment=values(environment), blind=values(blind),
+		                               missing=values(missing), checked_at=values(checked_at)",
+		      $strategy, (string) $environment, $blind ? 'Y' : 'N', $blind ? $missing : null);
+	}
+
+	/**
+	 * Was the order book unreadable when this strategy's orders were last
+	 * resolved?
+	 *
+	 * Only a note from the last hour counts. The resolve step runs every ten
+	 * minutes, so an older one is a job that has stopped, and a flag nobody
+	 * has renewed should not decide what a halt says.
+	 */
+	function broker_book_blind($strategy) {
+
+		$none = ['blind' => false, 'missing' => '', 'environment' => ''];
+		if (!broker_book_state_ready()) { return $none; }
+
+		$rows = query("select blind, missing, environment from broker_order_book_state
+		                where strategy=? and timestampdiff(second, checked_at, now()) < 3600",
+		              $strategy);
+		if (!count($rows) || $rows[0]['blind'] !== 'Y') { return $none; }
+
+		return ['blind' => true, 'missing' => (string) $rows[0]['missing'],
+		        'environment' => (string) $rows[0]['environment']];
+	}
+
+	/**
+	 * The one stuck-order rule, for both senders.
+	 *
+	 * Called by broker_send_orders() and broker_live_send_orders() before
+	 * anything new is sent, and by nothing else. An order that was sent and has
+	 * not been accounted for is a question, and the answer to a question is not
+	 * another order:
+	 *
+	 *   settle time   (T212_SETTLE_SECONDS)  nothing more goes out this run;
+	 *                 inside it, "still settling" is said and the run carries on;
+	 *   stuck time    (T212_STUCK_SECONDS)   the strategy is halted through
+	 *                 broker_halt_strategy(), which also disarms a live one.
+	 *
+	 * If the order book was blind at the last resolve - the key was refused
+	 * when it asked for pending orders or the history - the halt says so: the
+	 * orders may have filled, and the broker has to be looked at before the
+	 * halt is cleared. Without that the halt reads as a slow broker, and
+	 * the cause is a permission somebody has to go and change.
+	 *
+	 * $options: live (the wording says "live order(s)").
+	 *
+	 * Never sends, resends or cancels an order, and never clears a halt.
+	 * Returns waiting, oldest (seconds), halted, hold (stop this run, not
+	 * halted), blind, say (a line for the run's log) and error (the sentence
+	 * the sender reports).
+	 */
+	function stuck_check($strategy, $options = []) {
+
+		$live = !empty($options['live']);
+		$out  = ['waiting' => 0, 'oldest' => 0, 'halted' => false, 'hold' => false,
+		         'blind' => false, 'say' => '', 'error' => ''];
+
+		$waiting = query("select client_order_id, status,
+		                         timestampdiff(second, coalesce(sent_at, created_at), now()) age
+		                    from strategy_orders
+		                   where strategy=? and status in ('SENT','UNKNOWN')
+		                   order by age desc", $strategy);
+
+		if (!count($waiting)) { return $out; }
+
+		$count  = count($waiting);
+		$oldest = (int) $waiting[0]['age'];
+		$mins   = round($oldest / 60);
+		$noun   = ($live ? "live order(s)" : "order(s)");
+		$book   = broker_book_blind($strategy);
+
+		$out['waiting'] = $count;
+		$out['oldest']  = $oldest;
+		$out['blind']   = $book['blind'];
+
+		if ($oldest >= (int) T212_STUCK_SECONDS) {
+
+			if ($book['blind']) {
+				$reason = "The Trading 212 key cannot read orders (it needs "
+				        . $book['missing'] . "), so " . $count . " " . $noun . " out for "
+				        . $mins . " minutes could not be checked and may have filled."
+				        . " Check the broker before clearing this halt.";
+			}
+			else {
+				$reason = $count . " " . $noun . " have been out for " . $mins
+				        . " minutes without being resolved, the oldest being "
+				        . $waiting[0]['client_order_id'];
+			}
+
+			broker_halt_strategy($strategy, $reason);
+			$out['halted'] = true;
+			$out['error']  = "halted: " . ($live ? "a live order" : "an order")
+			               . " has been unresolved for " . $mins . " minutes"
+			               . ($book['blind'] ? ", and the Trading 212 key cannot read orders" : "");
+			return $out;
+		}
+
+		if ($oldest >= (int) T212_SETTLE_SECONDS) {
+			$out['hold']  = true;
+			$out['error'] = $count . " " . $noun . " sent earlier are still unresolved, the"
+			              . " oldest " . $mins . " minute(s) ago. Nothing more is sent until the"
+			              . " broker has been asked what became of them."
+			              . ($book['blind']
+			                 ? " The Trading 212 key cannot read orders, so it cannot be asked."
+			                 : "");
+			return $out;
+		}
+
+		$out['say'] = $count . " order(s) are still settling, which is normal for the first "
+		            . (int) T212_SETTLE_SECONDS . " seconds";
+		return $out;
+	}
+
+	/* ---------------------------------------------------------------------
 	   Finding out what happened.
 	   --------------------------------------------------------------------- */
+
+	/**
+	 * Mark the book blind when the key was refused the call.
+	 *
+	 * A 403 is a permission the key does not have and a 401 is a key Trading
+	 * 212 did not accept: either way the answer is not "nothing is there", it is
+	 * "you may not look". Any other failure - a timeout, a 429, a 500 - leaves
+	 * the book incomplete, which the resolve step already treats as unable to
+	 * decide, but it is not a statement about the key.
+	 */
+	function broker_book_missing(array &$book, array $answer, $permission) {
+
+		$status = isset($answer['status']) ? (int) $answer['status'] : 0;
+		if ($status === 403) { $needs = $permission; }
+		else if ($status === 401) { $needs = "a key Trading 212 accepts"; }
+		else { return; }
+
+		if (!in_array($needs, $book['blind'], true)) { $book['blind'][] = $needs; }
+	}
 
 	/**
 	 * The broker's own view of an order, by its id.
@@ -474,7 +622,7 @@
 	 */
 	function broker_order_book($client) {
 
-		$book = ['pending' => [], 'history' => [], 'errors' => []];
+		$book = ['pending' => [], 'history' => [], 'errors' => [], 'blind' => []];
 
 		$pending = $client->get('orders');
 		if ($pending['ok']) {
@@ -485,10 +633,16 @@
 				if ($id !== null) { $book['pending'][(string) $id] = $row; }
 			}
 		}
-		else { $book['errors'][] = "pending orders: " . $pending['message']; }
+		else {
+			$book['errors'][] = "pending orders: " . $pending['message'];
+			broker_book_missing($book, $pending, 'Orders - Read');
+		}
 
 		$history = $client->get_all('order_history');
-		if (!$history['ok']) { $book['errors'][] = "order history: " . $history['message']; }
+		if (!$history['ok']) {
+			$book['errors'][] = "order history: " . $history['message'];
+			broker_book_missing($book, $history, 'history');
+		}
 		foreach ($history['items'] as $row) {
 			[$id] = broker_field($row, broker_fields('order_id'));
 			if ($id !== null) { $book['history'][(string) $id] = $row; }
@@ -654,7 +808,7 @@
 
 		$out = ['filled' => 0, 'rejected' => 0, 'cancelled' => 0, 'working' => 0,
 		        'adopted' => 0, 'written_off' => 0, 'lines' => [], 'errors' => [],
-		        'halted' => false];
+		        'halted' => false, 'blind' => false];
 
 		if (!broker_trading_ready()) {
 			$out['errors'][] = "sql/broker_trading.sql has not been applied";
@@ -676,6 +830,21 @@
 
 		$book = broker_order_book($client);
 		foreach ($book['errors'] as $error) { $out['errors'][] = $error; }
+
+		/* BLIND: the key was refused the pending orders or the history. The
+		   orders stay as they are - they are not marked filled, refused or
+		   missing from a book that could not be read, and nothing is written
+		   from the positions alone - and the fact is stored for the sender and
+		   the stuck-order check that run after this. Written on every read, so
+		   a fixed key clears it. */
+		broker_book_note($strategy, $client->environment(), $book);
+		if (count($book['blind'])) {
+			$out['blind'] = true;
+			$out['errors'][] = "BLIND: the " . $client->environment() . " key cannot read orders (it needs "
+			                 . implode(' and ', $book['blind']) . "), so what became of the "
+			                 . count($waiting) . " order(s) sent earlier is not known. They may have"
+			                 . " filled. Check the broker.";
+		}
 
 		/* Nothing is decided from an incomplete picture: if the history
 		   could not be read, an order that is not in it has not been shown

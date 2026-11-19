@@ -2909,6 +2909,435 @@
           substr_count((string) file_get_contents(dirname(__DIR__) . '/templates/strategies.php'),
                        's_mode_badge(') >= 3);
 
+    /* ---------------- a key that cannot read orders ---------------- */
+
+    echo "\n--- live order reconcile: a key that cannot read orders ---\n";
+
+    /* 19 Nov 2026: thirteen live orders filled at the broker and none was
+       recorded, because the key that reads the order book answered 403 and
+       nothing said so. The orders stayed SENT, the strategy halted "without
+       being resolved", and the halt read as a slow broker. These are the
+       checks that the application now says what it is, and does nothing
+       more than say it.
+
+       The stub answers 403 to the pending orders and the order history
+       through t212_mode_pending and t212_mode_orders. Nothing here reaches
+       Trading 212. */
+
+    $rc_modes = function ($pending, $history) use ($lc_dir) {
+        foreach (['pending' => $pending, 'orders' => $history] as $call => $mode) {
+            if ($mode === null) { @unlink("$lc_dir/t212_mode_$call"); }
+            else { file_put_contents("$lc_dir/t212_mode_$call", $mode); }
+        }
+    };
+    $rc_orders = function ($minutes, $n = 13) use ($LC, $SASOF, $lc_batch_id) {
+        db()->prepare("delete from strategy_orders where strategy=?")->execute([$LC]);
+        $insert = db()->prepare("insert into strategy_orders
+                                   (client_order_id,strategy,as_of_date,batch,symbol,exchange,side,
+                                    quantity,status,note,created_at,broker,broker_order_id,sent_at)
+                                 values (?,?,?,?,'AAA','XLON','BUY',0.5,'SENT','rebalance',now(),?,?,
+                                         date_sub(now(), interval ? minute))");
+        for ($i = 1; $i <= $n; $i++) {
+            $insert->execute([$LC . ':rc' . $i, $LC, $SASOF, $lc_batch_id, BROKER_T212,
+                              'rc-' . $i, $minutes]);
+        }
+    };
+    $rc_unhalt = function () use ($LC) {
+        db()->prepare("update strategy_accounts set halted='N', halt_reason=null, halted_at=null
+                        where strategy=?")->execute([$LC]);
+    };
+    $rc_count = function ($where) use ($LC) {
+        return (int) scalar("select count(*) from strategy_orders where strategy=? and " . $where, [$LC]);
+    };
+    $rc_reason = function () use ($LC) {
+        return (string) scalar("select halt_reason from strategy_accounts where strategy=?", [$LC]);
+    };
+    $rc_halted = function () use ($LC) {
+        return scalar("select halted from strategy_accounts where strategy=?", [$LC]) === 'Y';
+    };
+    $rc_state = function () use ($LC) {
+        $rows = rows("select * from broker_order_book_state where strategy='" . $LC . "'");
+        return count($rows) ? $rows[0] : null;
+    };
+
+    db()->prepare("delete from broker_order_book_state where strategy=?")->execute([$LC]);
+    $rc_unhalt();
+
+    /* ---- 1. blind: thirteen SENT orders stay SENT ---- */
+
+    $rc_modes('403', '403');
+    $lc_arm(250.00);
+    $lc_batch('APPROVED');
+    $lc_agreed(0.0);
+    $rc_orders(10);
+    $lc_reset();
+    [$rc_blind_out] = $lc_run();
+    $rc_row = $rc_state();
+
+    check('a key refused the order book is said to be blind, and which key it was',
+          stripos($rc_blind_out, 'BLIND') !== false
+          && strpos($rc_blind_out, 'resolved (live-orders key)') !== false
+          && stripos($rc_blind_out, 'Orders - Read and history') !== false,
+          $rc_blind_out);
+    check('the thirteen orders stay SENT: none is filled, refused, cancelled or missing',
+          $rc_count("status='SENT'") === 13 && $rc_count("status<>'SENT'") === 0,
+          $rc_blind_out);
+    check('nothing is written as a holding or a fill from a book that could not be read',
+          (int) scalar("select count(*) from strategy_positions where strategy=?", [$LC]) === 0
+          && (int) scalar("select count(*) from broker_orders where environment='live'") === 0
+          && $rc_count("fill_price is not null") === 0);
+    check('and nothing is sent while they are unaccounted for',
+          count($lc_sent()) === 0 && $rc_count("status='PENDING'") === 0);
+    check('the blind flag is kept where the sender can read it, naming the permission',
+          $rc_row !== null && $rc_row['blind'] === 'Y'
+          && $rc_row['missing'] === 'Orders - Read and history'
+          && $rc_row['environment'] === 'live-orders',
+          json_encode($rc_row));
+    check('ten minutes in, the run holds and says the key cannot read orders; it does not halt yet',
+          !$rc_halted()
+          && stripos($rc_blind_out, 'still unresolved') !== false
+          && stripos($rc_blind_out, 'cannot read orders, so it cannot be asked') !== false,
+          $rc_blind_out);
+
+    /* A 401 is a different thing to ask for, and still blind. */
+    $rc_modes('401', '401');
+    $lc_reset();
+    [$rc_401_out] = $lc_run();
+    $rc_row = $rc_state();
+    check('a key the broker does not accept at all is blind as well, and says that instead',
+          $rc_row !== null && $rc_row['blind'] === 'Y'
+          && stripos((string) $rc_row['missing'], 'accepts') !== false
+          && $rc_count("status='SENT'") === 13,
+          json_encode($rc_row));
+
+    /* Only the history refused: the pending list alone does not show an order that has
+       already filled, so this is blind too, and says only what is missing. */
+    $rc_modes(null, '403');
+    $lc_reset();
+    [$rc_hist_out] = $lc_run();
+    $rc_row = $rc_state();
+    check('only the history refused is blind too, and names only the history',
+          $rc_row !== null && $rc_row['blind'] === 'Y' && $rc_row['missing'] === 'history',
+          json_encode($rc_row));
+
+    /* ---- 2. aged past the stuck time: the halt says why ---- */
+
+    $rc_modes('403', '403');
+    $rc_orders(45);
+    $lc_arm(250.00);
+    $lc_reset();
+    [$rc_halt_out] = $lc_run();
+    $rc_why = $rc_reason();
+    check('past the stuck time a blind book halts the strategy and the reason names the key',
+          $rc_halted()
+          && stripos($rc_why, 'key cannot read orders') !== false
+          && stripos($rc_why, 'Orders - Read') !== false,
+          $rc_why . ' | ' . $rc_halt_out);
+    check('and says the orders may have filled and the broker is to be checked before clearing it',
+          stripos($rc_why, 'may have filled') !== false
+          && stripos($rc_why, 'Check the broker before clearing this halt') !== false
+          && strlen($rc_why) <= 255,
+          $rc_why);
+    check('the halt does not read as a slow broker',
+          stripos($rc_why, 'without being resolved') === false);
+    check('and still nothing was sent, marked filled or cancelled',
+          count($lc_sent()) === 0 && $rc_count("status='SENT'") === 13);
+
+    /* Not blind and aged: the reason is the existing one. */
+    $rc_unhalt();
+    $rc_modes(null, null);
+    $rc_orders(45);
+    $lc_arm(250.00);
+    $lc_reset();
+    [$rc_slow_out] = $lc_run();
+    $rc_why = $rc_reason();
+    $rc_row = $rc_state();
+    check('with the book readable, the same age gives the reason it always did',
+          $rc_halted()
+          && strpos($rc_why, '13 live order(s) have been out for 45 minutes without being resolved,'
+                           . ' the oldest being ') === 0
+          && stripos($rc_why, 'cannot read') === false,
+          $rc_why . ' | ' . $rc_slow_out);
+    check('and a readable book clears the blind flag, so a fixed key is not blamed again',
+          $rc_row !== null && $rc_row['blind'] === 'N' && $rc_row['missing'] === null,
+          json_encode($rc_row));
+
+    /* The practice sender asks the same function and gets the same words. */
+    $rc_unhalt();
+
+    /* ---- 3. one rule, one parser: checked on the code ---- */
+
+    $rc_src = [];
+    foreach (glob(dirname(__DIR__) . '/includes/*.php') as $rc_file) {
+        $rc_src[basename($rc_file)] = (string) file_get_contents($rc_file);
+    }
+    $rc_count_in = function ($needle) use ($rc_src) {
+        $found = [];
+        foreach ($rc_src as $name => $text) {
+            $n = substr_count($text, $needle);
+            if ($n > 0) { $found[$name] = $n; }
+        }
+        return $found;
+    };
+
+    check('the stuck-order wording exists once, in broker_orders.php',
+          $rc_count_in('without being resolved') === ['broker_orders.php' => 1],
+          json_encode($rc_count_in('without being resolved')));
+    check('and the rule that applies it - the stuck time - is tested once, in the same file',
+          $rc_count_in('>= (int) T212_STUCK_SECONDS') === ['broker_orders.php' => 1]
+          && $rc_count_in('>= (int) T212_SETTLE_SECONDS') === ['broker_orders.php' => 1],
+          json_encode([$rc_count_in('>= (int) T212_STUCK_SECONDS'),
+                       $rc_count_in('>= (int) T212_SETTLE_SECONDS')]));
+    check('stuck_check is defined once, and both senders call it',
+          $rc_count_in('function stuck_check(') === ['broker_orders.php' => 1]
+          && strpos($rc_src['broker_orders.php'], 'stuck_check($strategy);') !== false
+          && strpos($rc_src['broker_live_send.php'], "stuck_check(\$strategy, ['live' => true])") !== false);
+    check('neither sender halts a stuck order for itself',
+          strpos($rc_src['broker_live_send.php'], 'broker_halt_strategy') !== false
+          && substr_count($rc_src['broker_live_send.php'], 'unresolved for') === 0
+          && substr_count($rc_src['broker_orders.php'], 'out for " . $mins') === 1);
+    check('refusal_reason is defined once, in the client',
+          $rc_count_in('function refusal_reason(') === ['t212_client.php' => 1]);
+    check('and both the practice and the live order function call it',
+          strpos($rc_src['t212_client.php'], 'refusal_reason($status, $answer)') !== false
+          && strpos($rc_src['broker_live_send.php'], 'refusal_reason($status, $answer)') !== false);
+    check('neither carries a parser of its own, nor a "no reason given" fallback',
+          strpos($rc_src['t212_client.php'], 'no reason given') === false
+          && strpos($rc_src['broker_live_send.php'], 'no reason given') === false
+          && strpos($rc_src['broker_orders.php'], 'no reason given') === false
+          && strpos($rc_src['broker_live_send.php'], "isset(\$decoded['code'])") === false
+          && strpos($rc_src['t212_client.php'], "isset(\$decoded['code'])") === false
+          && strpos($rc_src['t212_client.php'], "isset(\$decoded['message'])") === false);
+    check('the live host is still written to from one function only',
+          substr_count($rc_src['broker_live_send.php'], "'/equity/orders/market'") === 1
+          && substr_count($rc_src['broker_live_send.php'], '"method"  => "POST"') === 1);
+
+    /* ---- 4. refusal reasons, one case each, with a real key in the body ---- */
+
+    $rc_key = 'T212-TEST-KEY-NOT-REAL-7b2e';
+    $rc_cases = [
+        'code'            => [400, '{"code":"QuantityPrecisionInvalid"}'],
+        'message'         => [400, '{"message":"Instrument is closed"}'],
+        'title'           => [400, '{"title":"Bad Request"}'],
+        'detail'          => [422, '{"detail":"Too many decimal places"}'],
+        'code and message'=> [400, '{"code":"BadRequest","message":"quantity has too many decimal places"}'],
+        'none of them'    => [400, '{"error":"something odd"}'],
+        'long'            => [400, str_repeat('x', 300)],
+        'empty'           => [400, ''],
+        'blank'           => [502, "  \n "],
+        'not json'        => [502, '<html>Bad Gateway</html>'],
+        'key in message'  => [400, '{"message":"rejected for ' . $rc_key . ' today"}'],
+        'key in none'     => [400, '{"error":"' . $rc_key . '"}'],
+        'key at the cut'  => [400, str_repeat('y', 190) . $rc_key . str_repeat('z', 50)],
+        'header in body'  => [400, '{"error":"Authorization: Basic YWJjZDEyMzQ6ZWZnaDU2Nzg="}'],
+    ];
+    $rc_in  = sys_get_temp_dir() . '/smrc' . getmypid() . '.json';
+    $rc_run = sys_get_temp_dir() . '/smrc' . getmypid() . '.php';
+    file_put_contents($rc_in, json_encode(array_values($rc_cases)));
+    file_put_contents($rc_run, '<?php require_once("constants.php"); require_once("t212_client.php");'
+        . ' $c = json_decode(file_get_contents($argv[1]), true); $o = [];'
+        . ' foreach ($c as $x) { $o[] = refusal_reason($x[0], $x[1]); } echo json_encode($o);');
+    $rc_got = json_decode((string) shell_exec(
+        'SM_T212_API_KEY=' . escapeshellarg($rc_key) . ' SM_T212_API_SECRET=secret-NOT-REAL-33aa'
+        . ' php -d include_path=' . escapeshellarg(__DIR__ . '/fixtures' . PATH_SEPARATOR . $INCLUDES)
+        . ' ' . escapeshellarg($rc_run) . ' ' . escapeshellarg($rc_in) . ' 2>&1'), true);
+    @unlink($rc_in); @unlink($rc_run);
+    $rc_by = is_array($rc_got) ? array_combine(array_keys($rc_cases), $rc_got) : [];
+
+    check('refusal_reason ran for every case', count($rc_by) === count($rc_cases), json_encode($rc_got));
+    check('a code is the reason',    ($rc_by['code'] ?? '') === 'QuantityPrecisionInvalid');
+    check('a message is the reason', ($rc_by['message'] ?? '') === 'Instrument is closed');
+    check('a title is the reason',   ($rc_by['title'] ?? '') === 'Bad Request');
+    check('a detail is the reason',  ($rc_by['detail'] ?? '') === 'Too many decimal places');
+    check('a code and a message are both kept, so a generic code cannot hide what was wrong',
+          ($rc_by['code and message'] ?? '') === 'BadRequest: quantity has too many decimal places'
+          && preg_match('~quantity|fraction|decimal|lot size|whole~i', $rc_by['code and message']) === 1);
+    check('a body with none of them is quoted, not called "no reason given"',
+          ($rc_by['none of them'] ?? '') === '{"error":"something odd"}'
+          && ($rc_by['not json'] ?? '') === '<html>Bad Gateway</html>');
+    check('a long body is cut to 200 characters',
+          ($rc_by['long'] ?? '') === str_repeat('x', 200));
+    check('an empty body gives the status, and so does one that is only blank',
+          ($rc_by['empty'] ?? '') === 'HTTP 400, empty body'
+          && ($rc_by['blank'] ?? '') === 'HTTP 502, empty body');
+    check('the key is redacted wherever it appears, including across the cut',
+          strpos(json_encode($rc_by), 'T212-TEST') === false
+          && strpos(json_encode($rc_by), 'NOT-REAL') === false
+          && strpos((string) ($rc_by['key in message'] ?? ''), '[redacted]') !== false
+          && strpos((string) ($rc_by['key in none'] ?? ''), '[redacted]') !== false
+          && strlen((string) ($rc_by['key at the cut'] ?? '')) <= 200,
+          json_encode($rc_by));
+    check('and an Authorization header in a body is redacted',
+          strpos(json_encode($rc_by), 'YWJjZDEy') === false
+          && strpos((string) ($rc_by['header in body'] ?? ''), '[redacted]') !== false);
+    check('nothing with content in it is ever called "no reason given"',
+          strpos(json_encode($rc_by), 'no reason given') === false);
+
+    /* ---- the live sender, end to end: the HAS case ---- */
+
+    /* A share the broker refuses in fractions, with the answer carrying its
+       words in title and detail and no code or message. Recorded as "no
+       reason given" on 19 Nov, which also meant the fallback below could never
+       find the word "quantity" and the share was refused again every night. */
+    $rc_unhalt();
+    $lc_clear_orders();
+    $lc_arm(250.00);
+    $lc_batch('APPROVED');
+    $lc_agreed(0.0);
+    db()->exec("update broker_instruments set whole_shares=null where environment='live' and symbol='AAA'");
+    $rc_has = $lc_order('BUY', $lc_qty(16.00));
+    $lc_reset();
+    file_put_contents("$lc_dir/t212_place", 'reject_detail');
+    [$rc_has_out] = $lc_run();
+    $rc_note = (string) scalar("select note from strategy_orders where client_order_id=?", [$rc_has]);
+    check('a refusal that only has a title and a detail is recorded with them',
+          scalar("select status from strategy_orders where client_order_id=?", [$rc_has]) === 'REJECTED'
+          && stripos($rc_note, 'Bad Request: The quantity is not valid for this instrument') !== false
+          && stripos($rc_note, 'no reason given') === false,
+          $rc_note . ' | ' . $rc_has_out);
+    check('and its words reach the whole-shares fallback, which now finds "quantity" in them',
+          scalar("select whole_shares from broker_instruments where environment='live' and symbol='AAA'") === 'Y'
+          && stripos($rc_has_out, 'does not deal in fractions') !== false,
+          $rc_has_out);
+
+    $lc_clear_orders();
+    $lc_agreed(0.0);
+    $rc_empty = $lc_order('BUY', $lc_qty(16.00));
+    $lc_reset();
+    file_put_contents("$lc_dir/t212_place", 'reject_empty');
+    [$rc_empty_out] = $lc_run();
+    check('a refusal with an empty body says so, with the status',
+          stripos((string) scalar("select note from strategy_orders where client_order_id=?", [$rc_empty]),
+                  'HTTP 400, empty body') !== false);
+
+    /* The contract line for refused orders, as the code now behaves: a call
+       that fails or is disallowed puts the order back to PENDING and stops
+       the run; a refusal of the order itself is REJECTED with the broker's
+       reason and the run goes on; no answer is UNKNOWN and is never resent. */
+    $lc_clear_orders();
+    $lc_agreed(0.0);
+    $rc_back = $lc_order('BUY', $lc_qty(16.00), 'AAA');
+    $rc_next = $lc_order('BUY', $lc_qty(16.00), 'BBB');
+    $lc_reset();
+    file_put_contents("$lc_dir/t212_place", 'forbidden');
+    [$rc_forbid_out] = $lc_run();
+    check('a 403 on the order puts it back to PENDING and stops the run: the next order is not tried',
+          $rc_count("status='PENDING'") === 2 && count($lc_sent()) === 1,
+          $rc_forbid_out);
+    $lc_reset();
+    file_put_contents("$lc_dir/t212_place", '500');
+    [$rc_500_out] = $lc_run();
+    check('a server error leaves the order UNKNOWN, and the run goes on to the next',
+          $rc_count("status='UNKNOWN'") === 2 && count($lc_sent()) === 2,
+          $rc_500_out);
+    [$rc_again_out] = $lc_run();
+    check('and neither is sent again by the run after',
+          $rc_count("status='UNKNOWN'") === 2 && count($lc_sent()) === 2,
+          $rc_again_out);
+    $lc_clear_orders();
+    @unlink("$lc_dir/t212_place");
+
+    /* ---- 5. key scopes ---- */
+
+    $rc_scan = function ($pending, $history, $env = []) use ($lc_dir, $lc_env, $rc_modes, $lc_reset) {
+        $rc_modes($pending, $history);
+        $lc_reset();
+        [$out] = run_script('check_key_scopes.php', [], $lc_env($env));
+        $asked = array_values(array_filter(explode("\n",
+                 (string) @file_get_contents("$lc_dir/t212_requests"))));
+        return [$out, $asked];
+    };
+    $rc_scope = function ($environment = 'live-orders') {
+        $rows = rows("select * from broker_key_scopes where environment='" . $environment . "'");
+        return count($rows) ? $rows[0] : null;
+    };
+    db()->exec("delete from broker_key_scopes");
+
+    [$rc_a, $rc_a_asked] = $rc_scan('403', null);
+    check('orders refused: the log says the key lacks Orders - Read, and not the history',
+          strpos($rc_a, 'key lacks Orders - Read') !== false
+          && strpos($rc_a, 'lacks Orders - Read and') === false
+          && strpos($rc_a, 'orders 403, history 200') !== false,
+          $rc_a);
+    check('and it is stored for the page',
+          ($rc_scope() ?: [])['lacks'] === 'Orders - Read'
+          && ($rc_scope() ?: [])['words'] === 'key lacks Orders - Read');
+    check('it asked twice - orders and history - with a GET each and nothing else',
+          count($rc_a_asked) === 2
+          && strpos(implode("\n", $rc_a_asked), ' GET /api/v0/equity/orders ') !== false
+          && strpos(implode("\n", $rc_a_asked), ' GET /api/v0/equity/history/orders ') !== false
+          && strpos(implode("\n", $rc_a_asked), 'POST') === false,
+          implode("\n", $rc_a_asked));
+
+    [$rc_b] = $rc_scan(null, '403');
+    check('history refused: the key lacks history',
+          strpos($rc_b, 'key lacks history') !== false && strpos($rc_b, 'Orders - Read') === false
+          && ($rc_scope() ?: [])['lacks'] === 'history',
+          $rc_b);
+
+    [$rc_c] = $rc_scan('403', '403');
+    check('both refused: it says both',
+          strpos($rc_c, 'key lacks Orders - Read and history') !== false
+          && ($rc_scope() ?: [])['lacks'] === 'Orders - Read and history', $rc_c);
+
+    [$rc_d] = $rc_scan(null, null);
+    check('both answered: the key can read both, and nothing is lacking',
+          strpos($rc_d, 'key can read orders and history') !== false
+          && ($rc_scope() ?: [])['lacks'] === '', $rc_d);
+
+    [$rc_e, $rc_e_asked] = $rc_scan('429', null);
+    check('a rate limit is not a missing permission',
+          strpos($rc_e, 'key lacks') === false && strpos($rc_e, 'could not tell') !== false, $rc_e);
+
+    db()->exec("delete from broker_key_scopes");
+    [$rc_off, $rc_off_asked] = $rc_scan('403', '403', ['SM_T212_LIVE_ORDERS' => 'off']);
+    check('with the environment off it opens no connection and stores nothing',
+          count($rc_off_asked) === 0 && stripos($rc_off, 'not checked') !== false
+          && $rc_scope() === null, $rc_off . implode("\n", $rc_off_asked));
+
+    [$rc_nokey, $rc_nokey_asked] = $rc_scan('403', '403', ['SM_T212_LIVE_ORDERS_API_KEY' => '']);
+    check('with no key set it opens no connection and stores nothing',
+          count($rc_nokey_asked) === 0 && stripos($rc_nokey, 'not checked') !== false
+          && $rc_scope() === null, $rc_nokey . implode("\n", $rc_nokey_asked));
+
+    [$rc_both, $rc_both_asked] = $rc_scan('403', null,
+        ['SM_T212_LIVE_READ' => 'on', 'SM_T212_API_KEY' => 'T212-LIVE-READ-KEY-NOT-REAL-5d1c',
+         'SM_T212_API_SECRET' => 'T212-LIVE-READ-SECRET-NOT-REAL-2e8a']);
+    check('with both live keys on, each is asked, and only for the two reads',
+          count($rc_both_asked) === 4
+          && strpos($rc_both, 'live-read') !== false && strpos($rc_both, 'live-orders') !== false
+          && count(array_filter($rc_both_asked, function ($l) { return strpos($l, ' GET ') === false; })) === 0
+          && $rc_scope('live-read') !== null && $rc_scope('live-orders') !== null,
+          $rc_both);
+    check('and the demo environment is never checked here',
+          $rc_scope('demo') === null && strpos($rc_both, 'demo') === false);
+    check('no key, secret or header reaches the output or the stored words',
+          strpos($rc_a . $rc_b . $rc_c . $rc_d . $rc_both, 'NOT-REAL') === false
+          && strpos(json_encode(rows("select * from broker_key_scopes")), 'NOT-REAL') === false);
+
+    /* The page: a verdict is shown for an environment that is switched on,
+       and not for one that is off - in this process every environment is off. */
+    check('a verdict for an environment that is off is not shown on the page',
+          count(broker_key_scopes_latest()) === 0
+          && (int) scalar("select count(*) from broker_key_scopes") === 2);
+    $rc_tpl = (string) file_get_contents(dirname(__DIR__) . '/templates/strategies.php');
+    check('the Strategies page prints the stored words in place of a generic problem',
+          strpos($rc_tpl, "\$card['key_scopes']") !== false
+          && strpos($rc_tpl, "e(ucfirst((string) \$scope['words']))") !== false
+          && strpos((string) file_get_contents(dirname(__DIR__) . '/public/strategies.php'),
+                    'broker_key_scopes_latest()') !== false);
+
+    check('the broker run starts with the key check, and the check is a read',
+          strpos((string) file_get_contents(dirname(__DIR__) . '/includes/broker_run.sh'),
+                 'check_key_scopes.php') !== false
+          && strpos($rc_src['check_key_scopes.php'] ?? (string) file_get_contents(
+                 dirname(__DIR__) . '/includes/check_key_scopes.php'), 'place_market_order') === false);
+
+    $rc_modes(null, null);
+    db()->exec("delete from broker_key_scopes");
+    db()->prepare("delete from broker_order_book_state where strategy=?")->execute([$LC]);
+    $rc_unhalt();
+
     if ($lc_pid > 0) { exec("kill $lc_pid 2>/dev/null"); }
     exec('rm -rf ' . escapeshellarg($lc_dir));
     s_drop($LC);

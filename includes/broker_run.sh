@@ -66,6 +66,13 @@ echo "broker_run: $(date '+%Y-%m-%d %H:%M:%S') demo=${SM_T212_DEMO:-off}" \
      "live-read=${SM_T212_LIVE_READ:-off} live-orders=${SM_T212_LIVE_ORDERS:-off}" \
      "app=$APP_DIR"
 
+# What each live key can read, before anything relies on it: the two GETs the
+# order resolve step makes, so a key that cannot see orders is said to be that
+# in the log and on the Strategies page, not found out thirty minutes later as
+# a halt. It reads, stores and prints; it cannot send, amend or cancel, and it
+# opens no connection for an environment that is off or has no key.
+"$PHP" "$APP_DIR/includes/check_key_scopes.php" || echo "broker_run: the key check did not finish; carrying on"
+
 # The read first. The sender no longer needs it - it reads the positions
 # again itself after writing a fill up, which is what fix J was - but the
 # Broker page shows the cash, the order history and the dividends, and this
