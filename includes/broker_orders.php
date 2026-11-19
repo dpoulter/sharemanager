@@ -443,7 +443,7 @@
 	   Orders that are out and unaccounted for.
 	   --------------------------------------------------------------------- */
 
-	/** Whether sql/broker_key_scopes.sql has been applied. */
+	/** Whether the table that holds the blind flag exists. */
 	function broker_book_state_ready() {
 
 		static $known = null;
