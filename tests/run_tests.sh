@@ -149,8 +149,8 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_fills.sql" > /dev/null || exit 1
 echo "applying sql/broker_environment.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_environment.sql" > /dev/null || exit 1
 
-# What a Trading 212 key can read, and whether the order book was visible
-# when the last resolve ran. After sql/broker.sql; needs nothing else.
+# Whether the order book was visible when the last resolve ran. Needs nothing
+# else. The file keeps its name from an earlier version; it makes one table.
 echo "applying sql/broker_key_scopes.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_key_scopes.sql" > /dev/null || exit 1
 

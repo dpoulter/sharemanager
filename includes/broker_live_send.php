@@ -52,8 +52,8 @@
 	 * the order we sent"; without it the read-only live key is. Whether the
 	 * orders key may READ orders is not something this code can know: it was
 	 * made for Orders - Execute, and on 19 Nov 2026 it was refused the pending
-	 * orders and the order history (403). key_scopes() asks, at the start of
-	 * every broker run, and the answer is on the Strategies page. Neither
+	 * orders and the order history (403). That is learned from the resolve
+	 * step, which marks the book blind when it happens. Neither
 	 * key can write through this client: this file is the only thing that
 	 * can, and it does not go through the client at all.
 	 */

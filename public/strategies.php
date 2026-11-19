@@ -220,9 +220,6 @@
            for every account that is not a live one, so the paper and
            practice cards draw none of it. */
         $card['live'] = broker_live_state($chosen);
-        /* What each live key can read, so a key that cannot see orders is said
-           to be that - "key lacks Orders - Read" - and not a generic problem. */
-        $card['key_scopes'] = $card['live'] === null ? [] : broker_key_scopes_latest();
     }
 
     render("strategies.php", [

@@ -349,8 +349,7 @@ order history, and nothing said so. The orders stayed SENT and the strategy
 halted "without being resolved", which reads as a slow broker.
 
 ```sh
-mysql sharemanager < sql/broker_key_scopes.sql   # per-key status and the blind flag
-php includes/check_key_scopes.php                # what each live key can read, reads only
+mysql sharemanager < sql/broker_key_scopes.sql   # the blind flag (the file keeps its old name)
 ```
 
 - `broker_resolve_orders()` marks the book **blind** when either call is
@@ -366,11 +365,6 @@ php includes/check_key_scopes.php                # what each live key can read, 
   refusal body, called by both order functions. It uses the broker's code,
   message, title and detail, and never records "no reason" for a body that had
   words in it.
-- `key_scopes()` makes the two GETs the resolve step relies on, once each. It
-  runs at the start of every broker run (`check_key_scopes.php`, from
-  `broker_run.sh`), prints the result, stores it in `broker_key_scopes`, and the
-  Strategies page shows "key lacks Orders - Read" or "key lacks history". An
-  environment that is off, or has no key, opens no connection.
 
 None of this sends, amends or cancels anything, and none of it clears a halt.
 

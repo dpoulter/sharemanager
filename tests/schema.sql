@@ -26,10 +26,10 @@ drop table if exists historical_prices, stock_symbols, screen_indicators,
 -- applied by tests/run_tests.sh after the seed.
 drop table if exists strategy_rules, strategy_values, strategy_backtest_runs;
 
--- Key scopes and the order book's blindness (sql/broker_key_scopes.sql): a row
+-- The order book's blindness flag: a row
 -- left from an earlier run would make this run's first halt say the key was
 -- blind when nothing in this run had been.
-drop table if exists broker_key_scopes, broker_order_book_state;
+drop table if exists broker_order_book_state;
 
 -- The live orders tables (sql/strategy_live.sql). Dropped for the reason
 -- above, and one more: they hold the record of who armed an account and what

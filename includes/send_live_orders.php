@@ -118,9 +118,8 @@
 
 		/* 1. What became of what has already gone. The client is the orders
 		   key when there is one, else the read-only live key (the line below
-		   names which). Whether the orders key may read orders is checked by
-		   check_key_scopes.php at the start of every run, not assumed: on
-		   19 Nov 2026 it could not. */
+		   names which). Whether the orders key may read orders is learned here:
+		   on 19 Nov 2026 it could not, and the resolve step says so. */
 		if ($client->configured()) {
 			$resolved = broker_resolve_orders($strategy, ['client' => $client]);
 			echo "  resolved (" . $client->environment() . " key): " . $resolved['filled'] . " filled, " . $resolved['rejected']

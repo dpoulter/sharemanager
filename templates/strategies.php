@@ -632,21 +632,6 @@
 					<div class="alert <?= $live['armed'] ? 'alert-warning' : 'alert-secondary' ?> py-2">
 						<strong><?= e($live['words']) ?></strong>
 
-						<?php /* A key that cannot read the order book, named, in place of a
-						         generic problem: the orders may have filled and nothing
-						         here can find out until the key is fixed. */ ?>
-						<?php foreach (($card['key_scopes'] ?? []) as $scope): ?>
-						<?php if ($scope['lacks'] !== ''): ?>
-						<br><span class="text-danger">
-							<strong><?= e(ucfirst((string) $scope['words'])) ?></strong>
-							(<?= e((string) $scope['environment']) ?>, checked
-							<?= e(date('j M H:i', strtotime((string) $scope['checked_at']))) ?>).
-							Orders sent to the live account cannot be confirmed until it is fixed
-							in Trading 212.
-						</span>
-						<?php endif ?>
-						<?php endforeach ?>
-
 						<?php if ($live['armed'] && $live['caps'] !== null): ?>
 						<br><small>
 							At most <?= s_money($live['caps']['per_order'], 2) ?> in one order,
