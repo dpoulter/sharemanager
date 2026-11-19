@@ -17403,6 +17403,146 @@ STUB
               stripos((string) $curl("$base/strategies.php?s=" . urlencode($sp)),
                       'Arm this account') === false);
 
+        /* ---------------- Clearing a halt ---------------- */
+
+        /* Nothing in the application used to clear one, and a page that says
+           "until somebody has cleared the halt" with no way to is a page that
+           sends a person to the database. The form is a POST with the
+           password and the name typed again, refused while an order is SENT
+           or UNKNOWN, and it does not arm. Every check below goes through the
+           real page, because the function refuses the command line. */
+        $ch_log = function ($event) use ($spl) {
+            return (int) scalar("select count(*) from strategy_live_log where strategy=? and event=?",
+                                [$spl, $event]);
+        };
+        $ch_state = function () use ($spl) {
+            $rows = rows("select halted, halt_reason, halted_at from strategy_accounts where strategy=?", [$spl]);
+            return $rows[0];
+        };
+        $ch_post = function ($fields, $with_session = true) use ($base, $jar, $curl) {
+            $body = http_build_query($fields);
+            if ($with_session) { return (string) $curl("$base/strategies.php", $body); }
+            return (string) shell_exec('curl -s -L -m 30 -d ' . escapeshellarg($body) . ' '
+                                       . escapeshellarg("$base/strategies.php") . ' 2>/dev/null');
+        };
+        $ch_ok = ['do' => 'clear_halt', 'strategy' => $spl, 'password' => 'testpass', 'name' => $spl_name];
+
+        /* An account armed, then halted, which is the state of the real one. */
+        db()->prepare("insert into strategy_live_arming
+                         (strategy,armed_by,armed_user_id,armed_at,capital_cap,expires_at)
+                       values (?,'dale',1,now(),250,date_add(now(), interval 35 day))")->execute([$spl]);
+        check('an armed account is armed before the halt',
+              (int) scalar("select count(*) from strategy_live_arming where strategy=? and disarmed_at is null",
+                           [$spl]) === 1);
+        broker_halt_strategy($spl, 'thirteen live orders out for 30 minutes');
+        check('a halt disarms it',
+              (int) scalar("select count(*) from strategy_live_arming where strategy=? and disarmed_at is null",
+                           [$spl]) === 0 && $ch_state()['halted'] === 'Y');
+
+        $ch_page = (string) $curl("$base/strategies.php?s=" . urlencode($spl));
+        check('the Stopped box shows the reason and a form to clear it, which says it does not arm',
+              stripos($ch_page, 'Stopped.') !== false
+              && stripos($ch_page, 'thirteen live orders out') !== false
+              && strpos($ch_page, 'value="clear_halt"') !== false
+              && strpos($ch_page, 'Clear the halt') !== false
+              && preg_match('~does\s+not\s+arm\s+it~i', $ch_page) === 1);
+
+        /* A GET, and a visitor with no session, clear nothing. */
+        $curl("$base/strategies.php?do=clear_halt&strategy=$spl&password=testpass&name=" . urlencode($spl_name));
+        $ch_post($ch_ok, false);
+        check('a GET and a logged-out POST clear nothing',
+              $ch_state()['halted'] === 'Y' && $ch_log('HALT_CLEARED') === 0);
+
+        $ch_refused = $ch_log('HALT_CLEAR_REFUSED');
+        $ch_out = $ch_post(array_merge($ch_ok, ['password' => 'not-the-password']));
+        check('a wrong password clears nothing, says why, and is logged',
+              $ch_state()['halted'] === 'Y' && stripos($ch_out, 'password was wrong') !== false
+              && $ch_log('HALT_CLEAR_REFUSED') === $ch_refused + 1);
+        $ch_out = $ch_post(array_merge($ch_ok, ['name' => 'something else']));
+        check('a wrong name clears nothing, says why, and is logged',
+              $ch_state()['halted'] === 'Y' && stripos($ch_out, 'typed in full') !== false
+              && $ch_log('HALT_CLEAR_REFUSED') === $ch_refused + 2);
+
+        /* Orders the broker has not been asked about block it; others do not. */
+        foreach (['SENT', 'UNKNOWN'] as $ch_status) {
+            db()->prepare("update strategy_orders set status=? where client_order_id=?")
+              ->execute([$ch_status, $spl . '-1']);
+            $ch_out = $ch_post($ch_ok);
+            check("one order $ch_status refuses it, and says to resolve it first",
+                  $ch_state()['halted'] === 'Y' && stripos($ch_out, 'SENT or UNKNOWN') !== false
+                  && stripos($ch_out, 'Resolve them first') !== false,
+                  substr($ch_out, 0, 200));
+        }
+        check('and each refusal is in the log',
+              $ch_log('HALT_CLEAR_REFUSED') === $ch_refused + 4);
+
+        db()->prepare("update strategy_orders set status='REJECTED' where client_order_id=?")->execute([$spl . '-1']);
+        $ch_extra = db()->prepare("insert into strategy_orders
+                         (client_order_id,strategy,as_of_date,batch,symbol,exchange,side,quantity,
+                          status,created_at,note)
+                       values (?,?,?,?,'AAA','XLON','BUY',5,?,now(),'rebalance')");
+        $ch_extra->execute([$spl . '-2', $spl, $sp_asof, $spl_batch, 'PENDING']);
+        $ch_extra->execute([$spl . '-3', $spl, $sp_asof, $spl_batch, 'FILLED']);
+
+        $ch_out = $ch_post($ch_ok);
+        $ch_after = $ch_state();
+        check('with only PENDING, FILLED and REJECTED orders, the right password and name clear it',
+              $ch_after['halted'] === 'N' && $ch_after['halt_reason'] === null
+              && $ch_after['halted_at'] === null && stripos($ch_out, 'halt is cleared') !== false,
+              json_encode($ch_after) . substr($ch_out, 0, 200));
+        check('and it is in the live log, with who did it and what the halt had been',
+              $ch_log('HALT_CLEARED') === 1
+              && (string) scalar("select who from strategy_live_log where strategy=? and event='HALT_CLEARED'", [$spl]) === 'tester'
+              && stripos((string) scalar("select detail from strategy_live_log where strategy=? and event='HALT_CLEARED'", [$spl]),
+                         'thirteen live orders') !== false);
+        check('clearing does not arm: the account stays disarmed',
+              (int) scalar("select count(*) from strategy_live_arming where strategy=? and disarmed_at is null",
+                           [$spl]) === 0);
+        check('and the form is gone from a strategy that is not halted',
+              strpos((string) $curl("$base/strategies.php?s=" . urlencode($spl)), 'value="clear_halt"') === false);
+
+        $ch_refused = $ch_log('HALT_CLEAR_REFUSED');
+        $ch_out = $ch_post($ch_ok);
+        check('a strategy that is not halted refuses, writes nothing, and says so',
+              stripos($ch_out, 'not halted') !== false
+              && $ch_log('HALT_CLEARED') === 1 && $ch_log('HALT_CLEAR_REFUSED') === $ch_refused + 1);
+
+        /* The command line cannot do it either, whatever it is given. */
+        broker_halt_strategy($spl, 'again');
+        $ch_cli = broker_clear_halt($spl, ['user_id' => 1, 'password' => 'testpass', 'typed_name' => $spl_name]);
+        check('the function refuses the command line, password and name notwithstanding',
+              $ch_cli['ok'] === false && stripos($ch_cli['why'], 'command line') !== false
+              && $ch_state()['halted'] === 'Y');
+        db()->prepare("update strategy_accounts set halted='N', halt_reason=null, halted_at=null where strategy=?")->execute([$spl]);
+
+        /* On the code: one caller, one writer, no fourth copy of the check. */
+        $ch_src = [];
+        foreach (array_merge(glob(dirname(__DIR__) . '/includes/*.php'), glob(dirname(__DIR__) . '/public/*.php'),
+                             glob(dirname(__DIR__) . '/templates/*.php'), glob(dirname(__DIR__) . '/tools/*.php')) as $ch_f) {
+            $ch_src[substr($ch_f, strlen(dirname(__DIR__)) + 1)] = (string) file_get_contents($ch_f);
+        }
+        $ch_callers = [];
+        $ch_writers = [];
+        foreach ($ch_src as $ch_name => $ch_text) {
+            if (preg_match('~broker_clear_halt\(~', $ch_text)) { $ch_callers[] = $ch_name; }
+            if (preg_match("~halted\s*=\s*'N'~", $ch_text)) { $ch_writers[] = $ch_name; }
+        }
+        sort($ch_callers);
+        check('the function is defined in broker_orders.php and called only from public/strategies.php',
+              $ch_callers === ['includes/broker_orders.php', 'public/strategies.php'], json_encode($ch_callers));
+        check('halted=\'N\' is written in one place only, inside that function',
+              $ch_writers === ['includes/broker_orders.php']
+              && substr_count($ch_src['includes/broker_orders.php'], "halted='N'") === 1);
+        check('the password check was not copied inline: the three in broker_live.php are untouched'
+              . ' and the new function has the one helper',
+              substr_count($ch_src['includes/broker_live.php'], 'verify_password(') === 3
+              && substr_count($ch_src['includes/broker_orders.php'], 'verify_password(') === 1
+              && strpos($ch_src['public/strategies.php'], 'verify_password') === false);
+        check('and clearing a halt does not touch arming',
+              strpos(substr($ch_src['includes/broker_orders.php'],
+                            strpos($ch_src['includes/broker_orders.php'], 'function broker_clear_halt(')),
+                     'strategy_live_arming') === false);
+
         foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values',
                   'strategy_rules','strategy_accounts','strategy_live_arming','strategy_live_log',
                   'strategy_order_batches'] as $spl_table) {

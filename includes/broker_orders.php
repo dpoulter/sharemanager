@@ -122,6 +122,105 @@
 	}
 
 	/**
+	 * Who is asking to clear a halt, and have they proved it.
+	 *
+	 * Used by broker_clear_halt() and by nothing else. The same check is
+	 * written inline in broker_live.php three times (arming, the approval
+	 * switch, approving a batch); this is not a fourth copy of those, it is
+	 * the one this function owns, and putting all four on one helper is a
+	 * later change of its own.
+	 *
+	 * Returns ['ok'=>true, 'username'=>...] or ['ok'=>false, 'why'=>...].
+	 */
+	function broker_clear_halt_identity($user_id, $password) {
+
+		$user_id = (int) $user_id;
+		$users = $user_id > 0 ? query("select id, username, hash from users where id=?", $user_id) : [];
+		if (!count($users)) {
+			return ['ok' => false, 'why' => "clearing a halt needs somebody logged in."];
+		}
+
+		$password = (string) $password;
+		if ($password === '' || !verify_password($password, (string) $users[0]['hash'])) {
+			return ['ok' => false, 'why' => "the password was wrong, so the halt was not cleared."];
+		}
+
+		return ['ok' => true, 'username' => (string) $users[0]['username']];
+	}
+
+	/**
+	 * Clear a strategy's halt, because a person says they have looked at it.
+	 *
+	 * The only place that clears a halt, beside broker_halt_strategy()
+	 * which writes 'Y'. A halt is the application saying something needs a
+	 * person; this is the person saying it has had one. So it is a web POST
+	 * and nothing else - never a job, never the command line - with the
+	 * password typed again and the strategy's name typed in full, exactly as
+	 * arming is.
+	 *
+	 * It refuses while any order of the strategy is SENT or UNKNOWN. Those
+	 * are orders the broker has not been asked about, and clearing a halt
+	 * over them would plan the same buys again. It does NOT arm: a halt
+	 * disarmed a live account, and it stays disarmed - arming is its own
+	 * form. Every attempt, refused ones too, is written to the live log.
+	 *
+	 * $options: user_id, password, typed_name.
+	 * Returns ['ok'=>bool, 'why'=>string].
+	 */
+	function broker_clear_halt($strategy, $options = []) {
+
+		$strategy = (string) $strategy;
+
+		$refuse = function ($why) use ($strategy) {
+			broker_live_log($strategy, 'HALT_CLEAR_REFUSED', null, "clearing the halt refused: " . $why);
+			return ['ok' => false, 'why' => $why];
+		};
+
+		if (PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg') {
+			return $refuse("a halt is cleared by a person on the strategy's page, in their own"
+			             . " logged in session. The command line cannot clear one.");
+		}
+		if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) !== 'POST') {
+			return $refuse("clearing a halt is a form on the strategy's page, so it is a POST"
+			             . " and nothing else.");
+		}
+
+		$account = strategy_reserved($strategy) ? null : strategy_account($strategy);
+		if ($account === null) { return $refuse("there is no strategy called that."); }
+		if ($account['halted'] !== 'Y') {
+			return $refuse("this strategy is not halted, so there is nothing to clear.");
+		}
+
+		$who = broker_clear_halt_identity(isset($options['user_id']) ? $options['user_id'] : 0,
+		                                  isset($options['password']) ? $options['password'] : '');
+		if (!$who['ok']) { return $refuse($who['why']); }
+
+		$wanted = strategy_display_name($strategy);
+		$typed  = trim((string) (isset($options['typed_name']) ? $options['typed_name'] : ''));
+		if ($typed === '' || strcasecmp($typed, $wanted) !== 0) {
+			return $refuse("the strategy's name has to be typed in full. This one is \""
+			             . $wanted . "\".");
+		}
+
+		$out = query("select count(*) n from strategy_orders
+		               where strategy=? and status in ('SENT','UNKNOWN')", $strategy);
+		$out = count($out) ? (int) $out[0]['n'] : 0;
+		if ($out > 0) {
+			return $refuse($out . " order(s) are still SENT or UNKNOWN. Resolve them first: clearing"
+			             . " the halt over orders the broker has not been asked about would plan"
+			             . " the same buys again.");
+		}
+
+		query("update strategy_accounts set halted='N', halt_reason=null, halted_at=null
+		        where strategy=?", $strategy);
+
+		broker_live_log($strategy, 'HALT_CLEARED', $who['username'],
+		                "halt cleared. It was: " . (string) $account['halt_reason']);
+
+		return ['ok' => true, 'why' => ''];
+	}
+
+	/**
 	 * Mark an order's outcome.
 	 *
 	 * Every status change goes through here so that the note always says
