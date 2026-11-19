@@ -242,6 +242,13 @@
 							<?php endforeach ?>
 							</optgroup>
 						<?php endforeach ?>
+						<?php if (count($drafts)): ?>
+							<optgroup label="No account">
+							<?php foreach ($drafts as $d): ?>
+								<option value="<?= e($d['strategy']) ?>"<?= ($draft['strategy'] ?? null) === $d['strategy'] ? ' selected' : '' ?>><?= e($d['name']) ?></option>
+							<?php endforeach ?>
+							</optgroup>
+						<?php endif ?>
 						<option value="_backtests"<?= $view === '_backtests' ? ' selected' : '' ?>>Backtests</option>
 						<option value="_how"<?= $view === '_how' ? ' selected' : '' ?>>How this works</option>
 					</select>
@@ -281,6 +288,19 @@
 						</li>
 						<?php endforeach ?>
 					<?php endforeach ?>
+
+					<?php if (count($drafts)): ?>
+						<li class="sm-menu-heading">No account</li>
+						<?php foreach ($drafts as $d): ?>
+						<li class="nav-item">
+							<a class="nav-link sm-menu-strategy<?= ($draft['strategy'] ?? null) === $d['strategy'] ? ' active' : '' ?>"
+							   href="<?= e(s_link(['s' => $d['strategy']], $show_disabled)) ?>">
+								<span class="sm-menu-line"><span class="sm-menu-name"><?= e($d['name']) ?></span></span>
+								<span class="sm-menu-line sm-menu-meta"><?= e($d['stage']) ?></span>
+							</a>
+						</li>
+						<?php endforeach ?>
+					<?php endif ?>
 
 					<li class="nav-item">
 						<a class="nav-link<?= $view === '_backtests' ? ' active' : '' ?>"
@@ -336,6 +356,7 @@
 							         first, and on a laptop the eleventh column is off
 							         the right-hand edge. */ ?>
 							<th data-sort="text">Status</th>
+							<th data-sort="text">Stage</th>
 							<th data-sort="text">Mode</th>
 							<th class="sm-num" data-sort="number">Value</th>
 							<th class="sm-num" data-sort="number">Return</th>
@@ -360,6 +381,8 @@
 							       title="<?= e($row['strategy']) ?>" data-bs-toggle="tooltip"><?=
 								e(strategy_display_name($row['strategy'])) ?></a></td>
 							<td data-label="Status"><?= s_status_badge($row['status']) ?></td>
+							<td data-label="Stage"><?= isset($stages[$row['strategy']])
+							    ? e($stages[$row['strategy']]['stage']) : VIEW_DASH ?></td>
 							<td data-label="Mode"><?= s_mode_badge($row) ?></td>
 							<td class="sm-num" data-label="Value" data-value="<?= e((string) $row['total']) ?>"><?= s_money($row['total'], 0) ?></td>
 							<td class="sm-num<?= s_colour($row['return']) ?>" data-label="Return" data-value="<?= e((string) $row['return']) ?>"><?= s_percent($row['return']) ?></td>
@@ -440,6 +463,8 @@
 					</tbody>
 				</table>
 			</div>
+
+			<?php include __DIR__ . '/strategy_stage_list.php'; ?>
 
 			<!-- The chart -->
 			<div class="card mb-4">
@@ -598,6 +623,10 @@
 		<?php /* ============================================================
 		         One strategy: its header, and its tabs.
 		         ============================================================ */ ?>
+		<?php if ($view === '_draft' && $draft !== null): ?>
+			<?php include __DIR__ . '/strategy_draft.php'; ?>
+		<?php endif ?>
+
 		<?php if ($view === '_strategy' && $card !== null): ?>
 
 			<div class="card mb-4">
@@ -610,6 +639,9 @@
 						<?= s_status_badge($card['status']) ?>
 						<?php if ($card['enabled'] !== 'Y'): ?><?= status_badge_html('off') ?><?php endif ?>
 					</h2>
+
+					<?php $stage = $stages[$card['strategy']] ?? null; ?>
+					<?php if ($stage !== null): include __DIR__ . '/strategy_stepper.php'; endif ?>
 
 					<?php if ($card['halted'] === 'Y'): ?>
 					<div class="alert alert-danger py-2">

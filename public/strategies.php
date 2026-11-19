@@ -43,6 +43,9 @@
        broker_orders.php requires this too; named here because this page is
        what draws it. */
     require_once("../includes/broker_live.php");
+    /* The stage of each strategy, derived: Draft, Backtested, Practice or
+       Live. New files, so nothing of it is added to strategy_functions.php. */
+    require_once("../includes/strategy_stage.php");
 
     /* CLEAR A HALT. The one POST this page takes: a halted strategy's form,
        with the password and the strategy's name typed again. It is handled
@@ -106,6 +109,9 @@
             "switch_readable" => strategy_kill_switch_readable(),
             "live_waiting" => [],
             "live_message" => null,
+            "stages"     => [],
+            "drafts"     => [],
+            "draft"      => null,
         ]);
         exit;
     }
@@ -133,10 +139,26 @@
     $view   = '_overview';
     $chosen = null;
 
+    /* Every strategy with rules, by stage - including the ones with no
+       account, which are in none of the lists above and so used to be
+       nowhere on this page. */
+    $stages = strategy_stage_list();
+    $drafts = [];
+    foreach ($stages as $name => $info) {
+        if (!$info['has_account'] && !in_array($name, $strategies, true)) { $drafts[] = $info; }
+    }
+    $draft = null;
+
     if (isset($VIEWS[$want])) { $view = $want; }
     else if ($want !== '' && in_array($want, $strategies, true)) {
         $view   = '_strategy';
         $chosen = $want;
+    }
+    else if ($want !== '' && isset($stages[$want]) && !$stages[$want]['has_account']) {
+        /* Rules and no account: its own view, with the stepper and no
+           trading anywhere on it. */
+        $view  = '_draft';
+        $draft = $stages[$want];
     }
 
     $TABS = ['holdings' => 'Holdings', 'orders' => 'Orders', 'trades' => 'Trades',
@@ -273,6 +295,9 @@
         /* Every live account with a batch nobody has decided about, for the
            line at the top of the page: an exit waiting for an approval is
            costing money while it waits. */
+        "stages"    => $stages,
+        "drafts"    => $drafts,
+        "draft"     => $draft,
         "live_waiting" => broker_live_waiting(),
         /* What the last arm, disarm, approval or refusal said. Read once:
            a message that survived a reload would be a message about

@@ -17269,6 +17269,302 @@ STUB
                             strpos($ch_src['includes/broker_orders.php'], 'function broker_clear_halt(')),
                      'strategy_live_arming') === false);
 
+        /* ---------------- Stage A: from a screen to a stage ---------------- */
+
+        /* A screen becomes a strategy with rules and no account; the rules
+           have a fingerprint; the stage is derived from what exists; and
+           the night run leaves a strategy with no account alone. Creating
+           goes through the real page, because the function refuses the
+           command line. */
+        require_once(dirname(__DIR__) . '/includes/strategy_create.php');
+        require_once(dirname(__DIR__) . '/includes/strategy_stage.php');
+        require_once(dirname(__DIR__) . '/includes/night_skips.php');
+
+        $wf_post = function ($fields, $with_session = true) use ($base, $curl) {
+            $body = http_build_query($fields);
+            if ($with_session) { return (string) $curl("$base/strategy_create.php", $body); }
+            return (string) shell_exec('curl -s -L -m 30 -d ' . escapeshellarg($body) . ' '
+                                       . escapeshellarg("$base/strategy_create.php") . ' 2>/dev/null');
+        };
+        $wf_rules = function () { return (int) scalar("select count(*) from strategy_rules"); };
+        $wf_ok = ['screen' => 2, 'name' => 'Screen test one', 'holdings' => '15', 'rank_by' => '6mnth',
+                  'rebalance' => 'monthly', 'exit_rules' => ['below_ma200_2d'], 'exclude_funds' => 'Y'];
+        $WF = 'screen_test_one';
+        foreach (['strategy_rules', 'strategy_accounts'] as $wf_t) {
+            db()->prepare("delete from $wf_t where strategy=?")->execute([$WF]);
+        }
+
+        $wf_screen_before = [(int) scalar("select count(*) from screen_build where screen_id=2"),
+                             (int) scalar("select count(*) from screen_criteria"),
+                             (int) scalar("select count(*) from screen")];
+
+        /* Nothing but a logged in POST makes one. */
+        $wf_before = $wf_rules();
+        $curl("$base/strategy_create.php?screen=2&name=Made+by+a+get&holdings=15");
+        $wf_post(array_merge($wf_ok, ['name' => 'Made logged out']), false);
+        check('a GET and a logged-out POST create nothing',
+              $wf_rules() === $wf_before);
+        $wf_cli = strategy_create_from_screen(array_merge($wf_ok, ['user_id' => 1, 'screen_id' => 2]));
+        check('the function refuses the command line, whatever it is given',
+              $wf_cli['ok'] === false && stripos($wf_cli['why'], 'command line') !== false
+              && $wf_rules() === $wf_before);
+
+        /* Every field is checked on the server, whatever the browser sent. */
+        $wf_bad = [
+            'a one-letter name'        => ['name' => 'ab'],
+            'a reserved name'          => ['name' => 'bt_hack'],
+            'a name that is an existing strategy' => ['name' => 'Trend following'],
+            'no holdings'              => ['holdings' => '0'],
+            'holdings that are text'   => ['holdings' => 'abc'],
+            'too many holdings'        => ['holdings' => '99'],
+            'a rank nothing offers'    => ['rank_by' => 'nonsense'],
+            'a hold rank below the holdings' => ['hold_rank' => '5'],
+            'an unknown rebalance'     => ['rebalance' => 'hourly'],
+            'an unknown exit rule'     => ['exit_rules' => ['bogus']],
+            'a screen that is not there' => ['screen' => '9999'],
+        ];
+        foreach ($wf_bad as $wf_what => $wf_fields) {
+            $wf_before = $wf_rules();
+            $wf_out = $wf_post(array_merge($wf_ok, $wf_fields));
+            check("a crafted POST with $wf_what creates nothing, and says why",
+                  $wf_rules() === $wf_before && stripos($wf_out, 'Not created') !== false
+                  || ($wf_fields === ['screen' => '9999'] && $wf_rules() === $wf_before),
+                  substr(strip_tags($wf_out), 0, 200));
+        }
+
+        /* The one that is right. */
+        $wf_out = $wf_post($wf_ok);
+        $wf_row = rows("select * from strategy_rules where strategy=?", [$WF]);
+        check('a good POST makes a rules row from the screen, with the settings it was given',
+              count($wf_row) === 1 && $wf_row[0]['selection'] === 'screen' && (int) $wf_row[0]['screen_id'] === 2
+              && (int) $wf_row[0]['holdings'] === 15 && $wf_row[0]['rank_by'] === '6mnth'
+              && $wf_row[0]['rebalance'] === 'monthly' && $wf_row[0]['exit_rules'] === 'below_ma200_2d'
+              && $wf_row[0]['exclude_funds'] === 'Y', json_encode($wf_row));
+        check('and no account: nothing can trade',
+              (int) scalar("select count(*) from strategy_accounts where strategy=?", [$WF]) === 0
+              && (int) scalar("select count(*) from strategy_orders where strategy=?", [$WF]) === 0
+              && (int) scalar("select count(*) from strategy_positions where strategy=?", [$WF]) === 0);
+        check('it lands on the strategy\'s page, which says so, at Draft, with the stepper',
+              strpos($wf_out, 'id="sm-draft"') !== false && stripos($wf_out, 'Strategy created') !== false
+              && strpos($wf_out, 'data-stage="Draft"') !== false
+              && preg_match('~nothing\s+can\s+trade~i', $wf_out) === 1, substr(strip_tags($wf_out), 0, 300));
+        check('the screen is not changed by it',
+              [(int) scalar("select count(*) from screen_build where screen_id=2"),
+               (int) scalar("select count(*) from screen_criteria"),
+               (int) scalar("select count(*) from screen")] === $wf_screen_before);
+        $wf_dup = $wf_rules();
+        $wf_out = $wf_post($wf_ok);
+        check('the same name a second time is refused',
+              $wf_rules() === $wf_dup && stripos($wf_out, 'already a strategy') !== false);
+
+        /* The same rules pick the same shares as the hand made strategy. */
+        /* On the latest date where the selection returns something: an empty
+           answer from both would prove nothing. */
+        $wf_date = $SASOF;
+        foreach (rows("select distinct date from statistics order by date desc limit 40") as $wf_d) {
+            if (count(strategy_select_symbols(strategy_rules('trend_following'), $wf_d['date'], 'XLON')['symbols'])) {
+                $wf_date = $wf_d['date'];
+                break;
+            }
+        }
+        $wf_mine  = strategy_select_symbols(strategy_rules($WF), $wf_date, 'XLON');
+        $wf_theirs = strategy_select_symbols(strategy_rules('trend_following'), $wf_date, 'XLON');
+        check('a strategy made from screen 2 with the trend following settings picks the same shares as trend_following',
+              count($wf_theirs['symbols']) > 0 && $wf_mine['symbols'] === $wf_theirs['symbols'],
+              json_encode([$wf_mine['symbols'], $wf_theirs['symbols']]));
+
+        /* ---- the fingerprint ---- */
+        $wf_fp = rules_fingerprint($WF);
+        check('the same rules give the same fingerprint, every time',
+              is_string($wf_fp) && strlen($wf_fp) === 40 && rules_fingerprint($WF) === $wf_fp
+              && rules_fingerprint('no_such_strategy') === null);
+        $wf_edits = ['holdings' => 14, 'hold_rank' => 20, 'rebalance' => 'weekly', 'exit_rules' => '',
+                     'exclude_funds' => 'N', 'rank_by' => '3mnth'];
+        $wf_orig = rows("select holdings, hold_rank, rebalance, exit_rules, exclude_funds, rank_by
+                           from strategy_rules where strategy=?", [$WF])[0];
+        foreach ($wf_edits as $wf_col => $wf_val) {
+            db()->prepare("update strategy_rules set $wf_col=? where strategy=?")->execute([$wf_val, $WF]);
+            $wf_changed = rules_fingerprint($WF);
+            db()->prepare("update strategy_rules set $wf_col=? where strategy=?")->execute([$wf_orig[$wf_col], $WF]);
+            check("editing $wf_col changes the fingerprint, and putting it back restores it",
+                  $wf_changed !== $wf_fp && rules_fingerprint($WF) === $wf_fp);
+        }
+        $wf_crit = rows("select sc.id, sc.first_operand from screen_criteria sc, screen_build sb
+                          where sb.screen_id=2 and sb.criteria_id=sc.id order by sc.id limit 1")[0];
+        $wf_tv = rules_fingerprint('trending_value');
+        db()->prepare("update screen_criteria set first_operand=concat(coalesce(first_operand,''),'9') where id=?")
+          ->execute([$wf_crit['id']]);
+        $wf_crit_fp = rules_fingerprint($WF);
+        check('editing a criterion of the screen it uses changes the fingerprint',
+              $wf_crit_fp !== $wf_fp);
+        check('and not that of a strategy built on a different screen',
+              rules_fingerprint('trending_value') === $wf_tv);
+        db()->prepare("update screen_criteria set first_operand=? where id=?")
+          ->execute([$wf_crit['first_operand'], $wf_crit['id']]);
+        check('and putting the criterion back restores it',
+              rules_fingerprint($WF) === $wf_fp);
+
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                       values (?,1000,'GBP','PAPER','N',now())")->execute([$WF]);
+        $wf_acct = ['display_name' => 'Renamed for the test', 'enabled' => 'Y', 'cash' => 5000, 'mode' => 'T212_DEMO'];
+        foreach ($wf_acct as $wf_col => $wf_val) {
+            if ($wf_col === 'display_name' && scalar("select count(*) from information_schema.columns
+                where table_schema=database() and table_name='strategy_accounts' and column_name='display_name'") == 0) { continue; }
+            db()->prepare("update strategy_accounts set $wf_col=? where strategy=?")->execute([$wf_val, $WF]);
+        }
+        check('a rename, enabling the account, its capital and its mode do not change it',
+              rules_fingerprint($WF) === $wf_fp);
+        db()->prepare("delete from strategy_accounts where strategy=?")->execute([$WF]);
+
+        /* ---- the stage, derived ---- */
+        $wf_run = function ($fingerprint, $status = 'DONE') use ($WF) {
+            db()->prepare("insert into strategy_backtest_runs
+                             (strategy,account,from_date,to_date,started_at,finished_at,status,fingerprint,rules_snapshot)
+                           values (?,?,?,?,now(),now(),?,?,'{}')")
+              ->execute([$WF, 'bt_' . $WF . '_1', date('Y-m-d', strtotime('-1 year')), date('Y-m-d'), $status, $fingerprint]);
+        };
+        $wf_stage = function () use ($WF) { return strategy_stage($WF); };
+
+        check('rules and no completed run: Draft, and starting practice is closed with the reason',
+              $wf_stage()['stage'] === 'Draft' && $wf_stage()['moves']['start_practice']['open'] === false
+              && stripos($wf_stage()['moves']['start_practice']['reason'], 'completed backtest') !== false);
+        $wf_run('some-other-rules');
+        check('a completed run of other rules does not count: still Draft',
+              $wf_stage()['stage'] === 'Draft');
+        db()->prepare("delete from strategy_backtest_runs where strategy=?")->execute([$WF]);
+        $wf_run($wf_fp, 'FAILED');
+        check('nor does a run that failed',
+              $wf_stage()['stage'] === 'Draft');
+        db()->prepare("delete from strategy_backtest_runs where strategy=?")->execute([$WF]);
+        $wf_run($wf_fp);
+        check('a completed run of the current rules, and no account: Backtested',
+              $wf_stage()['stage'] === 'Backtested' && $wf_stage()['backtest'] !== null);
+        db()->prepare("update screen_criteria set first_operand=concat(coalesce(first_operand,''),'9') where id=?")
+          ->execute([$wf_crit['id']]);
+        $wf_edited_stage = $wf_stage()['stage'];
+        db()->prepare("update screen_criteria set first_operand=? where id=?")
+          ->execute([$wf_crit['first_operand'], $wf_crit['id']]);
+        check('editing a criterion on its screen sends it back to Draft, and putting it back returns it',
+              $wf_edited_stage === 'Draft' && $wf_stage()['stage'] === 'Backtested');
+        check('the stage is not stored anywhere: no column of that name in any strategy table',
+              (int) scalar("select count(*) from information_schema.columns where table_schema=database()
+                             and table_name like 'strategy\\_%' and column_name in ('stage','strategy_stage')") === 0);
+
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                       values ('wf_holder',1000,'GBP','T212_DEMO','Y',now())")->execute();
+        $wf_move = $wf_stage()['moves']['start_practice'];
+        check('starting practice is closed while another strategy holds the practice account, naming it',
+              $wf_move['open'] === false && stripos($wf_move['reason'], 'Wf holder') !== false, json_encode($wf_move));
+        db()->prepare("delete from strategy_accounts where strategy='wf_holder'")->execute();
+        check('and open once it is free',
+              $wf_stage()['moves']['start_practice']['open'] === true);
+
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                       values (?,1000,'GBP','T212_DEMO','Y',now())")->execute([$WF]);
+        check('a practice account: Practice',
+              $wf_stage()['stage'] === 'Practice' && $wf_stage()['moves']['stop_practice']['open'] === true);
+        check('archiving is refused while the account is switched on',
+              $wf_stage()['moves']['archive']['open'] === false
+              && stripos($wf_stage()['moves']['archive']['reason'], 'switched on') !== false);
+        db()->prepare("update strategy_accounts set mode='T212_LIVE' where strategy=?")->execute([$WF]);
+        check('a live account that is not armed is not Live: it steps down to Practice',
+              $wf_stage()['stage'] === 'Practice');
+        db()->prepare("insert into strategy_live_arming
+                         (strategy,armed_by,armed_user_id,armed_at,capital_cap,expires_at)
+                       values (?,'dale',1,now(),250,date_add(now(), interval 35 day))")->execute([$WF]);
+        check('Live only while it is armed',
+              $wf_stage()['stage'] === 'Live' && $wf_stage()['moves']['stop_live']['open'] === true
+              && $wf_stage()['moves']['archive']['open'] === false);
+        db()->prepare("update strategy_live_arming set disarmed_at=now(), disarmed_by='test' where strategy=?")->execute([$WF]);
+        check('and not once it is disarmed', $wf_stage()['stage'] === 'Practice');
+        db()->prepare("update strategy_accounts set enabled='N' where strategy=?")->execute([$WF]);
+        check('with every account off and nothing armed, archiving is open',
+              $wf_stage()['moves']['archive']['open'] === true);
+        db()->prepare("delete from strategy_accounts where strategy=?")->execute([$WF]);
+        db()->prepare("delete from strategy_live_arming where strategy=?")->execute([$WF]);
+
+        /* ---- the page ---- */
+        $wf_page = (string) $curl("$base/strategies.php");
+        check('the overview lists a strategy with no account, by stage, with the others',
+              strpos($wf_page, 'id="sm-stage-list"') !== false && stripos($wf_page, 'Screen test one') !== false
+              && stripos($wf_page, 'Not trading yet') !== false);
+        check('and the summary table has a Stage column',
+              preg_match('~<th[^>]*>Stage</th>~', $wf_page) === 1);
+        $wf_card = (string) $curl("$base/strategies.php?s=trend_following");
+        check('a strategy with an account shows the stepper on its card',
+              strpos($wf_card, 'class="sm-stepper') !== false
+              && preg_match('~data-stage="(Draft|Backtested)"~', $wf_card) === 1);
+        check('and the moves it can make, each open or closed with the reason',
+              strpos($wf_card, 'data-move="archive"') !== false && strpos($wf_card, 'data-open="no"') !== false);
+
+        /* ---- the screen's edit page names the strategies ---- */
+        db()->prepare("update strategy_rules set archived_at=now() where strategy=?")->execute([$WF]);
+        $wf_edit = (string) $curl("$base/screen_list.php?screen=2&edit=1");
+        check('the screen edit page names the strategies an edit would send back to Draft, archived ones marked',
+              strpos($wf_edit, 'id="screen-feeds"') !== false && stripos($wf_edit, 'Screen test one') !== false
+              && stripos($wf_edit, 'Trend following') !== false && stripos($wf_edit, '(archived)') !== false,
+              substr(strip_tags($wf_edit), 0, 300));
+        $wf_links = strategies_for_screen(2);
+        check('and screen_links says the same, and names the screen of a strategy',
+              count(array_filter($wf_links, function ($l) { return $l['strategy'] === 'screen_test_one' && $l['archived']; })) === 1
+              && screen_of_strategy($WF)['id'] === 2);
+        db()->prepare("update strategy_rules set archived_at=null where strategy=?")->execute([$WF]);
+
+        /* ---- the night run ---- */
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at,archived_at)
+                       values ('wf_archived','screen',2,'6mnth',15,'monthly','','Y',now(),now())")->execute();
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at)
+                       values ('wf_archived',100000,'GBP','PAPER','Y',now())")->execute();
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at)
+                       values ('bt_screen_test_one_1','screen',2,'6mnth',15,'monthly','','Y',now())")->execute();
+        [$wf_night, $wf_night_rc] = run_script('run_strategies.php', [$SASOF, '--dry-run']);
+        check('the night run skips a strategy with no account, in one line, and it is not an error',
+              strpos($wf_night, 'skipped screen_test_one: no account yet') !== false
+              && !preg_match('~! [^\n]*screen_test_one~', $wf_night), $wf_night);
+        check('and an archived one, even with its account left on',
+              strpos($wf_night, 'skipped wf_archived: archived') !== false
+              && strpos($wf_night, "\r\nwf_archived") === false, $wf_night);
+        check('and the bt_ copy a backtest left behind is not run, or mentioned',
+              strpos($wf_night, 'bt_screen_test_one_1') === false);
+        check('nothing is planned for any of them',
+              (int) scalar("select count(*) from strategy_orders where strategy in ('screen_test_one','wf_archived','bt_screen_test_one_1')") === 0
+              && (int) scalar("select count(*) from strategy_targets where strategy in ('screen_test_one','wf_archived','bt_screen_test_one_1')") === 0);
+        $wf_skips = night_skips(['trend_following', 'wf_archived']);
+        check('night_skips splits the ones to run from the ones to leave alone',
+              $wf_skips['run'] === ['trend_following']
+              && in_array(['wf_archived', 'archived'], $wf_skips['skipped'], true));
+
+        /* ---- on the code ---- */
+        $wf_src = [];
+        foreach (array_merge(glob(dirname(__DIR__) . '/includes/*.php'), glob(dirname(__DIR__) . '/public/*.php')) as $wf_f) {
+            $wf_src[substr($wf_f, strlen(dirname(__DIR__)) + 1)] = (string) file_get_contents($wf_f);
+        }
+        $wf_new = ['includes/rules_fingerprint.php', 'includes/screen_links.php', 'includes/strategy_create.php',
+                   'includes/strategy_stage.php', 'includes/night_skips.php', 'public/strategy_create.php'];
+        $wf_posts = array_filter($wf_new, function ($f) use ($wf_src) {
+            return preg_match('~live\.trading212|T212_LIVE_BASE_URL|file_get_contents\(\s*\$where|equity/orders~', $wf_src[$f]);
+        });
+        check('no new code posts to the live host or names an order path', count($wf_posts) === 0,
+              implode(', ', $wf_posts));
+        check('live_arming does not call strategy_stage',
+              strpos($wf_src['includes/broker_live.php'], 'strategy_stage') === false);
+        check('rules_fingerprint is the one place that lists the rule fields: no other new module compares rules',
+              count(array_filter($wf_new, function ($f) use ($wf_src) {
+                  return $f !== 'includes/rules_fingerprint.php'
+                      && preg_match("~\\\$rules\\[['\"](holdings|rank_by|rebalance|exit_rules|hold_rank)['\"]\\]\\s*(===|!==|==|!=)~", $wf_src[$f]);
+              })) === 0);
+        check('nothing was added to strategy_functions.php or share_functions.php',
+              strpos($wf_src['includes/strategy_functions.php'], 'rules_fingerprint') === false
+              && strpos($wf_src['includes/strategy_functions.php'], 'strategy_stage') === false
+              && strpos($wf_src['includes/share_functions.php'], 'strategy_stage') === false);
+
+        foreach (['strategy_rules', 'strategy_accounts', 'strategy_orders', 'strategy_targets'] as $wf_t) {
+            db()->exec("delete from $wf_t where strategy in ('screen_test_one','wf_archived','bt_screen_test_one_1','wf_holder')");
+        }
+        db()->exec("delete from strategy_backtest_runs where strategy='screen_test_one'");
+        db()->exec("delete from strategy_live_arming where strategy='screen_test_one'");
+        db()->exec("delete from strategy_live_log where strategy='screen_test_one'");
+
         foreach (['strategy_orders','strategy_positions','strategy_targets','strategy_values',
                   'strategy_rules','strategy_accounts','strategy_live_arming','strategy_live_log',
                   'strategy_order_batches'] as $spl_table) {

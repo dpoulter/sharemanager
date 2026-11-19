@@ -43,6 +43,8 @@
 	   to put them in a batch for Dale to approve, and has to stand down the
 	   batch nobody approved yesterday. */
 	include("broker_live.php");
+	/* Which strategies are left alone and why: no account yet, or archived. */
+	include("night_skips.php");
 
 	$_SESSION["exchange"]='XLON';
 	$exchange='XLON';
@@ -92,8 +94,17 @@
 		}
 	}
 
+	/* A strategy with rules and no account, or an archived one, is skipped
+	   and is not an error: one line each, and nothing is planned for it. */
+	$left_alone=night_skips($strategies);
+	$strategies=$left_alone['run'];
+
 	echo "run_strategies ".$as_of.($dry_run?" (dry run)":"")
 	     .": ".count($strategies)." strategy(ies)\r\n";
+
+	foreach ($left_alone['skipped'] as $skip){
+		echo "  skipped ".$skip[0].": ".$skip[1]."\r\n";
+	}
 
 	/* Yesterday's unapproved batch, stood down before tonight is planned.
 	   An unapproved batch is good for the session it was planned for and no

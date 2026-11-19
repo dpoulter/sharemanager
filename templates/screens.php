@@ -69,6 +69,10 @@
 						<?php endif ?>
 						<a class="btn btn-sm btn-outline-secondary"
 						   href="screen_list.php?screen=<?= (int) $screen['id'] ?>&amp;edit=1">Edit</a>
+						<?php if (!count($screen['problems'])): ?>
+							<a class="btn btn-sm btn-outline-success"
+							   href="strategy_create.php?screen=<?= (int) $screen['id'] ?>">Create strategy</a>
+						<?php endif ?>
 					</td>
 				</tr>
 			<?php endforeach ?>
