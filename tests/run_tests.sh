@@ -149,6 +149,11 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_fills.sql" > /dev/null || exit 1
 echo "applying sql/broker_environment.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_environment.sql" > /dev/null || exit 1
 
+# What a Trading 212 key can read, and whether the order book was visible
+# when the last resolve ran. After sql/broker.sql; needs nothing else.
+echo "applying sql/broker_key_scopes.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/broker_key_scopes.sql" > /dev/null || exit 1
+
 # The figures the one-screen quote page shows: the one month return, the two
 # ends of the year, return on capital, operating margin, the lines of the
 # yearly accounts, and the in_score column that keeps a new measure out of
@@ -217,6 +222,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       strategy_hold_rank strategy_display_name \
                       strategy_backtest strategy_backtest_overrides strategy_backtest_costs \
                       strategy_prices \
+                      broker_key_scopes \
                       broker broker_account_fields broker_mapping broker_trading \
                       broker_fills broker_environment strategy_live dividends quote_report; do
        db "$SM_TEST_DB" < "$REPO_DIR/sql/$migration.sql" > /dev/null

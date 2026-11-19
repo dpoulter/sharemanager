@@ -32,7 +32,8 @@
  *                    the query and whether credentials arrived. Never the
  *                    credentials themselves, in a file a person might paste
  *                    somewhere.
- *   t212_place       ok | reject | slow | timeout | 500 | forbidden, for the
+ *   t212_place       ok | reject | reject_detail | reject_empty | slow | timeout
+ *                    | 500 | forbidden, for the
  *                    stage 2 order path
  *   t212_next_order_id  the id the next accepted order comes back with
  *   t212_orders      appended to, one line per order body that arrived
@@ -206,6 +207,17 @@ if ($call === 'place') {
     if ($mode === 'forbidden') {
         stub_answer(403, json_encode(['code' => 'Forbidden']));
     }
+    /* A refusal with none of code or message, the shape a problem-details
+       body has: the words are in title and detail. The first sender to meet
+       one recorded "no reason given" and could not tell the share deals in
+       whole shares only. */
+    if ($mode === 'reject_detail') {
+        stub_answer(400, json_encode(['type' => 'about:blank', 'title' => 'Bad Request',
+                                      'status' => 400,
+                                      'detail' => 'The quantity is not valid for this instrument']));
+    }
+    /* And one with nothing to say at all. */
+    if ($mode === 'reject_empty') { stub_answer(400, ''); }
 
     $sent = json_decode((string) $body, true);
     $id = is_file("$dir/t212_next_order_id")

@@ -116,12 +116,14 @@
 		echo "\r\n--- " . $strategy . " (live) ---\r\n";
 		echo "  " . broker_live_words($strategy) . "\r\n";
 
-		/* 1. What became of what has already gone. The orders key has
-		   Orders - Read, so the same key that sent them can be asked about
-		   them; without it the read-only live key answers. */
+		/* 1. What became of what has already gone. The client is the orders
+		   key when there is one, else the read-only live key (the line below
+		   names which). Whether the orders key may read orders is checked by
+		   check_key_scopes.php at the start of every run, not assumed: on
+		   19 Nov 2026 it could not. */
 		if ($client->configured()) {
 			$resolved = broker_resolve_orders($strategy, ['client' => $client]);
-			echo "  resolved: " . $resolved['filled'] . " filled, " . $resolved['rejected']
+			echo "  resolved (" . $client->environment() . " key): " . $resolved['filled'] . " filled, " . $resolved['rejected']
 			   . " refused, " . $resolved['cancelled'] . " cancelled, " . $resolved['working']
 			   . " still working, " . $resolved['adopted'] . " matched up, "
 			   . $resolved['written_off'] . " never arrived\r\n";

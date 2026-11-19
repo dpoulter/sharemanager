@@ -48,12 +48,14 @@
 	/**
 	 * A client for READING the live account.
 	 *
-	 * The orders key has Orders - Read as well as Orders - Execute, so when
-	 * it is configured it is the one that answers "what became of the order
-	 * we sent"; without it the read-only live key does, which is what a host
-	 * that only watches the account has. Neither of them can write: this
-	 * file is the only thing that can, and it does not go through the
-	 * client at all.
+	 * When the orders key is configured it is the one asked "what became of
+	 * the order we sent"; without it the read-only live key is. Whether the
+	 * orders key may READ orders is not something this code can know: it was
+	 * made for Orders - Execute, and on 19 Nov 2026 it was refused the pending
+	 * orders and the order history (403). key_scopes() asks, at the start of
+	 * every broker run, and the answer is on the Strategies page. Neither
+	 * key can write through this client: this file is the only thing that
+	 * can, and it does not go through the client at all.
 	 */
 	function broker_live_client($options = []) {
 
@@ -257,10 +259,8 @@
 		$decoded = json_decode((string) $answer, true);
 
 		if ($status >= 400) {
-			$why = is_array($decoded) && isset($decoded['code']) ? (string) $decoded['code']
-			     : (is_array($decoded) && isset($decoded['message'])
-			        ? (string) $decoded['message'] : 'no reason given');
-			return $refuse('rejected', "Trading 212 refused the order: " . t212_mask($why), $status);
+			return $refuse('rejected', "Trading 212 refused the order: "
+			                         . refusal_reason($status, $answer), $status);
 		}
 		if (!is_array($decoded)) {
 			return $refuse('unknown', "Trading 212 accepted the order and answered something"
@@ -361,38 +361,19 @@
 		}
 
 		/* Nothing new goes out while something already sent is unaccounted
-		   for. A market order fills in ten to thirty seconds; one that is
-		   still unresolved minutes later is a question, and the answer to a
-		   question is not another order. */
-		$waiting = query("select client_order_id, status,
-		                         timestampdiff(second, coalesce(sent_at, created_at), now()) age
-		                    from strategy_orders
-		                   where strategy=? and status in ('SENT','UNKNOWN')
-		                   order by age desc", $strategy);
-
-		if (count($waiting)) {
-
-			$oldest = (int) $waiting[0]['age'];
-
-			if ($oldest >= (int) T212_STUCK_SECONDS) {
-				broker_halt_strategy($strategy,
-				    count($waiting) . " live order(s) have been out for " . round($oldest / 60)
-				  . " minutes without being resolved, the oldest being "
-				  . $waiting[0]['client_order_id']);
-				$out['halted'] = true;
-				$out['errors'][] = "halted: a live order has been unresolved for "
-				                 . round($oldest / 60) . " minutes";
-				return $out;
-			}
-			if ($oldest >= (int) T212_SETTLE_SECONDS) {
-				$out['errors'][] = count($waiting) . " live order(s) sent earlier are still"
-				                 . " unresolved. Nothing more is sent until the broker has"
-				                 . " been asked what became of them.";
-				return $out;
-			}
-			$say(count($waiting) . " order(s) are still settling, which is normal for the"
-			     . " first " . (int) T212_SETTLE_SECONDS . " seconds");
+		   for: the one rule, in stuck_check() (broker_orders.php), the same
+		   function the practice sender asks. */
+		$stuck = stuck_check($strategy, ['live' => true]);
+		if ($stuck['halted']) {
+			$out['halted'] = true;
+			$out['errors'][] = $stuck['error'];
+			return $out;
 		}
+		if ($stuck['hold']) {
+			$out['errors'][] = $stuck['error'];
+			return $out;
+		}
+		if ($stuck['say'] !== '') { $say($stuck['say']); }
 
 		/* And nothing goes out without this strategy's own positions having
 		   been compared with the broker's. On a live account that means

@@ -1552,6 +1552,64 @@
 	   What the page reads.
 	   --------------------------------------------------------------------- */
 
+	/* ---------------------------------------------------------------------
+	   What each live key can read (sql/broker_key_scopes.sql).
+	   --------------------------------------------------------------------- */
+
+	/** Whether sql/broker_key_scopes.sql has been applied. */
+	function broker_key_scopes_ready() {
+
+		static $known = null;
+		if ($known !== null) { return $known; }
+
+		$rows = query("select count(*) n from information_schema.tables
+		                where table_schema=database() and table_name='broker_key_scopes'");
+		$known = count($rows) && (int) $rows[0]['n'] === 1;
+		return $known;
+	}
+
+	/**
+	 * Keep what key_scopes() found, one row per environment.
+	 *
+	 * Only a result that asked something is kept: an environment that is off,
+	 * or has no key, opened no connection and has nothing to say. The words
+	 * are masked again on the way in, because this is the last place before a
+	 * page.
+	 */
+	function broker_key_scopes_record(array $result) {
+
+		if (!broker_key_scopes_ready() || empty($result['checked'])) { return false; }
+
+		query("insert into broker_key_scopes
+		         (environment, checked_at, orders_status, history_status, lacks, words)
+		       values (?, now(), ?, ?, ?, ?)
+		       on duplicate key update checked_at=values(checked_at),
+		         orders_status=values(orders_status), history_status=values(history_status),
+		         lacks=values(lacks), words=values(words)",
+		      (string) $result['environment'],
+		      $result['orders']['status'], $result['history']['status'],
+		      implode(' and ', $result['lacks']), t212_mask((string) $result['words']));
+		return true;
+	}
+
+	/**
+	 * What the page says about each live key that is switched on.
+	 *
+	 * An environment that is off is left out, so a verdict from before it was
+	 * switched off is not shown as if it were current.
+	 */
+	function broker_key_scopes_latest() {
+
+		if (!broker_key_scopes_ready()) { return []; }
+
+		$out = [];
+		foreach (query("select * from broker_key_scopes order by environment") as $row) {
+			if (!t212_environment_on($row['environment'])) { continue; }
+			$out[] = $row;
+		}
+		return $out;
+	}
+
 	/** The most recent sync attempt, successful or not. */
 	function broker_last_run($broker = BROKER_T212, $environment = null) {
 
