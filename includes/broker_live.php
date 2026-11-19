@@ -1152,7 +1152,36 @@
 			'name'       => strategy_display_name($strategy),
 			'cap_max'    => (float) T212_LIVE_CAPITAL_CAP_MAX,
 			'arm_days'   => (int) T212_LIVE_ARM_DAYS,
+			'key_problems' => broker_live_key_problems($strategy),
 		];
+	}
+
+	/**
+	 * What is wrong with the live keys' permissions, in the words the page
+	 * prints: "key lacks Orders - Read" or "key lacks history" in place of a
+	 * generic problem. From the last check (includes/check_key_scopes.php) and
+	 * from whether this strategy's last order resolve was blind. Empty when
+	 * nothing is known to be wrong, and when sql/broker_key_scopes.sql has not
+	 * been applied.
+	 */
+	function broker_live_key_problems($strategy) {
+
+		$out = [];
+		if (!function_exists('broker_key_scopes_state')) { return $out; }
+
+		foreach (broker_key_scopes_state() as $environment => $row) {
+			if ($environment === 'demo') { continue; }
+			if (stripos((string) $row['summary'], 'key lacks') === 0
+			    || stripos((string) $row['summary'], 'key not accepted') === 0) {
+				$out[] = $environment . ' ' . $row['summary'];
+			}
+		}
+
+		$book = broker_book_state($strategy);
+		if ($book['blind'] && !count($out)) {
+			$out[] = $book['environment'] . ' key lacks ' . $book['missing'];
+		}
+		return $out;
 	}
 
 	/**

@@ -66,6 +66,11 @@ echo "broker_run: $(date '+%Y-%m-%d %H:%M:%S') demo=${SM_T212_DEMO:-off}" \
      "live-read=${SM_T212_LIVE_READ:-off} live-orders=${SM_T212_LIVE_ORDERS:-off}" \
      "app=$APP_DIR"
 
+# Before anything else: can each key read orders? One call each to orders and
+# order history, stored for the Strategies page. Read only, and it never stops
+# the job: a refused permission is for Dale to fix in Trading 212.
+"$PHP" "$APP_DIR/includes/check_key_scopes.php" || echo "broker_run: the key check did not finish; carrying on"
+
 # The read first. The sender no longer needs it - it reads the positions
 # again itself after writing a fill up, which is what fix J was - but the
 # Broker page shows the cash, the order history and the dividends, and this

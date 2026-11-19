@@ -257,10 +257,7 @@
 		$decoded = json_decode((string) $answer, true);
 
 		if ($status >= 400) {
-			$why = is_array($decoded) && isset($decoded['code']) ? (string) $decoded['code']
-			     : (is_array($decoded) && isset($decoded['message'])
-			        ? (string) $decoded['message'] : 'no reason given');
-			return $refuse('rejected', "Trading 212 refused the order: " . t212_mask($why), $status);
+			return $refuse('rejected', refusal_reason($status, $answer), $status);
 		}
 		if (!is_array($decoded)) {
 			return $refuse('unknown', "Trading 212 accepted the order and answered something"
@@ -361,38 +358,12 @@
 		}
 
 		/* Nothing new goes out while something already sent is unaccounted
-		   for. A market order fills in ten to thirty seconds; one that is
-		   still unresolved minutes later is a question, and the answer to a
-		   question is not another order. */
-		$waiting = query("select client_order_id, status,
-		                         timestampdiff(second, coalesce(sent_at, created_at), now()) age
-		                    from strategy_orders
-		                   where strategy=? and status in ('SENT','UNKNOWN')
-		                   order by age desc", $strategy);
-
-		if (count($waiting)) {
-
-			$oldest = (int) $waiting[0]['age'];
-
-			if ($oldest >= (int) T212_STUCK_SECONDS) {
-				broker_halt_strategy($strategy,
-				    count($waiting) . " live order(s) have been out for " . round($oldest / 60)
-				  . " minutes without being resolved, the oldest being "
-				  . $waiting[0]['client_order_id']);
-				$out['halted'] = true;
-				$out['errors'][] = "halted: a live order has been unresolved for "
-				                 . round($oldest / 60) . " minutes";
-				return $out;
-			}
-			if ($oldest >= (int) T212_SETTLE_SECONDS) {
-				$out['errors'][] = count($waiting) . " live order(s) sent earlier are still"
-				                 . " unresolved. Nothing more is sent until the broker has"
-				                 . " been asked what became of them.";
-				return $out;
-			}
-			$say(count($waiting) . " order(s) are still settling, which is normal for the"
-			     . " first " . (int) T212_SETTLE_SECONDS . " seconds");
-		}
+		   for: the one rule, in stuck_check(), shared with the practice sender. */
+		$stuck = stuck_check($strategy, ['live' => true]);
+		foreach ($stuck['lines'] as $line)   { $say($line); }
+		foreach ($stuck['errors'] as $error) { $out['errors'][] = $error; }
+		if ($stuck['halted']) { $out['halted'] = true; }
+		if ($stuck['stop'])   { return $out; }
 
 		/* And nothing goes out without this strategy's own positions having
 		   been compared with the broker's. On a live account that means

@@ -1593,6 +1593,84 @@
 		];
 	}
 
+	/* ---------------------------------------------------------------------
+	   What a key can read, and whether the order book was blind.
+	   sql/broker_key_scopes.sql. Where this has not been applied nothing is
+	   stored and nothing is read, and everything else behaves as it did.
+	   --------------------------------------------------------------------- */
+
+	function broker_scopes_ready() {
+
+		static $known = null;
+		if ($known !== null) { return $known; }
+
+		$rows = query("select count(*) n from information_schema.tables
+		                where table_schema=database()
+		                  and table_name in ('broker_key_scopes','broker_order_book_state')");
+		$known = count($rows) && (int) $rows[0]['n'] === 2;
+		return $known;
+	}
+
+	/** Keep what key_scopes() found. One row per environment. */
+	function broker_store_key_scopes(array $scopes) {
+
+		if (!broker_scopes_ready() || empty($scopes['checked'])) { return false; }
+
+		query("replace into broker_key_scopes
+		         (environment, orders, history, orders_http, history_http, summary, checked_at)
+		       values (?,?,?,?,?,?,?)",
+		      (string) $scopes['environment'], $scopes['orders'], $scopes['history'],
+		      (int) $scopes['orders_http'], (int) $scopes['history_http'],
+		      substr(t212_mask((string) $scopes['summary']), 0, 200), date('Y-m-d H:i:s'));
+		return true;
+	}
+
+	/**
+	 * The last key check of each environment, keyed by environment.
+	 * Only environments that have been checked appear.
+	 */
+	function broker_key_scopes_state() {
+
+		$out = [];
+		if (!broker_scopes_ready()) { return $out; }
+		foreach (query("select * from broker_key_scopes order by environment") as $row) {
+			$out[(string) $row['environment']] = $row;
+		}
+		return $out;
+	}
+
+	/**
+	 * Record whether the order book was blind the last time this strategy's
+	 * orders were resolved. Written by broker_resolve_orders() every time it
+	 * reads the book, so a key that has been fixed clears it on the next run.
+	 */
+	function broker_store_book_state($strategy, $environment, $blind, array $missing = []) {
+
+		if (!broker_scopes_ready()) { return false; }
+
+		query("replace into broker_order_book_state
+		         (strategy, environment, blind, missing, checked_at)
+		       values (?,?,?,?,?)",
+		      (string) $strategy, (string) $environment, $blind ? 'Y' : 'N',
+		      count($missing) ? substr(implode(', ', $missing), 0, 200) : null,
+		      date('Y-m-d H:i:s'));
+		return true;
+	}
+
+	/** ['blind'=>bool, 'missing'=>string, 'environment'=>string] for a strategy. */
+	function broker_book_state($strategy) {
+
+		$none = ['blind' => false, 'missing' => '', 'environment' => '', 'checked_at' => null];
+		if (!broker_scopes_ready()) { return $none; }
+
+		$rows = query("select * from broker_order_book_state where strategy=?", (string) $strategy);
+		if (!count($rows)) { return $none; }
+
+		return ['blind' => $rows[0]['blind'] === 'Y', 'missing' => (string) $rows[0]['missing'],
+		        'environment' => (string) $rows[0]['environment'],
+		        'checked_at' => $rows[0]['checked_at']];
+	}
+
 	/** The latest figures for the account. */
 	function broker_latest_values($broker = BROKER_T212, $environment = 'demo') {
 

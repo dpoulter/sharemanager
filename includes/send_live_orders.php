@@ -116,15 +116,21 @@
 		echo "\r\n--- " . $strategy . " (live) ---\r\n";
 		echo "  " . broker_live_words($strategy) . "\r\n";
 
-		/* 1. What became of what has already gone. The orders key has
-		   Orders - Read, so the same key that sent them can be asked about
-		   them; without it the read-only live key answers. */
+		/* 1. What became of what has already gone. The orders key is meant to
+		   have Orders - Read, so the same key that sent them can be asked
+		   about them; without it the read-only live key answers. On 19 Nov
+		   the orders key was refused (403) on both reads: the result says
+		   which key answered and whether it was blind. */
 		if ($client->configured()) {
 			$resolved = broker_resolve_orders($strategy, ['client' => $client]);
-			echo "  resolved: " . $resolved['filled'] . " filled, " . $resolved['rejected']
+			echo "  resolved (" . $resolved['environment'] . " key): " . $resolved['filled'] . " filled, " . $resolved['rejected']
 			   . " refused, " . $resolved['cancelled'] . " cancelled, " . $resolved['working']
 			   . " still working, " . $resolved['adopted'] . " matched up, "
 			   . $resolved['written_off'] . " never arrived\r\n";
+			if ($resolved['blind']) {
+				echo "    ! BLIND: the " . $resolved['environment'] . " key was refused ("
+				   . implode(' and ', $resolved['missing']) . "). Orders still SENT stay SENT.\r\n";
+			}
 			foreach ($resolved['lines'] as $line)   { echo "    " . $line . "\r\n"; }
 			foreach ($resolved['errors'] as $error) { echo "    ! " . $error . "\r\n"; $failed = true; }
 

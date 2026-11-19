@@ -629,6 +629,14 @@
 					         ---------------------------------------------------- */ ?>
 					<?php if (!empty($card['live'])): ?>
 					<?php $live = $card['live']; ?>
+					<?php if (!empty($live['key_problems'])): ?>
+					<div class="alert alert-danger py-2">
+						<strong>Trading 212 key problem.</strong>
+						<?= e(implode('; ', $live['key_problems'])) ?>.
+						Orders cannot be resolved while this stands, so they stay SENT.
+						Fix the key in Trading 212, then check the broker before clearing a halt.
+					</div>
+					<?php endif; ?>
 					<div class="alert <?= $live['armed'] ? 'alert-warning' : 'alert-secondary' ?> py-2">
 						<strong><?= e($live['words']) ?></strong>
 

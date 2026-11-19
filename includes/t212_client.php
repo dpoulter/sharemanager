@@ -144,6 +144,127 @@
 		return $text;
 	}
 
+	/**
+	 * Why Trading 212 refused an order, in one masked sentence.
+	 *
+	 * The ONE parser of a refusal: place_market_order() and
+	 * broker_live_place_order() both call it, and neither carries a copy.
+	 *
+	 * The broker's own words are used - its code, message, title and detail,
+	 * whichever are present, each once. They are joined rather than one being
+	 * picked: an RFC 7807 style answer carries a generic title ("Bad
+	 * Request") and the real reason in detail, and picking the first present
+	 * would keep the title and lose the reason. With none of them present the
+	 * first 200 characters of the body are used, and an empty body says so.
+	 * It never says no reason was given when the body had something in it.
+	 *
+	 * Masked, because a body is the broker's text and a key that ends up in
+	 * a body is a key that has to stay out of a log.
+	 */
+	function refusal_reason($status, $body) {
+
+		$status = (int) $status;
+		$body   = trim((string) $body);
+
+		if ($body === '') {
+			return t212_mask("Trading 212 refused the order: HTTP " . $status . ", empty body");
+		}
+
+		$parts   = [];
+		$decoded = json_decode($body, true);
+		if (is_array($decoded)) {
+			foreach (['code', 'message', 'title', 'detail'] as $field) {
+				if (!isset($decoded[$field]) || !is_scalar($decoded[$field])) { continue; }
+				$text = trim(preg_replace('~\s+~', ' ', (string) $decoded[$field]));
+				if ($text !== '' && !in_array($text, $parts, true)) { $parts[] = $text; }
+			}
+		}
+
+		if (count($parts)) {
+			$why = implode(': ', $parts);
+		}
+		else {
+			$flat = trim(preg_replace('~\s+~', ' ', $body));
+			$why  = function_exists('mb_substr') ? mb_substr($flat, 0, 200) : substr($flat, 0, 200);
+		}
+
+		return t212_mask("Trading 212 refused the order: " . $why);
+	}
+
+	/**
+	 * What a key may read: the two GETs the resolve step depends on.
+	 *
+	 * Asks for the pending orders and, once, the order history - the same two
+	 * endpoints broker_order_book() reads - and says which of them the key was
+	 * refused. READ ONLY: this builds a T212Client and the client has no way
+	 * to place, amend or cancel through get().
+	 *
+	 * With the environment off or no key set, nothing is requested and no
+	 * socket is opened: the answer is checked=false with the reason.
+	 *
+	 * Returns:
+	 *   environment, checked, why (when not checked),
+	 *   orders / history   'ok', 'forbidden', 'unauthorised' or 'error'
+	 *   orders_http / history_http
+	 *   lacks              the permissions missing, in words
+	 *   summary            one phrase for the log and the Strategies page
+	 *
+	 * $options['client'] is for the suite.
+	 */
+	function key_scopes($environment, $options = []) {
+
+		$client = isset($options['client'])
+		        ? $options['client'] : new T212Client(['env' => $environment]);
+
+		$out = ['environment' => $client->environment(), 'checked' => false, 'why' => '',
+		        'orders' => null, 'history' => null, 'orders_http' => 0, 'history_http' => 0,
+		        'lacks' => [], 'summary' => ''];
+
+		if (!$client->configured()) {
+			$out['why']     = $client->why_not();
+			$out['summary'] = 'not checked: ' . $out['why'];
+			return $out;
+		}
+
+		$out['checked'] = true;
+
+		$kind = function ($answer) {
+			if ($answer['ok']) { return 'ok'; }
+			$k = isset($answer['kind']) ? $answer['kind'] : '';
+			return ($k === 'forbidden' || $k === 'unauthorised') ? $k : 'error';
+		};
+
+		$orders  = $client->get('orders');
+		$history = $client->get('order_history', ['limit' => 1]);
+
+		$out['orders']       = $kind($orders);
+		$out['history']      = $kind($history);
+		$out['orders_http']  = (int) (isset($orders['status'])  ? $orders['status']  : 0);
+		$out['history_http'] = (int) (isset($history['status']) ? $history['status'] : 0);
+
+		if ($out['orders']  === 'forbidden') { $out['lacks'][] = 'Orders - Read'; }
+		if ($out['history'] === 'forbidden') { $out['lacks'][] = 'history'; }
+
+		if (count($out['lacks'])) {
+			$out['summary'] = 'key lacks ' . implode(' and ', $out['lacks']);
+		}
+		else if ($out['orders'] === 'unauthorised' || $out['history'] === 'unauthorised') {
+			$out['summary'] = 'key not accepted by Trading 212 (401)';
+		}
+		else if ($out['orders'] === 'ok' && $out['history'] === 'ok') {
+			$out['summary'] = 'key can read orders and history';
+		}
+		else {
+			$bad = [];
+			if ($out['orders']  !== 'ok') { $bad[] = 'orders '  . $out['orders']; }
+			if ($out['history'] !== 'ok') { $bad[] = 'history ' . $out['history']; }
+			$out['summary'] = 'could not tell: ' . implode(', ', $bad);
+		}
+
+		$out['summary'] = t212_mask($out['summary']);
+		return $out;
+	}
+
 	class T212Client {
 
 		/**
@@ -520,11 +641,7 @@
 			$decoded = json_decode((string) $answer, true);
 
 			if ($status >= 400) {
-				$why = is_array($decoded) && isset($decoded['code']) ? (string) $decoded['code']
-				     : (is_array($decoded) && isset($decoded['message'])
-				        ? (string) $decoded['message'] : 'no reason given');
-				return $this->failure('rejected', $status,
-				       "Trading 212 refused the order: " . t212_mask($why));
+				return $this->failure('rejected', $status, refusal_reason($status, $answer));
 			}
 
 			if (!is_array($decoded)) {

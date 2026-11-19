@@ -156,6 +156,89 @@
 	   --------------------------------------------------------------------- */
 
 	/**
+	 * The one stuck-order rule. Called by broker_send_orders() and
+	 * broker_live_send_orders() before anything new is sent; neither carries
+	 * a copy of it.
+	 *
+	 * A market order fills in ten to thirty seconds. One still SENT or
+	 * UNKNOWN minutes later is a question, and the answer to a question is
+	 * not another order:
+	 *
+	 *   at T212_STUCK_SECONDS  the strategy is halted (broker_halt_strategy);
+	 *   at T212_SETTLE_SECONDS nothing more is sent this run;
+	 *   before that            a note that they are settling.
+	 *
+	 * If the last time the orders were resolved Trading 212 refused the read
+	 * (a key without Orders - Read), the halt says that, and that the orders
+	 * may have filled: "unresolved" would send a person looking for a failure
+	 * that did not happen, when the real fault is a permission.
+	 *
+	 * $options['live']  the live sender: wording only.
+	 *
+	 * NEVER sends, resends or cancels, and never clears a halt.
+	 *
+	 * Returns ['stop' => bool, 'halted' => bool, 'lines' => [], 'errors' => [],
+	 *          'waiting' => n, 'blind' => bool].
+	 */
+	function stuck_check($strategy, $options = []) {
+
+		$out  = ['stop' => false, 'halted' => false, 'lines' => [], 'errors' => [],
+		         'waiting' => 0, 'blind' => false];
+		$live = !empty($options['live']) ? 'live ' : '';
+
+		$waiting = query("select client_order_id, status,
+		                         timestampdiff(second, coalesce(sent_at, created_at), now()) age
+		                    from strategy_orders
+		                   where strategy=? and status in ('SENT','UNKNOWN')
+		                   order by age desc", $strategy);
+
+		if (!count($waiting)) { return $out; }
+
+		$out['waiting'] = count($waiting);
+		$oldest = (int) $waiting[0]['age'];
+		$state  = broker_book_state($strategy);
+		$out['blind'] = $state['blind'];
+
+		if ($oldest >= (int) T212_STUCK_SECONDS) {
+
+			$minutes = round($oldest / 60);
+
+			if ($state['blind']) {
+				$reason = count($waiting) . " " . $live . "order(s) have been out for " . $minutes
+				        . " minutes and the Trading 212 key cannot read orders (lacks "
+				        . $state['missing'] . "), so they may have filled. Check the broker"
+				        . " before clearing this halt.";
+			}
+			else {
+				$reason = count($waiting) . " " . $live . "order(s) have been out for " . $minutes
+				        . " minutes without being resolved, the oldest being "
+				        . $waiting[0]['client_order_id'];
+			}
+
+			broker_halt_strategy($strategy, $reason);
+			$out['halted'] = true;
+			$out['stop']   = true;
+			$out['errors'][] = "halted: " . ($live === '' ? "an order" : "a live order")
+			                 . " has been unresolved for " . $minutes . " minutes"
+			                 . ($state['blind'] ? " and the key cannot read orders" : "");
+			return $out;
+		}
+
+		if ($oldest >= (int) T212_SETTLE_SECONDS) {
+			$out['stop'] = true;
+			$out['errors'][] = count($waiting) . " " . $live . "order(s) sent earlier are still"
+			                 . " unresolved, the oldest " . round($oldest / 60)
+			                 . " minute(s) ago. Nothing more is sent until the broker"
+			                 . " has been asked what became of them.";
+			return $out;
+		}
+
+		$out['lines'][] = count($waiting) . " order(s) are still settling, which is normal for the"
+		                . " first " . (int) T212_SETTLE_SECONDS . " seconds";
+		return $out;
+	}
+
+	/**
 	 * Send a strategy's PENDING orders to the demo account.
 	 *
 	 * $options:
@@ -235,41 +318,12 @@
 		}
 
 		/* Nothing new goes out while something already sent is unaccounted
-		   for. A market order fills in ten to thirty seconds; one that is
-		   still unresolved minutes later is a question, and the answer to a
-		   question is not another order. */
-		$waiting = query("select client_order_id, status,
-		                         timestampdiff(second, coalesce(sent_at, created_at), now()) age
-		                    from strategy_orders
-		                   where strategy=? and status in ('SENT','UNKNOWN')
-		                   order by age desc", $strategy);
-
-		if (count($waiting)) {
-
-			$oldest = (int) $waiting[0]['age'];
-
-			if ($oldest >= (int) T212_STUCK_SECONDS) {
-				broker_halt_strategy($strategy,
-				    count($waiting) . " order(s) have been out for " . round($oldest / 60)
-				  . " minutes without being resolved, the oldest being "
-				  . $waiting[0]['client_order_id']);
-				$out['halted'] = true;
-				$out['errors'][] = "halted: an order has been unresolved for "
-				                 . round($oldest / 60) . " minutes";
-				return $out;
-			}
-
-			if ($oldest >= (int) T212_SETTLE_SECONDS) {
-				$out['errors'][] = count($waiting) . " order(s) sent earlier are still"
-				                 . " unresolved, the oldest " . round($oldest / 60)
-				                 . " minute(s) ago. Nothing more is sent until the broker"
-				                 . " has been asked what became of them.";
-				return $out;
-			}
-
-			$say(count($waiting) . " order(s) are still settling, which is normal for the"
-			     . " first " . (int) T212_SETTLE_SECONDS . " seconds");
-		}
+		   for: the one rule, in stuck_check(), shared with the live sender. */
+		$stuck = stuck_check($strategy);
+		foreach ($stuck['lines'] as $line)   { $say($line); }
+		foreach ($stuck['errors'] as $error) { $out['errors'][] = $error; }
+		if ($stuck['halted']) { $out['halted'] = true; }
+		if ($stuck['stop'])   { return $out; }
 
 		/* And nothing goes out without the two books having been compared,
 		   unless there is nothing of ours to compare: a strategy that holds
@@ -474,7 +528,7 @@
 	 */
 	function broker_order_book($client) {
 
-		$book = ['pending' => [], 'history' => [], 'errors' => []];
+		$book = ['pending' => [], 'history' => [], 'errors' => [], 'blind' => false, 'missing' => []];
 
 		$pending = $client->get('orders');
 		if ($pending['ok']) {
@@ -485,10 +539,24 @@
 				if ($id !== null) { $book['pending'][(string) $id] = $row; }
 			}
 		}
-		else { $book['errors'][] = "pending orders: " . $pending['message']; }
+		else {
+			$book['errors'][] = "pending orders: " . $pending['message'];
+			/* A 401 or 403 is not "nothing there": it is "not allowed to look".
+			   The book is blind, and says which permission it lacks. */
+			if (in_array((int) $pending['status'], [401, 403], true)) {
+				$book['blind'] = true;
+				$book['missing'][] = 'Orders - Read';
+			}
+		}
 
 		$history = $client->get_all('order_history');
-		if (!$history['ok']) { $book['errors'][] = "order history: " . $history['message']; }
+		if (!$history['ok']) {
+			$book['errors'][] = "order history: " . $history['message'];
+			if (in_array((int) $history['status'], [401, 403], true)) {
+				$book['blind'] = true;
+				$book['missing'][] = 'History - Read';
+			}
+		}
 		foreach ($history['items'] as $row) {
 			[$id] = broker_field($row, broker_fields('order_id'));
 			if ($id !== null) { $book['history'][(string) $id] = $row; }
@@ -654,7 +722,7 @@
 
 		$out = ['filled' => 0, 'rejected' => 0, 'cancelled' => 0, 'working' => 0,
 		        'adopted' => 0, 'written_off' => 0, 'lines' => [], 'errors' => [],
-		        'halted' => false];
+		        'halted' => false, 'blind' => false, 'missing' => [], 'environment' => ''];
 
 		if (!broker_trading_ready()) {
 			$out['errors'][] = "sql/broker_trading.sql has not been applied";
@@ -676,6 +744,20 @@
 
 		$book = broker_order_book($client);
 		foreach ($book['errors'] as $error) { $out['errors'][] = $error; }
+
+		/* Which key was used, and whether it could read the book. Kept where
+		   the sender that runs after this can read it: stuck_check() needs to
+		   know, because "unresolved" and "could not look" are different
+		   things for a person to be told. */
+		$out['environment'] = $client->environment();
+		$out['blind']       = $book['blind'];
+		$out['missing']     = $book['missing'];
+		broker_store_book_state($strategy, $client->environment(), $book['blind'], $book['missing']);
+		if ($book['blind']) {
+			write_log("broker_orders", $strategy . ": the " . $client->environment()
+			        . " key cannot read orders (lacks " . implode(' and ', $book['missing'])
+			        . "), so " . count($waiting) . " order(s) cannot be resolved");
+		}
 
 		/* Nothing is decided from an incomplete picture: if the history
 		   could not be read, an order that is not in it has not been shown
