@@ -44,6 +44,30 @@
        what draws it. */
     require_once("../includes/broker_live.php");
 
+    /* CLEAR A HALT. The one POST this page takes: a halted strategy's form,
+       with the password and the strategy's name typed again. It is handled
+       the way arming is - the function decides, this says what happened and
+       sends the reader back - and it is a web POST and nothing else, so
+       there is no job or command that calls it. Clearing does not arm. */
+    if (strtoupper((string) ($_SERVER["REQUEST_METHOD"] ?? 'GET')) === 'POST'
+        && is_string($_POST['do'] ?? null) && $_POST['do'] === 'clear_halt') {
+
+        $clear_strategy = is_string($_POST['strategy'] ?? null) ? trim($_POST['strategy']) : '';
+
+        $result = broker_clear_halt($clear_strategy, [
+            'user_id'    => (int) ($_SESSION['id'] ?? 0),
+            'password'   => is_string($_POST['password'] ?? null) ? $_POST['password'] : '',
+            'typed_name' => is_string($_POST['name'] ?? null) ? trim($_POST['name']) : '',
+        ]);
+
+        $_SESSION['sm_live_message'] = ['ok' => (bool) $result['ok'],
+            'text' => $result['ok']
+                    ? "The halt is cleared. The strategy is not armed: arming is its own form."
+                    : "The halt was not cleared: " . $result['why'],
+            'strategy' => $clear_strategy];
+        redirect("strategies.php?s=" . urlencode($clear_strategy));
+    }
+
     $exchange = session_exchange();
 
     /* The as of date every figure on the page is read at: the last day

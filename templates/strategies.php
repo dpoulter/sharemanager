@@ -616,7 +616,26 @@
 						<strong>Stopped.</strong>
 						<?= e((string) $card['halt_reason']) ?>
 						This strategy places no orders until somebody has looked at it and
-						cleared the halt.
+						cleared the halt here, with the password. Clearing the halt does not
+						arm it.
+						<?php /* Refused by the function while any order is SENT or UNKNOWN. */ ?>
+						<form method="post" action="strategies.php"
+						      class="mt-2 d-flex gap-2 align-items-end flex-wrap">
+							<input type="hidden" name="do" value="clear_halt">
+							<input type="hidden" name="strategy" value="<?= e($card['strategy']) ?>">
+							<div>
+								<label class="form-label mb-0"><small>Type
+									&ldquo;<?= e(strategy_display_name($card['strategy'])) ?>&rdquo;</small></label>
+								<input type="text" name="name" class="form-control form-control-sm"
+								       autocomplete="off" required>
+							</div>
+							<div>
+								<label class="form-label mb-0"><small>Password</small></label>
+								<input type="password" name="password" class="form-control form-control-sm"
+								       autocomplete="current-password" required>
+							</div>
+							<button type="submit" class="btn btn-sm btn-danger">Clear the halt</button>
+						</form>
 					</div>
 					<?php endif ?>
 
