@@ -1,0 +1,8 @@
+# One signal alone: top quintile of the FTSE 350-like universe, equal weight,
+# monthly, Trading 212 costs. See src/research/signals/osap.py for the source.
+name: reversal_1m_q5_monthly
+family: reversal_1m
+signals: {reversal_1m: 1}
+holdings: quintile
+rebalance: monthly
+universe: ftse350

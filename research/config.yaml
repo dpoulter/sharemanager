@@ -1,0 +1,59 @@
+# Settings for the research setup. Paths may start with ~.
+# Every value here can be read back from the log: the run records the
+# config file's hash alongside the strategy's.
+
+paths:
+  data: ~/sharemanager-research/data
+  reports: ~/sharemanager-research/reports
+  logs: ~/sharemanager-research/logs
+  env_file: ~/.config/sharemanager-research/env
+  # Relative to the research/ folder.
+  run_log: log/runs.parquet
+
+fmp:
+  base_url: https://financialmodelingprep.com/stable
+  # Premium is 750 a minute; stay under it.
+  calls_per_minute: 600
+  max_retries: 6
+  # Price history from this date where FMP has it.
+  price_start: "1988-01-01"
+  market_cap_start: "2007-01-01"
+  # Rows per price call is capped at 5,000; 15 years of trading days is ~3,800.
+  price_chunk_years: 15
+
+point_in_time:
+  # FMP's filingDate for UK companies is the period end, not the publication
+  # date, so a statement is only usable this long after its period end.
+  annual_lag_months: 4
+  half_year_lag_months: 3
+
+engine:
+  # adjusted: signals, averages, fills and valuations on the dividend-adjusted
+  # close (total return). raw: on the raw close, no dividends credited, as the
+  # N100 prices. Research runs use adjusted; validate uses raw.
+  price_basis: adjusted
+
+universe:
+  size: 350
+  large_size: 100            # FTSE 100-like = top 100, FTSE 250-like = 101..350
+  start: "2007-01-01"        # market cap history starts here; nothing before it
+  include_aim: false
+  # Rank like the FTSE 350: the top `size` by market cap WITH investment trusts
+  # and funds counted, then drop them (about 260 companies, as the FTSE 350
+  # has). False ranks companies only, which reaches about 90 places deeper.
+  rank_with_trusts: true
+  # Optional CSV of AIM symbols (one column, symbol) where FMP does not say.
+  aim_list: null
+
+periods:
+  # Validation starts in 2023, not 2022: the pulled data has dead London
+  # lines only from 2023 (2021: 1, 2022: 13, 2023: 141). Dale's call; to go
+  # back, set dev to end 2021-12-31 and val to start 2022-01-01.
+  dev: ["2007-01-01", "2022-12-31"]
+  val: ["2023-01-01", "2025-05-17"]
+  holdout_start: "2025-05-18"
+
+caveats:
+  - "Restatements: FMP holds the latest figures, not those first published, so accounts-based signals may see corrections made later."
+  - "Accounts are lagged from period end (4 months annual, 3 months half-year) because FMP's UK filing dates are period ends."
+  - "Development period (2007-2022) is survivorship-biased: the data holds few companies that died before 2023."

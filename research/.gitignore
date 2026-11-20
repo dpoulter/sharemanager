@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# The test log is kept out of git on purpose: it lives on the Mac mini and
+# nothing may rewrite it. Back it up, do not commit it.
+log/
