@@ -150,10 +150,12 @@ def cap_step_factors(cap: np.ndarray) -> tuple[np.ndarray, list[dict]]:
     segments (pence read as pounds changes the level by 100 at one step).
     A segment is judged against its neighbours, not against the series: its
     median against the median of the 40 trading days before it and the 40
-    after it, outside the segment.
+    after it, outside the segment and not past the next step.
 
     - Two neighbours: x100 or x0.01 when the ratio to both is within 80 to 125
-      (or its inverse) and the segment is flat (largest over median below 3).
+      (or its inverse) and the segment is flat (largest over median below 3), and
+      only if that lands it nearer the series' median than it was (a normal stretch
+      between two stretches at the other level is not moved towards them).
     - A segment at either end of the series has one neighbour: the ratio must be
       within 90 to 112 (or its inverse) and the segment at least 20 days long.
       It is measured against the series as already corrected, and only towards a
@@ -176,6 +178,7 @@ def cap_step_factors(cap: np.ndarray) -> tuple[np.ndarray, list[dict]]:
     bounds = np.r_[0, steps, len(v)]
     segs = list(zip(bounds[:-1], bounds[1:]))
     n = len(v)
+    anchor = float(np.median(v))      # only to say which of two 100x-apart levels is the series' own
     w = v.copy()                      # the series as corrected so far
     factor = np.ones(len(segs))
     refused_seg: dict[int, dict] = {}
@@ -183,8 +186,10 @@ def cap_step_factors(cap: np.ndarray) -> tuple[np.ndarray, list[dict]]:
     def ratios(i: int, series: np.ndarray) -> tuple[float, float, float, float]:
         lo, hi = segs[i]
         med = float(np.median(series[lo:hi]))
-        before = _ratio(med, series[max(0, lo - NEIGHBOUR_DAYS):lo]) if lo > 0 else float("nan")
-        after = _ratio(med, series[hi:hi + NEIGHBOUR_DAYS]) if hi < n else float("nan")
+        # 40 days either side, but not past the next step: beyond it is a different level, and in
+        # a series that flips (11 segments) the median over both levels is in line with neither.
+        before = _ratio(med, series[max(lo - NEIGHBOUR_DAYS, segs[i - 1][0]):lo]) if lo > 0 else float("nan")
+        after = _ratio(med, series[hi:min(hi + NEIGHBOUR_DAYS, segs[i + 1][1])]) if hi < n else float("nan")
         return med, before, after, float(series[lo:hi].max())
 
     def refuse(i: int, why: str, before: float, after: float, med: float, mx: float) -> None:
@@ -203,13 +208,18 @@ def cap_step_factors(cap: np.ndarray) -> tuple[np.ndarray, list[dict]]:
         flat = mx / med < FLAT
         for k, inv in ((0.01, False), (100.0, True)):
             if _near(rb, BOTH_LO, BOTH_HI, inv) and _near(ra, BOTH_LO, BOTH_HI, inv):
+                if abs(np.log(med * k / anchor)) >= abs(np.log(med / anchor)):
+                    break          # already the series' own level, between two stretches at the other one: left alone
                 if flat:
                     factor[i] = k
                 else:
                     refuse(i, f"not flat: largest {mx / med:.1f} times the median (limit {FLAT:g})", rb, ra, med, mx)
                 break
         else:
-            refuse(i, "ratio to the neighbours outside 80 to 125 on both sides", rb, ra, med, mx)
+            side = "both sides" if not (_near(rb, BOTH_LO, BOTH_HI, False) or _near(rb, BOTH_LO, BOTH_HI, True)
+                                        or _near(ra, BOTH_LO, BOTH_HI, False) or _near(ra, BOTH_LO, BOTH_HI, True)) \
+                else "one side only (or the two sides disagree on direction)"
+            refuse(i, f"ratio to the neighbours outside 80 to 125 on {side}", rb, ra, med, mx)
         if factor[i] != 1:
             w[lo:hi] = v[lo:hi] * factor[i]
     # Pass 2: the two end segments, against the series as corrected.

@@ -183,6 +183,37 @@ def ceiling_section(m: Market) -> tuple[list[str], pd.DataFrame]:
     return out, off
 
 
+def cap_vs_price_shares(m: Market, lo: float = 0.25, hi: float = 4.0, min_days: int = 20) -> pd.DataFrame:
+    """Kept symbols whose market cap is far from price x shares outstanding for at least `min_days`.
+
+    Shares come from the statements (weighted average shares out), held from each period end to
+    the next, and back to the first one before it. They are not point-in-time exact, so the band is
+    wide (a quarter to four times): it is there to catch a cap 10, 100 or 3,000 times out, whatever
+    the cause (pence read as pounds, a foreign currency, a bad share count). Report only: nothing
+    is changed and the build does not fail on it.
+    """
+    st = m.statements
+    cols = ["symbol", "days", "from", "to", "median_ratio", "largest_cap_gbp_bn"]
+    if st is None or st.empty or "weightedAverageShsOut" not in st:
+        return pd.DataFrame(columns=cols)
+    kept = [c for c in m.market_cap.columns if bool(m.master["included"].get(c, False))] \
+        if "included" in m.master else list(m.market_cap.columns)
+    s = st.dropna(subset=["weightedAverageShsOut"])
+    s = s[s["weightedAverageShsOut"] > 0].sort_values("period_end").drop_duplicates(["symbol", "period_end"], keep="last")
+    sh = s.pivot(index="period_end", columns="symbol", values="weightedAverageShsOut")
+    sh = sh.reindex(sh.index.union(m.dates)).ffill().bfill().reindex(m.dates)
+    use = [c for c in kept if c in sh.columns and c in m.close.columns]
+    ratio = m.market_cap[use] / (m.close[use] * sh[use])
+    out = []
+    for c in use:
+        r = ratio[c].dropna()
+        bad = r[(r < lo) | (r > hi)]
+        if len(bad) >= min_days:
+            out.append((c, int(len(bad)), str(bad.index.min().date()), str(bad.index.max().date()),
+                        round(float(bad.median()), 2), round(float(m.market_cap[c].loc[bad.index].max()) / 1e9, 2)))
+    return pd.DataFrame(out, columns=cols).sort_values("largest_cap_gbp_bn", ascending=False).reset_index(drop=True)
+
+
 def moves_by_scope(moves: pd.DataFrame, member: pd.DataFrame | None) -> dict:
     out = {"overall": int(len(moves))}
     if member is not None and len(moves):
@@ -225,6 +256,13 @@ def write_data_report(m: Market, data: Path, fail_on_ceiling: bool = True) -> Pa
     else:
         after_listed = after
     ceiling_lines, offenders = ceiling_section(m)
+    far = cap_vs_price_shares(m)
+    ceiling_lines += ["### Caps far from price x shares (report only)", "",
+                      f"Kept symbols with 20 or more days where the cap is under a quarter or over four times price x "
+                      f"shares outstanding (shares from the statements, so approximate): {len(far)}. Nothing is changed. "
+                      "A median ratio near 100 or 0.01 is a pence/pounds slip the rescale missed; near 1,000 or more is "
+                      "not a unit slip at all.", "",
+                      md(far.head(80), index=False) if len(far) else "none", ""]
     pounds = pounds_not_pence(data)
     empty = empty_statements(data)
     counts = counts_by_year(m, data)

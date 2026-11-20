@@ -106,6 +106,16 @@ def test_a_refused_middle_leaves_the_ends_alone():
     assert len(refused) == 1
 
 
+def test_a_series_that_flips_between_levels_is_corrected_segment_by_segment():
+    """NUM-like: 100x-low stretches of 10 days between normal stretches of 10. A 40-day window that runs
+    past the next step takes in the other level, so the neighbour median is in line with neither."""
+    v = np.r_[np.full(50, 2e9), np.full(10, 2e7), np.full(10, 2e9), np.full(10, 2e7), np.full(10, 2e9),
+              np.full(10, 2e7), np.full(50, 2e9)]
+    fixed, done, refused = fix_cap_steps(caps_of(NUM=v))
+    assert out_of(fixed, "NUM").tolist() == np.full(150, 2e9).tolist()
+    assert refused.empty and done["rows"].iloc[0] == 30
+
+
 def test_a_series_with_no_step_is_untouched_and_a_short_series_does_not_crash():
     fixed, done, refused = fix_cap_steps(caps_of(A=np.array([1e9]), B=np.array([np.nan, np.nan, 1e9])))
     assert done.empty and refused.empty and list(fixed.columns) == ["symbol", "date", "market_cap"]
@@ -272,3 +282,21 @@ def test_the_universe_has_no_overseas_no_isin_foreign_or_non_gbp_cap_line(tmp_pa
     assert held == {"UKCO.L", "IRCO.L", "JERS.L", "NOIS.L"}
     assert u["market_cap"].max() <= 3e8 * 1.0001
     assert (u[u["symbol"] == "UKCO.L"]["market_cap"] == 3e8).all()           # a pence line, cap in pounds
+
+
+def test_cap_far_from_price_times_shares_is_listed_not_changed():
+    """SDRY-like: a cap 3,000 times price x shares; a normal line and a 2x-off line are not listed."""
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from conftest import make_market
+    from research.checks import cap_vs_price_shares
+    n = 60
+    dates = pd.bdate_range("2020-01-01", periods=n)
+    st = pd.DataFrame({"symbol": ["OK.L", "SDRY.L", "TWO.L"], "period_end": pd.Timestamp("2019-12-31"),
+                       "weightedAverageShsOut": 1e8})
+    prices = {s: [10.0] * n for s in ("OK.L", "SDRY.L", "TWO.L")}        # £10 x 1e8 = £1bn
+    caps = {"OK.L": 1.1e9, "SDRY.L": 3e12, "TWO.L": 2e9}
+    m = make_market(prices, caps=caps, statements=st)
+    far = cap_vs_price_shares(m)
+    assert list(far["symbol"]) == ["SDRY.L"] and far["median_ratio"].iloc[0] == pytest.approx(3000)
+    assert (m.market_cap["SDRY.L"] == 3e12).all()
