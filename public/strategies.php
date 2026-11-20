@@ -114,7 +114,7 @@
 
         $_SESSION['sm_live_message'] = ['ok' => (bool) $result['ok'], 'strategy' => $asked,
             'text' => $result['ok']
-                    ? "Backtest queued as run " . $result['run_id'] . ". A job replays it outside the web server, one at a time."
+                    ? "Backtest queued as run " . $result['run_id'] . ". The Mac mini research engine runs it, one at a time."
                     : "The backtest was not queued: " . $result['why']];
         $left = strategy_account($asked);
         redirect("strategies.php?s=" . urlencode($asked) . "&tab=backtest"

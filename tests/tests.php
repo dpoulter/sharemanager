@@ -40,6 +40,11 @@
     $INCLUDES = dirname(__DIR__) . '/includes';
     $passed = 0; $failed = 0; $failures = [];
 
+    /* Where backtest reports posted by the Mac mini go during the suite, for
+       this process and the test web server alike. */
+    $BT_REPORTS = sys_get_temp_dir() . '/sm_backtest_reports_test';
+    putenv('SM_BACKTEST_REPORTS_DIR=' . $BT_REPORTS);
+
     /**
      * The first keyword structured outputs do not support, or null.
      *
@@ -15534,6 +15539,7 @@
             . ' ANTHROPIC_BASE_URL=http://127.0.0.1:' . $ai_port
             . ' ANTHROPIC_API_KEY=' . escapeshellarg($ai_key)
             . ' ANTHROPIC_TIMEOUT=5'
+            . ' SM_BACKTEST_REPORTS_DIR=' . escapeshellarg($BT_REPORTS)
             . ' SM_VAULT_DIR=' . escapeshellarg($ai_vault)
             /* config.php defaults display_errors to off, which is right for a
                public host. Half the checks below read warnings out of the page,
@@ -17617,6 +17623,7 @@ STUB
            a time, outside the web server, through the same engine the command
            line uses. The run keeps the rules it was asked to test. */
         require_once(dirname(__DIR__) . '/includes/backtest_runs.php');
+        require_once(dirname(__DIR__) . '/includes/backtest_api.php');
 
         foreach (['strategy_orders', 'strategy_positions', 'strategy_targets', 'strategy_values'] as $wb_t) {
             db()->exec("delete from $wb_t where strategy like 'bt\\_screen\\_test\\_one%'");
@@ -17641,7 +17648,9 @@ STUB
             return (string) shell_exec('curl -s -L -m 30 -d ' . escapeshellarg($body) . ' '
                                        . escapeshellarg("$base/strategies.php") . ' 2>/dev/null');
         };
-        $wb_ask = ['do' => 'backtest', 'strategy' => $WF, 'from' => $bf_from, 'to' => $bf_to,
+        /* Dates clear of the holdout, which starts on BACKTEST_HOLDOUT_START. */
+        $wb_from = '2024-11-01'; $wb_to = '2025-05-16';
+        $wb_ask = ['do' => 'backtest', 'strategy' => $WF, 'from' => $wb_from, 'to' => $wb_to,
                    'cash' => '50000', 'cost_model' => 't212'];
         $wb_runs = function () use ($WF) {
             return (int) scalar("select count(*) from strategy_backtest_runs where strategy=?", [$WF]);
@@ -17651,9 +17660,28 @@ STUB
             return count($r) ? $r[0] : null;
         };
 
+        /* The Mac mini's side, through the API module, from a Tailscale address. */
+        $WB_TOKEN = 'test-backtest-token-' . bin2hex(random_bytes(6));
+        putenv('SM_BACKTEST_API_TOKEN=' . $WB_TOKEN);
+        $wb_api = function ($body, $ip = '100.101.102.103', $token = null) use (&$WB_TOKEN) {
+            $token = $token ?? $WB_TOKEN;
+            return backtest_api_handle(['method' => 'POST', 'remote_addr' => $ip,
+                                        'authorization' => $token === '' ? '' : 'Bearer ' . $token,
+                                        'body' => json_encode($body)]);
+        };
+        $wb_result = function ($claim, $over = []) {
+            return array_merge(['trading_days' => 130, 'rebalances' => 7, 'fills' => 64, 'start_value' => 50000,
+                'final_value' => 54321.5, 'total_return' => 0.08643, 'annual_return' => 0.181,
+                'bench_equal_weight_return' => 0.041, 'bench_cap_weight_return' => 0.052, 'max_drawdown' => -0.071,
+                'costs_paid' => 512.25, 'sharpe' => 1.1, 'deflated_sharpe' => 0.42, 'trials' => 3,
+                'research_run_id' => '20261120-101010-000001-abc123', 'engine_commit' => '1ca044f',
+                'record' => ['strategy' => 'sm_' . $claim['strategy']]], $over);
+        };
+        $wb_report = base64_encode('<html><body><h1>report</h1></body></html>');
+
         /* Nothing but a logged in POST, of a request that is valid, queues one. */
         $wb_before = $wb_runs();
-        $curl("$base/strategies.php?do=backtest&strategy=$WF&from=$bf_from&to=$bf_to");
+        $curl("$base/strategies.php?do=backtest&strategy=$WF&from=$wb_from&to=$wb_to");
         $wb_post($wb_ask, false);
         $wb_cli = backtest_request(array_merge($wb_ask, ['user_id' => 1, 'strategy' => $WF]));
         check('a GET, a logged-out POST and the command line queue nothing',
@@ -17661,10 +17689,12 @@ STUB
               && stripos($wb_cli['why'], 'command line') !== false);
 
         $wb_bad = [
-            'dates the wrong way round' => ['from' => $bf_to, 'to' => $bf_from],
+            'dates the wrong way round' => ['from' => $wb_to, 'to' => $wb_from],
             'a date that is not one'    => ['from' => '2020-13-45'],
-            'dates before the data'     => ['from' => '1990-01-01'],
-            'dates after the data'      => ['to' => '2099-01-01'],
+            'dates before the engine\'s universe' => ['from' => '1990-01-01'],
+            'an end date on the holdout start' => ['to' => BACKTEST_HOLDOUT_START],
+            'an end date inside the holdout' => ['to' => '2025-06-01'],
+            'dates far in the future'   => ['to' => '2099-01-01'],
             'no cash'                   => ['cash' => '0'],
             'cash that is text'         => ['cash' => 'lots'],
             'a cost model nobody offers' => ['cost_model' => 'free'],
@@ -17678,13 +17708,20 @@ STUB
                   (int) scalar("select count(*) from strategy_backtest_runs") === $wb_n
                   && stripos($wb_out, 'not queued') !== false, substr(strip_tags($wb_out), 0, 200));
         }
+        check('test 1 (form): the holdout refusal names the holdout',
+              stripos(strip_tags($wb_post(array_merge($wb_ask, ['to' => '2025-06-01']))), 'holdout') !== false);
+        check('the holdout date is one setting, read by the queue and not written into the page or the API',
+              BACKTEST_HOLDOUT_START === '2025-05-18'
+              && strpos((string) file_get_contents(dirname(__DIR__) . '/templates/strategy_backtest_form.php'), '2025-05') === false
+              && strpos((string) file_get_contents(dirname(__DIR__) . '/includes/backtest_api.php'), '2025-05') === false
+              && strpos((string) file_get_contents(dirname(__DIR__) . '/public/backtest_api.php'), '2025-05') === false);
 
-        /* The good one: queued, with its rules, and not replayed in the request. */
-        $wb_start = microtime(true);
+        /* The good one: queued for the Mac mini, with its rules, and not replayed here. */
         $wb_out = $wb_post($wb_ask);
         $wb_run = $wb_last();
-        check('a good POST queues a run, and says so',
+        check('a good POST queues a run for the Mac mini, and says so',
               $wb_run !== null && $wb_run['status'] === 'QUEUED' && stripos($wb_out, 'Backtest queued') !== false
+              && $wb_run['engine'] === 'mac_mini'
               && (float) $wb_run['starting_cash'] === 50000.0 && $wb_run['cost_model'] === 't212'
               && $wb_run['requested_by'] === 'tester', json_encode($wb_run));
         check('it carries the rules it was asked to test, and their fingerprint',
@@ -17708,70 +17745,195 @@ STUB
         check('and the Backtests view still draws with a queued run in it',
               stripos((string) $curl("$base/strategies.php?s=_backtests"), 'Fatal error') === false);
 
-        /* The job runs it, one at a time, through the engine. */
-        [$wb_job] = run_script('run_backtests.php');
-        $wb_done = backtest_run_get($wb_run['run_id']);
-        check('the job runs the queued run to DONE through the engine',
-              $wb_done['status'] === 'DONE' && (int) $wb_done['trading_days'] > 10
-              && strpos($wb_job, 'DONE') !== false, $wb_job);
-        check('and it still carries the snapshot and fingerprint it was queued with',
+        /* The N100 job replays nothing any more. */
+        run_script('run_backtests.php');
+        check('the old N100 job leaves a Mac mini run alone: nothing is replayed on the N100',
+              backtest_run_get($wb_run['run_id'])['status'] === 'QUEUED'
+              && (int) scalar("select count(*) from strategy_accounts where strategy like 'bt\\_%'") === 0);
+
+        /* The API door: test 4. */
+        $wb_log_before = (int) scalar("select coalesce(max(id),0) from message_log");
+        [$wb_s1, $wb_a1] = $wb_api(['action' => 'claim'], '100.101.102.103', '');
+        [$wb_s2, $wb_a2] = $wb_api(['action' => 'claim'], '100.101.102.103', 'wrong-' . $WB_TOKEN);
+        [$wb_s3, $wb_a3] = $wb_api(['action' => 'claim'], '203.0.113.9');
+        [$wb_s4, $wb_a4] = $wb_api(['action' => 'claim'], '192.168.1.20');
+        check('test 4: a missing token, a wrong token and a caller outside Tailscale are refused',
+              $wb_s1 === 401 && $wb_s2 === 401 && $wb_s3 === 403 && $wb_s4 === 403
+              && !$wb_a1['ok'] && !$wb_a2['ok'] && !$wb_a3['ok'] && !$wb_a4['ok'],
+              json_encode([$wb_s1, $wb_s2, $wb_s3, $wb_s4]));
+        $wb_logged = rows("select message_text from message_log where id > ? and module='backtest_api'", [$wb_log_before]);
+        check('and each refusal is logged, without the token',
+              count($wb_logged) === 4
+              && strpos(json_encode($wb_logged), $WB_TOKEN) === false
+              && strpos(json_encode($wb_logged), 'wrong-') === false, json_encode($wb_logged));
+        check('and nothing was claimed by any of them',
+              backtest_run_get($wb_run['run_id'])['status'] === 'QUEUED');
+        $wb_http = (string) shell_exec('curl -s -m 10 -H ' . escapeshellarg('Authorization: Bearer ' . $WB_TOKEN)
+                    . ' -d ' . escapeshellarg('{"action":"claim"}') . ' ' . escapeshellarg("$base/backtest_api.php"));
+        check('over HTTP from outside the Tailscale range, even with the right token, it is refused',
+              strpos($wb_http, '"ok":false') !== false && strpos($wb_http, 'Tailscale') !== false
+              && backtest_run_get($wb_run['run_id'])['status'] === 'QUEUED', $wb_http);
+        check('the Tailscale ranges are 100.64.0.0/10 and fd7a:115c:a1e0::/48',
+              backtest_api_tailscale('100.64.0.1') && backtest_api_tailscale('100.127.255.254')
+              && !backtest_api_tailscale('100.128.0.1') && !backtest_api_tailscale('100.63.255.255')
+              && backtest_api_tailscale('fd7a:115c:a1e0::1') && !backtest_api_tailscale('fd7a:115c:a1e1::1')
+              && backtest_api_tailscale('::ffff:100.100.1.1') && !backtest_api_tailscale('garbage'));
+        check('a GET with the right token is refused',
+              backtest_api_handle(['method' => 'GET', 'remote_addr' => '100.64.0.9',
+                                   'authorization' => 'Bearer ' . $WB_TOKEN, 'body' => ''])[0] === 405
+              && backtest_run_get($wb_run['run_id'])['status'] === 'QUEUED');
+
+        /* What the claim hands out. */
+        [$wb_cs, $wb_ca] = $wb_api(['action' => 'claim']);
+        $wb_claim = $wb_ca['run'];
+        check('a claim from Tailscale with the token takes the queued run and marks it running',
+              $wb_cs === 200 && $wb_claim !== null && $wb_claim['run_id'] === (int) $wb_run['run_id']
+              && backtest_run_get($wb_run['run_id'])['status'] === 'RUNNING'
+              && backtest_run_get($wb_run['run_id'])['claimed_at'] !== null, json_encode($wb_ca));
+        check('the claim hands out the snapshot, fingerprint, dates, cash and cost model, with the indicator names',
+              $wb_claim['rules_snapshot'] === json_decode($wb_run['rules_snapshot'], true)
+              && $wb_claim['fingerprint'] === $wb_run['fingerprint']
+              && $wb_claim['from'] === $wb_from && $wb_claim['to'] === $wb_to
+              && $wb_claim['starting_cash'] === 50000.0 && $wb_claim['cost_model'] === 't212'
+              && is_array($wb_claim['cost_settings']) && is_array($wb_claim['indicators']), json_encode($wb_claim));
+        check('and never an account, a position or a broker detail',
+              !preg_match('~account|position|broker|cash_balance|t212_key|api_key~i',
+                          json_encode(array_diff_key($wb_claim, ['cost_model' => 1, 'cost_settings' => 1]))));
+        [, $wb_none] = $wb_api(['action' => 'claim']);
+        check('a second claim gets nothing: the run is not handed out twice', $wb_none['ok'] && $wb_none['run'] === null);
+
+        /* Test 5: a result for the wrong fingerprint, or a run not running. */
+        [$wb_fs] = $wb_api(['action' => 'result', 'run_id' => $wb_claim['run_id'], 'fingerprint' => str_repeat('0', 40),
+                            'result' => $wb_result($wb_claim), 'report_base64' => $wb_report]);
+        check('test 5: a result with the wrong fingerprint is refused, and the run is still running',
+              $wb_fs === 409 && backtest_run_get($wb_claim['run_id'])['status'] === 'RUNNING');
+        $wb_nowhere = (int) scalar("select max(run_id) from strategy_backtest_runs") + 1000;
+        [$wb_ns] = $wb_api(['action' => 'result', 'run_id' => $wb_nowhere,
+                            'fingerprint' => $wb_claim['fingerprint'], 'result' => $wb_result($wb_claim),
+                            'report_base64' => $wb_report]);
+        check('test 5: a result for a run that does not exist is refused', $wb_ns === 409);
+        [$wb_ms] = $wb_api(['action' => 'result', 'run_id' => $wb_claim['run_id'], 'fingerprint' => $wb_claim['fingerprint'],
+                            'result' => $wb_result($wb_claim, ['total_return' => 'lots']), 'report_base64' => $wb_report]);
+        check('a result with a field that is not a number is refused', $wb_ms === 409
+              && backtest_run_get($wb_claim['run_id'])['status'] === 'RUNNING');
+
+        /* The rules change while it runs: it still tests what it was queued with. */
+        db()->prepare("update strategy_rules set holdings=3 where strategy=?")->execute([$WF]);
+        [$wb_rs, $wb_ra] = $wb_api(['action' => 'result', 'run_id' => $wb_claim['run_id'],
+                                    'fingerprint' => $wb_claim['fingerprint'], 'result' => $wb_result($wb_claim),
+                                    'report_base64' => $wb_report]);
+        $wb_done = backtest_run_get($wb_claim['run_id']);
+        check('the result is stored: done, both benchmarks, trades, costs, trials, deflated Sharpe, run id, commit',
+              $wb_rs === 200 && $wb_done['status'] === 'DONE' && (float) $wb_done['total_return'] === 0.08643
+              && (float) $wb_done['benchmark_return'] === 0.041 && (float) $wb_done['cap_weight_return'] === 0.052
+              && (int) $wb_done['fills'] === 64 && (float) $wb_done['costs_paid'] === 512.25
+              && (int) $wb_done['trial_count'] === 3 && (float) $wb_done['deflated_sharpe'] === 0.42
+              && $wb_done['research_run_id'] === '20261120-101010-000001-abc123' && $wb_done['engine_commit'] === '1ca044f',
+              json_encode([$wb_rs, $wb_ra, $wb_done]));
+        check('and it keeps the snapshot and fingerprint it was queued with',
               $wb_done['fingerprint'] === $wb_run['fingerprint'] && $wb_done['rules_snapshot'] === $wb_run['rules_snapshot']);
-        check('and it leaves no copy of the rules in the rules table',
-              (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 0);
-        check('so the strategy is Backtested',
+        check('the report is a file with a name the server chose, in the reports folder',
+              preg_match('~^run-' . $wb_claim['run_id'] . '-[0-9a-f]{12}\.html$~', (string) $wb_done['report_file'])
+              && backtest_report_path($wb_done) !== null
+              && strpos((string) file_get_contents(backtest_report_path($wb_done)), '<h1>report</h1>') !== false);
+        check('the rules edited during the run leave the strategy Draft: the run tested the old rules',
+              strategy_stage($WF)['stage'] === 'Draft');
+        db()->prepare("update strategy_rules set holdings=15 where strategy=?")->execute([$WF]);
+        check('with the rules back, the done run is of the current rules, so the strategy is Backtested',
               strategy_stage($WF)['stage'] === 'Backtested' && strategy_stage($WF)['backtest'] !== null);
 
-        /* The same arguments on the command line give the same result. */
-        [$wb_cli_out] = run_script('backtest_strategy.php', [$WF, $bf_from, $bf_to, '--cash=50000', '--costs=t212']);
-        $wb_cli_run = $wb_last();
-        $wb_same = true; $wb_diff = [];
-        foreach (['trading_days', 'rebalances', 'exits', 'fills', 'start_value', 'final_value', 'total_return',
-                  'benchmark_return', 'max_drawdown', 'costs_paid', 'starting_cash'] as $wb_col) {
-            if ((string) $wb_cli_run[$wb_col] !== (string) $wb_done[$wb_col]) {
-                $wb_same = false; $wb_diff[$wb_col] = [$wb_done[$wb_col], $wb_cli_run[$wb_col]];
-            }
+        [$wb_again] = $wb_api(['action' => 'result', 'run_id' => $wb_claim['run_id'], 'fingerprint' => $wb_claim['fingerprint'],
+                               'result' => $wb_result($wb_claim, ['total_return' => 9.99]), 'report_base64' => $wb_report]);
+        [$wb_again_f] = $wb_api(['action' => 'failure', 'run_id' => $wb_claim['run_id'],
+                                 'fingerprint' => $wb_claim['fingerprint'], 'why' => 'late']);
+        check('test 5: a done run cannot be changed: a second result or a failure for it is refused',
+              $wb_again === 409 && $wb_again_f === 409
+              && (float) backtest_run_get($wb_claim['run_id'])['total_return'] === 0.08643
+              && backtest_run_get($wb_claim['run_id'])['status'] === 'DONE');
+
+        $wb_page = (string) $curl("$base/strategies.php?s=" . urlencode($WF) . "&tab=backtest");
+        check('the page shows the Mac mini result with both benchmarks, trials, deflated Sharpe, report and labels',
+              strpos($wb_page, 'data-engine="mac_mini"') !== false
+              && strpos($wb_page, 'cap-weighted universe') !== false && strpos($wb_page, 'equal-weight universe') !== false
+              && strpos($wb_page, 'deflated Sharpe') !== false && strpos($wb_page, 'backtest_report.php?run=' . $wb_claim['run_id']) !== false
+              && stripos($wb_page, 'Restatements') !== false
+              && stripos($wb_page, 'Survivorship') === false);
+        $wb_rep = (string) $curl("$base/backtest_report.php?run=" . $wb_claim['run_id']);
+        check('and the report opens for a logged in user', strpos($wb_rep, '<h1>report</h1>') !== false);
+        check('a result from before 2022 carries the survivorship label, every result the restatement caveat',
+              count(backtest_result_labels(['from_date' => '2015-01-01'])) === 2
+              && stripos(backtest_result_labels(['from_date' => '2015-01-01'])[0], 'survivorship') !== false
+              && count(backtest_result_labels(['from_date' => '2022-01-01'])) === 1);
+
+        /* A failure posted from the Mac mini says why. */
+        $wb_out = $wb_post($wb_ask);
+        [, $wb_fa] = $wb_api(['action' => 'claim']);
+        [$wb_ffs] = $wb_api(['action' => 'failure', 'run_id' => $wb_fa['run']['run_id'],
+                             'fingerprint' => $wb_fa['run']['fingerprint'],
+                             'why' => "rules_translator refused: rebalance: 'fortnightly' is not monthly"]);
+        $wb_failed = backtest_run_get($wb_fa['run']['run_id']);
+        check('a failure from the Mac mini marks the run failed and says why',
+              $wb_ffs === 200 && $wb_failed['status'] === 'FAILED' && stripos((string) $wb_failed['note'], 'fortnightly') !== false);
+
+        /* Test 3: a run running past its limit is failed and not handed out again. */
+        $wb_out = $wb_post($wb_ask);
+        [, $wb_late] = $wb_api(['action' => 'claim']);
+        db()->prepare("update strategy_backtest_runs set claimed_at = now() - interval ? minute where run_id=?")
+          ->execute([BACKTEST_TIME_LIMIT_MINUTES + 5, $wb_late['run']['run_id']]);
+        [, $wb_after_late] = $wb_api(['action' => 'claim']);
+        $wb_late_row = backtest_run_get($wb_late['run']['run_id']);
+        check('test 3: a run past its time limit is marked failed with that reason, and not handed out again',
+              $wb_late_row['status'] === 'FAILED' && stripos((string) $wb_late_row['note'], 'time limit') !== false
+              && $wb_after_late['run'] === null);
+        [$wb_late_res] = $wb_api(['action' => 'result', 'run_id' => $wb_late['run']['run_id'],
+                                  'fingerprint' => $wb_late['run']['fingerprint'], 'result' => $wb_result($wb_late['run']),
+                                  'report_base64' => $wb_report]);
+        check('and a result arriving for it afterwards is refused', $wb_late_res === 409
+              && backtest_run_get($wb_late['run']['run_id'])['status'] === 'FAILED');
+
+        /* Test 2: two claims at once, only one gets the run. */
+        $wb_out = $wb_post($wb_ask);
+        $wb_race = $wb_last();
+        $wb_racer = sys_get_temp_dir() . '/sm_bt_race_' . getmypid() . '.php';
+        file_put_contents($wb_racer, '<?php require("constants.php"); require("functions.php");'
+            . ' require("' . dirname(__DIR__) . '/includes/backtest_api.php");'
+            . ' while (microtime(true) < ' . (microtime(true) + 1.5) . ') { usleep(1000); }'
+            . ' $c = backtest_claim_next(); echo $c === null ? "none" : "got:" . $c["run_id"];');
+        $wb_inc = escapeshellarg(__DIR__ . '/fixtures' . PATH_SEPARATOR . $INCLUDES);
+        $wb_procs = [];
+        foreach ([0, 1, 2, 3] as $wb_i) {
+            $wb_procs[] = popen('php -d include_path=' . $wb_inc . ' ' . escapeshellarg($wb_racer) . ' 2>&1', 'r');
         }
-        check('a run queued from the page gives the same result as the command line with the same arguments',
-              $wb_cli_run['run_id'] !== $wb_done['run_id'] && $wb_cli_run['status'] === 'DONE' && $wb_same,
-              json_encode($wb_diff) . substr($wb_cli_out, -300));
-        check('and the command line run carries the same rules fingerprint',
-              $wb_cli_run['fingerprint'] === $wb_done['fingerprint']);
-        check('and the engine leaves no orders, positions or rules copy behind',
-              (int) scalar("select count(*) from strategy_orders where strategy like 'bt\\_%'") === 0
-              && (int) scalar("select count(*) from strategy_positions where strategy like 'bt\\_%'") === 0
-              && (int) scalar("select count(*) from strategy_rules where strategy like 'bt\\_%'") === 0);
-        check('the cash and cost model change the result, so they are really used',
-              (string) $wb_done['final_value'] !== '' && (float) $wb_done['start_value'] === 50000.0);
+        $wb_got = [];
+        foreach ($wb_procs as $wb_p) { $wb_got[] = trim(stream_get_contents($wb_p)); pclose($wb_p); }
+        @unlink($wb_racer);
+        check('test 2: four claims at once, only one gets the run',
+              count(array_filter($wb_got, function ($g) use ($wb_race) { return $g === 'got:' . $wb_race['run_id']; })) === 1
+              && count(array_filter($wb_got, function ($g) { return $g === 'none'; })) === 3,
+              json_encode($wb_got));
+        [$wb_rf] = $wb_api(['action' => 'failure', 'run_id' => $wb_race['run_id'], 'fingerprint' => $wb_race['fingerprint'],
+                            'why' => 'test over']);
 
-        /* A request has to be asked again when the strategy has no run in flight. */
-        check('with the run finished a new one can be asked for',
-              backtest_run_active($WF) === null && strategy_stage($WF)['moves']['backtest']['open'] === true);
+        /* Test 1 from the API: a queued run that reaches the holdout is never handed out. */
+        db()->prepare("insert into strategy_backtest_runs
+                         (strategy,account,from_date,to_date,started_at,status,rules_snapshot,fingerprint,starting_cash,
+                          cost_model,requested_at,requested_by,engine)
+                       values (?,'(queued)',?,?,now(),'QUEUED',?,?,50000,'t212',now(),'test','mac_mini')")
+          ->execute([$WF, $wb_from, '2025-06-01', json_encode(rules_snapshot($WF)), rules_fingerprint($WF)]);
+        $wb_hold_id = (int) scalar("select max(run_id) from strategy_backtest_runs");
+        [, $wb_hold] = $wb_api(['action' => 'claim']);
+        check('test 1 (API): a queued run reaching into the holdout is refused, not handed out',
+              $wb_hold['run'] === null && backtest_run_get($wb_hold_id)['status'] === 'REFUSED'
+              && stripos((string) backtest_run_get($wb_hold_id)['note'], 'holdout') !== false);
 
-        /* The rules snapshot is what is replayed, not what the strategy says later. */
-        $wb_out = $wb_post($wb_ask);
-        $wb_q2 = $wb_last();
-        db()->prepare("update strategy_rules set holdings=3 where strategy=?")->execute([$WF]);
-        run_script('run_backtests.php');
-        $wb_q2_done = backtest_run_get($wb_q2['run_id']);
-        check('a rules edit made while a run waited does not change what it tested',
-              $wb_q2_done['status'] === 'DONE' && $wb_q2_done['fingerprint'] === $wb_q2['fingerprint']
-              && (string) $wb_q2_done['final_value'] === (string) $wb_done['final_value']);
-        check('but that run is no longer of the current rules, so the strategy is Draft',
-              strategy_stage($WF)['stage'] === 'Draft');
-        db()->prepare("update strategy_rules set holdings=5 where strategy=?")->execute([$WF]);
-        db()->prepare("update strategy_rules set holdings=15 where strategy=?")->execute([$WF]);
-
-        /* A screen edited while a run waited: it would not test what it was asked to. */
-        $wb_out = $wb_post($wb_ask);
-        $wb_q3 = $wb_last();
-        db()->prepare("update screen_criteria set first_operand=concat(coalesce(first_operand,''),'9') where id=?")
-          ->execute([$wf_crit['id']]);
-        run_script('run_backtests.php');
-        db()->prepare("update screen_criteria set first_operand=? where id=?")->execute([$wf_crit['first_operand'], $wf_crit['id']]);
-        $wb_q3_done = backtest_run_get($wb_q3['run_id']);
-        check('a screen edited while a run waited fails the run, saying so, rather than testing other rules',
-              $wb_q3_done['status'] === 'FAILED' && stripos((string) $wb_q3_done['note'], 'screen was edited') !== false,
-              json_encode($wb_q3_done));
+        check('the queue never writes a copy of a strategy, and the API writes no table itself',
+              !preg_match('~(insert\s+into|update|delete\s+from)\s+\w+~i',
+                          (string) file_get_contents(dirname(__DIR__) . '/includes/backtest_api.php'))
+              && strpos((string) file_get_contents(dirname(__DIR__) . '/includes/backtest_api.php'), 'strategy_backtest_runs') === false
+              && strpos((string) file_get_contents(dirname(__DIR__) . '/public/backtest_api.php'), 'strategy_backtest_runs') === false);
+        check('the earlier runs are shown as N100 runs',
+              backtest_engine_label(['engine' => null]) === 'N100' && backtest_engine_label(['engine' => 'mac_mini']) === 'Mac mini');
+        putenv('SM_BACKTEST_API_TOKEN');
 
         /* One at a time; a failure does not stop the next; a crash is failed, not rerun. */
         db()->exec("delete from strategy_backtest_runs where strategy='screen_test_one'");

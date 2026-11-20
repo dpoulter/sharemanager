@@ -64,6 +64,27 @@ A strategy is a small YAML file in `strategies/`. The docstring in `src/research
 | `metrics.py` | Metrics, and the deflated Sharpe ratio (Bailey and López de Prado, 2014) |
 | `report.py` | One self-contained HTML file per run |
 
+## Sharemanager's backtests (the worker)
+
+Every backtest asked for on sharemanager's strategy page runs here. Sharemanager only queues it; the worker claims it, runs it and posts the result back, all through one door, `backtest_api.php` on the N100 (claim, result, failure). The worker has no SSH, no database access and no login on the N100.
+
+| File | What it does |
+|---|---|
+| `worker.py` | `uv run research worker`: polls `backtest_api`, one run at a time. A failure is posted with its reason and the next run goes ahead. Every run is logged in the test log as a hand-started one (`kind: research`, family `sm_<strategy>`), so it counts as a trial. |
+| `from_rules.py` | Turns the rules snapshot in a claim into the engine's strategy, or refuses and names the rule it cannot translate. Its docstring lists what it covers. |
+| `deploy/com.sharemanager.backtest-worker.plist` | The launchd entry. |
+
+Settings are in `~/.config/sharemanager-research/worker.env`, mode 600 (the worker refuses any other mode):
+
+```
+SM_BACKTEST_API_URL=http://<n100 tailscale name>/backtest_api.php
+SM_BACKTEST_API_TOKEN=<the same value as in /etc/sharemanager.env on the N100>
+```
+
+The token is never logged. The worker refuses to start unless `research validate --replay-targets` passed at the current, clean git commit (it reads `data/validation/run9_replay_check.json` and checks the run is in the test log), so run that after every pull. A run interrupted by a stop or a restart is posted as failed, never run again silently. Sharemanager refuses any run that ends on or after the holdout start, and the engine refuses it again.
+
+The N100's own dealing rules are used for these runs: raw closes, a price on or before the day, at most 50 orders a rebalance, and the cost model asked for on the form (`t212` is the cost model run 9 was dealt with).
+
 ## The N100's definitions, copied exactly
 
 - **6-month return** (`signals/base.py: n100_return_detail`, from `calc_momentum()` and `backfill_trend_statistics.php`): calendar months, not trading days. It runs from the first price on or after (date − 6 months) to the last price on or before the date, using each share's own prices, and only where the start is before the end. A share with less history than the window gets the return over the history it has.

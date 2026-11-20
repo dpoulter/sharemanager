@@ -539,7 +539,9 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
     spec = spec_from_dict(raw)
     out = ws.run(spec, period=f"{start}:{end}", kind="engine_validation", start=start, end=end)
     rec = out["record"]
-    report = {"price_basis": rec.get("price_basis"),
+    report = {"run_id": rec.get("run_id"), "git_commit": rec.get("git_commit"),
+              "replay_targets": replay_targets is not None,
+              "price_basis": rec.get("price_basis"),
               "exit_calendar": raw.get("exit_calendar", "trading days only"),
               "rebalance_asof": "%s, %d dates" % (raw["_asof_source"], len(raw["rebalance_asof"]))
               if "rebalance_asof" in raw else "first trading day of the month (no as-of file in data/validation)",

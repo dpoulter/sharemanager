@@ -3,11 +3,21 @@
 	/**
 	 * Backtest runs: ask for one, and follow it from queued to done or failed.
 	 *
-	 * A request from the strategy's page only QUEUES a run. Nothing is
-	 * replayed inside the web request: a five year replay takes minutes and a
-	 * web server is the wrong place to spend them. includes/run_backtests.php
-	 * picks queued runs up, one at a time, outside the web server, and the
-	 * engine (includes/backtest_strategy.php) fills in the result.
+	 * The backtest_queue module (contracts/modules.yaml). A request from the
+	 * strategy's page only QUEUES a run. Nothing is replayed on the N100: the
+	 * Mac mini research engine claims the run through public/backtest_api.php
+	 * (which calls the functions here and writes no table itself), runs it
+	 * and posts the result or the failure back. Only one claim can take a
+	 * queued run; a run left running past BACKTEST_TIME_LIMIT_MINUTES is
+	 * marked failed with that reason and never handed out again.
+	 *
+	 * The holdout: a request whose end date is on or after
+	 * BACKTEST_HOLDOUT_START is refused, here, for the form and the API
+	 * alike. Nothing in sharemanager can ask for the final exam.
+	 *
+	 * A done run keeps its snapshot and fingerprint and cannot be changed
+	 * (every write is guarded by status). Earlier runs (engine null) stay as
+	 * they are and are shown as N100 runs.
 	 *
 	 * A run keeps the rules it was asked to test - a snapshot, with the
 	 * criteria of its screen - and the fingerprint of that snapshot
@@ -16,18 +26,20 @@
 	 *
 	 * Never: writes a copy of a strategy into the rules table, changes a
 	 * strategy's rules, touches an account, or calls the broker. It writes
-	 * rows in strategy_backtest_runs and nothing else.
+	 * rows in strategy_backtest_runs, and report files in
+	 * BACKTEST_REPORTS_DIR, and nothing else.
 	 */
 
 	require_once("constants.php");
 	require_once(__DIR__ . "/strategy_functions.php");
 	require_once(__DIR__ . "/rules_fingerprint.php");
 	require_once(__DIR__ . "/strategy_stage.php");
+	require_once(__DIR__ . "/backtest_config.php");
 
 	/** The dealing models a run may be asked to use. */
 	function backtest_cost_models() {
-		return ['t212' => 'Trading 212 (no commission, a stamp duty and a spread)',
-		        'paper' => 'Paper (GBP 5.95 a trade, GBP 250 minimum)'];
+		return ['t212' => 'Trading 212 (no commission, a stamp duty and a 10 bp spread)',
+		        'paper' => 'Paper (GBP 5.95 a trade, GBP 250 minimum, 25 bp spread)'];
 	}
 
 	/** Whether sql/strategy_workflow.sql and sql/backtest_queue.sql are applied. */
@@ -41,7 +53,14 @@
 		$rows = query("select count(*) n from information_schema.columns
 		                where table_schema=database() and table_name='strategy_backtest_runs'
 		                  and column_name in ('requested_at','requested_by','cost_model','starting_cash')");
-		$known = count($rows) && (int) $rows[0]['n'] === 4;
+		if (!count($rows) || (int) $rows[0]['n'] !== 4) { return $known = false; }
+
+		$rows = query("select count(*) n from information_schema.columns
+		                where table_schema=database() and table_name='strategy_backtest_runs'
+		                  and column_name in ('engine','claimed_at','research_run_id','engine_commit',
+		                                      'cap_weight_return','deflated_sharpe','trial_count',
+		                                      'report_file','result_json')");
+		$known = count($rows) && (int) $rows[0]['n'] === 9;
 		return $known;
 	}
 
@@ -66,7 +85,7 @@
 	function backtest_runs_for($strategy, $limit = 10) {
 
 		if (!backtest_runs_ready()) { return []; }
-		return query("select run_id, status, from_date, to_date, requested_at, finished_at,
+		return query("select run_id, status, from_date, to_date, requested_at, finished_at, engine,
 		                     starting_cash, cost_model, total_return, benchmark_return, note
 		                from strategy_backtest_runs where strategy=?
 		               order by run_id desc limit " . max(1, min(50, (int) $limit)), (string) $strategy);
@@ -95,7 +114,7 @@
 			return $refuse("a backtest is asked for with a form, so it is a POST and nothing else.");
 		}
 		if (!backtest_runs_ready()) {
-			return $refuse("apply sql/strategy_workflow.sql and sql/backtest_queue.sql first.");
+			return $refuse("apply sql/strategy_workflow.sql, sql/backtest_queue.sql and sql/backtest_mac_mini.sql first.");
 		}
 
 		$user_id = isset($options['user_id']) ? (int) $options['user_id'] : 0;
@@ -123,12 +142,8 @@
 		}
 		if ($from >= $to) { return $refuse("the start date has to be before the end date."); }
 
-		$data = query("select min(date) first, max(date) last from historical_prices where exchange='XLON'");
-		if (!count($data) || $data[0]['first'] === null) { return $refuse("there are no prices to replay."); }
-		if ($from < $data[0]['first'] || $to > $data[0]['last']) {
-			return $refuse("the dates have to be inside the data, which runs from "
-			             . $data[0]['first'] . " to " . $data[0]['last'] . ".");
-		}
+		$dates = backtest_dates_refusal($from, $to);
+		if ($dates !== null) { return $refuse($dates); }
 
 		$cash_raw = trim((string) ($options['cash'] ?? ''));
 		$cash = $cash_raw === '' ? (float) STRATEGY_BACKTEST_CASH : (is_numeric($cash_raw) ? (float) $cash_raw : 0.0);
@@ -143,21 +158,13 @@
 		}
 
 		$snapshot = rules_snapshot($strategy);
-		$earliest = strategy_backtest_earliest(strategy_rules($strategy));
-		if (count($earliest['missing'])) {
-			return $refuse("it needs " . implode(', ', $earliest['missing']) . ", which has no stored history.");
-		}
-		if ($earliest['date'] !== null && $from < $earliest['date']) {
-			return $refuse("its indicators only exist from " . $earliest['date']
-			             . ", and replaying earlier would rank the past on today's figures.");
-		}
 
 		/* One queued or running run per strategy, decided by the insert
 		   itself so two requests at once cannot both get in. */
 		query("insert into strategy_backtest_runs
 		         (strategy, account, from_date, to_date, started_at, status, rules_snapshot,
-		          fingerprint, starting_cash, cost_model, requested_at, requested_by)
-		       select ?, '(queued)', ?, ?, now(), 'QUEUED', ?, ?, ?, ?, now(), ? from dual
+		          fingerprint, starting_cash, cost_model, requested_at, requested_by, engine)
+		       select ?, '(queued)', ?, ?, now(), 'QUEUED', ?, ?, ?, ?, now(), ?, 'mac_mini' from dual
 		        where not exists (select 1 from strategy_backtest_runs
 		                           where strategy=? and status in ('QUEUED','RUNNING'))",
 		      $strategy, $from, $to, json_encode($snapshot), rules_fingerprint_of($snapshot),
@@ -177,16 +184,21 @@
 
 	/* ---- what the job needs ---- */
 
-	/** The oldest queued run, or null. */
+	/**
+	 * The oldest queued run for the old N100 job, or null. Every run asked
+	 * for now is the Mac mini's (engine 'mac_mini'), so the N100 job finds
+	 * nothing to replay; it stays only until the PHP engine is removed.
+	 */
 	function backtest_next_queued() {
-		$rows = query("select * from strategy_backtest_runs where status='QUEUED' order by run_id limit 1");
+		$rows = query("select * from strategy_backtest_runs where status='QUEUED' and engine is null
+		                order by run_id limit 1");
 		return count($rows) ? $rows[0] : null;
 	}
 
 	/** QUEUED to RUNNING. True only if this call is the one that did it. */
 	function backtest_claim($run_id) {
 		query("update strategy_backtest_runs set status='RUNNING', started_at=now()
-		        where run_id=? and status='QUEUED'", (int) $run_id);
+		        where run_id=? and status='QUEUED' and engine is null", (int) $run_id);
 		$run = backtest_run_get($run_id);
 		return $run !== null && $run['status'] === 'RUNNING';
 	}
@@ -223,12 +235,311 @@
 	function backtest_recover_interrupted() {
 
 		$out = [];
-		foreach (query("select run_id, account from strategy_backtest_runs where status='RUNNING'") as $run) {
+		foreach (query("select run_id, account from strategy_backtest_runs where status='RUNNING' and engine is null") as $run) {
 			backtest_fail($run['run_id'], "the run was interrupted (the job or the server stopped) and is not run again; queue it again");
 			backtest_clean_account($run['account']);
 			$out[] = (int) $run['run_id'];
 		}
 		return $out;
+	}
+
+	/* ---- the holdout and the dates ---- */
+
+	/**
+	 * Why these dates cannot be queued, or null. The one place the holdout
+	 * is checked on the sharemanager side, for the form and the API alike.
+	 */
+	function backtest_dates_refusal($from, $to) {
+
+		foreach ([$from, $to] as $date) {
+			$parsed = date_create_from_format('Y-m-d', (string) $date);
+			if ($parsed === false || date_format($parsed, 'Y-m-d') !== (string) $date) {
+				return "'" . $date . "' is not a date; use YYYY-MM-DD.";
+			}
+		}
+		if ($from >= $to) { return "the start date has to be before the end date."; }
+		if ($to >= BACKTEST_HOLDOUT_START) {
+			return "the end date has to be before " . BACKTEST_HOLDOUT_START . ", where the 18-month holdout"
+			     . " starts. The holdout is the final exam, run by hand on the Mac mini, never from here.";
+		}
+		if ($from < BACKTEST_EARLIEST) {
+			return "the research engine's universe starts on " . BACKTEST_EARLIEST . ".";
+		}
+		return null;
+	}
+
+	/* ---- what the Mac mini asks, through backtest_api ---- */
+
+	/**
+	 * A Mac mini run still RUNNING past its time limit is marked failed with
+	 * that reason. It is never handed out again. Returns the run ids.
+	 */
+	function backtest_expire_overdue() {
+
+		$limit = max(1, (int) BACKTEST_TIME_LIMIT_MINUTES);
+		$out = [];
+		foreach (query("select run_id from strategy_backtest_runs
+		                 where status='RUNNING' and engine='mac_mini'
+		                   and claimed_at < now() - interval " . $limit . " minute") as $run) {
+			query("update strategy_backtest_runs set status='FAILED', finished_at=now(), note=?
+			        where run_id=? and status='RUNNING' and engine='mac_mini'",
+			      "it ran past its time limit of " . $limit . " minutes and is not run again; queue it again",
+			      (int) $run['run_id']);
+			write_log("backtest", "run " . $run['run_id'] . " failed: past its time limit of " . $limit . " minutes");
+			$out[] = (int) $run['run_id'];
+		}
+		return $out;
+	}
+
+	/** The cost settings a cost model stands for, as the engine is to deal them. */
+	function backtest_cost_settings($model) {
+		$models = [
+			/* As run 9 was dealt (Trading 212, the engine check of 20 Nov 2026). */
+			't212'  => ['commission' => 0.0, 'stamp_duty' => STRATEGY_STAMP_DUTY_RATE, 'spread_bp' => 10.0,
+			            'minimum_order' => 250.0, 'whole_shares' => true],
+			'paper' => ['commission' => STRATEGY_COMMISSION, 'stamp_duty' => STRATEGY_STAMP_DUTY_RATE,
+			            'spread_bp' => (float) STRATEGY_SLIPPAGE_BPS,
+			            'minimum_order' => 250.0, 'whole_shares' => true],
+		];
+		return $models[(string) $model] ?? null;
+	}
+
+	/**
+	 * What the claim hands out for a run: the rules snapshot, its
+	 * fingerprint, the dates, the cash and the cost model - and, so the
+	 * snapshot's criteria can be read, the name and rank order of each
+	 * indicator they refer to. Never an account, a position or a broker detail.
+	 */
+	function backtest_claim_payload(array $run) {
+
+		$snapshot = json_decode((string) $run['rules_snapshot'], true);
+		$ids = [];
+		if (is_array($snapshot)) {
+			foreach (($snapshot['criteria'] ?? []) as $c) { $ids[] = (int) $c[0]; }
+		}
+		$indicators = [];
+		if (count($ids)) {
+			$ids = array_values(array_unique($ids));
+			$rows = query("select indicator_id, name, rank_order from screen_indicators where indicator_id in ("
+			              . implode(',', array_fill(0, count($ids), '?')) . ")", ...$ids);
+			foreach ($rows as $r) {
+				$indicators[(string) $r['indicator_id']] = ['name' => (string) $r['name'],
+				                                            'rank_order' => (string) $r['rank_order']];
+			}
+		}
+		$rank_orders = [];
+		foreach ([$snapshot['rules']['rank_by'] ?? null, $snapshot['rules']['score_indicator'] ?? null] as $name) {
+			if ($name === null || $name === '') { continue; }
+			$rows = query("select rank_order from screen_indicators where name=? limit 1", (string) $name);
+			$rank_orders[(string) $name] = count($rows) ? (string) $rows[0]['rank_order'] : null;
+		}
+
+		return [
+			'run_id'         => (int) $run['run_id'],
+			'strategy'       => (string) $run['strategy'],
+			'from'           => (string) $run['from_date'],
+			'to'             => (string) $run['to_date'],
+			'starting_cash'  => (float) $run['starting_cash'],
+			'cost_model'     => (string) $run['cost_model'],
+			'cost_settings'  => backtest_cost_settings($run['cost_model']),
+			'fingerprint'    => (string) $run['fingerprint'],
+			'rules_snapshot' => $snapshot,
+			'indicators'     => $indicators,
+			'rank_orders'    => $rank_orders,
+			'holdout_start'  => BACKTEST_HOLDOUT_START,
+		];
+	}
+
+	/**
+	 * The Mac mini claims the oldest queued run. Only one claim can take a
+	 * run: the claim is one guarded update, and a second claim at the same
+	 * moment finds the row no longer QUEUED. Overdue runs are failed first.
+	 * A queued run that reaches into the holdout (asked for before the check
+	 * existed) is refused rather than handed out.
+	 *
+	 * Returns the payload, or null when nothing is queued.
+	 */
+	function backtest_claim_next() {
+
+		backtest_expire_overdue();
+
+		for ($tries = 0; $tries < 20; $tries++) {
+
+			$rows = query("select run_id, to_date, from_date from strategy_backtest_runs
+			                where status='QUEUED' and engine='mac_mini' order by run_id limit 1");
+			if (!count($rows)) { return null; }
+			$id = (int) $rows[0]['run_id'];
+
+			$why = backtest_dates_refusal((string) $rows[0]['from_date'], (string) $rows[0]['to_date']);
+			if ($why !== null) {
+				query("update strategy_backtest_runs set status='REFUSED', finished_at=now(), note=?
+				        where run_id=? and status='QUEUED'", substr("not handed out: " . $why, 0, 1000), $id);
+				continue;
+			}
+
+			$claim = bin2hex(random_bytes(8));
+			query("update strategy_backtest_runs set status='RUNNING', started_at=now(), claimed_at=now(),
+			              account=?
+			        where run_id=? and status='QUEUED' and engine='mac_mini'", 'claim:' . $claim, $id);
+			$run = backtest_run_get($id);
+			if ($run === null || $run['status'] !== 'RUNNING' || $run['account'] !== 'claim:' . $claim) {
+				continue;            /* somebody else's claim took it; look again */
+			}
+			write_log("backtest", "run " . $id . " claimed by the Mac mini");
+			return backtest_claim_payload($run);
+		}
+		return null;
+	}
+
+	/** The run if a result or a failure may be posted for it, else why not. */
+	function backtest_postable($run_id, $fingerprint) {
+
+		$run = backtest_run_get((int) $run_id);
+		if ($run === null) { return [null, "there is no run " . (int) $run_id . "."]; }
+		if ($run['engine'] !== 'mac_mini' || $run['status'] !== 'RUNNING') {
+			return [null, "run " . (int) $run_id . " is not running (it is " . strtolower((string) $run['status']) . ")."];
+		}
+		if (!is_string($fingerprint) || !hash_equals((string) $run['fingerprint'], $fingerprint)) {
+			return [null, "the fingerprint does not match run " . (int) $run_id . "'s rules."];
+		}
+		return [$run, null];
+	}
+
+	/** The fields a result has to carry, and the column each goes to. */
+	function backtest_result_fields() {
+		return [
+			'trading_days'       => ['trading_days', 'int'],
+			'rebalances'         => ['rebalances', 'int'],
+			'fills'              => ['fills', 'int'],
+			'start_value'        => ['start_value', 'float'],
+			'final_value'        => ['final_value', 'float'],
+			'total_return'       => ['total_return', 'float'],
+			'annual_return'      => ['annual_return', 'float'],
+			'bench_equal_weight_return' => ['benchmark_return', 'float'],
+			'bench_cap_weight_return'   => ['cap_weight_return', 'float'],
+			'max_drawdown'       => ['max_drawdown', 'float'],
+			'costs_paid'         => ['costs_paid', 'float'],
+			'sharpe'             => ['sharpe', 'float'],
+			'deflated_sharpe'    => ['deflated_sharpe', 'float'],
+			'trials'             => ['trial_count', 'int'],
+		];
+	}
+
+	/**
+	 * The Mac mini posts a result. Refused for a run that is not running or
+	 * whose fingerprint does not match. The report is written to a file the
+	 * server names; the row goes RUNNING to DONE in one guarded update, so a
+	 * done run cannot be changed afterwards.
+	 *
+	 * $result: the fields of backtest_result_fields(), plus research_run_id,
+	 * engine_commit and record (the engine's whole record). $report: the
+	 * report's bytes (HTML).
+	 */
+	function backtest_post_result($run_id, $fingerprint, $result, $report) {
+
+		[$run, $why] = backtest_postable($run_id, $fingerprint);
+		if ($run === null) { write_log("backtest", "result refused: " . $why); return ['ok' => false, 'why' => $why]; }
+		if (!is_array($result)) { return ['ok' => false, 'why' => "the result is not an object."]; }
+
+		$set = []; $args = [];
+		foreach (backtest_result_fields() as $key => [$column, $type]) {
+			$v = $result[$key] ?? null;
+			if ($v !== null && !is_numeric($v)) { return ['ok' => false, 'why' => "the result's " . $key . " is not a number."]; }
+			if ($v === null && in_array($key, ['total_return', 'final_value', 'fills', 'trials'], true)) {
+				return ['ok' => false, 'why' => "the result has no " . $key . "."];
+			}
+			if ($v !== null && is_float($v + 0) && !is_finite((float) $v)) { $v = null; }
+			$set[] = $column . "=?";
+			$args[] = $v === null ? null : ($type === 'int' ? (int) $v : round((float) $v, 6));
+		}
+		foreach (['research_run_id' => 64, 'engine_commit' => 40] as $key => $len) {
+			$v = $result[$key] ?? '';
+			if (!is_string($v) || $v === '' || strlen($v) > $len || !preg_match('~^[A-Za-z0-9_.+:-]+$~', $v)) {
+				return ['ok' => false, 'why' => "the result's " . $key . " is missing or not a plain name."];
+			}
+			$set[] = $key . "=?"; $args[] = $v;
+		}
+		if (!is_string($report) || $report === '' || strlen($report) > BACKTEST_REPORT_MAX_BYTES) {
+			return ['ok' => false, 'why' => "the report is missing or larger than " . BACKTEST_REPORT_MAX_BYTES . " bytes."];
+		}
+
+		/* The report: a name the server chooses, never one the caller gave. */
+		$dir = BACKTEST_REPORTS_DIR;
+		if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
+			return ['ok' => false, 'why' => "the reports folder cannot be written; the run stays running."];
+		}
+		$name = 'run-' . (int) $run_id . '-' . bin2hex(random_bytes(6)) . '.html';
+		if (@file_put_contents($dir . '/' . $name, $report, LOCK_EX) !== strlen($report)) {
+			@unlink($dir . '/' . $name);
+			return ['ok' => false, 'why' => "the report could not be written; the run stays running."];
+		}
+
+		$record = json_encode($result['record'] ?? null, JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+		$set[] = "report_file=?"; $args[] = $name;
+		$set[] = "result_json=?"; $args[] = $record;
+		$args[] = (int) $run_id; $args[] = (string) $fingerprint;
+
+		query("update strategy_backtest_runs set status='DONE', finished_at=now(), note=null, " . implode(', ', $set)
+		      . " where run_id=? and fingerprint=? and status='RUNNING' and engine='mac_mini'", ...$args);
+		$after = backtest_run_get($run_id);
+		if ($after === null || $after['status'] !== 'DONE' || $after['report_file'] !== $name) {
+			@unlink($dir . '/' . $name);
+			return ['ok' => false, 'why' => "run " . (int) $run_id . " stopped running before the result arrived."];
+		}
+		write_log("backtest", "run " . (int) $run_id . " done on the Mac mini (" . $after['research_run_id'] . ")");
+		return ['ok' => true, 'why' => ''];
+	}
+
+	/** The Mac mini posts a failure, with why. Refused as a result is. */
+	function backtest_post_failure($run_id, $fingerprint, $why_failed) {
+
+		[$run, $why] = backtest_postable($run_id, $fingerprint);
+		if ($run === null) { write_log("backtest", "failure refused: " . $why); return ['ok' => false, 'why' => $why]; }
+		$text = trim((string) $why_failed);
+		if ($text === '') { return ['ok' => false, 'why' => "a failure has to say why."]; }
+
+		query("update strategy_backtest_runs set status='FAILED', finished_at=now(), note=?
+		        where run_id=? and fingerprint=? and status='RUNNING' and engine='mac_mini'",
+		      substr("on the Mac mini: " . $text, 0, 1000), (int) $run_id, (string) $fingerprint);
+		write_log("backtest", "run " . (int) $run_id . " failed on the Mac mini: " . substr($text, 0, 300));
+		return ['ok' => true, 'why' => ''];
+	}
+
+	/* ---- what the page shows ---- */
+
+	/** "Mac mini" or "N100": which engine a run came from. */
+	function backtest_engine_label(array $run) {
+		return ($run['engine'] ?? null) === 'mac_mini' ? 'Mac mini' : 'N100';
+	}
+
+	/**
+	 * The labels a result is shown with: the survivorship label on every
+	 * result that starts before 2022, the restatement caveat on every one.
+	 */
+	function backtest_result_labels(array $run) {
+		$out = [];
+		if ((string) $run['from_date'] < '2022-01-01') {
+			$out[] = "Survivorship: before 2022 the data holds few companies that later died, so this result"
+			       . " is flattered.";
+		}
+		$out[] = "Restatements: company accounts are the latest figures, not those first published, so"
+		       . " value and quality signals may see corrections made later.";
+		return $out;
+	}
+
+	/** The Mac mini runs of a strategy that are done, newest first, for the page. */
+	function backtest_mac_mini_results($strategy, $limit = 10) {
+		if (!backtest_runs_ready()) { return []; }
+		return query("select * from strategy_backtest_runs where strategy=? and engine='mac_mini' and status='DONE'
+		               order by run_id desc limit " . max(1, min(50, (int) $limit)), (string) $strategy);
+	}
+
+	/** The full path of a done run's report, or null. */
+	function backtest_report_path(array $run) {
+		$name = (string) ($run['report_file'] ?? '');
+		if (!preg_match('~^run-\d+-[0-9a-f]{12}\.html$~', $name)) { return null; }
+		$path = BACKTEST_REPORTS_DIR . '/' . $name;
+		return is_file($path) ? $path : null;
 	}
 
 /* No closing tag: see the note at the end of constants.php. */

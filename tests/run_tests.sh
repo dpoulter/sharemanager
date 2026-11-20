@@ -184,6 +184,11 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/strategy_workflow.sql" > /dev/null || exit 1
 echo "applying sql/backtest_queue.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/backtest_queue.sql" > /dev/null || exit 1
 
+# Backtests on the Mac mini research engine: which engine ran a run, the claim,
+# and the results it posts back. After sql/backtest_queue.sql.
+echo "applying sql/backtest_mac_mini.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/backtest_mac_mini.sql" > /dev/null || exit 1
+
 # Every page at 390px. A check on the layout rather than on the queries, so a
 # host with no browser skips it rather than failing: the application is used on
 # a phone, and the fault it catches - a table that makes the page itself scroll
@@ -226,7 +231,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       user_theme market_breadth statistics_indicator_index screen_last_run \
                       strategy_hold_rank strategy_display_name \
                       strategy_backtest strategy_backtest_overrides strategy_backtest_costs \
-                      strategy_prices strategy_workflow backtest_queue \
+                      strategy_prices strategy_workflow backtest_queue backtest_mac_mini \
                       broker_key_scopes \
                       broker broker_account_fields broker_mapping broker_trading \
                       broker_fills broker_environment strategy_live quote_report; do

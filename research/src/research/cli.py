@@ -8,6 +8,7 @@
   report RUN_ID                   print a logged run (the HTML is written when the run is)
   validate --universe CSV [--orders CSV] [--values CSV]
                                   reproduce the N100's run 9; nothing else is trusted until it passes
+  worker [--once]                 run sharemanager's queued backtests through backtest_api (worker.py)
 """
 from __future__ import annotations
 
@@ -344,6 +345,11 @@ def cmd_validate(cfg, a):
     sys.exit(0 if rep.get("passed") else 1)
 
 
+def cmd_worker(cfg, a):
+    from .worker import main as worker_main
+    worker_main(cfg, once=a.once)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="research", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", default=None)
@@ -373,12 +379,15 @@ def main(argv=None):
     s.add_argument("--replay-targets", nargs="?", const="", default=None,
                    help="hold the N100's own targets (default data/validation/n100_run9_targets.csv): an engine-only check")
     s.add_argument("--values", help="default data/validation/n100_run9_values.csv")
+    s = sub.add_parser("worker", help="run sharemanager's queued backtests, one at a time (worker.py)")
+    s.add_argument("--once", action="store_true", help="claim and run at most one, then stop")
     a = p.parse_args(argv)
     cfg = load_config(a.config)
     _setup_logging(cfg)
     try:
         {"fetch": cmd_fetch, "cap-trace": cmd_cap_trace, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
-         "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate}[a.cmd](cfg, a)
+         "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate,
+         "worker": cmd_worker}[a.cmd](cfg, a)
     except Exception as e:     # never let a key reach the terminal in a traceback
         log.error("%s failed: %s", a.cmd, mask(e))
         if __import__("os").environ.get("RESEARCH_DEBUG"):

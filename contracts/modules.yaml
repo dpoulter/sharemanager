@@ -1,0 +1,79 @@
+# Module contracts for backtests on the Mac mini research engine
+# (brief of 20 Nov 2026). Each module: where it lives, what goes in and out,
+# what must hold before and after, and what it never does.
+
+backtest_queue:
+  file: includes/backtest_runs.php
+  settings: includes/backtest_config.php
+  owns: [strategy_backtest_runs, BACKTEST_REPORTS_DIR]
+  inputs:
+    - a request from the strategy page (logged in POST): strategy, from, to, cash, cost model
+    - claim, result and failure, from backtest_api only
+  outputs:
+    - a QUEUED run for the Mac mini, with the rules snapshot and fingerprint
+    - a claim payload (rules snapshot, fingerprint, dates, cash, cost model, indicator names)
+  preconditions:
+    - end date before BACKTEST_HOLDOUT_START (2025-05-18); start on or after BACKTEST_EARLIEST
+  postconditions:
+    - a request only queues a run; nothing is replayed on the N100
+    - only one claim can take a queued run
+    - a run RUNNING past BACKTEST_TIME_LIMIT_MINUTES is FAILED with that reason, not run twice
+    - a DONE run keeps its snapshot and fingerprint and cannot be changed; a FAILED run says why
+    - a DONE run holds return, equal-weight and cap-weighted universe returns, trades, costs,
+      trial count, deflated Sharpe, Mac mini run id and git commit, and its report file
+    - every result from before 2022 shows the survivorship label; every result the restatement caveat
+    - earlier runs (engine null) stay as they are and are shown as N100 runs
+  never:
+    - queue or accept a run that reaches into the holdout
+    - touch rules, accounts or the broker
+
+backtest_api:
+  file: public/backtest_api.php (logic in includes/backtest_api.php)
+  inputs:
+    - POST JSON {action: claim | result | failure}, from the Tailscale range, Authorization Bearer token
+    - token SM_BACKTEST_API_TOKEN, from the environment or /etc/sharemanager.env
+  outputs: [JSON {ok, why | run}]
+  postconditions:
+    - a missing or wrong token, or a caller outside Tailscale, is refused and logged without the token
+    - every request goes through backtest_queue; it writes no table itself
+    - a result for a run not running, or with a fingerprint that does not match, is refused
+    - a report is stored as a file with a name the server chooses
+  never:
+    - hand out an account, a position or a broker detail
+
+backtest_worker:
+  file: research/src/research/worker.py
+  launchd: research/deploy/com.sharemanager.backtest-worker.plist
+  settings: ~/.config/sharemanager-research/worker.env (mode 600)
+  inputs: [claims from backtest_api]
+  outputs: [results and failures to backtest_api, a test log entry per run]
+  preconditions:
+    - the run 9 replay check passed at the current, clean commit
+  postconditions:
+    - one run at a time; a failure is posted with its reason and does not stop the next
+    - every run is written to the test log as a hand-started run is
+    - a run interrupted by a stop or restart is posted as failed, not run again
+  never:
+    - run over the holdout; connect to the N100 database; log in to the N100; rewrite the test log
+    - log the token; interpret rules (that is rules_translator's)
+
+rules_translator:
+  file: research/src/research/from_rules.py
+  inputs: [a claim: rules snapshot, indicator names, cash, cost model and settings]
+  outputs: [the engine's strategy, or Untranslatable naming the rule]
+  postconditions:
+    - nothing dropped or guessed
+    - covers screen criteria comparing two indicators or an indicator with a constant, top_n,
+      rank_by, holdings, hold_rank, rebalance, exit rules, exclude_funds
+    - a ranking indicator can be a sharemanager indicator the engine computes or a research
+      signal by name (research:<signal>)
+    - value and quality figures reach a signal only through pit.Fundamentals (the publication lag)
+
+backtest_engine:
+  file: research/src/research/strategy.py (Workspace.run) and engine.py
+  postconditions:
+    - no change to the engine's results
+  later:
+    - after the Mac mini path is deployed and checked, remove includes/backtest_strategy.php,
+      includes/run_backtests.php and its cron entry, and the bt_ account clean-up in backtest_queue,
+      in a separate commit

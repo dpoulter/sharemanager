@@ -74,6 +74,8 @@
 					e(strategy_display_name((string) $run['strategy'])) ?></td>
 				<?php endif ?>
 				<td class="sm-col-wide">
+					<span class="badge bg-secondary sm-engine" data-engine="<?= ($run['engine'] ?? null) === 'mac_mini' ? 'mac_mini' : 'n100' ?>"><?=
+						($run['engine'] ?? null) === 'mac_mini' ? 'Mac mini run' : 'N100 run' ?></span>
 					<?= e((string) $run['label']) ?>
 					<?php if ($run['matches_live']): ?>
 						<span class="badge bg-success">matches live settings</span>

@@ -5,6 +5,12 @@
 	 *
 	 *   php includes/run_backtests.php
 	 *
+	 * RETIRING. Every run asked for now is the Mac mini's (engine 'mac_mini',
+	 * claimed through public/backtest_api.php), and this job only ever picks
+	 * up a run with no engine, so it replays nothing. It, its cron entry and
+	 * includes/backtest_strategy.php are removed in a separate commit once
+	 * the Mac mini path is deployed and checked.
+	 *
 	 * From cron, every minute, through includes/backtest_run.sh. A request
 	 * only QUEUES a run (includes/backtest_runs.php); this is what replays it,
 	 * outside the web server, one run at a time.

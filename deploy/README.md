@@ -376,6 +376,34 @@ Confirm the pool is listening before moving on:
 ls -l /run/php/sharemanager.sock
 ```
 
+### Backtests on the Mac mini
+
+Every backtest runs on the Mac mini research engine; the N100 only queues it
+and answers `public/backtest_api.php`. Apply `sql/backtest_mac_mini.sql` after
+`sql/backtest_queue.sql`. Then:
+
+- `SM_BACKTEST_API_TOKEN` (a long random value, e.g. `openssl rand -hex 32`)
+  goes in `/etc/sharemanager.env`. The API reads it from the environment
+  first, then from that file, so the php-fpm user has to be able to read it:
+  either add `env[SM_BACKTEST_API_TOKEN] = ...` to the pool beside the
+  database settings, or let the php-fpm group read the file (`chgrp www-data
+  /etc/sharemanager.env && chmod 640 /etc/sharemanager.env`). The same value
+  goes in the Mac mini's `~/.config/sharemanager-research/worker.env`.
+- The API answers only callers in the Tailscale range (100.64.0.0/10,
+  fd7a:115c:a1e0::/48) with the token. A refusal is written to `message_log`
+  (module `backtest_api`) with the caller's address, never the token.
+- Reports are written to `/var/lib/sharemanager/backtest_reports` (or
+  `SM_BACKTEST_REPORTS_DIR`), which the php-fpm user has to be able to create
+  and write: `sudo install -d -o www-data -g www-data -m 750 /var/lib/sharemanager/backtest_reports`.
+- A claimed run still running after 120 minutes (`SM_BACKTEST_TIME_LIMIT_MINUTES`)
+  is marked failed.
+- The holdout start (18 May 2025) is `BACKTEST_HOLDOUT_START` in
+  `includes/backtest_config.php`, the only place it is set on this side.
+
+`includes/run_backtests.php` and its cron entry no longer replay anything (every
+new run is the Mac mini's); they are removed, with `includes/backtest_strategy.php`,
+in a separate step once the Mac mini path is deployed and checked.
+
 ## 5. Caddy
 
 Point the DNS A record at the server first; Caddy needs port 80 reachable for
