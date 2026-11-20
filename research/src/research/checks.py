@@ -124,6 +124,10 @@ def cap_rescale_section(data: Path, member) -> list[str]:
             f"the segment is left as it was; ratio_before and ratio_after are its median over the neighbours'): "
             f"{len(rf)} in {rf['symbol'].nunique() if len(rf) else 0} symbols.", ""]
     if len(rf):
+        if "price_shares_ratio" in rf:
+            agree = rf["price_shares_ratio"].between(0.5, 2)
+            out += [f"Of those, {int(agree.sum())} have a cap within 0.5 to 2 times price x shares: the segment itself "
+                    "looks right and it is the neighbour that is off, so there is nothing to fix there.", ""]
         out += [md(rf.sort_values("segment_max", ascending=False).head(60), index=False), ""]
     rs = data / "cap_rescued_by_shares.parquet"
     rv = pd.read_parquet(rs) if rs.exists() else pd.DataFrame()

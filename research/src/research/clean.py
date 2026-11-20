@@ -363,7 +363,7 @@ def rescue_refused_caps(data: Path) -> pd.DataFrame:
     """A segment the neighbour test refused is rescaled when price x shares says the same thing.
 
     Its median cap over price x shares outstanding (from the statements) must be within 80 to 125
-    times, or its inverse, and flat (every day within 3 times of the median). The two tests are
+    times, or its inverse, and steady (80% of its days within 50 to 200 times, or the inverse). The two tests are
     independent, so agreement is strong evidence of a pence/pounds slip, where a neighbour ratio
     of 64 or 139 (real moves over a 40-day window) is not. Only refused segments are looked at.
     Run after refine_master (it needs the quote currency). Rewrites market_cap.parquet, drops the
@@ -395,7 +395,10 @@ def rescue_refused_caps(data: Path) -> pd.DataFrame:
             continue
         med = float(np.median(x))
         ratio_left[k] = med
-        flat = x.max() / med < FLAT and med / x.min() < FLAT
+        # Not every day within 3 times of the median (a cap and a price that move on different days,
+        # shares held flat between statements, make single days wild): 80% of days within 50 to 200.
+        inside = ((x >= 1 / 2 * 100) & (x <= 200)) if med > 1 else ((x >= 1 / 200) & (x <= 1 / 50))
+        flat = float(inside.mean()) >= 0.8
         for fct, inv in ((0.01, False), (100.0, True)):
             if flat and _near(med, RESCUE_LO, RESCUE_HI, inv):
                 caps.loc[sel, "market_cap"] = caps.loc[sel, "market_cap"] * fct

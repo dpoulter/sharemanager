@@ -351,7 +351,7 @@ def test_a_refused_segment_stays_when_price_times_shares_does_not_agree(tmp_path
 def test_the_referee_leaves_a_segment_alone_that_is_not_flat_or_has_no_shares(tmp_path):
     from research.clean import rescue_refused_caps
     cap = np.full(200, 3e8)
-    cap[50:90] = np.r_[np.full(30, 3e10), np.full(10, 3e11)]      # 100x to 1,000x: not flat
+    cap[50:90] = np.r_[np.full(20, 3e10), np.full(20, 3e11)]      # half of it at 100x, half at 1,000x
     _referee_data(tmp_path, {"BUMP.L": cap}, [("BUMP.L", 50, 89)])
     assert rescue_refused_caps(tmp_path).empty
     (tmp_path / "statements.parquet").unlink()
@@ -390,3 +390,13 @@ def test_a_london_line_with_a_uk_profile_country_but_roubles_is_out(tmp_path):
     m = refine_master(tmp_path).set_index("symbol")
     assert m.loc["LKOD.L", "exclude_reason"] == "no ISIN, not sterling"
     assert pd.isna(m.loc["NOIS.L", "exclude_reason"]) and pd.isna(m.loc["UKCO.L", "exclude_reason"])
+
+
+def test_the_referee_accepts_a_segment_with_a_few_wild_days(tmp_path):
+    """DCI-like: median 100x, but a few days out of range: still rescaled (80% of days inside 50 to 200)."""
+    from research.clean import rescue_refused_caps
+    cap = np.full(200, 3e8)
+    cap[50:100] = 3e10
+    cap[60], cap[61], cap[70] = 3e11, 1.0e11, 9e10                 # three wild days in fifty
+    _referee_data(tmp_path, {"DCI.L": cap.copy()}, [("DCI.L", 50, 99)])
+    assert len(rescue_refused_caps(tmp_path)) == 1
