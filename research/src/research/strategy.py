@@ -155,6 +155,16 @@ class Workspace:
         mk = self.market_for(basis)
         ctx = Context(mk, self.f, member)
         rules = spec.rules()
+        if spec.raw.get("targets_file"):
+            from .universe import to_fmp
+            t = pd.read_csv(Path(spec.raw["targets_file"]).expanduser())
+            dcol = "as_of_date" if "as_of_date" in t else "date"
+            fixed: dict = {}
+            for a, g in t.groupby(pd.to_datetime(t[dcol])):
+                k = int(self.m.dates.searchsorted(a, side="right")) - 1
+                if k >= 0:
+                    fixed.setdefault(self.m.dates[k], []).extend(g["symbol"].map(to_fmp).tolist())
+            rules.fixed_targets = fixed
         if rules.rebalance_asof:
             for a in pd.DatetimeIndex(pd.to_datetime(list(rules.rebalance_asof))):
                 k = int(self.m.dates.searchsorted(a, side="right")) - 1

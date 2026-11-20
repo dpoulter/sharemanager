@@ -72,6 +72,10 @@ class Rules:
     # fills the next trading day. With these dates (monthly only) the decision is taken on the last
     # trading day on or before each one, so the fill is the next trading day, as the N100's is.
     rebalance_asof: tuple | None = None
+    # Engine check only: decision day -> the N100's own target symbols for that rebalance. With these the
+    # selection is skipped and the N100's list is held (exits, sizing, costs and fills are still ours), so
+    # a gap left over is the engine's, not the data's or the ranking's.
+    fixed_targets: dict | None = None
 
     def n_holdings(self, universe_size: int) -> int:
         if isinstance(self.holdings, str):
@@ -316,6 +320,12 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
         keeping = [x for x in top if x in held][:n]
         chosen = keeping + [x for x in top if x not in held][: n - len(keeping)]
 
+    if rules.fixed_targets is not None:
+        given = rules.fixed_targets.get(d, [])
+        chosen = [x for x in given if x in col and close[i, col[x]] > 0]
+        events.append({"date": d, "symbol": "(all)", "event": "targets replayed from the N100",
+                       "detail": f"{len(chosen)} of {len(given)} given; not priced or not held in our data: "
+                                 f"{sorted(set(given) - set(chosen))}"})
     weight = math.floor((1.0 / n) * WEIGHT_DECIMALS) / WEIGHT_DECIMALS if n else 0.0
     mult = 1 + costs.stamp_duty + max(costs.spread(True), costs.spread(False))
     investable = (total - costs.commission * len(chosen)) / mult

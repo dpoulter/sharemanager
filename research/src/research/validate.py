@@ -16,6 +16,9 @@ Jarvis's exports from the N100 (rerun as run 10, identical to run 9:
     each decision day (explain in run9_check.json)
   - n100_ma200_dates.csv: date (and symbols): the dates that have a ma200 row, Sundays included. The
     200-day exit counts these rows. Without it the wider n100_stats_dates.csv is used, which is wrong
+  - n100_run9_targets.csv (validate --replay-targets): as_of_date, symbol; the N100's targets for every
+    rebalance (select as_of_date, symbol from strategy_targets where strategy = 'bt_trend_following_10').
+    Our selection is then skipped and those names held: what is left of the gap is the engine's
   - n100_stats_dates.csv: date (select distinct date from statistics, Oct 2022 to Nov 2026). The N100
     rebalances on the first of those dates on or after the 1st, which includes some holidays and
     Sundays, and fills the next trading day; without it the engine rebalances on the first trading day
@@ -521,11 +524,16 @@ def run9_calendars(vdir: Path, start: str, end: str) -> dict:
 
 
 def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv: Path | None,
-         costs: dict | None = None, start: str = "2022-11-01", end: str = "2026-11-13") -> dict:
+         costs: dict | None = None, start: str = "2022-11-01", end: str = "2026-11-13",
+         replay_targets: Path | None = None) -> dict:
     listed = universe_list(Path(universe_csv), ws.cfg.data_dir / "validation" / "run9_universe_no_funds.csv")
     raw = dict(RUN9, universe=f"list:{listed}")
     vdir = ws.cfg.data_dir / "validation"
     raw.update(run9_calendars(vdir, start, end))
+    if replay_targets is not None:
+        # The N100's own targets for every rebalance, held as given: an engine check with selection taken out.
+        raw["targets_file"] = str(replay_targets)
+        raw["name"] = RUN9["name"] + "_replay"
     if costs:
         raw["costs"] = {**raw["costs"], **costs}
     spec = spec_from_dict(raw)

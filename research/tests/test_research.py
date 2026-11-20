@@ -753,3 +753,22 @@ def test_explain_screens_names_the_screen_that_dropped_a_share(cfg):
                                            "not in the run 9 universe on that date")
     assert rows["GONE.L"]["dropped_by"] == "no price column for the symbol"
     assert rows["S0.L"]["prices_to_date"] > 200 and "score_pct" in rows["S0.L"]
+
+
+def test_replayed_targets_are_held_instead_of_our_selection(cfg, tmp_path):
+    """Engine check: with the N100's targets given, the engine holds exactly those, whatever it would rank."""
+    ws = _workspace(cfg)
+    dates = ws.m.dates
+    first = [d for d in dates if d >= pd.Timestamp("2025-03-01")][0]
+    second = [d for d in dates if d >= pd.Timestamp("2025-04-01")][0]
+    pd.DataFrame({"as_of_date": [first] * 3 + [second] * 3,
+                  "symbol": ["S7", "S8", "S9", "S1", "S2", "S9"]}).to_csv(tmp_path / "t.csv", index=False)
+    spec = spec_from_dict({"name": "tf", "signals": {"momentum_12_1": 1}, "holdings": 3,
+                           "rebalance_asof": [str(first.date()), str(second.date())], "targets_file": str(tmp_path / "t.csv")})
+    out = ws.run(spec, start=str(first.date()), end="2025-04-30", write_report=False, kind="engine_validation")
+    f = out["result"].fills
+    first_buys = set(f[(f["side"] == "BUY") & (f["date"] < second)]["symbol"])
+    assert first_buys == {"S7.L", "S8.L", "S9.L"}
+    after = f[f["date"] > second]
+    assert set(after[after["side"] == "BUY"]["symbol"]) == {"S1.L", "S2.L"}
+    assert set(after[after["side"] == "SELL"]["symbol"]) == {"S7.L", "S8.L"}

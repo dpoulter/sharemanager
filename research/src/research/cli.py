@@ -325,7 +325,11 @@ def cmd_validate(cfg, a):
     uni = Path(a.universe) if a.universe else v / "n100_universe_2026-11-18.tsv"
     orders = Path(a.orders) if a.orders else v / "n100_run9_orders.csv"
     values = Path(a.values) if a.values else v / "n100_run9_values.csv"
-    rep = run9(Workspace(cfg), uni, orders if orders.exists() else None, values if values.exists() else None)
+    replay = None
+    if a.replay_targets is not None:
+        replay = Path(a.replay_targets) if a.replay_targets else v / "n100_run9_targets.csv"
+    rep = run9(Workspace(cfg), uni, orders if orders.exists() else None, values if values.exists() else None,
+               replay_targets=replay)
     pct = lambda x: "-" if x is None else f"{x * 100:+.2f}%"
     print(f"| | N100 run 9 | Research engine ({rep.get('price_basis')}) |\n|---|---|---|")
     print(f"| Total return | {pct(rep.get('n100_total_return'))} | {pct(rep.get('ours_total_return'))} |")
@@ -334,7 +338,7 @@ def cmd_validate(cfg, a):
     print(f"| Months with identical holdings | {rep.get('months_with_identical_holdings', '-')} | |")
     print(f"return gap {rep.get('return_gap_pp', float('nan')):+.2f} pp, fill gap {rep.get('fill_gap_pct', float('nan')):+.1f}%: "
           f"{'PASSED' if rep.get('passed') else 'FAILED'}\n")
-    out = cfg.data_dir / "validation" / "run9_check.json"
+    out = cfg.data_dir / "validation" / ("run9_replay_check.json" if replay else "run9_check.json")
     out.write_text(json.dumps(rep, indent=1, default=str))
     print(json.dumps(rep, indent=1, default=str))
     sys.exit(0 if rep.get("passed") else 1)
@@ -366,6 +370,8 @@ def main(argv=None):
     s = sub.add_parser("validate")
     s.add_argument("--universe", help="default data/validation/n100_universe_2026-11-18.tsv")
     s.add_argument("--orders", help="default data/validation/n100_run9_orders.csv")
+    s.add_argument("--replay-targets", nargs="?", const="", default=None,
+                   help="hold the N100's own targets (default data/validation/n100_run9_targets.csv): an engine-only check")
     s.add_argument("--values", help="default data/validation/n100_run9_values.csv")
     a = p.parse_args(argv)
     cfg = load_config(a.config)
