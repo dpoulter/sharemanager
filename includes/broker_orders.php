@@ -285,7 +285,24 @@
 
 		$account = strategy_account($strategy);
 		if ($account === null) { $out['errors'][] = "no account for " . $strategy; return $out; }
-		if ($account['enabled'] !== 'Y') { $out['errors'][] = "account is disabled"; return $out; }
+		/* CLEARING THE PRACTICE ACCOUNT. A retired practice strategy's account
+		   is switched off, and this sender does not send for a switched-off
+		   account - which is right for every night and every cron run. Clearing
+		   what a retired strategy left at the broker is the one exception, and
+		   it is narrow on three counts: it applies only while
+		   practice_clear.php is in the middle of its own call (an in-process
+		   flag nothing else sets, so the option alone does nothing); it sends
+		   only the orders practice_clear recorded, the ones whose id begins
+		   "clear:" (a note is overwritten when an order is marked SENT; an id
+		   is not); and it skips
+		   the checks that are about a strategy that is running - the stuck
+		   order rule and the reconciliation against the whole account - which
+		   practice_clear has made for itself. It is still this sender, this
+		   client and the practice host: there is no second way to post. */
+		$clearing = !empty($options['practice_clear'])
+		         && function_exists('practice_clear_sending') && practice_clear_sending();
+
+		if ($account['enabled'] !== 'Y' && !$clearing) { $out['errors'][] = "account is disabled"; return $out; }
 		if ($account['halted'] === 'Y') {
 			$out['halted'] = true;
 			$out['errors'][] = "halted: " . (string) $account['halt_reason'];
@@ -336,7 +353,7 @@
 		/* Nothing new goes out while something already sent is unaccounted
 		   for. The rule is stuck_check()'s, below, and the live sender asks the
 		   same function: it is written once. */
-		$stuck = stuck_check($strategy);
+		$stuck = $clearing ? ['halted' => false, 'hold' => false, 'say' => ''] : stuck_check($strategy);
 		if ($stuck['halted']) {
 			$out['halted'] = true;
 			$out['errors'][] = $stuck['error'];
@@ -351,8 +368,9 @@
 		/* And nothing goes out without the two books having been compared,
 		   unless there is nothing of ours to compare: a strategy that holds
 		   nothing and has never had a fill cannot disagree with anybody. */
-		$state = broker_reconciliation_state($strategy, $mode['broker'], $mode['environment']);
-		if (!$state['compared']) {
+		$state = $clearing ? ['compared' => true] : broker_reconciliation_state($strategy, $mode['broker'], $mode['environment']);
+		if ($clearing) { /* practice_clear compared its list with the broker's own figures */ }
+		else if (!$state['compared']) {
 			if (!$state['first_build']) {
 				$out['errors'][] = $state['why'] . ", so the two books could not be compared"
 				                 . " and nothing was sent.";
@@ -378,7 +396,11 @@
 			}
 		}
 
+		/* What clearing recorded (ids beginning "clear:") is sent only by
+		   clearing, and by nothing else: were the strategy ever switched on again, its ordinary run
+		   must not pick them up. */
 		$orders = query("select * from strategy_orders where strategy=? and status='PENDING'
+		                   and " . ($clearing ? "client_order_id like 'clear:%'" : "client_order_id not like 'clear:%'") . "
 		                  order by case when side='SELL' then 0 else 1 end, created_at",
 		                $strategy);
 

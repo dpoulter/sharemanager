@@ -51,6 +51,9 @@
     /* Starting on practice and stepping down: both POSTs handled below. */
     require_once("../includes/practice_start.php");
     require_once("../includes/stage_stepdown.php");
+    /* What a retired practice strategy left at the broker, and the two steps
+       that sell it. */
+    require_once("../includes/practice_clear.php");
 
     /* CLEAR A HALT. The one POST this page takes: a halted strategy's form,
        with the password and the strategy's name typed again. It is handled
@@ -74,6 +77,22 @@
                     : "The halt was not cleared: " . $result['why'],
             'strategy' => $clear_strategy];
         redirect("strategies.php?s=" . urlencode($clear_strategy));
+    }
+
+    /* CLEAR THE PRACTICE ACCOUNT (two requests). The function decides: nothing
+       is sent in the request that plans, and the sells go only through the
+       practice sender. */
+    if (strtoupper((string) ($_SERVER["REQUEST_METHOD"] ?? 'GET')) === 'POST'
+        && ($_POST['do'] ?? null) === 'practice_clear') {
+
+        $result = practice_clear([
+            'user_id' => (int) ($_SESSION['id'] ?? 0),
+            'step'    => is_string($_POST['step'] ?? null) ? (int) $_POST['step'] : 0,
+        ]);
+
+        $_SESSION['sm_live_message'] = ['ok' => (bool) $result['ok'], 'strategy' => '',
+            'text' => $result['ok'] ? $result['words'] : "The practice account was not cleared: " . $result['why']];
+        redirect("strategies.php");
     }
 
     /* ASK FOR A BACKTEST. A POST that only queues a run: the move has to be
@@ -184,6 +203,8 @@
             "stages"     => [],
             "drafts"     => [],
             "draft"      => null,
+            "pa_state"   => null,
+            "pa_plan"    => null,
         ]);
         exit;
     }
@@ -220,6 +241,11 @@
         if (!$info['has_account'] && !in_array($name, $strategies, true)) { $drafts[] = $info; }
     }
     $draft = null;
+
+    /* The practice account, once per page: who holds it, what is left on it
+       and whether clearing it is open. */
+    $pa_state = practice_account_state();
+    $pa_plan  = practice_clear_plan();
 
     if (isset($VIEWS[$want])) { $view = $want; }
     else if ($want !== '' && in_array($want, $strategies, true)) {
@@ -367,6 +393,8 @@
         /* Every live account with a batch nobody has decided about, for the
            line at the top of the page: an exit waiting for an approval is
            costing money while it waits. */
+        "pa_state"  => $pa_state,
+        "pa_plan"   => $pa_plan,
         "stages"    => $stages,
         "drafts"    => $drafts,
         "draft"     => $draft,

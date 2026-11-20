@@ -46,7 +46,8 @@ $sm_steps = strategy_stages();
 			<input type="hidden" name="strategy" value="<?= e($sm_key) ?>">
 			<div>
 				<label class="form-label mb-0"><small>Practice capital &pound;</small></label>
-				<input type="number" name="capital" class="form-control form-control-sm" min="1" step="any" required>
+				<input type="number" name="capital" class="form-control form-control-sm" min="1" step="any" required
+				       <?php if (!empty($pa_state['readable']) && $pa_state['value'] !== null): ?>value="<?= e(number_format($pa_state['value'], 2, '.', '')) ?>"<?php endif ?>>
 			</div>
 			<button type="submit" class="btn btn-sm btn-outline-primary">Start on practice</button>
 		</form>

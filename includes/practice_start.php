@@ -15,7 +15,10 @@
 	 * Step 1 needs the move to be open in strategy_stage(), asked on the
 	 * server: the rules have a completed backtest of their current
 	 * fingerprint, and the single practice account is not held by another
-	 * strategy - if it is, the refusal names the holder. Reconciliation
+	 * strategy - if it is, the refusal names the holder. Who holds it is
+	 * practice_account_state.php's to say. It also refuses over shares left on
+	 * the account by a retired strategy (naming them), and over a capital above
+	 * what the account is worth at the broker. Reconciliation
 	 * covers the whole practice account, so for now it is one strategy per
 	 * account.
 	 *
@@ -32,6 +35,7 @@
 	require_once("constants.php");
 	require_once(__DIR__ . "/strategy_functions.php");
 	require_once(__DIR__ . "/strategy_stage.php");
+	require_once(__DIR__ . "/practice_account_state.php");
 
 	/**
 	 * $options: user_id, strategy, step (1 or 2), capital (step 1).
@@ -73,7 +77,7 @@
 			if ($account['enabled'] === 'Y') { return $refuse("its practice account is already switched on."); }
 			if ($account['halted'] === 'Y') { return $refuse("its practice account is halted; clear that first."); }
 
-			$holder = strategy_practice_holder($strategy);
+			$holder = practice_account_holder($strategy);
 			if ($holder !== null) {
 				return $refuse("the practice account is in use by " . strategy_display_name($holder) . ".");
 			}
@@ -98,6 +102,32 @@
 		}
 
 		if (strategy_account($strategy) !== null) { return $refuse("it already has an account."); }
+
+		/* What is on the practice account now, from the broker's own figures.
+		   Another strategy's shares left behind would be this one's the moment
+		   it started, and a capital above what the account is worth is a
+		   capital that cannot be invested. If the broker cannot be read, that
+		   is the answer: nothing is guessed. */
+		$state = practice_account_state();
+		if (!$state['readable']) {
+			return $refuse("the practice account cannot be read, so what is on it is not known: " . $state['why'] . ".");
+		}
+		if (count($state['leftover'])) {
+			$names = [];
+			foreach ($state['leftover'] as $share) {
+				$names[] = ($share['symbol'] === null ? $share['ticker'] : $share['symbol']) . " "
+				         . rtrim(rtrim(number_format($share['quantity'], 6, '.', ''), '0'), '.');
+			}
+			return $refuse("the practice account still holds shares that belong to no running strategy ("
+			             . implode(', ', $names) . "). Use Clear the practice account first.");
+		}
+		if ($state['value'] === null) {
+			return $refuse("the practice account's value is not known, so the capital cannot be checked.");
+		}
+		if ($capital > $state['value'] + 0.005) {
+			return $refuse("the capital (" . number_format($capital, 2) . ") is more than the practice account is worth ("
+			             . number_format($state['value'], 2) . ").");
+		}
 
 		query("insert into strategy_accounts (strategy, cash, currency, mode, enabled, created_at, note)
 		       values (?, ?, 'GBP', ?, 'N', now(), ?)",

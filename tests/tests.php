@@ -17971,6 +17971,15 @@ STUB
         db()->exec("delete from strategy_live_log where strategy='wf_livex'");
 
         /* ---- practice_start ---- */
+        /* Starting on practice reads the practice account from the broker's own
+           figures: a run that finished, and what the account is worth. */
+        db()->exec("delete from broker_sync_runs where environment='demo'");
+        db()->exec("delete from broker_account_values where environment='demo'");
+        db()->exec("delete from broker_positions where environment='demo'");
+        db()->prepare("insert into broker_sync_runs (broker,environment,started_at,finished_at,status,as_of_date,positions)
+                       values ('t212','demo',now(),now(),'OK',?,0)")->execute([date('Y-m-d')]);
+        db()->prepare("insert into broker_account_values (broker,environment,as_of_date,cash,total,currency,synced_at)
+                       values ('t212','demo',?,100,20000,'GBP',now())")->execute([date('Y-m-d')]);
         if (strategy_stage($WF)['stage'] !== 'Backtested') {
             db()->prepare("insert into strategy_backtest_runs (strategy,account,from_date,to_date,started_at,finished_at,status,fingerprint,rules_snapshot)
                            values (?,'bt_wf_1',?,?,now(),now(),'DONE',?,'{}')")
@@ -18057,7 +18066,8 @@ STUB
         $pc_stop = $pc_post(['do' => 'stepdown', 'step' => 'stop_practice', 'strategy' => $WF]);
         check('stop practice switches the account off and says the positions stay at the broker',
               scalar("select enabled from strategy_accounts where strategy=?", [$WF]) === 'N'
-              && stripos($pc_stop, 'positions stay at the') !== false);
+              && stripos($pc_stop, 'positions stay at the') !== false
+              && stripos($pc_stop, 'Clear the practice account') !== false);
         check('and it does not clear a halt',
               scalar("select halted from strategy_accounts where strategy=?", [$WF]) === 'Y');
         db()->prepare("update strategy_accounts set halted='N', halt_reason=null where strategy=?")->execute([$WF]);
@@ -18101,6 +18111,345 @@ STUB
         check('arming asks practice_evidence inside broker_live_arm itself',
               preg_match('~function broker_live_arm\(.*?practice_evidence\(\$strategy\)~s',
                          (string) file_get_contents(dirname(__DIR__) . '/includes/broker_live.php')) === 1);
+
+        /* ---------------- Clearing the practice account ---------------- */
+
+        /* Archive and Stop practice never sell, so a retired practice strategy
+           leaves its shares at the single practice account. The state says who
+           holds it and what is left; Clear sells it in two requests, through
+           the practice sender; and starting another strategy over leftovers is
+           refused. The broker is stubbed as the sync stores it. */
+        require_once(dirname(__DIR__) . '/includes/practice_clear.php');
+
+        $CL_OLD = 'cl_old';
+        $cl_n = 15;
+        $cl_syms = [];
+        for ($cl_i = 1; $cl_i <= $cl_n; $cl_i++) { $cl_syms[] = sprintf('CL%02d', $cl_i); }
+
+        db()->exec("delete from broker_instruments where environment='demo' and symbol like 'CL%'");
+        $cl_inst = db()->prepare("insert into broker_instruments
+                                    (broker,environment,broker_ticker,symbol,short_name,isin,currency,venue,status,matched_on,last_seen)
+                                  values ('t212','demo',?,?,?,?,'GBX','london','matched','short_name',?)");
+        foreach ($cl_syms as $cl_s) { $cl_inst->execute([$cl_s . 'l_EQ', $cl_s, $cl_s, 'GB00' . $cl_s . '0001', date('Y-m-d')]); }
+
+        /* The broker as the sync stored it: a run, the account value, the positions. */
+        $pa_set = function ($positions = [], $value = 20000.0, $status = 'OK') {
+            db()->exec("delete from broker_positions where environment='demo'");
+            db()->exec("delete from broker_sync_runs where environment='demo'");
+            db()->exec("delete from broker_account_values where environment='demo'");
+            if ($status !== null) {
+                db()->prepare("insert into broker_sync_runs (broker,environment,started_at,finished_at,status,as_of_date,positions)
+                               values ('t212','demo',now(),now(),?,?,?)")->execute([$status, date('Y-m-d'), count($positions)]);
+                db()->prepare("insert into broker_account_values (broker,environment,as_of_date,cash,total,currency,synced_at)
+                               values ('t212','demo',?,71.31,?,'GBP',now())")->execute([date('Y-m-d'), $value]);
+            }
+            foreach ($positions as $sym => $qty) {
+                db()->prepare("insert into broker_positions (broker,environment,as_of_date,broker_ticker,symbol,quantity,price_unit,value,synced_at)
+                               values ('t212','demo',?,?,?,?,'pence',?,now())")
+                  ->execute([date('Y-m-d'), $sym . 'l_EQ', preg_match('~^ZZ~', $sym) ? null : $sym, $qty, $qty * 10]);
+            }
+        };
+
+        /* The retired strategy: archived, its practice account off, 15 shares recorded. */
+        foreach (['strategy_rules', 'strategy_accounts', 'strategy_positions', 'strategy_orders'] as $cl_t) {
+            db()->exec("delete from $cl_t where strategy in ('cl_old','cl_run','cl_new')");
+        }
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at,archived_at)
+                       values ('cl_old','screen',2,'6mnth',15,'monthly','','Y',now(),now())")->execute();
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at) values ('cl_old',100,'GBP','T212_DEMO','N',now())")->execute();
+        $cl_pos = db()->prepare("insert into strategy_positions (strategy,symbol,exchange,quantity,avg_price,updated_at) values (?,?,'XLON',?,1.00,now())");
+        $cl_book = [];
+        foreach ($cl_syms as $cl_s) { $cl_pos->execute(['cl_old', $cl_s, 10]); $cl_book[$cl_s] = 10; }
+
+        /* ---- the state ---- */
+        $cl_before = [(int) scalar("select count(*) from strategy_orders"), (int) scalar("select count(*) from strategy_accounts"),
+                      (int) scalar("select count(*) from strategy_positions"), (int) scalar("select count(*) from broker_positions")];
+
+        $pa_set([], 20000, null);
+        $cl_s0 = practice_account_state();
+        check('with the practice account never read, the state says so, and gives no shares - not an empty list',
+              $cl_s0['readable'] === false && $cl_s0['leftover'] === null && $cl_s0['value'] === null
+              && stripos($cl_s0['why'], 'never been read') !== false);
+        $pa_set($cl_book, 20000, 'FAILED');
+        $cl_s1 = practice_account_state();
+        check('a read that failed is unreadable too, however many shares the old rows hold',
+              $cl_s1['readable'] === false && $cl_s1['leftover'] === null && stripos($cl_s1['why'], 'did not finish') !== false);
+
+        $pa_set($cl_book, 20000);
+        $cl_s2 = practice_account_state();
+        check('a good read reports no holder, the account value, and every share left by the retired strategy',
+              $cl_s2['readable'] === true && $cl_s2['holder'] === null && $cl_s2['fresh'] === true
+              && $cl_s2['value'] === 20000.0 && count($cl_s2['leftover']) === 15
+              && count(array_filter($cl_s2['leftover'], function ($s) { return $s['tied'] === 'cl_old' && $s['quantity'] === 10.0; })) === 15,
+              json_encode(array_slice($cl_s2['leftover'], 0, 2)));
+
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at) values ('cl_run',100,'GBP','T212_DEMO','Y',now())")->execute();
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at) values ('cl_run','screen',2,'6mnth',15,'monthly','','Y',now())")->execute();
+        $cl_pos->execute(['cl_run', 'CL01', 4]);
+        $pa_set(array_merge($cl_book, ['CL01' => 14]), 20000);
+        $cl_s3 = practice_account_state();
+        $cl_by = []; foreach ($cl_s3['leftover'] as $cl_x) { $cl_by[$cl_x['symbol']] = $cl_x; }
+        check('a running strategy is the holder, and its shares are never listed as leftover',
+              $cl_s3['holder'] === 'cl_run' && isset($cl_by['CL01']) && $cl_by['CL01']['quantity'] === 10.0
+              && $cl_by['CL01']['tied'] === 'cl_old' && count($cl_s3['leftover']) === 15);
+        db()->exec("delete from strategy_positions where strategy='cl_run' and symbol='CL01'");
+        $cl_pos->execute(['cl_run', 'CL02', 10]);
+        $pa_set($cl_book, 20000);
+        $cl_s4 = practice_account_state();
+        check('a share the running strategy holds in full is not leftover at all',
+              count(array_filter($cl_s4['leftover'], function ($s) { return $s['symbol'] === 'CL02'; })) === 0
+              && count($cl_s4['leftover']) === 14);
+        db()->exec("delete from strategy_positions where strategy='cl_run'");
+        db()->exec("delete from strategy_accounts where strategy='cl_run'");
+        db()->exec("delete from strategy_rules where strategy='cl_run'");
+
+        $pa_set(array_merge($cl_book, ['ZZ99' => 3]), 20000);
+        $cl_s5 = practice_account_state();
+        check('a share nobody recorded is leftover with no strategy tied to it',
+              count(array_filter($cl_s5['leftover'], function ($s) { return $s['symbol'] === null && $s['tied'] === null; })) === 1);
+        check('reading the state writes nothing',
+              [(int) scalar("select count(*) from strategy_orders"), (int) scalar("select count(*) from strategy_accounts"),
+               (int) scalar("select count(*) from strategy_positions")] === array_slice($cl_before, 0, 3));
+
+        /* ---- Clear, step one ---- */
+        $pa_set($cl_book, 20000);
+        $cl_orders = (int) scalar("select count(*) from strategy_orders");
+        $cl_page = (string) $curl("$base/strategies.php");
+        check('the overview shows what is left on the practice account, the strategy that left it, and the account value',
+              strpos($cl_page, 'id="sm-practice-clear"') !== false && substr_count($cl_page, 'data-share="CL') === 15
+              && stripos($cl_page, 'left by Cl old') !== false && strpos($cl_page, '20,000.00') !== false
+              && strpos($cl_page, 'Show what would be sold') !== false);
+        $cl_out = $wb_post(['do' => 'practice_clear', 'step' => '1']);
+        check('step one lists the 15 leftover shares of the archived practice strategy',
+              stripos($cl_out, 'Would sell') !== false && substr_count($cl_out, 'CL') >= 15 && stripos($cl_out, 'Cl old') !== false,
+              substr(strip_tags($cl_out), 0, 300));
+        check('and records nothing, sends nothing: no order, no account change',
+              (int) scalar("select count(*) from strategy_orders") === $cl_orders
+              && scalar("select enabled from strategy_accounts where strategy='cl_old'") === 'N'
+              && stripos($cl_out, 'Nothing was sent or recorded') !== false);
+        check('and the confirmation is offered only now, once the list has been shown',
+              stripos((string) $curl("$base/strategies.php"), 'Confirm: sell these') !== false);
+
+        $cl_cli = practice_clear(['user_id' => 1, 'step' => 1]);
+        $curl("$base/strategies.php?do=practice_clear&step=1");
+        check('the command line and a GET do nothing',
+              $cl_cli['ok'] === false && stripos($cl_cli['why'], 'logged in session') !== false);
+
+        /* ---- the refusals ---- */
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at) values ('cl_run',100,'GBP','T212_DEMO','Y',now())")->execute();
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at) values ('cl_run','screen',2,'6mnth',15,'monthly','','Y',now())")->execute();
+        $cl_out = $wb_post(['do' => 'practice_clear', 'step' => '1']);
+        check('clear is refused while any strategy is switched on at the practice account, naming it',
+              stripos($cl_out, 'was not cleared') !== false && stripos($cl_out, 'Cl run') !== false
+              && stripos($cl_out, 'switched on') !== false, substr(strip_tags($cl_out), 0, 300));
+        db()->exec("delete from strategy_accounts where strategy='cl_run'");
+        db()->exec("delete from strategy_rules where strategy='cl_run'");
+
+        $pa_set(array_merge($cl_book, ['ZZ99' => 3]), 20000);
+        $cl_out = $wb_post(['do' => 'practice_clear', 'step' => '1']);
+        check('a share tied to no strategy is named, and nothing is sold',
+              stripos($cl_out, 'ZZ99l_EQ') !== false && stripos($cl_out, 'tied to no strategy') !== false
+              && (int) scalar("select count(*) from strategy_orders") === $cl_orders);
+        $pa_set(array_merge($cl_book, ['CL03' => 12]), 20000);
+        $cl_out = $wb_post(['do' => 'practice_clear', 'step' => '1']);
+        check('and so is a share the broker holds more of than the strategy recorded',
+              stripos($cl_out, 'CL03') !== false && stripos($cl_out, 'more at the broker') !== false);
+        $pa_set($cl_book, 20000, 'FAILED');
+        $cl_out = $wb_post(['do' => 'practice_clear', 'step' => '1']);
+        check('and so is a practice account that cannot be read: it does not guess',
+              stripos($cl_out, 'cannot be read') !== false && (int) scalar("select count(*) from strategy_orders") === $cl_orders);
+        $pa_set($cl_book, 20000);
+
+        /* ---- step two, on the page: a crafted POST, and the unconfigured server ---- */
+        $cl_jar = tempnam(sys_get_temp_dir(), 'cljar');
+        shell_exec('curl -s -c ' . escapeshellarg($cl_jar) . ' -b ' . escapeshellarg($cl_jar) . ' -L ' . escapeshellarg("$base/login.php") . ' > /dev/null 2>&1');
+        shell_exec('curl -s -c ' . escapeshellarg($cl_jar) . ' -b ' . escapeshellarg($cl_jar) . ' -L -d ' . escapeshellarg('username=tester&password=testpass') . ' ' . escapeshellarg("$base/login.php") . ' > /dev/null 2>&1');
+        $cl_crafted = (string) shell_exec('curl -s -c ' . escapeshellarg($cl_jar) . ' -b ' . escapeshellarg($cl_jar) . ' -L -d '
+                      . escapeshellarg('do=practice_clear&step=2') . ' ' . escapeshellarg("$base/strategies.php") . ' 2>/dev/null');
+        check('a crafted POST for step two without step one fails, and records nothing',
+              stripos($cl_crafted, 'list shown first') !== false && (int) scalar("select count(*) from strategy_orders") === $cl_orders);
+        @unlink($cl_jar);
+
+        $wb_post(['do' => 'practice_clear', 'step' => '1']);
+        $cl_out = $wb_post(['do' => 'practice_clear', 'step' => '2']);
+        check('step two where the practice connection is not configured records and sends nothing',
+              stripos($cl_out, 'not configured') !== false && (int) scalar("select count(*) from strategy_orders") === $cl_orders);
+
+        /* ---- step two, executed through the practice sender, against the stub ---- */
+        $cx_dir = sys_get_temp_dir() . '/smt212cx' . getmypid();
+        exec('rm -rf ' . escapeshellarg($cx_dir));
+        @mkdir($cx_dir, 0777, true);
+        $cx_port = 8379;
+        $cx_busy = @fsockopen('127.0.0.1', $cx_port, $cx_en, $cx_es, 0.5);
+        if ($cx_busy) { fclose($cx_busy); }
+        check('the clear stub port is free', $cx_busy === false);
+        $cx_pid = (int) trim((string) shell_exec('SM_STUB_DIR=' . escapeshellarg($cx_dir) . ' php -S 127.0.0.1:' . $cx_port . ' '
+                . escapeshellarg(dirname(__DIR__) . '/tools/t212_stub.php') . ' > /dev/null 2>&1 & echo $!'));
+        usleep(900000);
+        $cx_base = 'http://127.0.0.1:' . $cx_port . '/api/v0';
+        $cx_script = $cx_dir . '/run.php';
+        file_put_contents($cx_script, '<?php require_once("constants.php"); include("functions.php"); include("share_functions.php");
+            include("strategy_functions.php"); require_once("practice_clear.php");
+            $_SESSION["exchange"] = "XLON";
+            $plan = practice_clear_plan();
+            $out = ["plan_ok" => $plan["ok"], "plan_why" => $plan["why"]];
+            if ($argv[1] === "execute") { $out["run"] = practice_clear_execute($plan["shares"], ["ignore_time" => true]); }
+            if ($argv[1] === "outside") {
+                /* the option alone, from outside clearing, and the ordinary run */
+                $c = new T212Client(["env" => "demo", "throttle" => 0]);
+                $a = broker_send_orders("cl_old", ["client" => $c, "ignore_time" => true, "practice_clear" => true]);
+                $b = broker_send_orders("cl_old", ["client" => $c, "ignore_time" => true]);
+                $out["option_alone"] = $a["errors"]; $out["ordinary"] = $b["errors"];
+                $out["flag"] = practice_clear_sending();
+            }
+            echo json_encode($out);');
+        $cx_env = ['SM_T212_DEMO' => 'on', 'SM_T212_DEMO_API_KEY' => 'T212-CLEAR-KEY-NOT-REAL-1', 'SM_T212_DEMO_API_SECRET' => 'T212-CLEAR-SECRET-NOT-REAL-2',
+                   'SM_T212_DEMO_BASE_URL' => $cx_base, 'SM_T212_BASE_URL' => $cx_base, 'SM_T212_THROTTLE' => '0', 'SM_T212_MAX_WAIT' => '1'];
+        $cx_run = function ($mode) use ($cx_script, $cx_env, $INCLUDES) {
+            $cmd = '';
+            foreach ($cx_env as $k => $v) { $cmd .= $k . '=' . escapeshellarg($v) . ' '; }
+            $cmd .= 'php -d include_path=' . escapeshellarg(__DIR__ . '/fixtures' . PATH_SEPARATOR . $INCLUDES) . ' ' . escapeshellarg($cx_script) . ' ' . $mode;
+            $GLOBALS['cx_raw'] = (string) shell_exec($cmd . ' 2>&1');
+            return json_decode($GLOBALS['cx_raw'], true);
+        };
+        $cx_posted = function () use ($cx_dir) {
+            return array_values(array_filter(explode("\n", (string) @file_get_contents("$cx_dir/t212_orders"))));
+        };
+
+        /* An ordinary order for the retired strategy is left alone by clearing. */
+        db()->prepare("insert into strategy_orders (client_order_id,strategy,as_of_date,symbol,exchange,side,quantity,status,note,created_at)
+                       values ('cl_old:ordinary','cl_old',?,'CL01','XLON','BUY',1,'PENDING','rebalance',now())")->execute([date('Y-m-d')]);
+
+        $cx_out = $cx_run('outside');
+        check('the sender\'s exception does nothing from outside clearing: the option alone and the ordinary run both refuse a switched-off account',
+              is_array($cx_out) && $cx_out['flag'] === false
+              && stripos(implode(' ', $cx_out['option_alone']), 'disabled') !== false
+              && stripos(implode(' ', $cx_out['ordinary']), 'disabled') !== false && count($cx_posted()) === 0,
+              json_encode($cx_out));
+
+        $cx_out = $cx_run('execute');
+        $cx_sells = rows("select * from strategy_orders where strategy='cl_old' and client_order_id like 'clear:%' order by symbol");
+        check('step two records a sell for every share against the strategy that left it, and sends them',
+              is_array($cx_out) && $cx_out['plan_ok'] === true && $cx_out['run']['ok'] === true
+              && $cx_out['run']['sent'] === 15 && count($cx_sells) === 15
+              && count(array_filter($cx_sells, function ($o) { return $o['side'] === 'SELL' && $o['status'] === 'SENT' && (float) $o['quantity'] === 10.0 && $o['broker_order_id'] !== null; })) === 15,
+              json_encode(array_slice($cx_sells, 0, 2)));
+        $cx_bodies = array_map(function ($l) { return json_decode($l, true); }, $cx_posted());
+        check('and they went to the practice host through the practice sender, as sells',
+              count($cx_bodies) === 15 && count(array_filter($cx_bodies, function ($b) { return $b['quantity'] === -10 || $b['quantity'] === -10.0; })) === 15
+              && count(array_filter($cx_bodies, function ($b) { return strpos((string) $b['ticker'], 'CL') === 0; })) === 15);
+        check('the ordinary order was not sent by clearing',
+              scalar("select status from strategy_orders where client_order_id='cl_old:ordinary'") === 'PENDING');
+        check('and clearing did not switch an account, archive, or clear a halt',
+              scalar("select enabled from strategy_accounts where strategy='cl_old'") === 'N' && strategy_archived('cl_old')
+              && scalar("select halted from strategy_accounts where strategy='cl_old'") === 'N');
+        check('a second clear while those orders are unresolved is refused, so the same shares are not sold twice',
+              ($cx_again = $cx_run('execute')) && $cx_again['run']['ok'] === false
+              && count($cx_posted()) === 15, substr($GLOBALS['cx_raw'], 0, 600));
+
+        /* A refusal carries the broker's reason as the practice sender records it. */
+        db()->prepare("delete from strategy_orders where strategy='cl_old' and client_order_id like 'clear:%'")->execute();
+        @file_put_contents("$cx_dir/t212_orders", '');
+        file_put_contents("$cx_dir/t212_place", 'reject_detail');
+        $cx_rej = $cx_run('execute');
+        $cx_notes = rows("select status, note from strategy_orders where strategy='cl_old' and side='SELL'");
+        check('a refusal by the broker is recorded with its reason, as for any practice order',
+              is_array($cx_rej) && $cx_rej['run']['rejected'] === 15
+              && count(array_filter($cx_notes, function ($o) { return $o['status'] === 'REJECTED' && stripos((string) $o['note'], 'The quantity is not valid for this instrument') !== false; })) === 15,
+              json_encode(array_slice($cx_notes, 0, 2)));
+        @unlink("$cx_dir/t212_place");
+
+        if ($cx_pid > 0) { exec("kill $cx_pid 2>/dev/null"); }
+        exec('rm -rf ' . escapeshellarg($cx_dir));
+
+        /* ---- start on practice over leftovers ---- */
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at)
+                       select 'cl_new',selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,now() from strategy_rules where strategy=?")->execute([$WF]);
+        db()->prepare("insert into strategy_backtest_runs (strategy,account,from_date,to_date,started_at,finished_at,status,fingerprint,rules_snapshot)
+                       values ('cl_new','bt_cl_new_1',?,?,now(),now(),'DONE',?,'{}')")->execute([$bf_from, $bf_to, rules_fingerprint('cl_new')]);
+        check('the strategy to start is Backtested', strategy_stage('cl_new')['stage'] === 'Backtested');
+
+        $pa_set($cl_book, 20000);
+        $cl_orders = (int) scalar("select count(*) from strategy_orders");
+        $cl_out = $wb_post(['do' => 'practice_start', 'step' => '1', 'strategy' => 'cl_new', 'capital' => '1000']);
+        check('start on practice is refused over leftover shares, naming them and pointing to Clear',
+              stripos($cl_out, 'Not started on practice') !== false && stripos($cl_out, 'CL01') !== false
+              && stripos($cl_out, 'Clear the practice account') !== false
+              && (int) scalar("select count(*) from strategy_accounts where strategy='cl_new'") === 0, substr(strip_tags($cl_out), 0, 300));
+
+        $pa_set([], 5000);
+        $cl_out = $wb_post(['do' => 'practice_start', 'step' => '1', 'strategy' => 'cl_new', 'capital' => '10000']);
+        check('and refused when the capital is more than the account is worth, saying what it is worth',
+              stripos($cl_out, 'more than the practice account is worth') !== false && stripos($cl_out, '5,000.00') !== false
+              && (int) scalar("select count(*) from strategy_accounts where strategy='cl_new'") === 0);
+        check('the default capital offered is the account value at the broker',
+              preg_match('~name="capital"[^>]*value="5000.00"~s', (string) $curl("$base/strategies.php?s=cl_new")) === 1);
+        $pa_set($cl_book, 20000, 'FAILED');
+        $cl_out = $wb_post(['do' => 'practice_start', 'step' => '1', 'strategy' => 'cl_new', 'capital' => '1000']);
+        check('and refused when the practice account cannot be read',
+              stripos($cl_out, 'cannot be read') !== false && (int) scalar("select count(*) from strategy_accounts where strategy='cl_new'") === 0);
+        $pa_set([], 5000);
+        db()->prepare("insert into strategy_accounts (strategy,cash,currency,mode,enabled,created_at) values ('cl_run',100,'GBP','T212_DEMO','Y',now())")->execute();
+        db()->prepare("insert into strategy_rules (strategy,selection,screen_id,rank_by,holdings,rebalance,exit_rules,exclude_funds,updated_at) values ('cl_run','screen',2,'6mnth',15,'monthly','','Y',now())")->execute();
+        $cl_out = $wb_post(['do' => 'practice_start', 'step' => '1', 'strategy' => 'cl_new', 'capital' => '1000']);
+        check('and still refused while another strategy holds the account, naming it',
+              stripos($cl_out, 'Cl run') !== false && (int) scalar("select count(*) from strategy_accounts where strategy='cl_new'") === 0);
+        db()->exec("delete from strategy_accounts where strategy='cl_run'");
+        db()->exec("delete from strategy_rules where strategy='cl_run'");
+        $cl_out = $wb_post(['do' => 'practice_start', 'step' => '1', 'strategy' => 'cl_new', 'capital' => '1000']);
+        check('with the account clear and the capital within its value, step one works, and still records no order',
+              scalar("select enabled from strategy_accounts where strategy='cl_new'") === 'N'
+              && (int) scalar("select count(*) from strategy_orders") === $cl_orders
+              && stripos($cl_out, 'switched OFF') !== false, substr(strip_tags($cl_out), 0, 300));
+
+        /* ---- stop practice and archive still send and record nothing ---- */
+        db()->prepare("update strategy_accounts set enabled='Y' where strategy='cl_new'")->execute();
+        $cl_orders = (int) scalar("select count(*) from strategy_orders");
+        $cl_stop = $wb_post(['do' => 'stepdown', 'step' => 'stop_practice', 'strategy' => 'cl_new']);
+        $cl_arch = $wb_post(['do' => 'stepdown', 'step' => 'archive', 'strategy' => 'cl_new']);
+        check('stop practice and archive record no order, and say where the shares can be sold',
+              (int) scalar("select count(*) from strategy_orders") === $cl_orders
+              && stripos($cl_stop, 'Clear the practice account') !== false
+              && stripos($cl_arch, 'Clear the practice account') !== false
+              && strategy_archived('cl_new'));
+
+        /* ---- on the code ---- */
+        $cl_src = [];
+        foreach (array_merge(glob(dirname(__DIR__) . '/includes/*.php'), glob(dirname(__DIR__) . '/public/*.php'), glob(dirname(__DIR__) . '/templates/*.php')) as $cl_f) {
+            $cl_src[substr($cl_f, strlen(dirname(__DIR__)) + 1)] = (string) file_get_contents($cl_f);
+        }
+        $cl_new = $cl_src['includes/practice_account_state.php'] . $cl_src['includes/practice_clear.php'];
+        check('no new code posts to the live host, or posts an order itself',
+              !preg_match('~live\.trading212|T212_LIVE_BASE_URL|broker_live_|place_market_order|file_get_contents\(|stream_context_create~', $cl_new));
+        check('practice_account_state reads only: no insert, update or delete, no sending',
+              !preg_match('~\b(insert\s+into|update\s+\w+\s+set|delete\s+from)\b|broker_send_orders|broker_resolve~i', $cl_src['includes/practice_account_state.php']));
+        $cl_holders = [];
+        foreach ($cl_src as $cl_n2 => $cl_text) {
+            if (preg_match("~select\s+strategy\s+from\s+strategy_accounts\s+where\s+mode=\?\s+and\s+enabled='Y'[^,]*,\s*STRATEGY_MODE_T212_DEMO~", $cl_text)) { $cl_holders[] = $cl_n2; }
+        }
+        check('no module other than practice_account_state decides who holds the practice account',
+              $cl_holders === ['includes/practice_account_state.php'], json_encode($cl_holders));
+        check('practice_start has no holder check of its own: it asks practice_account_state',
+              strpos($cl_src['includes/practice_start.php'], 'practice_account_holder(') !== false
+              && strpos($cl_src['includes/practice_start.php'], 'strategy_practice_holder') === false);
+        check('only practice_clear raises the sender\'s flag, and only its own execute step calls the sending',
+              substr_count($cl_src['includes/practice_clear.php'], 'practice_clear_sending(true)') === 1
+              && substr_count(implode("\n", array_diff_key($cl_src, ['includes/practice_clear.php' => 1])), 'practice_clear_sending(true)') === 0
+              && substr_count($cl_src['includes/practice_clear.php'], 'practice_clear_execute($plan') === 1
+              && substr_count($cl_src['public/strategies.php'], 'practice_clear_execute') === 0);
+        check('nothing was added to strategy_functions.php or share_functions.php',
+              strpos($cl_src['includes/strategy_functions.php'], 'practice_clear') === false
+              && strpos($cl_src['includes/strategy_functions.php'], 'practice_account_state') === false
+              && strpos($cl_src['includes/share_functions.php'], 'practice_clear') === false);
+        check('stage_stepdown is still order-free',
+              !preg_match('~broker_send_orders|place_market_order|practice_clear\(~', $cl_src['includes/stage_stepdown.php']));
+
+        $pa_set([], 20000, null);
+        foreach (['strategy_orders', 'strategy_positions', 'strategy_targets', 'strategy_rules', 'strategy_accounts'] as $cl_t) {
+            db()->exec("delete from $cl_t where strategy in ('cl_old','cl_run','cl_new')");
+        }
+        db()->exec("delete from strategy_backtest_runs where strategy='cl_new'");
+        db()->exec("delete from broker_instruments where environment='demo' and symbol like 'CL%'");
 
         foreach (['strategy_orders', 'strategy_positions', 'strategy_targets', 'strategy_rules', 'strategy_accounts'] as $pc_t) {
             db()->exec("delete from $pc_t where strategy in ('wf_draft','wf_holder','wf_twin','wf_livex')");

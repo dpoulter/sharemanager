@@ -72,7 +72,8 @@
 			write_log("stage_stepdown", $strategy . " practice stopped by " . $who);
 			return ['ok' => true, 'why' => '',
 			        'words' => "Practice stopped: the account is switched off. Its positions stay at the"
-			                 . " broker; nothing was sold."];
+			                 . " broker; nothing was sold. Clear the practice account, on the"
+			                 . " Strategies overview, sells them."];
 		}
 
 		if ($step === 'stop_live') {
@@ -84,8 +85,11 @@
 
 		query("update strategy_rules set archived_at=now() where strategy=?", $strategy);
 		write_log("stage_stepdown", $strategy . " archived by " . $who);
+		$practice = strtoupper((string) ($stage['mode'] ?? '')) === STRATEGY_MODE_T212_DEMO;
 		return ['ok' => true, 'why' => '',
-		        'words' => "Archived. Its rules, runs, orders and accounts are all kept; the night run skips it."];
+		        'words' => "Archived. Its rules, runs, orders and accounts are all kept; the night run skips it."
+		                 . ($practice ? " Its positions stay at the practice broker; Clear the practice account,"
+		                              . " on the Strategies overview, sells them." : "")];
 	}
 
 /* No closing tag: see the note at the end of constants.php. */

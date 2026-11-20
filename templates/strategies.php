@@ -341,6 +341,8 @@
 		         ============================================================ */ ?>
 		<?php if ($view === '_overview'): ?>
 
+			<?php include __DIR__ . '/practice_clear.php'; ?>
+
 			<h2 class="h5">Every strategy, side by side</h2>
 
 			<div class="table-responsive mb-4">
@@ -640,6 +642,7 @@
 						<?php if ($card['enabled'] !== 'Y'): ?><?= status_badge_html('off') ?><?php endif ?>
 					</h2>
 
+					<?php include __DIR__ . '/practice_clear.php'; ?>
 					<?php $stage = $stages[$card['strategy']] ?? null; ?>
 					<?php if ($stage !== null): include __DIR__ . '/strategy_stepper.php'; endif ?>
 

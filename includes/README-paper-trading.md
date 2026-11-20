@@ -391,6 +391,28 @@ strategy that has no account, or is archived, with one line each.
   disarm; archive keeps everything and is refused while any account is on or
   armed. None of them sells, cancels, deletes, sends or clears a halt.
 
+### Clearing the practice account
+
+Archive and Stop practice never sell, so a retired practice strategy leaves its
+shares at the single practice account, and the next strategy started on it
+inherits them. `includes/practice_account_state.php` says who holds the account
+(the one strategy switched on), what shares at the broker belong to no running
+strategy, and what the account is worth - from the broker's own figures as the
+last sync stored them, and unreadable rather than guessed if that run did not
+finish. **Clear the practice account** (`includes/practice_clear.php`, on the
+Strategies overview) sells those shares in two requests: step one lists them
+and records nothing; step two - of the list step one showed - records the sells
+against the strategy that left each share and sends them through the practice
+sender. It is refused while any strategy is switched on at the practice
+account, and a share tied to no strategy is named and refused.
+
+The practice sender does not send for a switched-off account, and still does
+not: Clear is the one exception, only while `practice_clear.php` is in the
+middle of its own call, and only for the orders it recorded (ids beginning
+`clear:`). Start on practice is refused over leftover shares (naming them), over
+a capital above the account's value, and when the account cannot be read; the
+default capital offered is the account's value.
+
 ### A key that cannot read orders
 
 Sending is not the same permission as finding out what became of it. On 19

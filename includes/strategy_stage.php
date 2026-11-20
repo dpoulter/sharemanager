@@ -36,6 +36,7 @@
 	require_once(__DIR__ . "/rules_fingerprint.php");
 	require_once(__DIR__ . "/screen_links.php");
 	require_once(__DIR__ . "/broker_live.php");
+	require_once(__DIR__ . "/practice_account_state.php");
 
 	/** The four stages, in order. */
 	function strategy_stages() { return ['Draft', 'Backtested', 'Practice', 'Live']; }
@@ -77,14 +78,9 @@
 	 * is single and reconciliation covers the whole of it.
 	 */
 	function strategy_practice_holder($except = null) {
-
-		foreach (query("select strategy from strategy_accounts where mode=? and enabled='Y'
-		                 order by strategy", STRATEGY_MODE_T212_DEMO) as $row) {
-			if (strategy_reserved($row['strategy'])) { continue; }
-			if ($except !== null && $row['strategy'] === (string) $except) { continue; }
-			return (string) $row['strategy'];
-		}
-		return null;
+		/* Who holds the practice account is practice_account_state.php's to
+		   say; this is only the name the stage has always called it by. */
+		return practice_account_holder($except);
 	}
 
 	/**
