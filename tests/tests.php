@@ -6553,8 +6553,9 @@
     foreach ($bl_rows as $bl_run) {
         if ($bl_run['matches_live']) { $bl_match[] = $bl_run['account']; }
     }
-    check('the run that matches the live rules and cost model is first, and only it',
-          count($bl_rows) === 3 && $bl_rows[0]['account'] === 'bt_' . $BL . '_1'
+    /* Listed newest first since the run 19 fixes (20 Nov 2026), so the match is marked, not moved. */
+    check('the run that matches the live rules and cost model is marked, and only it',
+          count($bl_rows) === 3
           && $bl_match === ['bt_' . $BL . '_1'],
           json_encode(array_map(function ($r) {
               return [$r['account'], $r['label'], $r['matches_live']]; }, $bl_rows)));
@@ -16607,10 +16608,9 @@ STUB
                               '2026-10-01 10:00:00', 150000, 0.500]);
 
         $sp_bt_tab = (string) $curl("$base/strategies.php?s=" . urlencode($sp) . "&tab=backtest");
-        check('the run whose rules and cost model are the live ones is marked, and first',
+        check('the run whose rules and cost model are the live ones is marked',
               strpos($sp_bt_tab, 'matches live settings') !== false
-              && strpos($sp_bt_tab, '+104.4%') !== false
-              && strpos($sp_bt_tab, '+104.4%') < strpos($sp_bt_tab, '+12.0%'),
+              && strpos($sp_bt_tab, '+104.4%') !== false,
               substr($sp_bt_tab, max(0, strpos($sp_bt_tab, 'matches live settings') - 400), 600));
         check('and it says which cost model it used, not an average cost a fill',
               stripos($sp_bt_tab, 'old costs') !== false
@@ -17673,7 +17673,7 @@ STUB
             return array_merge(['trading_days' => 130, 'rebalances' => 7, 'fills' => 64, 'start_value' => 50000,
                 'final_value' => 54321.5, 'total_return' => 0.08643, 'annual_return' => 0.181,
                 'bench_equal_weight_return' => 0.041, 'bench_cap_weight_return' => 0.052, 'max_drawdown' => -0.071,
-                'costs_paid' => 512.25, 'sharpe' => 1.1, 'deflated_sharpe' => 0.42, 'trials' => 3,
+                'costs_paid' => 512.25, 'sharpe' => 1.1, 'deflated_sharpe' => 0.42, 'trials' => 6, 'dsr' => 0.61,
                 'research_run_id' => '20261120-101010-000001-abc123', 'engine_commit' => '1ca044f',
                 'record' => ['strategy' => 'sm_' . $claim['strategy']]], $over);
         };
@@ -17846,7 +17846,7 @@ STUB
               $wb_rs === 200 && $wb_done['status'] === 'DONE' && (float) $wb_done['total_return'] === 0.08643
               && (float) $wb_done['benchmark_return'] === 0.041 && (float) $wb_done['cap_weight_return'] === 0.052
               && (int) $wb_done['fills'] === 64 && (float) $wb_done['costs_paid'] === 512.25
-              && (int) $wb_done['trial_count'] === 3 && (float) $wb_done['deflated_sharpe'] === 0.42
+              && (int) $wb_done['trial_count'] === 6 && (float) $wb_done['deflated_sharpe_prob'] === 0.61 && (float) $wb_done['deflated_sharpe'] === 0.42
               && $wb_done['research_run_id'] === '20261120-101010-000001-abc123' && $wb_done['engine_commit'] === '1ca044f',
               json_encode([$wb_rs, $wb_ra, $wb_done]));
         check('and it keeps the snapshot and fingerprint it was queued with',
@@ -17874,15 +17874,46 @@ STUB
         check('the page shows the Mac mini result with both benchmarks, trials, deflated Sharpe, report and labels',
               strpos($wb_page, 'data-engine="mac_mini"') !== false
               && strpos($wb_page, 'cap-weighted universe') !== false && strpos($wb_page, 'equal-weight universe') !== false
-              && strpos($wb_page, 'deflated Sharpe') !== false && strpos($wb_page, 'backtest_report.php?run=' . $wb_claim['run_id']) !== false
+              && strpos($wb_page, 'probability the true Sharpe is above zero after 6 trials: 61.0%') !== false && strpos($wb_page, 'backtest_report.php?run=' . $wb_claim['run_id']) !== false
               && stripos($wb_page, 'Restatements') !== false
               && stripos($wb_page, 'Survivorship') === false);
         $wb_rep = (string) $curl("$base/backtest_report.php?run=" . $wb_claim['run_id']);
         check('and the report opens for a logged in user', strpos($wb_rep, '<h1>report</h1>') !== false);
         check('a result from before 2022 carries the survivorship label, every result the restatement caveat',
-              count(backtest_result_labels(['from_date' => '2015-01-01'])) === 2
-              && stripos(backtest_result_labels(['from_date' => '2015-01-01'])[0], 'survivorship') !== false
+              stripos(backtest_result_labels(['from_date' => '2015-01-01'])[0], 'survivorship') !== false
+              && stripos(implode(' ', backtest_result_labels(['from_date' => '2015-01-01'])), 'Restatements') !== false
               && count(backtest_result_labels(['from_date' => '2022-01-01'])) === 1);
+
+        /* Run 19 fixes on the page: the label, the DSR wording, the order. */
+        $wb_rows = strategy_backtest_rows($WF, 50);
+        $wb_mine = array_values(array_filter($wb_rows, function ($r) use ($wb_claim) { return (int) $r['run_id'] === (int) $wb_claim['run_id']; }));
+        check('a Mac mini run\'s label reads its cost model: Trading 212 costs, and its starting cash',
+              count($wb_mine) === 1 && strpos($wb_mine[0]['label'], 'Trading 212 costs') !== false
+              && strpos($wb_mine[0]['label'], 'not recorded') === false
+              && strpos($wb_mine[0]['label'], '50,000') !== false, json_encode($wb_mine[0]['label'] ?? null));
+        check('two trials: the deflated Sharpe is shown in words as too few trials, not as a number',
+              stripos(backtest_dsr_words(['sharpe' => 0.338, 'deflated_sharpe_prob' => null, 'trial_count' => 2]),
+                      'too few distinct trials') !== false
+              && strpos(backtest_dsr_words(['sharpe' => 0.338, 'deflated_sharpe_prob' => null, 'trial_count' => 2]), '%') === false);
+        check('enough trials: the DSR probability is shown beside the Sharpe',
+              strpos(backtest_dsr_words(['sharpe' => 0.9, 'deflated_sharpe_prob' => 0.43, 'trial_count' => 8]),
+                     'Sharpe 0.90; probability the true Sharpe is above zero after 8 trials: 43.0%') !== false);
+        check('a result from before 2016 says the cap-weighted benchmark rests on unchecked caps',
+              stripos(implode(' ', backtest_result_labels(['from_date' => '2007-01-01'])), 'unchecked market caps') !== false
+              && stripos(implode(' ', backtest_result_labels(['from_date' => '2016-01-01'])), 'unchecked') === false);
+        db()->prepare("insert into strategy_backtest_runs (strategy,account,from_date,to_date,started_at,finished_at,status,
+                         total_return,fingerprint,rules_snapshot,requested_at)
+                       values (?,'bt_old_order',?,?,'2026-11-19 18:43:00','2026-11-19 18:50:00','DONE',0.5,?,?,null)")
+          ->execute([$WF, $wb_from, $wb_to, $wb_run['fingerprint'], $wb_run['rules_snapshot']]);
+        $wb_old_order = (int) scalar("select max(run_id) from strategy_backtest_runs");
+        db()->prepare("update strategy_backtest_runs set requested_at='2026-11-20 22:23:00', started_at='2026-11-20 22:23:41' where run_id=?")
+          ->execute([$wb_claim['run_id']]);
+        $wb_ids = array_map(function ($r) { return (int) $r['run_id']; },
+                            array_values(array_filter(strategy_backtest_rows($WF, 50), function ($r) { return !$r['superseded']; })));
+        check('the Backtests table lists runs newest first, a matching older run included',
+              array_search((int) $wb_claim['run_id'], $wb_ids, true) < array_search($wb_old_order, $wb_ids, true),
+              json_encode($wb_ids));
+        db()->prepare("delete from strategy_backtest_runs where run_id=?")->execute([$wb_old_order]);
 
         /* A failure posted from the Mac mini says why. */
         $wb_out = $wb_post($wb_ask);

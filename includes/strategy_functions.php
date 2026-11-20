@@ -1751,8 +1751,13 @@
 	 * Three rows reading "rebalance=monthly, hold-rank=30" with three
 	 * different returns is not a comparison. What differed between them was
 	 * the cost settings, which the run records - so the label says so, and
-	 * the run whose rules and costs match the live strategy is marked and
-	 * listed first.
+	 * the run whose rules and costs match the live strategy is marked.
+	 *
+	 * Newest first by when the run was asked for: requested_at, or
+	 * started_at for a run from before requests were recorded (a Mac mini
+	 * run's started_at is reset when it is claimed, so it is not used when
+	 * there is a request time). Superseded runs after the rest, in the same
+	 * order.
 	 */
 	function strategy_backtest_rows($strategy=null,$limit=50) {
 
@@ -1760,11 +1765,14 @@
 
 		$limit=max(1,min(200,(int)$limit));
 
+		$has_requested=(int)query("select count(*) n from information_schema.columns
+		                            where table_schema=database() and table_name='strategy_backtest_runs'
+		                              and column_name='requested_at'")[0]['n']>0;
+		$order=$has_requested
+		      ? "coalesce(requested_at, started_at) desc, run_id desc" : "started_at desc, run_id desc";
 		$runs=($strategy===null)
-		    ? query("select * from strategy_backtest_runs
-		              order by started_at desc, run_id desc limit ".$limit)
-		    : query("select * from strategy_backtest_runs where strategy=?
-		              order by started_at desc, run_id desc limit ".$limit,$strategy);
+		    ? query("select * from strategy_backtest_runs order by ".$order." limit ".$limit)
+		    : query("select * from strategy_backtest_runs where strategy=? order by ".$order." limit ".$limit,$strategy);
 
 		$out=[];
 		$seen=[];
@@ -1772,7 +1780,12 @@
 		/* What each run's own fills paid, in one query: the only evidence
 		   of the cost model for a run that predates recording it. */
 		$accounts=[];
-		foreach ($runs as $run) { $accounts[]=(string)$run['account']; }
+		/* A Mac mini run keeps no fills here (its account is a claim: marker),
+		   so it is never looked up by account. */
+		foreach ($runs as $run) {
+			if (($run['engine']??null)==='mac_mini'){ continue; }
+			$accounts[]=(string)$run['account'];
+		}
 		$commission=strategy_backtest_commission($accounts);
 
 		foreach ($runs as $run) {
@@ -1802,12 +1815,9 @@
 			$out[]=$run;
 		}
 
-		/* The one that matches the live settings first, then the rest
-		   newest first, then the superseded ones. The sort is stable in
-		   PHP 8, so runs that tie keep the order they came out of the
-		   database in. */
+		/* Newest first as they came out of the database, the superseded ones
+		   after. The sort is stable in PHP 8, so the order within each holds. */
 		usort($out,function($a,$b){
-			if ($a['matches_live']!==$b['matches_live']){ return $a['matches_live'] ? -1 : 1; }
 			if ($a['superseded']!==$b['superseded']){ return $a['superseded'] ? 1 : -1; }
 			return 0;
 		});
@@ -1879,6 +1889,12 @@
 		$parts[]=$costs['words'];
 		$key[]=$costs['key'];
 
+		/* A Mac mini run says the cash it was asked to start with. */
+		if (($run['engine']??null)==='mac_mini'&&isset($run['starting_cash'])&&$run['starting_cash']!==null){
+			$parts[]='starting with '.fmt_pounds((float)$run['starting_cash'],0);
+			$key[]=(string)round((float)$run['starting_cash'],2);
+		}
+
 		$live=($account===null) ? null : strategy_backtest_costs_now($account['mode']);
 
 		$matches=$rules!==null
@@ -1916,6 +1932,17 @@
 	 * at, because a run that never dealt says nothing about either.
 	 */
 	function strategy_backtest_costs_words($run,$commission_paid=null) {
+
+		/* A Mac mini run records the cost model it was asked for, and keeps
+		   no fills here to work it out from. */
+		if (($run['engine']??null)==='mac_mini'){
+			$model=(string)($run['cost_model']??'');
+			if ($model==='t212'){ return ['key'=>'no-commission','words'=>'Trading 212 costs']; }
+			if ($model==='paper'){
+				return ['key'=>'commission','words'=>'old costs ('.fmt_pounds(STRATEGY_COMMISSION,2).' commission)'];
+			}
+			return ['key'=>'unknown','words'=>'cost model not recorded'];
+		}
 
 		$recorded=array_key_exists('cost_settings',$run)
 		        ? trim((string)$run['cost_settings']) : '';

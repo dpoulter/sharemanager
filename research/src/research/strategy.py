@@ -39,6 +39,10 @@ from .universe import fixed_universe, membership
 
 log = logging.getLogger(__name__)
 
+# Market caps before this date include known bad values (Lloyds and Hammerson as the largest
+# companies in 2007, Zephyr, DCI) that are kept; the cap-weighted benchmark rests on them.
+UNCHECKED_CAPS_BEFORE = "2016-01-01"
+
 
 @dataclass
 class Spec:
@@ -197,7 +201,9 @@ class Workspace:
         costs = from_dict(spec.raw.get("costs"))
         res = engine.simulate(mk, member, large, scores, rules, costs, start, end, exit_flags)
         free = engine.simulate(mk, member, large, scores, rules, costs.free(), start, end, exit_flags)
-        bench = engine.benchmarks(mk, member, start, end)          # same basis as the strategy
+        # Benchmarks are total return (dividend-adjusted) whatever the strategy's basis. Run 19's
+        # cap-weighted 5.1% over 2007-2025 was price only: the raw basis took the dividends out.
+        bench = engine.benchmarks(self.m, member, start, end)
         out = metrics.summarise(res.values["total"], bench, res.fills, res.values["holdings"], res.pnl,
                                 free.values["total"])
         share = coverage["scored"] / coverage["members"].replace(0, np.nan)
@@ -208,6 +214,7 @@ class Workspace:
         out["rebalance_refusals"] = res.refusals
         out["orders_skipped"] = res.skipped
 
+        out["cap_weight_unchecked_caps"] = bool(start < pd.Timestamp(UNCHECKED_CAPS_BEFORE))
         prior = self.log.read()
         family_sharpes, n_trials = [], 1
         if not prior.empty and "family" in prior:

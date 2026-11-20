@@ -429,9 +429,9 @@ def test_raw_basis_credits_no_dividends(cfg):
                write_report=False)
     assert a["record"]["price_basis"] == "adjusted" and r["record"]["price_basis"] == "raw"
     assert a["record"]["total_return"] > r["record"]["total_return"]
-    # Raw: the value moves with raw closes only, and the benchmark is on the same basis.
-    eq_raw = (m.close.loc["2025-02-03":"2025-05-16"].iloc[-1] / m.close.loc["2025-02-03":"2025-05-16"].iloc[0]).mean() - 1
-    assert r["record"]["bench_equal_weight_return"] == pytest.approx(eq_raw, abs=0.01)
+    # Raw: the value moves with raw closes only, but the benchmark is total return on both bases.
+    assert r["record"]["bench_equal_weight_return"] == pytest.approx(a["record"]["bench_equal_weight_return"])
+    assert r["record"]["bench_cap_weight_return"] == pytest.approx(a["record"]["bench_cap_weight_return"])
 
 
 def test_validate_reports_identical_months_and_passes_on_itself(cfg, tmp_path):

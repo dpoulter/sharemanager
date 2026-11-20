@@ -383,7 +383,14 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
 
 
 def benchmarks(m: Market, member: pd.DataFrame, start, end) -> pd.DataFrame:
-    """Equal-weight and cap-weighted universe, total return, rebased to 1."""
+    """Equal-weight and cap-weighted universe, rebased to 1.
+
+    Total return when `m` is the adjusted market (Workspace.run always passes it, whatever the
+    strategy's price basis: a benchmark is a total-return index). Each day's return of each
+    member is weighted equally, or by its market cap at the previous close, which is what holding
+    the index does. Market caps before 2016 include some known bad values that are kept
+    (Dale's decision), so a cap-weighted benchmark before 2016 rests on unchecked caps.
+    """
     dates = m.dates[(m.dates >= pd.Timestamp(start)) & (m.dates <= pd.Timestamp(end))]
     adj = m.adj.reindex(columns=member.columns).loc[dates]
     ret = adj.ffill(limit=10).pct_change(fill_method=None)

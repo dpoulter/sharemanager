@@ -41,8 +41,7 @@ $bt_pct = function ($v) { return $v === null ? '&ndash;' : e(number_format((floa
 			cap-weighted universe <?= $bt_pct($r['cap_weight_return']) ?>;
 			largest fall <?= $bt_pct($r['max_drawdown']) ?>;
 			<?= (int) $r['fills'] ?> trades, costs &pound;<?= e(number_format((float) $r['costs_paid'], 2)) ?>;
-			deflated Sharpe <?= $r['deflated_sharpe'] === null ? '&ndash;' : e(number_format((float) $r['deflated_sharpe'], 2)) ?>
-			after <?= (int) $r['trial_count'] ?> trial<?= (int) $r['trial_count'] === 1 ? '' : 's' ?> of this family.
+			<span class="sm-dsr"><?= e(backtest_dsr_words($r)) ?>.</span>
 			<span class="text-muted">Engine run <?= e((string) $r['research_run_id']) ?> at commit <?= e((string) $r['engine_commit']) ?>.</span>
 			<?php if (backtest_report_path($r) !== null): ?>
 				<a href="backtest_report.php?run=<?= (int) $r['run_id'] ?>" target="_blank" rel="noopener">Report</a>

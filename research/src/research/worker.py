@@ -57,7 +57,8 @@ log = logging.getLogger("research.worker")
 DEFAULT_SETTINGS = Path("~/.config/sharemanager-research/worker.env")
 RESULT_FIELDS = ["trading_days", "fills", "start_value", "final_value", "total_return", "annual_return",
                  "bench_equal_weight_return", "bench_cap_weight_return", "max_drawdown", "costs_paid",
-                 "sharpe", "deflated_sharpe", "trials"]
+                 "sharpe", "deflated_sharpe", "trials", "dsr", "deflation_meaningful",
+                 "cap_weight_unchecked_caps"]
 
 
 class WorkerError(RuntimeError):
@@ -176,6 +177,9 @@ def result_payload(record: dict, rebalances: int) -> dict:
     scored, one row each in Workspace.run's coverage table)."""
     out = {k: _clean(record.get(k)) for k in RESULT_FIELDS}
     out["rebalances"] = int(rebalances)
+    if not record.get("deflation_meaningful"):
+        # Too few distinct trials: no number that looks deflated is posted.
+        out["dsr"] = out["deflated_sharpe"] = None
     out["research_run_id"] = str(record["run_id"])
     out["engine_commit"] = str(record.get("git_commit") or "unknown")[:40]
     out["record"] = _clean({k: v for k, v in record.items()})

@@ -73,7 +73,8 @@ def write_report(cfg: Config, result: dict, trials: int, period_label: str | Non
                          f"{', recovered ' + rec['drawdown_recovered'] if rec['drawdown_recovered'] else ', not recovered'})"),
         ("Volatility", _pct(rec["volatility"])), ("Sharpe", _num(rec["sharpe"])),
         ("Deflated Sharpe (SR - SR0)", _num(rec.get("deflated_sharpe"))),
-        ("DSR probability", _pct(rec.get("dsr"))),
+        ("DSR probability (true Sharpe above zero, after the trials)", _pct(rec.get("dsr"))),
+        ("Plain Sharpe probability (no deflation)", _pct(rec.get("psr"))),
         ("Turnover a year", _pct(rec["turnover_a_year"], 0)), ("Costs a year", _pct(rec["costs_pct_a_year"], 2)),
         ("Return a year at zero cost", _pct(rec.get("zero_cost_annual"))),
         ("Fills", str(rec["fills"])), ("Holdings (mean, min, max)",
@@ -99,9 +100,16 @@ def write_report(cfg: Config, result: dict, trials: int, period_label: str | Non
                     "by year. A company with a missing field is skipped, never scored as zero.</p>"
                     f"<table><tr><th>Year</th>{head}</tr>{body}</table>")
     caveats = list(cfg.get("caveats", []))
-    caveats.insert(0, "Price basis: " + ("raw closes, no dividends credited (as the N100 prices); benchmarks on the same basis."
+    caveats.insert(0, "Price basis: " + ("the strategy is on raw closes with no dividends credited (as the N100 prices); "
+                                        "the benchmarks are total return, so they include dividends the strategy does not."
                                         if rec.get("price_basis") == "raw" else
-                                        "dividend-adjusted closes (total return); benchmarks on the same basis."))
+                                        "dividend-adjusted closes (total return), as are the benchmarks."))
+    if rec.get("cap_weight_unchecked_caps"):
+        caveats.insert(0, "The cap-weighted benchmark before 2016 rests on unchecked market caps, some known to be wrong "
+                          "(Lloyds and Hammerson shown as the largest companies in 2007); read it with that in mind.")
+    if rec.get("deflation_meaningful") is False:
+        caveats.insert(0, f"Too few distinct trials in the family ({rec.get('distinct_trials')}) to deflate the Sharpe: "
+                          "the deflated figures are not deflated.")
     if period_label:
         caveats.insert(0, period_label)
     if rec.get("touches_holdout"):

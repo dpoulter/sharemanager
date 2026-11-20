@@ -345,6 +345,28 @@ def cmd_validate(cfg, a):
     sys.exit(0 if rep.get("passed") else 1)
 
 
+def cmd_bench_weights(cfg, a):
+    """The largest cap weights in the cap-weighted benchmark each January, and its yearly total
+    and price-only returns: how much rests on the unchecked caps before 2016."""
+    from dataclasses import replace
+    from . import engine
+    from .strategy import Workspace
+    from .universe import membership
+    ws = Workspace(cfg)
+    member, _ = membership(ws.universe, ws.m.dates)
+    member = member.reindex(columns=ws.m.close.columns, fill_value=False)
+    tr = engine.benchmarks(ws.m, member, a.start, a.end)["cap_weight"]
+    px = engine.benchmarks(replace(ws.m, adj=ws.m.close, _ma200=None), member, a.start, a.end)["cap_weight"]
+    for y in sorted(set(tr.index.year)):
+        d = tr.index[tr.index.year == y][0]
+        cap = ws.m.market_cap.loc[:d].ffill(limit=10).iloc[-1].where(member.loc[d]).dropna()
+        w = (cap / cap.sum()).sort_values(ascending=False).head(a.top)
+        t, p = tr[tr.index.year == y], px[px.index.year == y]
+        print(f"{y}: total {t.iloc[-1] / t.iloc[0] - 1:+.1%}, price only {p.iloc[-1] / p.iloc[0] - 1:+.1%}; top: "
+              + ", ".join(f"{k} {v:.1%}" for k, v in w.items()))
+    print(f"whole period: total {tr.iloc[-1] - 1:+.1%}, price only {px.iloc[-1] - 1:+.1%}")
+
+
 def cmd_worker(cfg, a):
     from .worker import main as worker_main
     worker_main(cfg, once=a.once)
@@ -379,6 +401,9 @@ def main(argv=None):
     s.add_argument("--replay-targets", nargs="?", const="", default=None,
                    help="hold the N100's own targets (default data/validation/n100_run9_targets.csv): an engine-only check")
     s.add_argument("--values", help="default data/validation/n100_run9_values.csv")
+    s = sub.add_parser("bench-weights", help="largest cap weights each January and the cap-weighted benchmark by year")
+    s.add_argument("--from", dest="start", default="2007-01-01"); s.add_argument("--to", dest="end", default="2025-05-17")
+    s.add_argument("--top", type=int, default=5)
     s = sub.add_parser("worker", help="run sharemanager's queued backtests, one at a time (worker.py)")
     s.add_argument("--once", action="store_true", help="claim and run at most one, then stop")
     a = p.parse_args(argv)
@@ -387,7 +412,7 @@ def main(argv=None):
     try:
         {"fetch": cmd_fetch, "cap-trace": cmd_cap_trace, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
          "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate,
-         "worker": cmd_worker}[a.cmd](cfg, a)
+         "worker": cmd_worker, "bench-weights": cmd_bench_weights}[a.cmd](cfg, a)
     except Exception as e:     # never let a key reach the terminal in a traceback
         log.error("%s failed: %s", a.cmd, mask(e))
         if __import__("os").environ.get("RESEARCH_DEBUG"):

@@ -59,8 +59,8 @@
 		                where table_schema=database() and table_name='strategy_backtest_runs'
 		                  and column_name in ('engine','claimed_at','research_run_id','engine_commit',
 		                                      'cap_weight_return','deflated_sharpe','trial_count',
-		                                      'report_file','result_json')");
-		$known = count($rows) && (int) $rows[0]['n'] === 9;
+		                                      'report_file','result_json','deflated_sharpe_prob')");
+		$known = count($rows) && (int) $rows[0]['n'] === 10;
 		return $known;
 	}
 
@@ -114,7 +114,8 @@
 			return $refuse("a backtest is asked for with a form, so it is a POST and nothing else.");
 		}
 		if (!backtest_runs_ready()) {
-			return $refuse("apply sql/strategy_workflow.sql, sql/backtest_queue.sql and sql/backtest_mac_mini.sql first.");
+			return $refuse("apply sql/strategy_workflow.sql, sql/backtest_queue.sql, sql/backtest_mac_mini.sql"
+			             . " and sql/backtest_dsr.sql first.");
 		}
 
 		$user_id = isset($options['user_id']) ? (int) $options['user_id'] : 0;
@@ -422,6 +423,8 @@
 			'sharpe'             => ['sharpe', 'float'],
 			'deflated_sharpe'    => ['deflated_sharpe', 'float'],
 			'trials'             => ['trial_count', 'int'],
+			/* Null when the family has too few distinct trials (metrics.MIN_TRIALS_FOR_DEFLATION). */
+			'dsr'                => ['deflated_sharpe_prob', 'float'],
 		];
 	}
 
@@ -532,6 +535,10 @@
 			$out[] = "Survivorship: before 2022 the data holds few companies that later died, so this result"
 			       . " is flattered.";
 		}
+		if ((string) $run['from_date'] < '2016-01-01') {
+			$out[] = "Cap-weighted benchmark: before 2016 it rests on unchecked market caps, some known to be"
+			       . " wrong (Lloyds and Hammerson shown as the largest companies in 2007).";
+		}
 		$out[] = "Restatements: company accounts are the latest figures, not those first published, so"
 		       . " value and quality signals may see corrections made later.";
 		return $out;
@@ -542,6 +549,22 @@
 		if (!backtest_runs_ready()) { return []; }
 		return query("select * from strategy_backtest_runs where strategy=? and engine='mac_mini' and status='DONE'
 		               order by run_id desc limit " . max(1, min(50, (int) $limit)), (string) $strategy);
+	}
+
+	/**
+	 * The deflated Sharpe of a done Mac mini run, in words: the DSR
+	 * probability beside the Sharpe, or, when the family had too few
+	 * distinct trials for the deflation to mean anything, that.
+	 */
+	function backtest_dsr_words(array $run) {
+		$sharpe = $run['sharpe'] === null ? 'no Sharpe' : 'Sharpe ' . number_format((float) $run['sharpe'], 2);
+		if (($run['deflated_sharpe_prob'] ?? null) === null) {
+			return $sharpe . '; too few distinct trials in this family (' . (int) $run['trial_count']
+			     . ' so far, 5 needed) to deflate it, so no deflated figure is shown';
+		}
+		return $sharpe . '; probability the true Sharpe is above zero after ' . (int) $run['trial_count'] . ' trial'
+		     . ((int) $run['trial_count'] === 1 ? '' : 's') . ': '
+		     . number_format((float) $run['deflated_sharpe_prob'] * 100, 1) . '%';
 	}
 
 	/** The full path of a done run's report, or null. */
