@@ -454,9 +454,15 @@ def explain_screens(out: dict, ws: Workspace, pairs: list[tuple[str, str]], asof
     rows = []
     for date, sym in pairs:
         s = to_fmp(sym)
-        i = ctx.pos(date)
-        d = mk.dates[i] if i >= 0 else None
-        r = {"date": str(date), "decision_day": None if d is None else str(d.date()), "symbol": s}
+        # The decision day the engine used: the last scored day on or before the date, so the scores are the
+        # ones it ranked on (a holiday or weekend row in the price calendar must not hide them).
+        keys = sorted(scores)
+        k = int(np.searchsorted(np.array(keys, dtype="datetime64[ns]"), np.datetime64(pd.Timestamp(date)), side="right")) - 1
+        d = keys[k] if k >= 0 else None
+        i = ctx.pos(d) if d is not None else -1
+        r = {"date": str(date), "decision_day": None if d is None else f"{d.date()} ({d.day_name()})", "symbol": s}
+        if d is not None:
+            r["prices_in_calendar_that_day"] = int(mk.close.loc[d].notna().sum())
         if d is None or s not in mk.adj.columns:
             rows.append({**r, "dropped_by": "no price column for the symbol" if s not in mk.adj.columns else "no decision day"})
             continue
@@ -524,6 +530,12 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
     if ex.exists():
         pr = pd.read_csv(ex)
         report["explain"] = explain_screens(out, ws, list(zip(pr["date"], pr["symbol"])), raw.get("rebalance_asof"))
+    if ex.exists():
+        months = {str(x)[:7] for x in pr["date"]}
+        report["engine_events"] = {
+            mth: [{k: (str(v.date()) if isinstance(v, pd.Timestamp) else v) for k, v in e.items()}
+                  for e in out["result"].events if str(e["date"])[:7] == mth][:400]
+            for mth in sorted(months)}
     d0 = min(out["scores"])
     report["first_value_the_n100_way"] = n100_style_first_value(out, d0, float(raw["start_cash"]))
     if values_csv:
