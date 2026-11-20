@@ -14,6 +14,8 @@ Jarvis's exports from the N100 (rerun as run 10, identical to run 9:
     from strategy_targets where strategy = 'bt_trend_following_10'). Used first when it is there
   - explain.csv (optional): date, symbol; the report then says which screen kept or dropped each share on
     each decision day (explain in run9_check.json)
+  - n100_ma200_dates.csv: date (and symbols): the dates that have a ma200 row, Sundays included. The
+    200-day exit counts these rows. Without it the wider n100_stats_dates.csv is used, which is wrong
   - n100_stats_dates.csv: date (select distinct date from statistics, Oct 2022 to Nov 2026). The N100
     rebalances on the first of those dates on or after the 1st, which includes some holidays and
     Sundays, and fills the next trading day; without it the engine rebalances on the first trading day
@@ -516,6 +518,7 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
     out = ws.run(spec, period=f"{start}:{end}", kind="engine_validation", start=start, end=end)
     rec = out["record"]
     report = {"price_basis": rec.get("price_basis"),
+              "exit_calendar": raw.get("exit_calendar", "trading days only"),
               "rebalance_asof": "%s, %d dates" % (raw["_asof_source"], len(raw["rebalance_asof"]))
               if "rebalance_asof" in raw else "first trading day of the month (no as-of file in data/validation)",
               "universe_without_funds": int(len(pd.read_csv(listed))),
