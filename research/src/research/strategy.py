@@ -61,7 +61,8 @@ class Spec:
                             drift_band=float(r.get("drift_band", 0.02)), max_turnover=r.get("max_turnover"),
                             start_cash=float(r.get("start_cash", 100_000)),
                             require_traded_today=bool(r.get("require_traded_today", True)),
-                            max_orders=r.get("max_orders"))
+                            max_orders=r.get("max_orders"),
+                            rebalance_asof=tuple(r["rebalance_asof"]) if r.get("rebalance_asof") else None)
 
 
 def load_spec(path: str | Path) -> Spec:

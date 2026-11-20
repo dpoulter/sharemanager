@@ -400,3 +400,24 @@ def test_the_referee_accepts_a_segment_with_a_few_wild_days(tmp_path):
     cap[60], cap[61], cap[70] = 3e11, 1.0e11, 9e10                 # three wild days in fifty
     _referee_data(tmp_path, {"DCI.L": cap.copy()}, [("DCI.L", 50, 99)])
     assert len(rescue_refused_caps(tmp_path)) == 1
+
+
+# ------------------------------------------------------------------ the N100's rebalance as-of dates
+
+def test_rebalance_on_the_last_trading_day_on_or_before_the_n100_as_of():
+    from research.engine import rebalance_flags
+    d = pd.bdate_range("2022-12-28", "2023-02-03").drop(pd.to_datetime(["2023-01-02"]))     # 2 Jan: bank holiday
+    asof = ["2022-12-01", "2023-01-02", "2023-02-01"]
+    f = rebalance_flags(d, "monthly", asof)
+    assert list(d[f]) == [pd.Timestamp("2022-12-30"), pd.Timestamp("2023-02-01")]      # 2 Jan: decide on 30 Dec, fill 3 Jan
+    # No as_of dates: the first trading day of each month, as before.
+    assert list(d[rebalance_flags(d, "monthly")]) == [pd.Timestamp("2022-12-28"), pd.Timestamp("2023-01-03"),
+                                                      pd.Timestamp("2023-02-01")]
+
+
+def test_n100_asof_dates_come_from_its_statistics_calendar(tmp_path):
+    from research.validate import n100_asof_dates
+    pd.DataFrame({"date": ["2022-11-01", "2022-12-01", "2023-01-02", "2023-01-03", "2023-02-01", "2023-02-02"]}) \
+        .to_csv(tmp_path / "d.csv", index=False)
+    assert n100_asof_dates(tmp_path / "d.csv", "2022-11-01", "2023-02-28") == \
+        ["2022-11-01", "2022-12-01", "2023-01-02", "2023-02-01"]

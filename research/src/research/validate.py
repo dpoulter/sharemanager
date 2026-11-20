@@ -10,6 +10,9 @@ Jarvis's exports from the N100 (rerun as run 10, identical to run 9:
     (is_fund=Y) are dropped, as run 9 excluded them
   - n100_run9_orders.csv: date, symbol, side, quantity, price (pounds)
   - n100_run9_values.csv: date, total
+  - n100_stats_dates.csv: date (select distinct date from statistics, Oct 2022 to Nov 2026). The N100
+    rebalances on the first of those dates on or after the 1st, which includes some holidays and
+    Sundays, and fills the next trading day; without it the engine rebalances on the first trading day
 
 This run covers holdout dates. It is an engine check, logged as kind
 'engine_validation' and not as research, but it does show trend following's
@@ -418,16 +421,33 @@ def rankings(ws: Workspace, out: dict, d, month, differing: list[str]) -> dict:
     return res
 
 
+def n100_asof_dates(stats_dates_csv: Path, start: str, end: str) -> list[str]:
+    """The N100's rebalance as-of dates: for each month, the first date in its statistics calendar
+    on or after the 1st. stats_dates_csv has one column, date (select distinct date from statistics)."""
+    d = pd.to_datetime(pd.read_csv(stats_dates_csv)["date"]).drop_duplicates().sort_values()
+    out = []
+    for m in pd.period_range(pd.Timestamp(start), pd.Timestamp(end), freq="M"):
+        hit = d[d >= m.to_timestamp()]
+        if len(hit) and hit.iloc[0].to_period("M") == m:
+            out.append(str(hit.iloc[0].date()))
+    return out
+
+
 def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv: Path | None,
          costs: dict | None = None, start: str = "2022-11-01", end: str = "2026-11-13") -> dict:
     listed = universe_list(Path(universe_csv), ws.cfg.data_dir / "validation" / "run9_universe_no_funds.csv")
     raw = dict(RUN9, universe=f"list:{listed}")
+    asof_file = ws.cfg.data_dir / "validation" / "n100_stats_dates.csv"
+    if asof_file.exists():
+        raw["rebalance_asof"] = n100_asof_dates(asof_file, start, end)
     if costs:
         raw["costs"] = {**raw["costs"], **costs}
     spec = spec_from_dict(raw)
     out = ws.run(spec, period=f"{start}:{end}", kind="engine_validation", start=start, end=end)
     rec = out["record"]
     report = {"price_basis": rec.get("price_basis"),
+              "rebalance_asof": "N100 statistics calendar (%d dates)" % len(raw["rebalance_asof"])
+              if "rebalance_asof" in raw else "first trading day of the month (no data/validation/n100_stats_dates.csv)",
               "universe_without_funds": int(len(pd.read_csv(listed))),
               "ours_total_return": rec["total_return"], "ours_fills": rec["fills"],
               "ours_costs": rec["costs_paid"],

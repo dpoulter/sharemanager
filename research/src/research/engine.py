@@ -67,6 +67,11 @@ class Rules:
     # (STRATEGY_MAX_ORDERS_PER_RUN). Research defaults are stricter on the first and unlimited on the second.
     require_traded_today: bool = True
     max_orders: int | None = None
+    # The N100 rebalances on the first date of its own statistics calendar on or after the 1st, which
+    # includes some holidays and Sundays. Its data is then the last close on or before that date and it
+    # fills the next trading day. With these dates (monthly only) the decision is taken on the last
+    # trading day on or before each one, so the fill is the next trading day, as the N100's is.
+    rebalance_asof: tuple | None = None
 
     def n_holdings(self, universe_size: int) -> int:
         if isinstance(self.holdings, str):
@@ -88,7 +93,14 @@ class Result:
     events: list[dict] = field(default_factory=list)
 
 
-def rebalance_flags(dates: pd.DatetimeIndex, how: str) -> np.ndarray:
+def rebalance_flags(dates: pd.DatetimeIndex, how: str, as_of=None) -> np.ndarray:
+    if as_of is not None and how == "monthly":
+        flags = np.zeros(len(dates), dtype=bool)
+        for a in pd.DatetimeIndex(pd.to_datetime(list(as_of))):
+            i = int(dates.searchsorted(a, side="right")) - 1       # the last trading day on or before
+            if i >= 0:
+                flags[i] = True
+        return flags
     s = pd.Series(np.arange(len(dates)), index=dates)
     if how == "monthly":
         key = [dates.year, dates.month]
@@ -142,7 +154,7 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
         if s in col and m.gone.get(s, False) and d in pos_of:
             last_day[col[s]] = pos_of[d]
     ex = exit_flags.reindex(index=dates, columns=syms).fillna(False).to_numpy() if exit_flags is not None else None
-    rebal = rebalance_flags(dates, rules.rebalance)
+    rebal = rebalance_flags(dates, rules.rebalance, rules.rebalance_asof)
     rebal[0] = True     # the first build is always due
 
     cash = float(rules.start_cash)
