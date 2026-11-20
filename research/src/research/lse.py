@@ -285,7 +285,7 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
         c["month"] = c.index.to_period("M").to_timestamp() if isinstance(c.index, pd.DatetimeIndex) else c["month"]
         cap_at = c.groupby("month").last()       # month x symbol, pounds, last close of the month
 
-    syms_out, doubles = [], {}
+    syms_out, doubles, loose_matches = [], {}, {}
     for row in issuers.itertuples(index=False):
         cand = by_norm.get(row.norm)
         exact = bool(cand)
@@ -295,6 +295,8 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
                     if (lambda a, b: a == b[:len(a)])(*(sorted([n.split(), toks], key=len)))]
             loose = sorted({s for n in hits for s in by_norm[n]})
             cand = loose if len(loose) == 1 else None
+            if cand:
+                loose_matches.setdefault(f"{row.company} ({row.norm})", cand[0])
         if not cand:
             syms_out.append([None])
             continue
@@ -326,7 +328,9 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
     rate = out.assign(y=out["month"].dt.year, hit=out["symbol"].notna()) \
         .loc[lambda d: d["market"].isin(["MAIN MARKET", "AIM"])].groupby("y")["hit"].mean().round(3).to_dict()
     return out, {"match_rate_by_year": {int(k): float(v) for k, v in rate.items()},
-                 "names_matching_two_lines (all matched; the universe picks one)": doubles}
+                 "names_matching_two_lines (all matched; the universe picks one)": doubles,
+                 "loose_matches (LSE name only starts with the FMP name or the reverse; check each, correct with "
+                 "listing_overrides.csv: 'HSBC BANK PLC' on HSBA.L was one)": loose_matches}
 
 
 def _is_premium(cat) -> bool:
