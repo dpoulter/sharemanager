@@ -125,6 +125,18 @@ def cap_rescale_section(data: Path, member) -> list[str]:
             f"{len(rf)} in {rf['symbol'].nunique() if len(rf) else 0} symbols.", ""]
     if len(rf):
         out += [md(rf.sort_values("segment_max", ascending=False).head(60), index=False), ""]
+    rs = data / "cap_rescued_by_shares.parquet"
+    rv = pd.read_parquet(rs) if rs.exists() else pd.DataFrame()
+    out += [f"Refused segments rescaled because price x shares agrees (cap over price x shares within 80 to 125 "
+            f"times, or its inverse, and flat): {len(rv)} in {rv['symbol'].nunique() if len(rv) else 0} symbols. "
+            "The refused table above holds what is left, with price_shares_ratio where it could be worked out.", ""]
+    if len(rv):
+        out += [md(rv.head(80), index=False), ""]
+    op = data / "cap_overrides_applied.parquet"
+    ova = pd.read_parquet(op) if op.exists() else pd.DataFrame()
+    out += [f"Overrides applied from data/reference/cap_overrides.csv (Dale's case-by-case decisions): {len(ova)}.", ""]
+    if len(ova):
+        out += [md(ova, index=False), ""]
     sp = data / "cap_spikes.parquet"
     sk = pd.read_parquet(sp) if sp.exists() else pd.DataFrame()
     out += [f"One-day cap spikes replaced by the previous day's value (more than 20 times the median of the 20 days "

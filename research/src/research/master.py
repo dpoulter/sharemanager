@@ -12,7 +12,8 @@ Run after every merge. It decides, with the data rather than FMP's profile:
   volatility): loan stock under the issuer's name;
 - UK companies only. A line is kept only if its ISIN starts with GB, IE, JE,
   GG or IM ("overseas ISIN" otherwise). With no ISIN it is kept only if FMP's
-  profile country is one of those ("no ISIN, not UK"), and the survivors are
+  profile country is one of those and its profile currency is sterling or empty
+  ("no ISIN, not UK", "no ISIN, not sterling"), and the survivors are
   listed in master_report.json. After that, a line whose market cap is not in
   pounds is out ("cap not in GBP"): nothing is converted. Those with a UK ISIN
   are listed apart, for Dale to decide case by case;
@@ -214,6 +215,11 @@ def refine_master(data: Path) -> pd.DataFrame:
     no_isin = ~valid
     uk_profile = country.isin(list(HOME_COUNTRY)).fillna(False).astype(bool)
     counts["no ISIN, not UK"] = add(no_isin & ~uk_profile, "no ISIN, not UK")
+    # FMP says GB for some foreign lines on the London lines (Lukoil: profile country GB, currency RUB).
+    # A UK company with no ISIN reports in sterling, or in nothing FMP names; roubles and the like are out.
+    prof_ccy = m["currency"].astype("string").str.strip() if "currency" in m else pd.Series(pd.NA, index=m.index, dtype="string")
+    non_sterling = prof_ccy.notna() & ~prof_ccy.isin(["GBP"] + sorted(PENCE)) & (prof_ccy != "")
+    counts["no ISIN, not sterling"] = add(no_isin & non_sterling.fillna(False).astype(bool), "no ISIN, not sterling")
     use_lse = (data / "reference" / "lse_issuer_lists").exists()
 
     # A cap in dollars or euros (Compass, IHG, a EUR-quoted BCG) is not converted: the line is out.

@@ -395,6 +395,11 @@ class Fetcher:
         from .clean import clean_prices
         refine_master(self.data)
         clean_prices(self.data)
+        from .clean import apply_cap_overrides, rescue_refused_caps
+        rescued = rescue_refused_caps(self.data)
+        overridden = apply_cap_overrides(self.data)
+        log.info("market cap: %d refused segments rescaled because price x shares agrees; %d override rows applied",
+                 len(rescued), len(overridden))
         if self.failures:
             pd.DataFrame(self.failures).to_parquet(self.data / "fetch_failures.parquet")
         # A top-up leaves the next run free to download again; a full pull stays marked as done.

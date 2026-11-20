@@ -308,3 +308,157 @@ def cap_ceiling_offenders(caps: pd.DataFrame, giants=GIANTS) -> pd.DataFrame:
 
 class CapCeilingError(RuntimeError):
     pass
+
+
+# ---------------------------------------------------------------- the price x shares referee
+PENCE_UNITS = {"GBp", "GBX", "GBx"}
+RESCUE_LO, RESCUE_HI = 80.0, 125.0     # cap over price x shares, for a refused segment (or its inverse)
+OVERRIDE_ACTIONS = ("drop", "multiply", "price_x_shares")
+
+
+def _shares_at(st: pd.DataFrame, dates: pd.DatetimeIndex) -> np.ndarray:
+    """Weighted average shares out held from each period end to the next (the first one back to the start)."""
+    st = st.sort_values("period_end")
+    pe = pd.to_datetime(st["period_end"]).to_numpy()
+    i = np.clip(np.searchsorted(pe, dates.to_numpy(), side="right") - 1, 0, len(pe) - 1)
+    return st["weightedAverageShsOut"].to_numpy(dtype=float)[i]
+
+
+def _unit(quote: str | None) -> float | None:
+    if quote in (None, "") or (isinstance(quote, float) and np.isnan(quote)):
+        return 0.01                     # no quote on record: the London default
+    return 0.01 if quote in PENCE_UNITS else (1.0 if quote == "GBP" else None)
+
+
+def _load_for_referee(data: Path, symbols) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series] | None:
+    data = Path(data)
+    need = [data / n for n in ("market_cap.parquet", "prices.parquet", "statements.parquet", "symbols.parquet")]
+    if not all(p.exists() for p in need):
+        return None
+    caps = pd.read_parquet(need[0])
+    caps["date"] = pd.to_datetime(caps["date"])
+    px = pd.read_parquet(need[1], columns=["symbol", "date", "close"])
+    px = px[px["symbol"].isin(list(symbols))]
+    px["date"] = pd.to_datetime(px["date"])
+    st = pd.read_parquet(need[2], columns=["symbol", "period_end", "weightedAverageShsOut"])
+    st = st[st["symbol"].isin(list(symbols))].dropna(subset=["weightedAverageShsOut"])
+    st = st[st["weightedAverageShsOut"] > 0]
+    master = pd.read_parquet(need[3])
+    quote = master.set_index("symbol")["quote_currency"] if "quote_currency" in master else pd.Series(dtype=object)
+    return caps, px, st, quote
+
+
+def _cap_over_price_shares(caps_sym: pd.DataFrame, px_sym: pd.DataFrame, st_sym: pd.DataFrame,
+                           unit: float) -> pd.DataFrame:
+    """date, market_cap, implied (price x shares, pounds), ratio, for the dates held in both."""
+    j = caps_sym.merge(px_sym[["date", "close"]].drop_duplicates("date", keep="last"), on="date", how="inner")
+    if j.empty or st_sym.empty:
+        return j.assign(implied=np.nan, ratio=np.nan)
+    j["implied"] = j["close"] * unit * _shares_at(st_sym, pd.DatetimeIndex(j["date"]))
+    j["ratio"] = j["market_cap"] / j["implied"]
+    return j
+
+
+def rescue_refused_caps(data: Path) -> pd.DataFrame:
+    """A segment the neighbour test refused is rescaled when price x shares says the same thing.
+
+    Its median cap over price x shares outstanding (from the statements) must be within 80 to 125
+    times, or its inverse, and flat (every day within 3 times of the median). The two tests are
+    independent, so agreement is strong evidence of a pence/pounds slip, where a neighbour ratio
+    of 64 or 139 (real moves over a 40-day window) is not. Only refused segments are looked at.
+    Run after refine_master (it needs the quote currency). Rewrites market_cap.parquet, drops the
+    rescued rows from cap_rescale_refused.parquet, adds price_shares_ratio to the ones left, and
+    writes cap_rescued_by_shares.parquet. Returns the rescued segments.
+    """
+    data = Path(data)
+    cols = ["symbol", "from", "to", "factor", "price_shares_ratio", "rows", "reason"]
+    rp = data / "cap_rescale_refused.parquet"
+    if not rp.exists():
+        return pd.DataFrame(columns=cols)
+    refused = pd.read_parquet(rp)
+    got = _load_for_referee(data, refused["symbol"].unique()) if len(refused) else None
+    if got is None:
+        return pd.DataFrame(columns=cols)
+    caps, px, st, quote = got
+    log, ratio_left = [], {}
+    for k, r in refused.iterrows():
+        sym = r["symbol"]
+        unit = _unit(quote.get(sym))
+        sel = (caps["symbol"] == sym) & (caps["date"] >= r["from"]) & (caps["date"] <= r["to"])
+        if unit is None or not sel.any():
+            continue
+        j = _cap_over_price_shares(caps.loc[sel, ["date", "market_cap"]], px[px["symbol"] == sym],
+                                   st[st["symbol"] == sym], unit)
+        x = j["ratio"].to_numpy(dtype=float)
+        x = x[np.isfinite(x) & (x > 0)]
+        if not len(x):
+            continue
+        med = float(np.median(x))
+        ratio_left[k] = med
+        flat = x.max() / med < FLAT and med / x.min() < FLAT
+        for fct, inv in ((0.01, False), (100.0, True)):
+            if flat and _near(med, RESCUE_LO, RESCUE_HI, inv):
+                caps.loc[sel, "market_cap"] = caps.loc[sel, "market_cap"] * fct
+                log.append({"symbol": sym, "from": r["from"], "to": r["to"], "factor": fct,
+                            "price_shares_ratio": med, "rows": int(sel.sum()),
+                            "reason": f"neighbour test: {r['reason']}"})
+                ratio_left.pop(k)
+                refused = refused.drop(index=k)
+                break
+    out = pd.DataFrame(log, columns=cols)
+    if len(out):
+        caps.to_parquet(data / "market_cap.parquet")
+    refused = refused.assign(price_shares_ratio=pd.Series(ratio_left).reindex(refused.index))
+    refused.to_parquet(rp)
+    out.to_parquet(data / "cap_rescued_by_shares.parquet")
+    return out
+
+
+def apply_cap_overrides(data: Path) -> pd.DataFrame:
+    """data/reference/cap_overrides.csv: symbol, from, to, action, value, reason. Dale's decisions, one row each.
+
+    drop: the rows are removed (the line has no cap for those dates).
+    multiply: the cap times `value`.
+    price_x_shares: the cap becomes price x shares outstanding (statements), for the dates where both are held.
+    Every row applied is written to cap_overrides_applied.parquet and listed in the data report.
+    """
+    data = Path(data)
+    f = data / "reference" / "cap_overrides.csv"
+    cols = ["symbol", "from", "to", "action", "value", "rows", "reason"]
+    if not f.exists():
+        return pd.DataFrame(columns=cols)
+    ov = pd.read_csv(f, dtype=str).fillna("")
+    ov.columns = [c.strip().lower() for c in ov.columns]
+    bad = ov[~ov["action"].isin(OVERRIDE_ACTIONS)]
+    if len(bad):
+        raise ValueError(f"cap_overrides.csv: action must be one of {OVERRIDE_ACTIONS}: {bad['action'].tolist()}")
+    got = _load_for_referee(data, ov["symbol"].unique())
+    if got is None:
+        return pd.DataFrame(columns=cols)
+    caps, px, st, quote = got
+    log = []
+    for _, r in ov.iterrows():
+        lo, hi = pd.Timestamp(r["from"]), pd.Timestamp(r["to"])
+        sel = (caps["symbol"] == r["symbol"]) & (caps["date"] >= lo) & (caps["date"] <= hi)
+        n = int(sel.sum())
+        if r["action"] == "drop":
+            caps = caps[~sel]
+        elif r["action"] == "multiply":
+            caps.loc[sel, "market_cap"] = caps.loc[sel, "market_cap"] * float(r["value"])
+        else:
+            unit = _unit(quote.get(r["symbol"]))
+            j = _cap_over_price_shares(caps.loc[sel, ["date", "market_cap"]], px[px["symbol"] == r["symbol"]],
+                                       st[st["symbol"] == r["symbol"]], unit or 0.01)
+            ok = j.dropna(subset=["implied"]).set_index("date")["implied"]
+            have = caps.loc[sel, "date"].isin(ok.index)
+            caps.loc[sel & ~caps["date"].isin(ok.index), "market_cap"] = np.nan   # no price or shares: no cap
+            caps.loc[sel & caps["date"].isin(ok.index), "market_cap"] = \
+                caps.loc[sel & caps["date"].isin(ok.index), "date"].map(ok).to_numpy()
+            caps = caps.dropna(subset=["market_cap"])
+            n = int(have.sum())
+        log.append({"symbol": r["symbol"], "from": lo, "to": hi, "action": r["action"],
+                    "value": r.get("value", ""), "rows": n, "reason": r.get("reason", "")})
+    caps.to_parquet(data / "market_cap.parquet")
+    out = pd.DataFrame(log, columns=cols)
+    out.to_parquet(data / "cap_overrides_applied.parquet")
+    return out

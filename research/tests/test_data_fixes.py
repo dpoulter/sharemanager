@@ -300,3 +300,93 @@ def test_cap_far_from_price_times_shares_is_listed_not_changed():
     far = cap_vs_price_shares(m)
     assert list(far["symbol"]) == ["SDRY.L"] and far["median_ratio"].iloc[0] == pytest.approx(3000)
     assert (m.market_cap["SDRY.L"] == 3e12).all()
+
+
+# ------------------------------------------------------------------ the price x shares referee and overrides
+
+def _referee_data(tmp_path, caps: dict, refused: list[tuple], quote="GBp", shares=1e8, price=300.0):
+    """Prices in pence, so price x shares is 3e8 pounds at 300p and 1e8 shares."""
+    dates = pd.bdate_range("2024-01-01", periods=200)
+    pd.DataFrame([(s, d, price) for s in caps for d in dates], columns=["symbol", "date", "close"]) \
+        .to_parquet(tmp_path / "prices.parquet")
+    pd.DataFrame([(s, d, v) for s, vals in caps.items() for d, v in zip(dates, vals)],
+                 columns=["symbol", "date", "market_cap"]).to_parquet(tmp_path / "market_cap.parquet")
+    pd.DataFrame({"symbol": list(caps), "period_end": pd.Timestamp("2023-12-31"),
+                  "weightedAverageShsOut": shares}).to_parquet(tmp_path / "statements.parquet")
+    pd.DataFrame({"symbol": list(caps), "quote_currency": quote}).to_parquet(tmp_path / "symbols.parquet")
+    pd.DataFrame([{"symbol": s, "from": dates[a], "to": dates[b], "factor": np.nan, "segment_median": 1.0,
+                   "segment_max": 1.0, "ratio_before": 64.0, "ratio_after": 139.0, "reason": "outside the band"}
+                  for s, a, b in refused]).to_parquet(tmp_path / "cap_rescale_refused.parquet")
+    return dates
+
+
+def test_a_refused_segment_is_rescaled_when_price_times_shares_agrees(tmp_path):
+    """NUM-like: neighbour ratios of 64 and 139 are refused, but cap / (price x shares) is 100: divide."""
+    from research.clean import rescue_refused_caps
+    cap = np.full(200, 3e8)
+    cap[50:90] = 3e10                                           # 100x price x shares
+    dates = _referee_data(tmp_path, {"NUM.L": cap.copy()}, [("NUM.L", 50, 89)])
+    got = rescue_refused_caps(tmp_path)
+    after = pd.read_parquet(tmp_path / "market_cap.parquet").sort_values("date")["market_cap"].to_numpy()
+    assert after.tolist() == np.full(200, 3e8).tolist()
+    assert len(got) == 1 and got["factor"].iloc[0] == 0.01 and got["price_shares_ratio"].iloc[0] == pytest.approx(100)
+    assert pd.read_parquet(tmp_path / "cap_rescale_refused.parquet").empty
+
+
+def test_a_refused_segment_stays_when_price_times_shares_does_not_agree(tmp_path):
+    """WG-like 134x, and a segment 3,000x out (SDRY): left as it was, and the ratio recorded for the report."""
+    from research.clean import rescue_refused_caps
+    cap = np.full(200, 3e8)
+    cap[50:90] = 3e8 * 134
+    wg = cap.copy()
+    sd = np.full(200, 3e8)
+    sd[20:80] = 3e8 * 3000
+    _referee_data(tmp_path, {"WG.L": wg, "SDRY.L": sd}, [("WG.L", 50, 89), ("SDRY.L", 20, 79)])
+    assert rescue_refused_caps(tmp_path).empty
+    left = pd.read_parquet(tmp_path / "cap_rescale_refused.parquet").set_index("symbol")
+    assert left["price_shares_ratio"]["WG.L"] == pytest.approx(134) and left["price_shares_ratio"]["SDRY.L"] == pytest.approx(3000)
+    assert pd.read_parquet(tmp_path / "market_cap.parquet")["market_cap"].max() == 3e8 * 3000
+
+
+def test_the_referee_leaves_a_segment_alone_that_is_not_flat_or_has_no_shares(tmp_path):
+    from research.clean import rescue_refused_caps
+    cap = np.full(200, 3e8)
+    cap[50:90] = np.r_[np.full(30, 3e10), np.full(10, 3e11)]      # 100x to 1,000x: not flat
+    _referee_data(tmp_path, {"BUMP.L": cap}, [("BUMP.L", 50, 89)])
+    assert rescue_refused_caps(tmp_path).empty
+    (tmp_path / "statements.parquet").unlink()
+    assert rescue_refused_caps(tmp_path).empty                    # no statements: nothing to judge by, no crash
+
+
+def test_overrides_drop_multiply_and_price_times_shares(tmp_path):
+    from research.clean import apply_cap_overrides
+    cap = np.full(200, 3e8)
+    caps = {"SDRY.L": cap * np.r_[np.ones(20), np.full(60, 3000.0), np.ones(120)], "A.L": cap.copy(), "B.L": cap.copy()}
+    dates = _referee_data(tmp_path, caps, [])
+    (tmp_path / "reference").mkdir()
+    rows = [("SDRY.L", dates[20], dates[79], "price_x_shares", "", "1000x series error"),
+            ("A.L", dates[0], dates[9], "drop", "", "no good"), ("B.L", dates[100], dates[109], "multiply", "10", "x10")]
+    pd.DataFrame(rows, columns=["symbol", "from", "to", "action", "value", "reason"]) \
+        .to_csv(tmp_path / "reference" / "cap_overrides.csv", index=False)
+    log = apply_cap_overrides(tmp_path)
+    out = pd.read_parquet(tmp_path / "market_cap.parquet")
+    by = {s: g.sort_values("date")["market_cap"].to_numpy() for s, g in out.groupby("symbol")}
+    assert by["SDRY.L"].tolist() == np.full(200, 3e8).tolist()       # price x shares: 300p x 1e8
+    assert len(by["A.L"]) == 190 and by["B.L"][100:110].tolist() == np.full(10, 3e9).tolist()
+    assert list(log["action"]) == ["price_x_shares", "drop", "multiply"] and list(log["rows"]) == [60, 10, 10]
+    pd.DataFrame([("X.L", dates[0], dates[1], "delete", "", "")], columns=["symbol", "from", "to", "action", "value", "reason"]) \
+        .to_csv(tmp_path / "reference" / "cap_overrides.csv", index=False)
+    with pytest.raises(ValueError, match="action"):
+        apply_cap_overrides(tmp_path)
+
+
+def test_a_london_line_with_a_uk_profile_country_but_roubles_is_out(tmp_path):
+    """Lukoil: no ISIN, FMP profile country GB, profile currency RUB."""
+    from research.master import refine_master
+    rows = [{"symbol": "UKCO.L", "name": "Uk Co plc", "isin": "GB00B0000010"},
+            {"symbol": "LKOD.L", "name": "PJSC Lukoil", "isin": None, "country": "GB", "profile_ccy": "RUB"},
+            {"symbol": "NOIS.L", "name": "No Isin Uk plc", "isin": None, "country": "GB"}]
+    _symbols_data(tmp_path, rows)
+    m = refine_master(tmp_path).set_index("symbol")
+    assert m.loc["LKOD.L", "exclude_reason"] == "no ISIN, not sterling"
+    assert pd.isna(m.loc["NOIS.L", "exclude_reason"]) and pd.isna(m.loc["UKCO.L", "exclude_reason"])
