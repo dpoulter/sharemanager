@@ -156,7 +156,7 @@ class Workspace:
         ctx = Context(mk, self.f, member)
         rules = spec.rules()
         dates = self.m.dates[(self.m.dates >= start) & (self.m.dates <= end)]
-        flags = engine.rebalance_flags(dates, rules.rebalance)
+        flags = engine.rebalance_flags(dates, rules.rebalance, rules.rebalance_asof)
         flags[0] = True
         parts = [(REGISTRY[s], float(w)) for s, w in spec.raw["signals"].items()]
         scores, cover = {}, []

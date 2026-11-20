@@ -716,3 +716,18 @@ def test_sells_before_buys_trims_then_exits_then_buys_each_in_symbol_order():
     assert list(sells["reason"]) == ["rebalance"] * len(trims) + ["no_longer_selected"] * len(exits)
     assert [key(s) for s in exits] == sorted(key(s) for s in exits)
     assert buys["symbol"].tolist() == ["AAA.L", "CCC.L", "FFF.L"]                  # symbol order, not rank order
+
+
+def test_asof_on_a_non_trading_day_scores_the_day_before_and_keeps_the_book(cfg):
+    """The N100 as-of 2 Jan (a holiday): decide on the last close before it. The scores must be taken on
+    that decision day too; with none, the selection is empty and the book is sold for nothing."""
+    ws = _workspace(cfg)
+    dates = ws.m.dates
+    d = dates[dates > "2024-06-01"][0]
+    holiday = dates[dates > d][5] + pd.Timedelta(days=0)             # a trading day we then treat as the as-of
+    asof = [str(dates[dates >= "2024-04-01"][0].date()), str((holiday).date())]
+    spec = spec_from_dict({"name": "mom", "signals": {"momentum_12_1": 1}, "holdings": 3, "rebalance": "monthly",
+                           "rebalance_asof": asof})
+    out = ws.run(spec, start="2024-03-01", end="2024-12-31", write_report=False, kind="engine_validation")
+    decisions = {dates[dates.searchsorted(pd.Timestamp(a), side="right") - 1] for a in asof}
+    assert decisions <= set(out["scores"])                       # scored on every decision day
