@@ -32,7 +32,8 @@ class FakeFmp:
         if path == "delisted-companies":
             return [{"symbol": "DED.L", "companyName": "Dead plc", "delistedDate": "2008-06-30"}] if p["page"] == 0 else []
         if path == "profile":
-            return [{"symbol": sym, "currency": "GBp", "sector": "Industrials", "exchange": "LSE", "isEtf": False, "isFund": False}]
+            return [{"symbol": sym, "currency": "GBp", "sector": "Industrials", "exchange": "LSE", "isEtf": False, "isFund": False,
+                     "isin": f"GB00B000{sum(map(ord, sym)) % 1000:03d}0", "country": "GB"}]
         if path.startswith("historical-price-eod"):
             if sym not in self.px:
                 return []

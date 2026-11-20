@@ -98,6 +98,7 @@ class Fetcher:
         path = self.raw / "profiles.parquet"
         have = pd.read_parquet(path) if path.exists() else pd.DataFrame(columns=["symbol"])
         todo = [s for s in symbols if s not in set(have["symbol"])]
+        todo += self.country_backfill(have, symbols)
         rows = []
         log.info("profiles: %d to fetch, %d held", len(todo), len(have))
         for i, sym in enumerate(todo):
@@ -118,15 +119,37 @@ class Fetcher:
                 "is_adr": bool(p.get("isAdr")),
                 "active": p.get("isActivelyTrading"), "ipo_date": p.get("ipoDate"),
                 "profile_name": p.get("companyName"),
+                "country": p.get("country"), "country_checked": True,
             })
             if rows and (len(rows) % 200 == 0 or i == len(todo) - 1):
-                have = pd.concat([have, pd.DataFrame(rows)], ignore_index=True)
+                have = self._add_profiles(have, rows)
                 have.to_parquet(path)
                 rows = []
         if rows:
-            have = pd.concat([have, pd.DataFrame(rows)], ignore_index=True)
+            have = self._add_profiles(have, rows)
             have.to_parquet(path)
         return have
+
+    @staticmethod
+    def _add_profiles(have: pd.DataFrame, rows: list[dict]) -> pd.DataFrame:
+        """New profile rows over the held ones: a re-fetched symbol replaces its old row."""
+        new = pd.DataFrame(rows)
+        return pd.concat([have[~have["symbol"].isin(new["symbol"])], new], ignore_index=True)
+
+    @staticmethod
+    def country_backfill(have: pd.DataFrame, symbols: list[str]) -> list[str]:
+        """Held profiles that have no ISIN and were fetched before the country was kept.
+
+        The universe keeps a line with no ISIN only if the profile says it is a UK company
+        (master.py), so those, and only those, are fetched again, once.
+        """
+        if have.empty:
+            return []
+        isin = have["isin"] if "isin" in have else pd.Series(np.nan, index=have.index)
+        checked = have["country_checked"].fillna(False).astype(bool) if "country_checked" in have \
+            else pd.Series(False, index=have.index)
+        sel = have.loc[isin.isna() & ~checked & have["symbol"].isin(symbols), "symbol"]
+        return sel.tolist()
 
     def build_master(self, full: bool) -> pd.DataFrame:
         listed = self.list_symbols()
@@ -439,14 +462,15 @@ def consolidate(data: Path) -> None:
     if len(m):
         # Pence read as pounds for part of a series: rescale here, at the source,
         # so nothing downstream sees a cap 100 times too big.
-        from .clean import fix_cap_steps
+        from .clean import clean_market_caps
         m["date"] = pd.to_datetime(m["date"])
-        m, rescaled, refused = fix_cap_steps(m[["symbol", "date", "market_cap"]])
+        m, rescaled, refused, spikes = clean_market_caps(m[["symbol", "date", "market_cap"]])
         rescaled.to_parquet(data / "cap_rescaled.parquet")
         refused.to_parquet(data / "cap_rescale_refused.parquet")
-        if len(rescaled):
-            log.info("market cap: %d symbols, %d rows rescaled by 100 (pence read as pounds); %d rescales refused",
-                     len(rescaled), int(rescaled["rows"].sum()), len(refused))
+        spikes.to_parquet(data / "cap_spikes.parquet")
+        log.info("market cap: %d symbols, %d rows rescaled by 100 (pence read as pounds); %d rescales refused; "
+                 "%d one-day spikes replaced", len(rescaled), int(rescaled["rows"].sum()) if len(rescaled) else 0,
+                 len(refused), len(spikes))
         m.to_parquet(data / "market_cap.parquet")
     d = gather("dividends")
     if len(d):

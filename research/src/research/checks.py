@@ -113,22 +113,74 @@ def cap_rescale_section(data: Path, member) -> list[str]:
     if r.empty:
         out += ["Step check: none.", ""]
     else:
-        out += [f"Step check (a one-day ratio of 70 to 140, or its inverse; the earlier segment lined up with the "
-                f"latest level): {len(r)} symbols, {int(r['rows'].sum())} rows.", "",
+        out += [f"Step check (a one-day ratio of 70 to 140, or its inverse; each segment judged against the 40 "
+                f"trading days either side of it): {len(r)} symbols, {int(r['rows'].sum())} rows.", "",
                 "The 20 largest corrections:", "",
                 md(r.sort_values("correction", ascending=False).head(20)[
                     ["symbol", "rows", "from", "to", "largest_before", "largest_after"]], index=False), ""]
     rp = data / "cap_rescale_refused.parquet"
     rf = pd.read_parquet(rp) if rp.exists() else pd.DataFrame()
-    out += [f"Rescales refused (a x100 on a segment already above 1m, or a result above 500bn; "
-            f"the segment is left as it was): {len(rf)} in {rf['symbol'].nunique() if len(rf) else 0} symbols.", ""]
+    out += [f"Rescales refused (the ratio to the neighbours is outside the band, or the segment is not flat; "
+            f"the segment is left as it was; ratio_before and ratio_after are its median over the neighbours'): "
+            f"{len(rf)} in {rf['symbol'].nunique() if len(rf) else 0} symbols.", ""]
     if len(rf):
         out += [md(rf.sort_values("segment_max", ascending=False).head(60), index=False), ""]
+    sp = data / "cap_spikes.parquet"
+    sk = pd.read_parquet(sp) if sp.exists() else pd.DataFrame()
+    out += [f"One-day cap spikes replaced by the previous day's value (more than 20 times the median of the 20 days "
+            f"around): {len(sk)} in {sk['symbol'].nunique() if len(sk) else 0} symbols.", ""]
+    if len(sk):
+        out += [md(sk.sort_values("market_cap", ascending=False).head(60), index=False), ""]
     q = data / "cap_lse_corrections.parquet"
     c = pd.read_parquet(q) if q.exists() else pd.DataFrame()
     out += [f"LSE check (FMP still 50 to 200 times the LSE's cap in a month, divided by 100): "
             f"{c['symbol'].nunique() if len(c) else 0} symbols, {len(c)} symbol-months.", ""]
     return out
+
+
+def kept_caps(m: Market) -> pd.DataFrame:
+    """Long symbol, date, market_cap (pounds) for the kept symbols only."""
+    kept = [c for c in m.market_cap.columns if bool(m.master["included"].get(c, False))] \
+        if "included" in m.master else list(m.market_cap.columns)
+    w = m.market_cap[kept]
+    long = w.stack().rename("market_cap").reset_index()
+    long.columns = ["date", "symbol", "market_cap"]
+    return long
+
+
+def top_caps_by_year(caps: pd.DataFrame, names: pd.Series | None = None, n: int = 20) -> pd.DataFrame:
+    """The n largest symbols each year by their highest cap in the year: year, rank, symbol, name, peak_gbp_bn, on."""
+    if caps.empty:
+        return pd.DataFrame(columns=["year", "rank", "symbol", "name", "peak_gbp_bn", "on"])
+    c = caps.dropna(subset=["market_cap"]).copy()
+    c["year"] = pd.to_datetime(c["date"]).dt.year
+    peak = c.loc[c.groupby(["year", "symbol"])["market_cap"].idxmax()]
+    out = []
+    for y, g in peak.groupby("year"):
+        for r, row in enumerate(g.sort_values("market_cap", ascending=False).head(n).itertuples(index=False), 1):
+            out.append((int(y), r, row.symbol, "" if names is None else str(names.get(row.symbol, "")),
+                        round(row.market_cap / 1e9, 2), str(pd.Timestamp(row.date).date())))
+    return pd.DataFrame(out, columns=["year", "rank", "symbol", "name", "peak_gbp_bn", "on"])
+
+
+def ceiling_section(m: Market) -> tuple[list[str], pd.DataFrame]:
+    """Market cap ceiling by date for the kept universe: the offenders, and the top 20 caps per year."""
+    from .clean import CAP_CEILING, CAP_GIANT_LEVEL, GIANTS, cap_ceiling_offenders
+    caps = kept_caps(m)
+    off = cap_ceiling_offenders(caps)
+    names = m.master["name"] if "name" in m.master else None
+    out = ["## Market cap ceiling (kept symbols, at any date)", "",
+           f"No cap above {CAP_CEILING / 1e9:.0f}bn, and none above {CAP_GIANT_LEVEL / 1e9:.0f}bn unless the symbol is "
+           f"one of {', '.join(GIANTS)}. Offenders: {off['symbol'].nunique() if len(off) else 0} symbols, "
+           f"{len(off)} symbol-days. The build fails if there are any; nothing is dropped.", ""]
+    if len(off):
+        g = off.groupby("symbol").agg(days=("date", "size"), first=("date", "min"), last=("date", "max"),
+                                      largest=("market_cap", "max")).reset_index()
+        out += [md(g.sort_values("largest", ascending=False), index=False), ""]
+    top = top_caps_by_year(caps, names)
+    out += ["### Top 20 caps per year (each symbol's highest cap in the year, pounds bn)", "",
+            md(top, index=False) if len(top) else "none", ""]
+    return out, off
 
 
 def moves_by_scope(moves: pd.DataFrame, member: pd.DataFrame | None) -> dict:
@@ -143,7 +195,7 @@ def moves_by_scope(moves: pd.DataFrame, member: pd.DataFrame | None) -> dict:
     return out
 
 
-def write_data_report(m: Market, data: Path) -> Path:
+def write_data_report(m: Market, data: Path, fail_on_ceiling: bool = True) -> Path:
     import json
     from .clean import find_bad_ticks
     from .universe import membership
@@ -172,6 +224,7 @@ def write_data_report(m: Market, data: Path) -> Path:
         after_listed = after[keep]
     else:
         after_listed = after
+    ceiling_lines, offenders = ceiling_section(m)
     pounds = pounds_not_pence(data)
     empty = empty_statements(data)
     counts = counts_by_year(m, data)
@@ -184,14 +237,19 @@ def write_data_report(m: Market, data: Path) -> Path:
              f"with prices: {int(m.close.notna().any().sum())}; stopped trading: {int(m.gone.sum())}.", "",
              "## Excluded, by reason", "", md(excl.to_frame("symbols")) if len(excl) else "none", "",
              "## Master checks", "",
-             f"- Overseas lines excluded, by ISIN prefix (for Dale to decide): {msum.get('overseas_by_isin_prefix', {})}",
-             f"- Kept with no ISIN (country unknown): {msum.get('kept_without_isin', '?')}",
+             f"- Overseas ISIN lines excluded (UK companies only), by ISIN prefix: {msum.get('overseas_by_isin_prefix', {})}",
+             f"- Kept with no ISIN, FMP profile country GB, IE, JE, GG or IM ({len(msum.get('kept_without_isin_uk_profile', []))}; "
+             f"for Dale to check): {', '.join(r['symbol'] + ' (' + str(r.get('name')) + ', ' + str(r.get('country')) + ')' for r in msum.get('kept_without_isin_uk_profile', [])) or 'none'}",
+             f"- Excluded because the cap is not in GBP: {msum.get('cap_not_in_gbp_count', '?')}. "
+             f"Of those, UK ISIN lines (Dale decides case by case): "
+             f"{', '.join(r['symbol'] + ' (' + str(r.get('name')) + ', quote ' + str(r.get('quote_currency')) + ', cap ' + str(r.get('cap_currency')) + ')' for r in msum.get('cap_not_in_gbp_uk_isin', [])) or 'none'}",
              f"- Quote currency of kept lines: {msum.get('quote_currency', {})}; cap currency: {msum.get('cap_currency', {})}",
              f"- Profile currency is not the quote (reporting currency, traded in pence): "
              f"{', '.join(msum.get('profile_currency_not_quote', [])[:60]) or 'none'}",
              f"- AIM file: {msum.get('aim_file') or 'NOT LOADED - put the LSE AIM companies file in data/reference/aim_companies.*'}; "
              f"lines marked AIM: {msum.get('aim_marked', 0)}. {msum.get('aim_caveat', '')}", "",
              *cap_rescale_section(data, member),
+             *ceiling_lines,
              f"## Price gaps over 10 trading days ({len(gaps)})", "", md(gaps.head(200), index=False) if len(gaps) else "none", "",
              "## Day moves over 50%", "",
              f"Bad ticks dropped (a move over 50% back within 20% of the earlier price inside 3 sessions): {len(ticks)} "
@@ -209,4 +267,12 @@ def write_data_report(m: Market, data: Path) -> Path:
              "## Companies per year", "", md(counts), ""]
     path = data / "data_report.md"
     path.write_text("\n".join(lines))
+    if len(offenders):
+        offenders.to_csv(data / "cap_ceiling_offenders.csv", index=False)
+        if fail_on_ceiling:
+            from .clean import CapCeilingError
+            top = offenders.groupby("symbol")["market_cap"].max().sort_values(ascending=False).head(15)
+            raise CapCeilingError(f"{offenders['symbol'].nunique()} kept symbols have a market cap above the ceiling "
+                                  f"(listed in {path.name} and cap_ceiling_offenders.csv): "
+                                  + ", ".join(f"{s} {v / 1e9:,.0f}bn" for s, v in top.items()))
     return path

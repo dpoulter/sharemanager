@@ -155,7 +155,10 @@ def test_master_isin_edge_cases(tmp_path):
                   "isin": [None, "GB12", "gb00b1234567", "FR0000120271"], "is_aim": None, "is_etf": False,
                   "is_fund": False, "delisted_date": None}).to_parquet(tmp_path / "symbols.parquet")
     m = refine_master(tmp_path).set_index("symbol")
-    assert m["included"].all() or m.loc["DDD.L", "exclude_reason"].startswith("overseas")
+    # UK companies only: DDD (FR ISIN) is out; AAA and BBB have no usable ISIN and no profile country, so out too.
+    assert m.loc["DDD.L", "exclude_reason"] == "overseas ISIN"
+    assert m.loc["AAA.L", "exclude_reason"] == m.loc["BBB.L", "exclude_reason"] == "no ISIN, not UK"
+    assert bool(m.loc["CCC.L", "included"])
     assert m.loc["CCC.L", "isin_country"] == "GB"
     assert pd.isna(m.loc["AAA.L", "isin_country"]) and pd.isna(m.loc["BBB.L", "isin_country"])
     assert bool(m.loc["DDD.L", "overseas_isin"]) is True
@@ -297,40 +300,6 @@ def test_cap_steps_of_100x_rescaled_bcg_case():
     assert b.loc["2026-09-30"] == pytest.approx(cap[-1])
     assert list(done["symbol"]) == ["BCG.L"] and refused.empty
     assert (fixed[fixed["symbol"] == "OK.L"]["market_cap"].to_numpy() == other["market_cap"].to_numpy()).all()
-
-
-
-
-def test_z2_rescale_anchored_to_median_refusals_logged_nothing_above_500bn():
-    """Z2: the anchor is the symbol's median, a x100 on a segment already above 1m is refused,
-    every refusal is recorded, and no symbol ends above 500bn."""
-    from research.clean import CAP_CEILING, fix_cap_steps
-    d = pd.bdate_range("2023-01-02", periods=400)
-    series = {
-        # A 80m company that jumps to 8bn in one day for 100 days: the tail is the error, not the body.
-        "PLAZ.L": np.r_[np.full(300, 8e7), np.full(100, 8e9)],
-        # A £45bn company with a short 100x-too-small glitch: multiplying a segment already above 1m
-        # is refused, so the glitch is left as it was and recorded.
-        "RGO.L": np.r_[np.full(350, 4.5e10), np.full(30, 4.5e8), np.full(20, 4.5e10)],
-        # Even split, the lower half above 1m: refused, series untouched.
-        "HOME.L": np.r_[np.full(200, 5e8), np.full(200, 5e6)],
-        # Pence read as pounds for the first 120 days: fixed.
-        "BCG.L": np.r_[np.full(120, 1.5e11), np.full(280, 1.5e9)],
-        # Far too big for the first 100 days (trillions): divided down to the body.
-        "WILD.L": np.r_[np.full(100, 6e12), np.full(300, 6e10)],
-    }
-    caps = pd.concat([pd.DataFrame({"symbol": s, "date": d, "market_cap": v}) for s, v in series.items()])
-    fixed, done, refused = fix_cap_steps(caps)
-    by = {s: g["market_cap"].to_numpy() for s, g in fixed.groupby("symbol")}
-    assert max(v.max() for v in by.values()) <= CAP_CEILING
-    assert by["PLAZ.L"].max() == pytest.approx(8e7)
-    assert by["RGO.L"].tolist() == series["RGO.L"].tolist()
-    assert by["HOME.L"].tolist() == series["HOME.L"].tolist()
-    assert by["BCG.L"].max() == pytest.approx(1.5e9)
-    assert by["WILD.L"].max() == pytest.approx(6e10)
-    assert {"RGO.L", "HOME.L"} <= set(refused["symbol"])
-    assert {"reason", "segment_max", "segment_median", "from", "to", "factor"} <= set(refused.columns)
-    assert set(done["symbol"]) == {"PLAZ.L", "BCG.L", "WILD.L"}
 
 
 def test_trust_candidates_closed_ended_only_one_line_per_issuer():

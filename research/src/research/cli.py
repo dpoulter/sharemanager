@@ -60,7 +60,13 @@ def cmd_fetch(cfg, a):
     from .checks import write_data_report
     from .fetch import Fetcher
     from .store import load_market
-    if a.trust_caps:
+    if a.profile_country:
+        f = Fetcher(cfg)
+        held = pd.read_parquet(cfg.data_dir / "raw" / "profiles.parquet")
+        n = f.profiles(held["symbol"].tolist())
+        log.info("profiles with a country: %d of %d", int(n["country"].notna().sum()) if "country" in n else 0, len(n))
+        summary = f.run(merge_only=True)
+    elif a.trust_caps:
         import pandas as _pd
         f = Fetcher(cfg)
         master = _pd.read_parquet(cfg.data_dir / "symbols.parquet")
@@ -302,6 +308,9 @@ def main(argv=None):
     s = sub.add_parser("fetch"); s.add_argument("--full", action="store_true")
     s.add_argument("--merge-only", action="store_true",
                    help="no downloads: merge the per-symbol files, refine the master, clean prices, report")
+    s.add_argument("--profile-country", action="store_true",
+                   help="fetch the profile again, once, for held lines with no ISIN (their country decides "
+                        "whether they are UK companies), then merge")
     s.add_argument("--trust-caps", action="store_true",
                    help="fetch market caps of investment trusts only (for ranking like the FTSE 350), then merge")
     s = sub.add_parser("universe"); s.add_argument("--live"); s.add_argument("--aim", action="store_true")

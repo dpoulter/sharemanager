@@ -10,8 +10,12 @@ Run after every merge. It decides, with the data rather than FMP's profile:
   that agrees is kept;
 - lines whose price series looks like a bond (median near 100, very low
   volatility): loan stock under the issuer's name;
-- overseas companies with a secondary London listing: ISIN country outside
-  GB, JE, GG, IM. Those with no ISIN are kept and counted;
+- UK companies only. A line is kept only if its ISIN starts with GB, IE, JE,
+  GG or IM ("overseas ISIN" otherwise). With no ISIN it is kept only if FMP's
+  profile country is one of those ("no ISIN, not UK"), and the survivors are
+  listed in master_report.json. After that, a line whose market cap is not in
+  pounds is out ("cap not in GBP"): nothing is converted. Those with a UK ISIN
+  are listed apart, for Dale to decide case by case;
 - second share classes: one line per company - the plain ticker, or the
   most traded line where there is no plain one (BT is BT-A.L on FMP);
 - AIM, from the London Stock Exchange's AIM companies file in
@@ -34,7 +38,8 @@ from .fetch import exclusion_reason
 
 log = logging.getLogger(__name__)
 
-HOME_ISIN = {"GB", "JE", "GG", "IM"}
+HOME_ISIN = {"GB", "IE", "JE", "GG", "IM"}
+HOME_COUNTRY = {"GB", "IE", "JE", "GG", "IM"}     # FMP profile country codes
 PENCE = {"GBp", "GBX", "GBx"}
 
 
@@ -78,6 +83,26 @@ def infer_units(close: float, cap: float, shares: float, profile_ccy: str | None
             if err < best[2]:
                 best = (q, c, err)
     return best
+
+
+def _profile_country(m: pd.DataFrame, data: Path) -> pd.Series:
+    """FMP's profile country per symbol: from the master if it has the column, else from raw/profiles."""
+    if "country" in m:
+        return m["country"].astype("string").str.strip().str.upper()
+    p = Path(data) / "raw" / "profiles.parquet"
+    if p.exists():
+        pr = pd.read_parquet(p)
+        if "country" in pr:
+            c = pr.drop_duplicates("symbol", keep="last").set_index("symbol")["country"].astype("string").str.strip().str.upper()
+            return m["symbol"].map(c).astype("string").set_axis(m.index)
+    return pd.Series(pd.NA, index=m.index, dtype="string")
+
+
+def _rows(m: pd.DataFrame, index, country: pd.Series) -> list[dict]:
+    cols = [c for c in ("symbol", "name", "isin", "quote_currency", "cap_currency") if c in m]
+    out = m.loc[index, cols].copy()
+    out["country"] = country.reindex(index).astype(object)
+    return out.astype(object).where(out.notna(), None).to_dict("records")
 
 
 def bond_like(close: pd.Series) -> bool:
@@ -181,15 +206,22 @@ def refine_master(data: Path) -> pd.DataFrame:
     overseas = (valid & ~cc.isin(list(HOME_ISIN)).fillna(False)).astype(bool)
     m["isin_country"] = cc
     m["overseas_isin"] = overseas
+    # UK companies only (Dale, 20 Nov 2026): an overseas ISIN is out whatever the LSE lists say
+    # about a premium listing, and nothing overseas is converted and kept.
     overseas_by_prefix = cc[overseas & m["exclude_reason"].isna()].value_counts().to_dict()
-    # With the LSE issuer lists, the universe decides month by month (lse.py):
-    # an overseas company with a premium (ESCC) listing is in, a secondary
-    # listing is out, and ISIN country alone cannot tell the two apart. Only
-    # without the lists does ISIN country exclude here.
+    counts["overseas ISIN"] = add(overseas, "overseas ISIN")
+    country = _profile_country(m, data)
+    no_isin = ~valid
+    uk_profile = country.isin(list(HOME_COUNTRY)).fillna(False).astype(bool)
+    counts["no ISIN, not UK"] = add(no_isin & ~uk_profile, "no ISIN, not UK")
     use_lse = (data / "reference" / "lse_issuer_lists").exists()
-    if not use_lse:
-        for code in overseas_by_prefix:
-            add(overseas & (cc == code).fillna(False).astype(bool), f"overseas company (ISIN {code})")
+
+    # A cap in dollars or euros (Compass, IHG, a EUR-quoted BCG) is not converted: the line is out.
+    not_gbp = ~m["cap_currency"].fillna("GBP").isin(["GBP"] + sorted(PENCE))
+    cap_out = m.index[not_gbp & m["exclude_reason"].isna()]
+    uk_isin = (valid & cc.isin(list(HOME_ISIN)).fillna(False).astype(bool)).astype(bool)
+    cap_uk = cap_out[uk_isin.loc[cap_out].to_numpy()]
+    counts["cap not in GBP"] = add(not_gbp, "cap not in GBP")
 
     # One line per company.
     m["base"] = m["symbol"].map(base_ticker)
@@ -229,6 +261,9 @@ def refine_master(data: Path) -> pd.DataFrame:
         "by_reason": m["exclude_reason"].value_counts().to_dict(),
         "overseas_by_isin_prefix": {k: int(v) for k, v in overseas_by_prefix.items()},
         "kept_without_isin": int((m["included"] & isin.isna()).sum()),
+        "kept_without_isin_uk_profile": _rows(m, m.index[m["included"] & no_isin & uk_profile], country),
+        "cap_not_in_gbp_uk_isin": _rows(m, cap_uk, country),
+        "cap_not_in_gbp_count": int(len(cap_out)),
         "quote_currency": m.loc[m["included"], "quote_currency"].value_counts().to_dict(),
         "cap_currency": m.loc[m["included"], "cap_currency"].value_counts().to_dict(),
         "profile_currency_not_quote": sorted(m.loc[m["included"] & m["currency"].notna()

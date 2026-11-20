@@ -183,7 +183,7 @@ def test_master_drops_bonds_classes_overseas_and_marks_aim(tmp_path):
     assert kept == {"BP.L", "BT-A.L", "AMS.L"}
     assert m.loc["BP-A.L", "exclude_reason"] == "second share class (kept BP.L)"
     assert m.loc["BT-B.L", "exclude_reason"] == "second share class (kept BT-A.L)"
-    assert m.loc["BHP.L", "exclude_reason"] == "overseas company (ISIN AU)"
+    assert m.loc["BHP.L", "exclude_reason"] == "overseas ISIN"
     assert m.loc["LOAN.L", "exclude_reason"] == "price series looks like a bond"
     assert bool(m.loc["AMS.L", "is_aim"]) is True
 
