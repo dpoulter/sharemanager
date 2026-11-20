@@ -10,6 +10,8 @@ Jarvis's exports from the N100 (rerun as run 10, identical to run 9:
     (is_fund=Y) are dropped, as run 9 excluded them
   - n100_run9_orders.csv: date, symbol, side, quantity, price (pounds)
   - n100_run9_values.csv: date, total
+  - n100_run9_asof.csv: the as_of_date of each rebalance's targets, one column (select distinct as_of_date
+    from strategy_targets where strategy = 'bt_trend_following_10'). Used first when it is there
   - n100_stats_dates.csv: date (select distinct date from statistics, Oct 2022 to Nov 2026). The N100
     rebalances on the first of those dates on or after the 1st, which includes some holidays and
     Sundays, and fills the next trading day; without it the engine rebalances on the first trading day
@@ -437,23 +439,35 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
          costs: dict | None = None, start: str = "2022-11-01", end: str = "2026-11-13") -> dict:
     listed = universe_list(Path(universe_csv), ws.cfg.data_dir / "validation" / "run9_universe_no_funds.csv")
     raw = dict(RUN9, universe=f"list:{listed}")
-    asof_file = ws.cfg.data_dir / "validation" / "n100_stats_dates.csv"
-    if asof_file.exists():
+    vdir = ws.cfg.data_dir / "validation"
+    actual = vdir / "n100_run9_asof.csv"
+    asof_file = vdir / "n100_stats_dates.csv"
+    if actual.exists():
+        # The as_of_date of each rebalance's targets (strategy_targets), as the N100 used it.
+        col = pd.read_csv(actual)
+        raw["rebalance_asof"] = sorted(pd.to_datetime(col[col.columns[0]]).dt.strftime("%Y-%m-%d").unique())
+        raw["_asof_source"] = "the N100's own targets (n100_run9_asof.csv)"
+    elif asof_file.exists():
         raw["rebalance_asof"] = n100_asof_dates(asof_file, start, end)
+        raw["_asof_source"] = "first date of the N100 statistics calendar on or after the 1st (a guess)"
     if costs:
         raw["costs"] = {**raw["costs"], **costs}
     spec = spec_from_dict(raw)
     out = ws.run(spec, period=f"{start}:{end}", kind="engine_validation", start=start, end=end)
     rec = out["record"]
     report = {"price_basis": rec.get("price_basis"),
-              "rebalance_asof": "N100 statistics calendar (%d dates)" % len(raw["rebalance_asof"])
-              if "rebalance_asof" in raw else "first trading day of the month (no data/validation/n100_stats_dates.csv)",
+              "rebalance_asof": "%s, %d dates" % (raw["_asof_source"], len(raw["rebalance_asof"]))
+              if "rebalance_asof" in raw else "first trading day of the month (no as-of file in data/validation)",
               "universe_without_funds": int(len(pd.read_csv(listed))),
               "ours_total_return": rec["total_return"], "ours_fills": rec["fills"],
               "ours_costs": rec["costs_paid"],
               "report": str(out.get("report"))}
     ours_path = write_ours_orders(out["result"].fills, ws.cfg.data_dir / "validation" / "run9_ours_orders.csv")
     report["ours_orders_file"] = str(ours_path)
+    report["our_top_scores_first_rebalances"] = {
+        str(d.date()): {k.replace(".L", ""): round(float(v), 3)
+                        for k, v in out["scores"][d].dropna().sort_values(ascending=False).head(25).items()}
+        for d in sorted(out["scores"])[:4]}
     d0 = min(out["scores"])
     report["first_value_the_n100_way"] = n100_style_first_value(out, d0, float(raw["start_cash"]))
     if values_csv:
