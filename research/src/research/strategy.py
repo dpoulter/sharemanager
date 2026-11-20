@@ -155,6 +155,11 @@ class Workspace:
         mk = self.market_for(basis)
         ctx = Context(mk, self.f, member)
         rules = spec.rules()
+        if rules.rebalance_asof:
+            for a in pd.DatetimeIndex(pd.to_datetime(list(rules.rebalance_asof))):
+                k = int(self.m.dates.searchsorted(a, side="right")) - 1
+                if k >= 0:
+                    ctx.asof[self.m.dates[k]] = a
         dates = self.m.dates[(self.m.dates >= start) & (self.m.dates <= end)]
         flags = engine.rebalance_flags(dates, rules.rebalance, rules.rebalance_asof)
         flags[0] = True

@@ -421,3 +421,25 @@ def test_n100_asof_dates_come_from_its_statistics_calendar(tmp_path):
         .to_csv(tmp_path / "d.csv", index=False)
     assert n100_asof_dates(tmp_path / "d.csv", "2022-11-01", "2023-02-28") == \
         ["2022-11-01", "2022-12-01", "2023-01-02", "2023-02-01"]
+
+
+def test_the_six_month_base_counts_back_from_the_n100_as_of_not_the_decision_day():
+    """As-of Mon 2 Jan 2023 (a holiday), decided on Fri 30 Dec: the N100's base is the first close on or
+    after 2 Jul, which is Mon 4 Jul, not 30 Jun."""
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from conftest import make_market
+    from research.pit import Fundamentals
+    from research.signals import Context
+    dates = pd.bdate_range("2022-06-01", "2023-01-31").drop(pd.to_datetime(["2023-01-02"]))
+    px = list(100.0 + np.arange(len(dates), dtype=float))
+    m = make_market({"A.L": px}, start="2022-06-01")
+    m.close.index = m.adj.index = m.market_cap.index = dates          # the bank holiday is not a trading day
+    ctx = Context(m, Fundamentals(pd.DataFrame()))
+    d = pd.Timestamp("2022-12-30")
+    def base_of(c):
+        return c.n100_return_detail(d, 6).loc["A.L", "start"]
+    assert base_of(ctx) == "2022-06-30"                                # from the decision day: the old answer
+    ctx.asof[d] = pd.Timestamp("2023-01-02")
+    assert base_of(ctx) == "2022-07-04"                                # from the as-of date
+    assert ctx.n100_return_detail(d, 6).loc["A.L", "end"] == "2022-12-30"

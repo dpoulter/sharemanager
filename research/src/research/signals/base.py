@@ -31,6 +31,10 @@ class Context:
         self.m = m
         self.f = fundamentals
         self.member = member
+        # decision day -> the N100's as-of date, where they differ (the as-of date is a holiday or a
+        # weekend and the decision is taken on the last close before it). The N100 counts its
+        # lookback back from the as-of date, not from the close it uses.
+        self.asof: dict = {}
 
     @cached_property
     def adj_filled(self) -> pd.DataFrame:
@@ -73,7 +77,7 @@ class Context:
         out["ret"] = np.nan
         if i < 0:
             return out
-        back = pd.Timestamp(date) - pd.DateOffset(months=months)
+        back = pd.Timestamp(self.asof.get(pd.Timestamp(date), date)) - pd.DateOffset(months=months)
         j = int(self.m.dates.searchsorted(back, side="left"))      # first panel date on or after
         if j > i:
             return out
