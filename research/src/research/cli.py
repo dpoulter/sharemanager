@@ -79,6 +79,45 @@ def cmd_fetch(cfg, a):
     log.info("data report: %s", path)
 
 
+def cmd_cap_trace(cfg, a):
+    """For each symbol: the master row, FMP's raw cap, the cap held now, price, shares and the ratio, over a window."""
+    from .clean import _cap_over_price_shares, _unit
+    d = cfg.data_dir
+    master = pd.read_parquet(d / "symbols.parquet").set_index("symbol")
+    caps = pd.read_parquet(d / "market_cap.parquet")
+    caps["date"] = pd.to_datetime(caps["date"])
+    px = pd.read_parquet(d / "prices.parquet", columns=["symbol", "date", "close"])
+    px["date"] = pd.to_datetime(px["date"])
+    st = pd.read_parquet(d / "statements.parquet", columns=["symbol", "period_end", "weightedAverageShsOut"])
+    st = st.dropna(subset=["weightedAverageShsOut"])
+    lo, hi = pd.Timestamp(a.start), pd.Timestamp(a.end)
+    for sym in a.symbols:
+        print(f"\n== {sym}")
+        if sym in master.index:
+            r = master.loc[sym]
+            print({k: (None if pd.isna(r.get(k)) else r.get(k)) for k in
+                   ("name", "isin", "country", "currency", "quote_currency", "cap_currency", "included", "exclude_reason")})
+        raw_p = d / "raw" / "market_cap" / f"{sym}.parquet"
+        raw = pd.read_parquet(raw_p).assign(date=lambda x: pd.to_datetime(x["date"])).set_index("date")["market_cap"] \
+            if raw_p.exists() else pd.Series(dtype=float)
+        c = caps[caps["symbol"] == sym][["date", "market_cap"]]
+        j = _cap_over_price_shares(c, px[px["symbol"] == sym], st[st["symbol"] == sym], _unit(master["quote_currency"].get(sym))
+                                   if "quote_currency" in master else 0.01)
+        j = j[(j["date"] >= lo) & (j["date"] <= hi)]
+        j["fmp_raw_cap"] = j["date"].map(raw)
+        print(f"statements held: {int((st['symbol'] == sym).sum())}, shares: "
+              f"{st[st['symbol'] == sym].sort_values('period_end')['weightedAverageShsOut'].iloc[[0, -1]].tolist() if (st['symbol'] == sym).any() else 'none'}")
+        print(j.iloc[::max(1, len(j) // 12)][["date", "fmp_raw_cap", "market_cap", "close", "implied", "ratio"]].to_string(index=False)
+              if len(j) else "no cap and price rows in the window")
+        for n in ("cap_rescale_refused", "cap_rescued_by_shares", "cap_rescaled", "cap_spikes"):
+            f = d / f"{n}.parquet"
+            if f.exists():
+                t = pd.read_parquet(f)
+                t = t[t["symbol"] == sym]
+                if len(t):
+                    print(f"-- {n}:\n{t.to_string(index=False)}")
+
+
 def cmd_universe(cfg, a):
     from .lse import build_status, cap_check, write_report
     from .store import load_market
@@ -313,6 +352,9 @@ def main(argv=None):
                         "whether they are UK companies), then merge")
     s.add_argument("--trust-caps", action="store_true",
                    help="fetch market caps of investment trusts only (for ranking like the FTSE 350), then merge")
+    s = sub.add_parser("cap-trace", help="one symbol's raw and held market cap against price x shares over a window")
+    s.add_argument("symbols", nargs="+"); s.add_argument("--from", dest="start", default="2007-01-01")
+    s.add_argument("--to", dest="end", default="2008-12-31")
     s = sub.add_parser("universe"); s.add_argument("--live"); s.add_argument("--aim", action="store_true")
     s = sub.add_parser("run"); s.add_argument("strategy", nargs="+")
     s.add_argument("--period", default="dev"); s.add_argument("--final", action="store_true")
@@ -329,7 +371,7 @@ def main(argv=None):
     cfg = load_config(a.config)
     _setup_logging(cfg)
     try:
-        {"fetch": cmd_fetch, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
+        {"fetch": cmd_fetch, "cap-trace": cmd_cap_trace, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
          "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate}[a.cmd](cfg, a)
     except Exception as e:     # never let a key reach the terminal in a traceback
         log.error("%s failed: %s", a.cmd, mask(e))
