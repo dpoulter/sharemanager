@@ -53,6 +53,12 @@ HOME = {"UNITED KINGDOM", "UK", "GREAT BRITAIN", "ENGLAND", "ENGLAND AND WALES",
 
 
 LEGAL = {"PLC", "LTD", "LIMITED"}
+# Words that make a longer LSE name a different entity from the listed company whose name it starts with:
+# "BARCLAYS BANK", "PEARSON FUNDING", a ZDP or VCT line, an ETF. A loose match never rests on these.
+LOOSE_BLOCK = {"BANK", "FUNDING", "FINANCE", "FINANCING", "FUND", "FUNDS", "TRUST", "VCT", "ZDP", "UCITS", "ETF",
+               "ETC", "SECURITIES", "NOMINEES", "LEASING", "MORTGAGES", "ISSUER", "CAPITAL"}
+LOOSE_MAX_EXTRA = 2                # and the longer name has at most this many words more than the shorter
+LOOSE_CAP_RATIO = 3.0              # FMP's cap and the LSE row's, in the same month, within this factor either way
 DESCRIPTIONS = {"ORD", "ORDS", "ORDINARY", "SHARES", "SHS", "NEW", "DI", "CDI", "REG", "REGD", "NPV"}
 
 
@@ -285,7 +291,7 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
         c["month"] = c.index.to_period("M").to_timestamp() if isinstance(c.index, pd.DatetimeIndex) else c["month"]
         cap_at = c.groupby("month").last()       # month x symbol, pounds, last close of the month
 
-    syms_out, doubles, loose_matches = [], {}, {}
+    syms_out, doubles, loose_matches, loose_rejected = [], {}, {}, {}
     for row in issuers.itertuples(index=False):
         cand = by_norm.get(row.norm)
         exact = bool(cand)
@@ -293,10 +299,25 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
             toks = row.norm.split()
             hits = [n for n in by_first.get(toks[0], [])
                     if (lambda a, b: a == b[:len(a)])(*(sorted([n.split(), toks], key=len)))]
-            loose = sorted({s for n in hits for s in by_norm[n]})
+            ok_hits = []
+            for n in hits:
+                longer, shorter = sorted([n.split(), toks], key=len, reverse=True)
+                extra = longer[len(shorter):]
+                if len(extra) <= LOOSE_MAX_EXTRA and not (set(extra) & LOOSE_BLOCK):
+                    ok_hits.append(n)
+            loose = sorted({s for n in ok_hits for s in by_norm[n]})
             cand = loose if len(loose) == 1 else None
+            if cand and cap_at is not None:
+                lse_cap = getattr(row, "cap_m", np.nan)
+                fmp = cap_at.at[row.month, cand[0]] if row.month in cap_at.index and cand[0] in cap_at.columns else np.nan
+                if pd.notna(lse_cap) and lse_cap > 0 and pd.notna(fmp) and fmp > 0 \
+                        and not (1 / LOOSE_CAP_RATIO <= fmp / (lse_cap * 1e6) <= LOOSE_CAP_RATIO):
+                    loose_rejected.setdefault(f"{row.company} ({row.norm})", f"{cand[0]}: cap {fmp / 1e6:,.0f}m vs LSE {lse_cap:,.0f}m")
+                    cand = None
             if cand:
                 loose_matches.setdefault(f"{row.company} ({row.norm})", cand[0])
+            elif hits:
+                loose_rejected.setdefault(f"{row.company} ({row.norm})", loose_rejected.get(f"{row.company} ({row.norm})", "name"))
         if not cand:
             syms_out.append([None])
             continue
@@ -330,7 +351,9 @@ def match_to_master(issuers: pd.DataFrame, master: pd.DataFrame, caps: pd.DataFr
     return out, {"match_rate_by_year": {int(k): float(v) for k, v in rate.items()},
                  "names_matching_two_lines (all matched; the universe picks one)": doubles,
                  "loose_matches (LSE name only starts with the FMP name or the reverse; check each, correct with "
-                 "listing_overrides.csv: 'HSBC BANK PLC' on HSBA.L was one)": loose_matches}
+                 "listing_overrides.csv: 'HSBC BANK PLC' on HSBA.L was one)": loose_matches,
+                 "loose_rejected (a leading-words match refused: a bank, funding, fund or ZDP word, more than two "
+                 "extra words, or FMP's cap not within 3x the LSE row's)": loose_rejected}
 
 
 def _is_premium(cat) -> bool:

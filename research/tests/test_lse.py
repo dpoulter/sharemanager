@@ -361,3 +361,27 @@ def test_override_applies_to_a_share_the_lists_never_matched(tmp_path):
     master = m.master.reset_index().rename(columns={"index": "symbol"})
     elig, _ = build_status(tmp_path, master, m.market_cap, pd.DatetimeIndex(["2026-11-01"]), False)
     assert bool(elig.at[pd.Timestamp("2026-11-01"), "INVP.L"]) is True
+
+
+def test_loose_name_matches_refuse_banks_funds_and_a_cap_that_does_not_fit():
+    """HSBC BANK PLC, Aberdeen funds, Just Eat and a ZDP line must not take a listed company's status;
+    DCC Energy (a rename) and BAE Systems still match loosely."""
+    from research.lse import match_to_master, norm_name
+    names = {"HSBA.L": "HSBC Holdings plc", "ABDN.L": "Aberdeen Group plc", "JUST.L": "Just Group plc",
+             "DCC.L": "DCC plc", "RGL.L": "Regional REIT Limited", "PSON.L": "Pearson plc"}
+    master = pd.DataFrame({"symbol": list(names), "name": list(names.values()), "included": True})
+    rows = [("HSBC BANK PLC", np.nan), ("ABERDEEN ASIAN INCOME FUND LIMITED", 300.0), ("JUST EAT PLC", 6000.0),
+            ("JUST RETIREMENT GROUP PLC", 650.0), ("DCC ENERGY PLC", 5000.0), ("REGIONAL REIT ZDP PLC", 40.0),
+            ("PEARSON FUNDING PLC", np.nan)]
+    month = pd.Timestamp("2016-01-01")
+    issuers = pd.DataFrame({"company": [r[0] for r in rows], "norm": [norm_name(r[0]) for r in rows],
+                            "month": month, "market": "MAIN MARKET", "cap_m": [r[1] for r in rows]})
+    caps = pd.DataFrame({"HSBA.L": 1e11, "ABDN.L": 4e9, "JUST.L": 7e8, "DCC.L": 4.8e9, "RGL.L": 4e8, "PSON.L": 6e9},
+                        index=pd.DatetimeIndex([month]))
+    out, rep = match_to_master(issuers, master, caps)
+    got = out.set_index("company")["symbol"]
+    assert got["DCC ENERGY PLC"] == "DCC.L" and got["JUST RETIREMENT GROUP PLC"] == "JUST.L"
+    for bad in ("HSBC BANK PLC", "ABERDEEN ASIAN INCOME FUND LIMITED", "JUST EAT PLC", "REGIONAL REIT ZDP PLC", "PEARSON FUNDING PLC"):
+        assert pd.isna(got[bad]), bad
+    rej = [k for k in next(v for k, v in rep.items() if k.startswith("loose_rejected"))]
+    assert any("JUST EAT" in k for k in rej)
