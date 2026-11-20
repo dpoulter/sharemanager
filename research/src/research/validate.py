@@ -508,6 +508,8 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
     elif asof_file.exists():
         raw["rebalance_asof"] = n100_asof_dates(asof_file, start, end)
         raw["_asof_source"] = "first date of the N100 statistics calendar on or after the 1st (a guess)"
+    if asof_file.exists():
+        raw["exit_calendar"] = str(asof_file)      # the exit counts the N100's statistics rows, weekend ones too
     if costs:
         raw["costs"] = {**raw["costs"], **costs}
     spec = spec_from_dict(raw)

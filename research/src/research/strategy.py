@@ -179,7 +179,11 @@ class Workspace:
             line["scored"] = int(scores[d].notna().sum())
             cover.append(line)
         coverage = pd.DataFrame(cover).set_index("date")
-        exit_flags = engine.ma200_below_twice(mk.adj, mk.ma200) if rules.exit_ma200 else None
+        if rules.exit_ma200 and spec.raw.get("exit_calendar"):
+            cal = pd.read_csv(Path(spec.raw["exit_calendar"]).expanduser())["date"]
+            exit_flags = engine.ma200_below_twice_calendar(mk.adj, mk.ma200, cal)
+        else:
+            exit_flags = engine.ma200_below_twice(mk.adj, mk.ma200) if rules.exit_ma200 else None
         costs = from_dict(spec.raw.get("costs"))
         res = engine.simulate(mk, member, large, scores, rules, costs, start, end, exit_flags)
         free = engine.simulate(mk, member, large, scores, rules, costs.free(), start, end, exit_flags)

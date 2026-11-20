@@ -443,3 +443,18 @@ def test_the_six_month_base_counts_back_from_the_n100_as_of_not_the_decision_day
     ctx.asof[d] = pd.Timestamp("2023-01-02")
     assert base_of(ctx) == "2022-07-04"                                # from the as-of date
     assert ctx.n100_return_detail(d, 6).loc["A.L", "end"] == "2022-12-30"
+
+
+def test_exit_counts_a_sunday_statistics_row_as_a_second_day_below():
+    """AO, 26 Feb 2023: below the average on Friday, the Sunday row carries Friday over, so the N100 sells.
+    Trading days alone see Friday below and Monday above: no exit."""
+    from research.engine import ma200_below_twice, ma200_below_twice_calendar
+    px = {"2023-02-22": 55.0, "2023-02-23": 55.7, "2023-02-24": 54.8, "2023-02-27": 56.25, "2023-02-28": 56.0}
+    adj = pd.DataFrame({"AO.L": pd.Series(px)}); adj.index = pd.to_datetime(adj.index)
+    ma = pd.DataFrame({"AO.L": [55.49, 55.43, 55.36, 55.28, 55.2]}, index=adj.index)
+    plain = ma200_below_twice(adj, ma)
+    assert not plain["AO.L"].any()                                    # Thu above, Fri below, Mon above
+    with_sunday = ma200_below_twice_calendar(adj, ma, [pd.Timestamp("2023-02-26")])
+    assert list(with_sunday.index[with_sunday["AO.L"]]) == [pd.Timestamp("2023-02-24")]   # decided Friday, filled Monday
+    # No weekend rows in the calendar: identical to the plain rule.
+    assert ma200_below_twice_calendar(adj, ma, list(adj.index)).equals(plain)

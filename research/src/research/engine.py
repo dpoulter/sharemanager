@@ -130,6 +130,29 @@ def ma200_below_twice(adj: pd.DataFrame, ma: pd.DataFrame | None = None) -> pd.D
     return below & below.shift(1, fill_value=False)
 
 
+def ma200_below_twice_calendar(adj: pd.DataFrame, ma: pd.DataFrame, calendar) -> pd.DataFrame:
+    """The same exit as ma200_below_twice, counted on the N100's statistics calendar.
+
+    The N100 writes a statistics row on some Sundays and holidays, carrying the last close and average
+    over, so a Friday below the average followed by a Sunday row is "two days below" and the share is
+    sold (AO, 26 Feb 2023). Each calendar row is below if the last price on or before it is below the
+    average on that day; two rows in a row are the signal; the flag lands on the last trading day on or
+    before the row, and the order fills the trading day after. Trading days missing from the calendar
+    are added, so with no weekend rows this is the same as the plain rule.
+    """
+    filled = adj.ffill(limit=10)
+    below = ((filled < ma) & ma.notna()).to_numpy()
+    dates = adj.index
+    cal = pd.DatetimeIndex(sorted(set(pd.to_datetime(list(calendar))) | set(dates)))
+    cal = cal[cal >= dates[0]]
+    pos = dates.searchsorted(cal, side="right") - 1
+    b = below[pos]
+    prev = np.vstack([np.zeros((1, b.shape[1]), dtype=bool), b[:-1]])
+    out = np.zeros(below.shape, dtype=bool)
+    np.logical_or.at(out, pos, b & prev)
+    return pd.DataFrame(out, index=dates, columns=adj.columns)
+
+
 def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
              rules: Rules, costs: Costs, start, end, exit_flags: pd.DataFrame | None = None) -> Result:
     """Run one portfolio.
