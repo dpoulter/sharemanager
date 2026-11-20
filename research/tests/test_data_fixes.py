@@ -458,3 +458,15 @@ def test_exit_counts_a_sunday_statistics_row_as_a_second_day_below():
     assert list(with_sunday.index[with_sunday["AO.L"]]) == [pd.Timestamp("2023-02-24")]   # decided Friday, filled Monday
     # No weekend rows in the calendar: identical to the plain rule.
     assert ma200_below_twice_calendar(adj, ma, list(adj.index)).equals(plain)
+
+
+def test_run9_picks_the_ma200_calendar_for_the_exit_and_the_n100_asof_for_rebalances(tmp_path):
+    from research.validate import run9_calendars
+    pd.DataFrame({"date": ["2023-02-26", "2023-03-18", "2023-03-19"]}).to_csv(tmp_path / "n100_stats_dates.csv", index=False)
+    assert run9_calendars(tmp_path, "2023-01-01", "2023-03-31")["exit_calendar"].endswith("n100_stats_dates.csv")
+    pd.DataFrame({"date": ["2023-02-26"], "symbols": [340]}).to_csv(tmp_path / "n100_ma200_dates.csv", index=False)
+    pd.DataFrame({"as_of_date": ["2023-01-02", "2023-02-01"]}).to_csv(tmp_path / "n100_run9_asof.csv", index=False)
+    c = run9_calendars(tmp_path, "2023-01-01", "2023-03-31")
+    assert c["exit_calendar"].endswith("n100_ma200_dates.csv")
+    assert c["rebalance_asof"] == ["2023-01-02", "2023-02-01"]
+    assert run9_calendars(tmp_path / "none", "2023-01-01", "2023-03-31") == {}

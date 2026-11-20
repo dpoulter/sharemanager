@@ -495,23 +495,37 @@ def explain_screens(out: dict, ws: Workspace, pairs: list[tuple[str, str]], asof
     return rows
 
 
+def run9_calendars(vdir: Path, start: str, end: str) -> dict:
+    """Which N100 calendars run 9 uses, from the files in data/validation.
+
+    rebalance_asof: the N100's own as-of dates (n100_run9_asof.csv), else a guess from the statistics
+    calendar. exit_calendar: the dates that carry a ma200 row (n100_ma200_dates.csv), Sundays included;
+    only those count. The wider statistics calendar (n100_stats_dates.csv) has Sundays with other
+    indicators only, which fire exits a day early that the N100 does not (HFD, PRU 2023-03; COST 2023-06;
+    ONT 2025-10), so it is a last resort.
+    """
+    out = {}
+    actual, stats, ma = vdir / "n100_run9_asof.csv", vdir / "n100_stats_dates.csv", vdir / "n100_ma200_dates.csv"
+    if actual.exists():
+        col = pd.read_csv(actual)
+        out["rebalance_asof"] = sorted(pd.to_datetime(col[col.columns[0]]).dt.strftime("%Y-%m-%d").unique())
+        out["_asof_source"] = "the N100's own targets (n100_run9_asof.csv)"
+    elif stats.exists():
+        out["rebalance_asof"] = n100_asof_dates(stats, start, end)
+        out["_asof_source"] = "first date of the N100 statistics calendar on or after the 1st (a guess)"
+    if ma.exists():
+        out["exit_calendar"] = str(ma)
+    elif stats.exists():
+        out["exit_calendar"] = str(stats)
+    return out
+
+
 def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv: Path | None,
          costs: dict | None = None, start: str = "2022-11-01", end: str = "2026-11-13") -> dict:
     listed = universe_list(Path(universe_csv), ws.cfg.data_dir / "validation" / "run9_universe_no_funds.csv")
     raw = dict(RUN9, universe=f"list:{listed}")
     vdir = ws.cfg.data_dir / "validation"
-    actual = vdir / "n100_run9_asof.csv"
-    asof_file = vdir / "n100_stats_dates.csv"
-    if actual.exists():
-        # The as_of_date of each rebalance's targets (strategy_targets), as the N100 used it.
-        col = pd.read_csv(actual)
-        raw["rebalance_asof"] = sorted(pd.to_datetime(col[col.columns[0]]).dt.strftime("%Y-%m-%d").unique())
-        raw["_asof_source"] = "the N100's own targets (n100_run9_asof.csv)"
-    elif asof_file.exists():
-        raw["rebalance_asof"] = n100_asof_dates(asof_file, start, end)
-        raw["_asof_source"] = "first date of the N100 statistics calendar on or after the 1st (a guess)"
-    if asof_file.exists():
-        raw["exit_calendar"] = str(asof_file)      # the exit counts the N100's statistics rows, weekend ones too
+    raw.update(run9_calendars(vdir, start, end))
     if costs:
         raw["costs"] = {**raw["costs"], **costs}
     spec = spec_from_dict(raw)
