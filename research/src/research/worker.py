@@ -171,8 +171,11 @@ def _clean(v):
     return v
 
 
-def result_payload(record: dict) -> dict:
+def result_payload(record: dict, rebalances: int) -> dict:
+    """What is posted: the record's figures, and the engine's rebalance count (the decision days it
+    scored, one row each in Workspace.run's coverage table)."""
     out = {k: _clean(record.get(k)) for k in RESULT_FIELDS}
+    out["rebalances"] = int(rebalances)
     out["research_run_id"] = str(record["run_id"])
     out["engine_commit"] = str(record.get("git_commit") or "unknown")[:40]
     out["record"] = _clean({k: v for k, v in record.items()})
@@ -242,7 +245,7 @@ class Worker:
         try:
             out = self.run_claim(claim)
             report = Path(out["report"]).read_bytes()
-            ans = self.api.result(run_id, fp, result_payload(out["record"]), report)
+            ans = self.api.result(run_id, fp, result_payload(out["record"], len(out["coverage"])), report)
             if ans.get("ok"):
                 log.info("run %s done: engine run %s", run_id, out["record"]["run_id"])
             else:

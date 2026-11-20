@@ -167,6 +167,8 @@ def test_worker_runs_a_claim_logs_it_and_posts_the_result(cfg):
     assert w.run_once() is True
     kind, run_id, fp, result, report = api.calls[-1]
     assert kind == "result" and run_id == 41 and fp == TREND_CLAIM["fingerprint"]
+    assert isinstance(result["rebalances"], int) and result["rebalances"] >= 3     # Feb to May, monthly
+    assert result["trading_days"] and result["fills"] is not None
     for k in ("total_return", "bench_equal_weight_return", "bench_cap_weight_return", "fills", "costs_paid",
               "trials", "deflated_sharpe", "research_run_id", "engine_commit"):
         assert k in result

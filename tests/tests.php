@@ -17817,6 +17817,25 @@ STUB
         check('a result with a field that is not a number is refused', $wb_ms === 409
               && backtest_run_get($wb_claim['run_id'])['status'] === 'RUNNING');
 
+        /* Run 18: a result with no rebalances was a fatal (the column is NOT NULL) and left its report behind. */
+        $wb_files = function () use ($BT_REPORTS) { return is_dir($BT_REPORTS) ? count(glob($BT_REPORTS . '/run-*.html')) : 0; };
+        $wb_nf = $wb_files();
+        $wb_norb = $wb_result($wb_claim); unset($wb_norb['rebalances']);
+        [$wb_rbs, $wb_rba] = $wb_api(['action' => 'result', 'run_id' => $wb_claim['run_id'], 'fingerprint' => $wb_claim['fingerprint'],
+                                      'result' => $wb_norb, 'report_base64' => $wb_report]);
+        check('a result without rebalances is refused with a reason, not a fatal, and the run is still running',
+              $wb_rbs === 409 && stripos((string) $wb_rba['why'], 'rebalances') !== false
+              && backtest_run_get($wb_claim['run_id'])['status'] === 'RUNNING', json_encode([$wb_rbs, $wb_rba]));
+        check('and no report file is left behind by a refused result', $wb_files() === $wb_nf);
+        /* Make the update itself fail, as run 18's did: a column it writes is briefly not there. */
+        db()->exec("alter table strategy_backtest_runs change engine_commit engine_commit_gone varchar(40) null");
+        [$wb_ts, $wb_ta] = $wb_api(['action' => 'result', 'run_id' => $wb_claim['run_id'], 'fingerprint' => $wb_claim['fingerprint'],
+                                    'result' => $wb_result($wb_claim), 'report_base64' => $wb_report]);
+        db()->exec("alter table strategy_backtest_runs change engine_commit_gone engine_commit varchar(40) null");
+        check('when the database refuses the update, the report file just written is removed and the run stays running',
+              $wb_ts === 409 && $wb_files() === $wb_nf
+              && backtest_run_get($wb_claim['run_id'])['status'] === 'RUNNING', json_encode([$wb_ts, $wb_ta]));
+
         /* The rules change while it runs: it still tests what it was queued with. */
         db()->prepare("update strategy_rules set holdings=3 where strategy=?")->execute([$WF]);
         [$wb_rs, $wb_ra] = $wb_api(['action' => 'result', 'run_id' => $wb_claim['run_id'],

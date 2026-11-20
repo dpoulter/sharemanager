@@ -445,7 +445,9 @@
 		foreach (backtest_result_fields() as $key => [$column, $type]) {
 			$v = $result[$key] ?? null;
 			if ($v !== null && !is_numeric($v)) { return ['ok' => false, 'why' => "the result's " . $key . " is not a number."]; }
-			if ($v === null && in_array($key, ['total_return', 'final_value', 'fills', 'trials'], true)) {
+			/* The NOT NULL columns, and what a result is for: refused with a reason, never a fatal. */
+			if ($v === null && in_array($key, ['trading_days', 'rebalances', 'fills', 'total_return', 'final_value',
+			                                   'trials'], true)) {
 				return ['ok' => false, 'why' => "the result has no " . $key . "."];
 			}
 			if ($v !== null && is_float($v + 0) && !is_finite((float) $v)) { $v = null; }
@@ -479,9 +481,17 @@
 		$set[] = "result_json=?"; $args[] = $record;
 		$args[] = (int) $run_id; $args[] = (string) $fingerprint;
 
-		query("update strategy_backtest_runs set status='DONE', finished_at=now(), note=null, " . implode(', ', $set)
-		      . " where run_id=? and fingerprint=? and status='RUNNING' and engine='mac_mini'", ...$args);
-		$after = backtest_run_get($run_id);
+		/* The report is on disk now: every way out that does not end DONE removes it. */
+		try {
+			query("update strategy_backtest_runs set status='DONE', finished_at=now(), note=null, " . implode(', ', $set)
+			      . " where run_id=? and fingerprint=? and status='RUNNING' and engine='mac_mini'", ...$args);
+			$after = backtest_run_get($run_id);
+		} catch (Throwable $e) {
+			@unlink($dir . '/' . $name);
+			write_log("backtest", "result for run " . (int) $run_id . " not stored: " . $e->getMessage());
+			return ['ok' => false, 'why' => "the result could not be stored (" . substr($e->getMessage(), 0, 200)
+			                               . "); the run stays running."];
+		}
 		if ($after === null || $after['status'] !== 'DONE' || $after['report_file'] !== $name) {
 			@unlink($dir . '/' . $name);
 			return ['ok' => false, 'why' => "run " . (int) $run_id . " stopped running before the result arrived."];
