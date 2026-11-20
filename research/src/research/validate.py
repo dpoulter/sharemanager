@@ -12,6 +12,8 @@ Jarvis's exports from the N100 (rerun as run 10, identical to run 9:
   - n100_run9_values.csv: date, total
   - n100_run9_asof.csv: the as_of_date of each rebalance's targets, one column (select distinct as_of_date
     from strategy_targets where strategy = 'bt_trend_following_10'). Used first when it is there
+  - explain.csv (optional): date, symbol; the report then says which screen kept or dropped each share on
+    each decision day (explain in run9_check.json)
   - n100_stats_dates.csv: date (select distinct date from statistics, Oct 2022 to Nov 2026). The N100
     rebalances on the first of those dates on or after the 1st, which includes some holidays and
     Sundays, and fills the next trading day; without it the engine rebalances on the first trading day
@@ -435,6 +437,56 @@ def n100_asof_dates(stats_dates_csv: Path, start: str, end: str) -> list[str]:
     return out
 
 
+def explain_screens(out: dict, ws: Workspace, pairs: list[tuple[str, str]], asof=None) -> list[dict]:
+    """For each (date, symbol): which screen kept or dropped the share on that decision day.
+
+    Universe membership, a price, the 200-day average (and how many prices stand behind it), above it,
+    the six-month return with its two base dates, and the score and rank among the scored shares.
+    """
+    from .signals.base import Context
+    from .universe import to_fmp
+    mk, member, scores = out["market"], out["member"], out["scores"]
+    ctx = Context(mk, ws.f)
+    for a in pd.DatetimeIndex(pd.to_datetime(list(asof or []))):
+        k = ctx.pos(a)
+        if k >= 0:
+            ctx.asof[mk.dates[k]] = a
+    rows = []
+    for date, sym in pairs:
+        s = to_fmp(sym)
+        i = ctx.pos(date)
+        d = mk.dates[i] if i >= 0 else None
+        r = {"date": str(date), "decision_day": None if d is None else str(d.date()), "symbol": s}
+        if d is None or s not in mk.adj.columns:
+            rows.append({**r, "dropped_by": "no price column for the symbol" if s not in mk.adj.columns else "no decision day"})
+            continue
+        det = ctx.n100_return_detail(d, 6).loc[s]
+        cl, ma = mk.adj[s].iloc[i], mk.ma200[s].iloc[i]
+        sc = scores.get(d, pd.Series(dtype=float)).dropna().sort_values(ascending=False)
+        in_u = bool(member.at[d, s]) if (d in member.index and s in member.columns) else False
+        r.update({"in_universe": in_u, "adj_close": None if pd.isna(cl) else round(float(cl), 4),
+                  "ma200": None if pd.isna(ma) else round(float(ma), 4),
+                  "prices_to_date": int(mk.adj[s].iloc[: i + 1].notna().sum()),
+                  "return_pct": None if pd.isna(det["ret"]) else round(float(det["ret"]) * 100, 3),
+                  "base_date": det["start"], "end_date": det["end"],
+                  "score_pct": None if s not in sc.index else round(float(sc[s]) * 100, 3),
+                  "rank": None if s not in sc.index else int(sc.index.get_loc(s)) + 1, "scored": int(len(sc))})
+        if not in_u:
+            r["dropped_by"] = "not in the run 9 universe on that date"
+        elif pd.isna(cl):
+            r["dropped_by"] = "no price on or before the date"
+        elif pd.isna(ma):
+            r["dropped_by"] = "no 200-day average (fewer than 200 prices)"
+        elif not cl > ma:
+            r["dropped_by"] = "at or below its 200-day average"
+        elif pd.isna(det["ret"]):
+            r["dropped_by"] = "no six-month return"
+        else:
+            r["dropped_by"] = None
+        rows.append(r)
+    return rows
+
+
 def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv: Path | None,
          costs: dict | None = None, start: str = "2022-11-01", end: str = "2026-11-13") -> dict:
     listed = universe_list(Path(universe_csv), ws.cfg.data_dir / "validation" / "run9_universe_no_funds.csv")
@@ -468,6 +520,10 @@ def run9(ws: Workspace, universe_csv: Path, orders_csv: Path | None, values_csv:
         str(d.date()): {k.replace(".L", ""): round(float(v), 3)
                         for k, v in out["scores"][d].dropna().sort_values(ascending=False).head(25).items()}
         for d in sorted(out["scores"])[:4]}
+    ex = vdir / "explain.csv"
+    if ex.exists():
+        pr = pd.read_csv(ex)
+        report["explain"] = explain_screens(out, ws, list(zip(pr["date"], pr["symbol"])), raw.get("rebalance_asof"))
     d0 = min(out["scores"])
     report["first_value_the_n100_way"] = n100_style_first_value(out, d0, float(raw["start_cash"]))
     if values_csv:

@@ -731,3 +731,25 @@ def test_asof_on_a_non_trading_day_scores_the_day_before_and_keeps_the_book(cfg)
     out = ws.run(spec, start="2024-03-01", end="2024-12-31", write_report=False, kind="engine_validation")
     decisions = {dates[dates.searchsorted(pd.Timestamp(a), side="right") - 1] for a in asof}
     assert decisions <= set(out["scores"])                       # scored on every decision day
+
+
+def test_explain_screens_names_the_screen_that_dropped_a_share(cfg):
+    from research.validate import explain_screens
+    rng = np.random.default_rng(5)
+    n = 560
+    prices = {f"S{i}.L": list(100 * np.cumprod(1 + rng.normal(0.0006, 0.01, n))) for i in range(8)}
+    prices["DOWN.L"] = list(200 * np.cumprod(1 + rng.normal(-0.002, 0.005, n)))       # falling: below its 200-day average
+    prices["NEW.L"] = [np.nan] * 500 + list(100 + np.arange(60.0))                      # under 200 prices
+    m = make_market(prices, start="2023-01-02")
+    u = build_universe(m, size=10, large=5, start="2023-01-02")
+    cfg.raw["universe"]["start"] = "2023-01-02"
+    ws = Workspace(cfg, market=m, universe=u)
+    spec = spec_from_dict({"name": "tf", "signals": {"trend_following": 1}, "holdings": 3, "exit": "below_ma200_2d"})
+    out = ws.run(spec, start="2024-06-03", end="2024-09-30", write_report=False, kind="engine_validation")
+    d = sorted(out["scores"])[0]
+    rows = {r["symbol"]: r for r in explain_screens(out, ws, [(str(d.date()), s) for s in ("DOWN.L", "NEW.L", "GONE.L", "S0.L")])}
+    assert rows["DOWN.L"]["dropped_by"] == "at or below its 200-day average"
+    assert rows["NEW.L"]["dropped_by"] in ("no 200-day average (fewer than 200 prices)", "no price on or before the date",
+                                           "not in the run 9 universe on that date")
+    assert rows["GONE.L"]["dropped_by"] == "no price column for the symbol"
+    assert rows["S0.L"]["prices_to_date"] > 200 and "score_pct" in rows["S0.L"]
