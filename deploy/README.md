@@ -383,12 +383,12 @@ and answers `public/backtest_api.php`. Apply `sql/backtest_mac_mini.sql` after
 `sql/backtest_queue.sql`. Then:
 
 - `SM_BACKTEST_API_TOKEN` (a long random value, e.g. `openssl rand -hex 32`)
-  goes in `/etc/sharemanager.env`. The API reads it from the environment
-  first, then from that file, so the php-fpm user has to be able to read it:
-  either add `env[SM_BACKTEST_API_TOKEN] = ...` to the pool beside the
-  database settings, or let the php-fpm group read the file (`chgrp www-data
-  /etc/sharemanager.env && chmod 640 /etc/sharemanager.env`). The same value
-  goes in the Mac mini's `~/.config/sharemanager-research/worker.env`.
+  goes in three places, with the same value: `/etc/sharemanager.env`, the
+  php-fpm pool (`env[SM_BACKTEST_API_TOKEN] = ...`, commented out in
+  `deploy/php-fpm-pool.conf`; uncomment it and set it, then
+  `sudo systemctl reload php8.3-fpm`), and the Mac mini's
+  `~/.config/sharemanager-research/worker.env`. `/etc/sharemanager.env` stays
+  root-only: the web server reads the token from the pool, not the file.
 - The API answers only callers in the Tailscale range (100.64.0.0/10,
   fd7a:115c:a1e0::/48) with the token. A refusal is written to `message_log`
   (module `backtest_api`) with the caller's address, never the token.
