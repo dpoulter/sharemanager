@@ -59,6 +59,8 @@ RUN9 = {
     # STRATEGY_MAX_ORDERS_PER_RUN refuses a rebalance of more than 50 orders.
     "require_traded_today": False,
     "max_orders": 50,
+    # The N100 engine credits no dividends: the replay check is an engine check, so they are off.
+    "dividends": "off",
     # Run 9 came from Jarvis's patched copy of the N100 app with Trading 212
     # costs (Dale, 18 Nov 2026): no commission, 10 bp spread each way on every
     # line, 0.5% stamp on buys, whole shares, GBP 250 minimum order, no PTM levy.

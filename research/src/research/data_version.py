@@ -38,10 +38,12 @@ STATE = "data_version.json"
 CHANGES = "data_changes.parquet"
 SNAPSHOT = "data_snapshot.parquet"
 FILES = ["symbols.parquet", "prices.parquet", "market_cap.parquet", "statements.parquet", "fx.parquet",
+         "dividends.parquet",
          "bad_ticks.parquet", "cap_lse_corrections.parquet", "universe.parquet"]
 EVERYTHING = "*"
 # Which inputs of an indicator (indicators/base.py USES) each panel is.
 PANEL_INPUT = {"close": "prices", "adj": "prices", "market_cap": "caps", "statements": "statements",
+               "dividends": "dividends",
                "fx": "fx", "universe": "universe", "master": "master", EVERYTHING: EVERYTHING}
 
 
@@ -154,6 +156,10 @@ def snapshot(m, member: pd.DataFrame | None) -> pd.DataFrame:
     if st is not None and not st.empty and "symbol" in st:
         end = "period_end" if "period_end" in st else ("date" if "date" in st else None)
         parts.append(_row_hashes(st, "statements", end))
+    # Dividends: a change to any (amount, dates, kind) changes the data version. The engine credits them.
+    dv = getattr(m, "dividends", None)
+    if dv is not None and not dv.empty:
+        parts.append(_row_hashes(dv, "dividends", "ex_date"))
     # Of the master, only what an indicator reads (the sector, for value_composite).
     if "sector" in m.master:
         master = m.master[["sector"]].rename_axis("symbol").reset_index()

@@ -10,7 +10,9 @@
     rebalance: monthly           # monthly | weekly | quarterly
     hold_rank: null              # keep a holding while it ranks inside this
     exit: null                   # or below_ma200_2d
-    price_basis: adjusted        # or raw: raw closes, no dividends (the N100's basis)
+    price_basis: adjusted        # or raw: raw closes (the N100's basis)
+    dividends: on                # on: cash dividends credited (raw basis; on adjusted they are in the
+                                 # price already); off: none, as the N100 engine deals (the run 9 check)
     universe: ftse350            # ftse350 | ftse100 | ftse250 | list:<csv of symbols>
     costs: {}                    # overrides of costs.py, e.g. {spread_large_bp: 10}
     start_cash: 100000
@@ -169,6 +171,14 @@ class Workspace:
         self.universe = universe
         self.log = RunLog(cfg.p("run_log"))
 
+    def dividends_setting(self, spec: "Spec") -> str:
+        v = spec.raw.get("dividends", "on")
+        v = {True: "on", False: "off"}.get(v, v)          # YAML reads a bare on/off as a boolean
+        v = str(v).lower()
+        if v not in ("on", "off"):
+            raise ValueError(f"dividends must be on or off, not {v!r}")
+        return v
+
     def price_basis(self, spec: "Spec") -> str:
         basis = str(spec.raw.get("price_basis") or self.cfg.get("engine", {}).get("price_basis", "adjusted")).lower()
         if basis not in ("adjusted", "raw"):
@@ -308,8 +318,11 @@ class Workspace:
                 used[g.key] = {"version": g.version, "data_version": g.data_version}
             exit_flags = engine.exit_below_twice(cv.frame, mv.frame, self.m.dates)
         costs = from_dict(spec.raw.get("costs"))
-        res = engine.simulate(mk, member, large, scores, rules, costs, start, end, exit_flags)
-        free = engine.simulate(mk, member, large, scores, rules, costs.free(), start, end, exit_flags)
+        div_setting = self.dividends_setting(spec)
+        # Raw basis: the engine credits them as cash. Adjusted basis: already in the price.
+        divs = mk.dividends if (div_setting == "on" and basis == "raw") else None
+        res = engine.simulate(mk, member, large, scores, rules, costs, start, end, exit_flags, divs)
+        free = engine.simulate(mk, member, large, scores, rules, costs.free(), start, end, exit_flags, divs)
         # Benchmarks are total return (dividend-adjusted) whatever the strategy's basis. Run 19's
         # cap-weighted 5.1% over 2007-2025 was price only: the raw basis took the dividends out.
         bench = engine.benchmarks(self.m, member, start, end)
@@ -320,6 +333,12 @@ class Workspace:
         out["coverage_min"] = int(coverage["scored"].min())
         out["coverage_share_median"] = float(share.median())
         out["members_median"] = float(coverage["members"].median())
+        out["dividends"] = ("off" if div_setting == "off" else
+                            "credited as cash" if basis == "raw" else "in the adjusted price")
+        out["dividends_received"] = float(res.dividends_received)
+        out["dividends_after_end"] = int(res.dividends_after_end)
+        out["dividends_after_end_cash"] = float(res.dividends_after_end_cash)
+        out["dividends_skipped_noncash"] = int(res.dividends_skipped_noncash)
         out["rebalance_refusals"] = res.refusals
         out["orders_skipped"] = res.skipped
 

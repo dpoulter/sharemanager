@@ -8,7 +8,7 @@ Layout under the data folder:
     symbols.parquet                  the symbol master, with exclusions
     prices.parquet                   symbol, date, close (raw, pence), adj_close
     market_cap.parquet               symbol, date, market_cap (pounds)
-    dividends.parquet                symbol, ex_date, amount (pence)
+    dividends.parquet                symbol, ex_date, amount (quote unit), payment_date, kind
     statements.parquet               one row per symbol, period, statement fields
     fx.parquet                       date, currency, gbp_per_unit
 
@@ -256,8 +256,15 @@ class Fetcher:
             df = pd.DataFrame({"ex_date": pd.Series(dtype="datetime64[ns]"), "amount": []})
         else:
             amt = "dividend" if "dividend" in df else "adjDividend"
-            df = df.rename(columns={"date": "ex_date", amt: "amount"})[["ex_date", "amount"]]
+            df = df.rename(columns={"date": "ex_date", amt: "amount", "paymentDate": "payment_date"})
+            # FMP's feed has no cash/scrip flag on most rows; where it gives a type, it is kept as kind.
+            typ = next((c for c in ("dividendType", "type") if c in df), None)
+            df["kind"] = df[typ].astype(str).str.lower() if typ else "cash"
+            if "payment_date" not in df:
+                df["payment_date"] = pd.NaT
+            df = df[["ex_date", "amount", "payment_date", "kind"]]
             df["ex_date"] = pd.to_datetime(df["ex_date"])
+            df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
         if path.exists() and len(df):
             self._merge_write(path, df, ["ex_date"])
         elif not path.exists():

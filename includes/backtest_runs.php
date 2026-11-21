@@ -59,8 +59,9 @@
 		                where table_schema=database() and table_name='strategy_backtest_runs'
 		                  and column_name in ('engine','claimed_at','research_run_id','engine_commit',
 		                                      'cap_weight_return','deflated_sharpe','trial_count',
-		                                      'report_file','result_json','deflated_sharpe_prob')");
-		$known = count($rows) && (int) $rows[0]['n'] === 10;
+		                                      'report_file','result_json','deflated_sharpe_prob',
+		                                      'dividends_received')");
+		$known = count($rows) && (int) $rows[0]['n'] === 11;
 		return $known;
 	}
 
@@ -115,7 +116,7 @@
 		}
 		if (!backtest_runs_ready()) {
 			return $refuse("apply sql/strategy_workflow.sql, sql/backtest_queue.sql, sql/backtest_mac_mini.sql"
-			             . " and sql/backtest_dsr.sql first.");
+			             . ", sql/backtest_dsr.sql and sql/backtest_dividends.sql first.");
 		}
 
 		$user_id = isset($options['user_id']) ? (int) $options['user_id'] : 0;
@@ -425,6 +426,8 @@
 			'trials'             => ['trial_count', 'int'],
 			/* Null when the family has too few distinct trials (metrics.MIN_TRIALS_FOR_DEFLATION). */
 			'dsr'                => ['deflated_sharpe_prob', 'float'],
+			/* Cash dividends credited, pounds (null from an engine that credits none). */
+			'dividends_received' => ['dividends_received', 'float'],
 		];
 	}
 

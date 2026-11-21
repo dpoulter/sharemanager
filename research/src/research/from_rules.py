@@ -41,9 +41,10 @@ A screen that is exactly an engine strategy already validated against the N100
 the trend following rules become the strategy the run 9 replay check passed
 with.
 
-The engine runs a sharemanager rule the N100's way: raw closes with no
-dividends credited, a price on or before the day is enough, and at most 50
-orders a rebalance (validate.RUN9).
+The engine runs a sharemanager rule the N100's way: raw closes, a price on or
+before the day is enough, and at most 50 orders a rebalance (validate.RUN9).
+Unlike the N100 engine, cash dividends are credited (the strategy's default,
+dividends: on), as a real account receives them.
 """
 from __future__ import annotations
 

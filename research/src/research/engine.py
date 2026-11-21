@@ -19,6 +19,14 @@ The same rules as the N100 engine (includes/strategy_functions.php):
   (taken over or failed alike), and the cash is held until the next
   rebalance.
 
+Dividends (simulate's `dividends`, raw price basis only): a cash dividend on
+shares held at the close before the ex-date is credited to cash, gross (as in
+an ISA), on the payment date (the ex-date where FMP has none). The holding is
+the engine's own after that day's fills. The cash waits, earning nothing,
+until the next rebalance sizes it into the targets. A payment after the run's
+end is not credited; scrip and stock dividends are skipped; both are counted.
+On the adjusted basis the dividends are already in the price, so none is passed.
+
 Returns use the dividend-adjusted close; share counts, minimum orders and
 costs use the raw close in pounds. A position is held as "units" of the
 adjusted series, so its value tracks total return, and is converted back to
@@ -95,6 +103,12 @@ class Result:
     # What the engine decided and why, per rebalance: skipped for the drift band, under the minimum
     # order, rounded to nothing, trimmed to fit cash, refused. validate prints these for a month.
     events: list[dict] = field(default_factory=list)
+    # Dividends: one row per entitlement (symbol, ex_date, pay_date, shares, amount, cash, status).
+    dividends: pd.DataFrame = field(default_factory=pd.DataFrame)
+    dividends_received: float = 0.0
+    dividends_after_end: int = 0           # entitled, paid after the run's end: not credited
+    dividends_after_end_cash: float = 0.0
+    dividends_skipped_noncash: int = 0     # scrip / stock dividends on shares held: skipped
 
 
 def rebalance_flags(dates: pd.DatetimeIndex, how: str, as_of=None) -> np.ndarray:
@@ -178,8 +192,12 @@ def ma200_below_twice_calendar(adj: pd.DataFrame, ma: pd.DataFrame, calendar) ->
 
 
 def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
-             rules: Rules, costs: Costs, start, end, exit_flags: pd.DataFrame | None = None) -> Result:
+             rules: Rules, costs: Costs, start, end, exit_flags: pd.DataFrame | None = None,
+             dividends: pd.DataFrame | None = None) -> Result:
     """Run one portfolio.
+
+    `dividends` (Market.dividends: symbol, ex_date, pay_date, amount in pounds a share, kind) is
+    credited to cash as the module docstring says; None runs without dividends, exactly as before.
 
     `scores` maps each rebalance date (Timestamp) to a Series of scores per
     symbol, higher is better, NaN meaning not eligible. Only symbols that
@@ -203,6 +221,22 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
     ex = exit_flags.reindex(index=dates, columns=syms).fillna(False).to_numpy() if exit_flags is not None else None
     rebal = rebalance_flags(dates, rules.rebalance, rules.rebalance_asof)
     rebal[0] = True     # the first build is always due
+
+    # Dividends by the trading day whose close decides the entitlement: the last trading day
+    # before the ex-date. An ex-date on or before the first day needs a holding before the run: none.
+    div_by_day: dict[int, list] = {}
+    if dividends is not None and len(dividends):
+        dv = dividends[dividends["symbol"].isin(col.keys())]
+        ex_i = dates.searchsorted(pd.to_datetime(dv["ex_date"]).to_numpy(), side="left")
+        pay_i = dates.searchsorted(pd.to_datetime(dv["pay_date"]).to_numpy(), side="left")
+        for r, e, p_ in zip(dv.itertuples(index=False), ex_i, pay_i):
+            if 1 <= e <= len(dates) - 1:          # ex-dates inside the run only
+                # A payment date before the ex-date (bad data) is paid on the ex-date.
+                div_by_day.setdefault(int(e) - 1, []).append((col[r.symbol], r, max(int(p_), int(e))))
+    div_pay: dict[int, float] = {}
+    div_rows: list[tuple] = []
+    div_received = div_after_cash = 0.0
+    div_after = div_noncash = 0
 
     cash = float(rules.start_cash)
     units = np.zeros(len(syms))
@@ -228,6 +262,10 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
         return math.floor(q * f + 1e-9) / f
 
     for i, d in enumerate(dates):
+        # 0. Dividends paid today land in cash. They wait for the next rebalance.
+        if i in div_pay:
+            cash += div_pay.pop(i)
+
         # 1. Yesterday's orders fill at today's close: sells first, so a
         #    rebalance's buys can use their cash.
         if pending:
@@ -281,6 +319,27 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
             fills.append((d, syms[j], "SELL", q, p, c["consideration"], 0.0, c["spread"],
                           c["commission"], c["ptm"], "delisted"))
 
+        # 2b. Entitlements: the holding at today's close is what the next day's ex-dividends pay on.
+        for j, r, p_i in div_by_day.get(i, ()):
+            q = shares_held(j, i)
+            if q <= 0:
+                continue
+            amount = float(r.amount) if r.amount == r.amount else float("nan")
+            if str(r.kind) != "cash" or not (amount > 0):
+                div_noncash += 1
+                div_rows.append((r.symbol, r.ex_date, r.pay_date, q, amount, 0.0, f"skipped: {r.kind}"))
+                continue
+            gross = q * amount
+            if p_i > len(dates) - 1:
+                div_after += 1
+                div_after_cash += gross
+                div_rows.append((r.symbol, r.ex_date, r.pay_date, q, amount, gross, "paid after the run's end"))
+                continue
+            div_pay[p_i] = div_pay.get(p_i, 0.0) + gross
+            div_received += gross
+            flows[j] += gross
+            div_rows.append((r.symbol, r.ex_date, r.pay_date, q, amount, gross, "credited"))
+
         total = value_at(i)
         values.append((d, cash, total - cash, total, int((units > 0).sum())))
         if i == len(dates) - 1:
@@ -309,7 +368,10 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
     final_value = np.where(units > 0, units * np.nan_to_num(adj[last]), 0.0)
     pnl = pd.Series(flows + final_value, index=syms)
     pnl = pnl[(flows != 0) | (final_value != 0)]
-    return Result(values=vals, fills=f, pnl=pnl, refusals=refusals, skipped=skipped, events=events)
+    divs = pd.DataFrame(div_rows, columns=["symbol", "ex_date", "pay_date", "shares", "amount", "cash", "status"])
+    return Result(values=vals, fills=f, pnl=pnl, refusals=refusals, skipped=skipped, events=events,
+                  dividends=divs, dividends_received=div_received, dividends_after_end=div_after,
+                  dividends_after_end_cash=div_after_cash, dividends_skipped_noncash=div_noncash)
 
 
 def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, total, rules, costs,

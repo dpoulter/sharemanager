@@ -35,7 +35,9 @@ $bt_pct = function ($v) { return $v === null ? '&ndash;' : e(number_format((floa
 	<?php foreach ($bt_results as $r): ?>
 		<div class="small mt-2 sm-backtest-result" data-run="<?= (int) $r['run_id'] ?>" data-engine="mac_mini">
 			<strong>Mac mini run <?= (int) $r['run_id'] ?></strong>, <?= e((string) $r['from_date']) ?> to <?= e((string) $r['to_date']) ?>:
-			return <?= $bt_pct($r['total_return']) ?>
+			return <?= $bt_pct($r['total_return']) ?><?php if ($r['dividends_received'] !== null): ?>
+			with dividends (<span class="sm-dividends">&pound;<?= e(number_format((float) $r['dividends_received'], 2)) ?> received</span>)<?php
+			else: ?> with no dividends credited<?php endif ?>
 			(<?= $bt_pct($r['annual_return']) ?> a year);
 			equal-weight universe <?= $bt_pct($r['benchmark_return']) ?>,
 			cap-weighted universe <?= $bt_pct($r['cap_weight_return']) ?>;

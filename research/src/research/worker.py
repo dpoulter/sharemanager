@@ -62,7 +62,7 @@ log = logging.getLogger("research.worker")
 DEFAULT_SETTINGS = Path("~/.config/sharemanager-research/worker.env")
 RESULT_FIELDS = ["trading_days", "fills", "start_value", "final_value", "total_return", "annual_return",
                  "bench_equal_weight_return", "bench_cap_weight_return", "max_drawdown", "costs_paid",
-                 "sharpe", "deflated_sharpe", "trials", "dsr", "deflation_meaningful",
+                 "sharpe", "deflated_sharpe", "trials", "dividends_received", "dsr", "deflation_meaningful",
                  "cap_weight_unchecked_caps"]
 
 
@@ -182,6 +182,8 @@ def result_payload(record: dict, rebalances: int) -> dict:
     scored, one row each in Workspace.run's coverage table)."""
     out = {k: _clean(record.get(k)) for k in RESULT_FIELDS}
     out["rebalances"] = int(rebalances)
+    if record.get("dividends") != "credited as cash":
+        out["dividends_received"] = None      # none credited: the page says so rather than showing 0
     if not record.get("deflation_meaningful"):
         # Too few distinct trials: no number that looks deflated is posted.
         out["dsr"] = out["deflated_sharpe"] = None

@@ -28,6 +28,10 @@ class Market:
     last_price: pd.Series = field(default_factory=pd.Series)  # symbol -> last date with a price
     gone: pd.Series = field(default_factory=pd.Series)        # symbol -> True if it stopped trading
     volume: pd.DataFrame | None = None                         # shares traded, for choosing between two lines
+    # One row per dividend: symbol, ex_date, pay_date (the ex-date where FMP has none), amount (pounds a
+    # share, in the share's quote unit turned to pounds as its prices are), kind ('cash', or 'scrip' /
+    # 'stock' where FMP says so). Credited to cash by engine.simulate on the raw price basis only.
+    dividends: pd.DataFrame = field(default_factory=pd.DataFrame)
     _ma200: pd.DataFrame | None = None
 
     @property
@@ -77,6 +81,35 @@ def to_pounds_factor(master: pd.DataFrame, fx: pd.DataFrame, dates: pd.DatetimeI
         else:
             out[cols] = np.nan
     return out
+
+
+DIVIDEND_COLUMNS = ["symbol", "ex_date", "pay_date", "amount", "kind"]
+
+
+def dividends_in_pounds(raw: pd.DataFrame, factor: pd.DataFrame) -> pd.DataFrame:
+    """Stored dividends (amount in the share's quote unit) -> pounds a share, by the same unit rule as
+    the share's prices (factor: date x symbol, from to_pounds_factor), at the ex-date."""
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=DIVIDEND_COLUMNS)
+    d = raw.copy()
+    d = d[d["symbol"].isin(factor.columns)]
+    d["ex_date"] = pd.to_datetime(d["ex_date"])
+    pay = pd.to_datetime(d["payment_date"], errors="coerce") if "payment_date" in d else pd.Series(pd.NaT, index=d.index)
+    d["pay_date"] = pay.fillna(d["ex_date"])
+    kind = d["kind"].astype(str).str.lower() if "kind" in d else pd.Series("cash", index=d.index)
+    d["kind"] = kind.where(~kind.isin(["", "nan", "none"]), "cash")
+    rows = factor.index.searchsorted(d["ex_date"].to_numpy(), side="right") - 1
+    cols = factor.columns.get_indexer(d["symbol"])
+    f = factor.to_numpy()
+    unit = np.where(rows >= 0, f[np.clip(rows, 0, None), cols], f[0, cols]) if len(factor) else np.nan
+    d["amount"] = pd.to_numeric(d["amount"], errors="coerce") * unit
+    d = d.drop_duplicates(["symbol", "ex_date"], keep="last").sort_values(["ex_date", "symbol"])
+    return d[DIVIDEND_COLUMNS].reset_index(drop=True)
+
+
+def load_dividends(data: Path, factor: pd.DataFrame) -> pd.DataFrame:
+    p = Path(data) / "dividends.parquet"
+    return dividends_in_pounds(pd.read_parquet(p) if p.exists() else None, factor)
 
 
 def load_market(data: Path, symbols: list[str] | None = None) -> Market:
@@ -136,7 +169,9 @@ def load_market(data: Path, symbols: list[str] | None = None) -> Market:
     if "volume" in prices:
         volume = prices.pivot(index="date", columns="symbol", values="volume").sort_index() \
             .reindex(index=close.index, columns=close.columns)
-    m = Market(close=close, adj=adj, market_cap=mcap, master=master, statements=statements, fx=fx, volume=volume)
+    dividends = load_dividends(data, factor)
+    m = Market(close=close, adj=adj, market_cap=mcap, master=master, statements=statements, fx=fx, volume=volume,
+               dividends=dividends)
     return finish_market(drop_thin_dates(m))
 
 

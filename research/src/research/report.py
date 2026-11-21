@@ -65,7 +65,10 @@ def write_report(cfg: Config, result: dict, trials: int, period_label: str | Non
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{rec['run_id']}-{rec['strategy']}.html"
     rows = [
-        ("Total return", _pct(rec["total_return"])), ("Return a year", _pct(rec["annual_return"])),
+        ("Total return" + (" (dividends included)" if rec.get("dividends") != "off" else " (no dividends)"),
+         _pct(rec["total_return"])),
+        ("Dividends received", f"£{rec.get('dividends_received', 0.0):,.2f}"
+         + ("" if rec.get("dividends") == "credited as cash" else f" ({rec.get('dividends')})")), ("Return a year", _pct(rec["annual_return"])),
         ("Equal-weight benchmark a year", _pct(rec.get("bench_equal_weight_annual"))),
         ("Cap-weighted benchmark a year", _pct(rec.get("bench_cap_weight_annual"))),
         ("Against equal weight, a year", _pct(rec.get("excess_equal_weight_annual"))),
@@ -100,10 +103,21 @@ def write_report(cfg: Config, result: dict, trials: int, period_label: str | Non
                     "by year. A company with a missing field is skipped, never scored as zero.</p>"
                     f"<table><tr><th>Year</th>{head}</tr>{body}</table>")
     caveats = list(cfg.get("caveats", []))
-    caveats.insert(0, "Price basis: " + ("the strategy is on raw closes with no dividends credited (as the N100 prices); "
-                                        "the benchmarks are total return, so they include dividends the strategy does not."
-                                        if rec.get("price_basis") == "raw" else
-                                        "dividend-adjusted closes (total return), as are the benchmarks."))
+    if rec.get("price_basis") == "raw":
+        basis_words = ("the strategy is on raw closes (as the N100 prices) with cash dividends credited on their "
+                       "payment dates, gross, and invested at the next rebalance; the benchmarks are total return."
+                       if rec.get("dividends") == "credited as cash" else
+                       "the strategy is on raw closes with no dividends credited (as the N100 engine deals); "
+                       "the benchmarks are total return, so they include dividends the strategy does not.")
+    else:
+        basis_words = "dividend-adjusted closes (total return), as are the benchmarks."
+    caveats.insert(0, "Price basis: " + basis_words)
+    if rec.get("dividends_after_end"):
+        caveats.insert(0, f"{rec['dividends_after_end']} dividend(s) went ex inside the run but are paid after its end "
+                          f"(£{rec.get('dividends_after_end_cash', 0.0):,.2f}); they are not credited.")
+    if rec.get("dividends_skipped_noncash"):
+        caveats.insert(0, f"{rec['dividends_skipped_noncash']} scrip or stock dividend(s) on shares held were skipped: "
+                          "only cash dividends are credited. FMP flags few of these, so others may be counted as cash.")
     if rec.get("cap_weight_unchecked_caps"):
         caveats.insert(0, "The cap-weighted benchmark before 2016 rests on unchecked market caps, some known to be wrong "
                           "(Lloyds and Hammerson shown as the largest companies in 2007); read it with that in mind.")
