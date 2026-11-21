@@ -89,6 +89,8 @@ The Mac mini is the one source of prices and of `close_price`, `ma50`, `ma200`, 
 - Batches, then a close; a failure sends `abort` and the N100 keeps its previous version. N100 symbols with no data here are named.
 - `--full` sends 2021 to date (the first publish). `--dry-run` sends nothing. Each publish writes `reports/publish-<id>.md`: rows replaced, symbols missing, and the largest differences against the N100's old values per statistic.
 
+**Trusts and funds.** The research master leaves out investment trusts and funds; the N100 lists them. `research fetch` reads the N100's symbols from data_import, keeps those the research master does not cover in `data/n100_extra/symbols.parquet` (with the date read), and fetches their prices and dividends from 2021 into `data/n100_extra/`, cleaned like research prices. Their changes are recorded in the data version as the `extra_close` panel; `research indicators` works out the seven N100-style indicators for them into a store of their own (scope `n100_extra`), which no ranking, universe or backtest reads (`extra.py`). The publish sends them with the rest, so a symbol is named missing only when FMP has nothing for it.
+
 Add `SM_DATA_API_URL=http://<n100 tailscale name>/data_api.php` to `worker.env`; the token is the worker's.
 
 ## Sharemanager's backtests (the worker)

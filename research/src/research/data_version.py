@@ -39,12 +39,16 @@ CHANGES = "data_changes.parquet"
 SNAPSHOT = "data_snapshot.parquet"
 FILES = ["symbols.parquet", "prices.parquet", "market_cap.parquet", "statements.parquet", "fx.parquet",
          "dividends.parquet",
-         "bad_ticks.parquet", "cap_lse_corrections.parquet", "universe.parquet"]
+         "bad_ticks.parquet", "cap_lse_corrections.parquet", "universe.parquet",
+         # the N100's extra symbols (extra.py): their own panel, read by nothing in research
+         "n100_extra/symbols.parquet", "n100_extra/prices.parquet", "n100_extra/dividends.parquet",
+         "n100_extra/bad_ticks.parquet"]
 EVERYTHING = "*"
 # Which inputs of an indicator (indicators/base.py USES) each panel is.
 PANEL_INPUT = {"close": "prices", "adj": "prices", "market_cap": "caps", "statements": "statements",
                "dividends": "dividends",
-               "fx": "fx", "universe": "universe", "master": "master", EVERYTHING: EVERYTHING}
+               "fx": "fx", "universe": "universe", "master": "master", EVERYTHING: EVERYTHING,
+               "extra_close": "extra_prices"}
 
 
 class UnrecordedChange(RuntimeError):
@@ -143,7 +147,7 @@ def _row_hashes(df: pd.DataFrame, panel: str, month_col: str | None) -> pd.DataF
     return pd.DataFrame(out, columns=["panel", "symbol", "month", "hash"])
 
 
-def snapshot(m, member: pd.DataFrame | None) -> pd.DataFrame:
+def snapshot(m, member: pd.DataFrame | None, extra=None) -> pd.DataFrame:
     """The data as the engine and indicators see it, as hashes per panel, symbol and month (day, lately)."""
     cut = daily_from(m.dates)
     parts = [panel_hashes(m.close, "close", cut), panel_hashes(m.adj, "adj", cut),
@@ -164,6 +168,9 @@ def snapshot(m, member: pd.DataFrame | None) -> pd.DataFrame:
     if "sector" in m.master:
         master = m.master[["sector"]].rename_axis("symbol").reset_index()
         parts.append(_row_hashes(master, "master", None))
+    # The N100's extra symbols (extra.py): their raw closes, as a panel of their own.
+    if extra is not None and not extra.close.empty:
+        parts.append(panel_hashes(extra.close, "extra_close", cut))
     snap = pd.concat([p for p in parts if len(p)], ignore_index=True)
     snap["hash"] = snap["hash"].astype(np.uint64)
     return snap
@@ -219,7 +226,8 @@ def record(cfg, reason: str, market=None, member: pd.DataFrame | None = None, fu
     if member is None and (data / "universe.parquet").exists():
         from .universe import membership
         member, _ = membership(pd.read_parquet(data / "universe.parquet"), market.dates)
-    new = snapshot(market, member)
+    from .extra import load as load_extra
+    new = snapshot(market, member, load_extra(cfg))
     snap_path = data / SNAPSHOT
     st = state(data)
     version = int(st["version"]) if st else 0

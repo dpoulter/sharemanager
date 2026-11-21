@@ -204,6 +204,14 @@ def run(cfg, rebuild: list[str] | None = None, names: list[str] | None = None, m
                 log.info("indicator %s: %s", k, json.dumps({x: y for x, y in r.items() if x != "indicator"},
                                                              default=str))
                 reports.append(r)
+        # The N100's extra symbols (extra.py): the N100-style indicators, in their own store, for
+        # publishing only. Never in the research store, so no ranking or backtest reads them.
+        from . import extra
+        if not names or set(names) & set(extra.PUBLISHED):
+            for r in extra.indicators(cfg, version_now):
+                log.info("indicator %s: %s", r["indicator"], json.dumps({x: y for x, y in r.items() if x != "indicator"},
+                                                                         default=str))
+                reports.append(r)
         _log(cfg, reports)
         return reports
     finally:

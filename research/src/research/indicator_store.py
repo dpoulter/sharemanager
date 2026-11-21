@@ -77,6 +77,14 @@ class IndicatorStore:
     def for_config(cls, cfg) -> "IndicatorStore":
         return cls(cfg.data_dir / "indicators")
 
+    @classmethod
+    def for_scope(cls, cfg, scope: str) -> "IndicatorStore":
+        """A store of its own under the research one (`n100_extra`: the N100's trusts and funds, for
+        publishing only). keys() of the research store never lists it: it globs its own folder only."""
+        if not scope or "/" in scope or scope.startswith("."):
+            raise ValueError(f"not a store scope: {scope!r}")
+        return cls(cfg.data_dir / "indicators" / scope)
+
     # ---- reading
     def path(self, key: str) -> Path:
         if "/" in key or key.startswith("."):

@@ -69,6 +69,20 @@ def _fetch_marker(cfg, **fields) -> None:
     p.write_text(_json.dumps({"time": _dt.datetime.now().isoformat(timespec="seconds"), **fields}))
 
 
+def _fetch_extras(cfg, full: bool) -> None:
+    """The N100's symbols the research master leaves out (trusts, funds): read the list from
+    data_import, then fetch their prices (extra.py). With no data_import settings the held list is used."""
+    from . import extra
+    from .publish import DataApi, PublishRefused, read_settings
+    try:
+        s = read_settings()
+        held = DataApi(s["SM_DATA_API_URL"], s["SM_BACKTEST_API_TOKEN"]).must({"action": "symbols"})
+        extra.write_list(cfg, [str(x) for x in held.get("symbols") or []])
+    except (PublishRefused, OSError, ValueError) as e:
+        log.warning("N100 symbol list not read (%s); using the list held", e)
+    log.info("N100 extra symbols: %s", extra.fetch(cfg, full=full))
+
+
 def cmd_fetch(cfg, a):
     from .checks import write_data_report
     _fetch_marker(cfg, ok=False, started=time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -89,6 +103,8 @@ def cmd_fetch(cfg, a):
     else:
         summary = Fetcher(cfg).run(full=a.full, merge_only=a.merge_only)
     log.info("fetch done: %s", summary)
+    if not (a.profile_country or a.trust_caps or a.merge_only):
+        _fetch_extras(cfg, full=bool(a.full))
     from .data_version import record
     m = load_market(cfg.data_dir)
     rec = record(cfg, "fetch --full" if a.full else "fetch --merge-only" if a.merge_only else "fetch",

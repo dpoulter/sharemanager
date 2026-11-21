@@ -33,8 +33,10 @@ With --full, or before the first publish, 2021-01-01 for every symbol.
 
 Whole or nothing: batches, then a closing call with the data version. A
 failure part way sends `abort`, and the N100 stays on its previous version
-(the close is one transaction there). An N100 symbol with no Mac mini data is
-named in the close and the log, never skipped silently.
+(the close is one transaction there). Every N100 symbol is covered: the trusts and funds the research master leaves
+out come from their own data and store (extra.py), so a symbol is named as
+missing - in the close and the log, never skipped silently - only when FMP has
+no data for it.
 
 It talks only to data_import (public/data_api.php on the N100). Settings are in
 the worker's file (worker.env, mode 600; RESEARCH_WORKER_SETTINGS overrides):
@@ -73,6 +75,7 @@ FULL_FROM = pd.Timestamp("2021-01-01")
 BATCH_ROWS = 20000
 DEFAULT_SETTINGS = Path("~/.config/sharemanager-research/worker.env")
 PRICE_PANELS = {"close", "master", "fx", dv.EVERYTHING}   # what the raw close and the @raw indicators read
+EXTRA_PANELS = {"extra_close", "fx", dv.EVERYTHING}       # the same, for the N100's extra symbols (extra.py)
 
 
 class PublishRefused(RuntimeError):
@@ -138,7 +141,7 @@ def fetch_marker(cfg) -> Path:
     return cfg.p("logs") / "fetch_last.json"
 
 
-def check_ready(cfg, market, store) -> int:
+def check_ready(cfg, market, store, extra_market=None, extra_store=None) -> int:
     """The data version to publish, or PublishRefused naming what is not ready."""
     from .indicator_job import job_running
     if job_running(cfg):
@@ -162,24 +165,31 @@ def check_ready(cfg, market, store) -> int:
             except ValueError:
                 continue
             last_jobs[r.get("indicator")] = r
+    _check_built(store, market, last_jobs, version, "")
+    if extra_market is not None:
+        _check_built(extra_store, extra_market, last_jobs, version, "n100_extra/")
+    return version
+
+
+def _check_built(store, market, last_jobs: dict, version: int, prefix: str) -> None:
     last_day = market.dates[-1]
     for name in PUBLISHED:
         k = f"{name}@{BASIS}"
-        job = last_jobs.get(k)
+        job = last_jobs.get(prefix + k)
+        k = prefix + k
         if job is None:
             raise PublishRefused(f"{k}: the indicator job has no record of it")
         if not job.get("ok"):
             raise PublishRefused(f"{k}: the last indicator job failed ({job.get('reason')})")
-        if not store.has(k):
+        if not store.has(k.removeprefix(prefix)):
             raise PublishRefused(f"{k} is not in the store")
-        meta = store.meta(k)
+        meta = store.meta(k.removeprefix(prefix))
         if int(meta["data_version"]) != version:
             raise PublishRefused(f"{k} was built from data version {meta['data_version']}, not the current "
                                  f"{version}; run `research indicators`")
         if len(meta["dates"]) == 0 or meta["dates"][-1] < last_day:
             raise PublishRefused(f"{k} is built to {meta['dates'][-1].date() if len(meta['dates']) else 'nothing'}, "
                                  f"the prices to {last_day.date()}")
-    return version
 
 
 # ---- what to send
@@ -201,14 +211,15 @@ def symbol_map(market, n100_symbols: list[str]) -> tuple[dict[str, str], list[st
     return by_n100, missing
 
 
-def replace_from(cfg, mapping: dict[str, str], held_version, held_latest, full: bool) -> dict[str, pd.Timestamp]:
+def replace_from(cfg, mapping: dict[str, str], held_version, held_latest, full: bool,
+                 panels=PRICE_PANELS) -> dict[str, pd.Timestamp]:
     """Each N100 symbol -> the first date whose rows are sent (and replaced on the N100)."""
     if full or held_version is None or held_latest is None:
         return {n: FULL_FROM for n in mapping}
     start = pd.Timestamp(held_latest) + pd.Timedelta(days=1)
     out = {n: start for n in mapping}
     ch = dv.changes_since(cfg.data_dir, int(held_version))
-    ch = ch[ch["panel"].isin(PRICE_PANELS)]
+    ch = ch[ch["panel"].isin(panels)]
     if not len(ch):
         return out
     if (ch["symbol"] == dv.EVERYTHING).any() or ch["panel"].isin({dv.EVERYTHING, "fx"}).any():
@@ -274,13 +285,17 @@ def batches(prices: list, stats: list, size: int = BATCH_ROWS):
 # ---- the run
 
 def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | None = None,
-            market=None, batch_rows: int = BATCH_ROWS) -> dict:
+            market=None, extra_market=None, batch_rows: int = BATCH_ROWS) -> dict:
+    from . import extra
     from .indicator_store import IndicatorStore
     from .store import load_market
     store = IndicatorStore.for_config(cfg)
     if market is None:
         market = load_market(cfg.data_dir)
-    version = check_ready(cfg, market, store)
+    if extra_market is None:
+        extra_market = extra.load(cfg)
+    xstore = extra.store(cfg)
+    version = check_ready(cfg, market, store, extra_market, xstore)
     if api is None:
         s = read_settings()
         api = DataApi(s["SM_DATA_API_URL"], s["SM_BACKTEST_API_TOKEN"])
@@ -289,6 +304,12 @@ def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | No
     mapping, missing = symbol_map(market, n100)
     starts = replace_from(cfg, mapping, held.get("data_version"), held.get("latest_date"), full)
     prices, stats = rows_to_send(market, store, mapping, starts)
+    # The trusts and funds the research data leaves out, from their own data and store (extra.py).
+    if extra_market is not None and missing:
+        xmap, missing = symbol_map(extra_market, missing)
+        xstarts = replace_from(cfg, xmap, held.get("data_version"), held.get("latest_date"), full, EXTRA_PANELS)
+        xp, xs = rows_to_send(extra_market, xstore, xmap, xstarts)
+        prices, stats, starts = prices + xp, stats + xs, {**starts, **xstarts}
     sent = {r[0] for r in prices} | {r[0] for r in stats}
     # a symbol with nothing new and no change is left as it is on the N100
     held_latest = pd.Timestamp(held["latest_date"]) if held.get("latest_date") else None

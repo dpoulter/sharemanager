@@ -192,9 +192,9 @@ class Fetcher:
             return
         new.sort_values(keys).reset_index(drop=True).to_parquet(path)
 
-    def prices(self, sym: str, full: bool, end: str) -> None:
+    def prices(self, sym: str, full: bool, end: str, start: str | None = None) -> None:
         path = self._path("prices", sym)
-        start = self.cfg["fmp"]["price_start"]
+        start = start or self.cfg["fmp"]["price_start"]
         if path.exists():
             if full:
                 return
