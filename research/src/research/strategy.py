@@ -2,7 +2,10 @@
 
     name: momentum_12_1          # unique; a changed file deserves a new name
     family: momentum             # variants of one idea share a family (trial count)
-    signals: {momentum_12_1: 1}  # one signal, or weights for a blend of percentile ranks
+    signals: {momentum_12_1: 1}  # one stored indicator, or weights for a blend of percentile ranks
+    screen: null                 # or a screen of stored indicators (from_rules.py writes these):
+                                 # {criteria: [[name, op, constant, other_name] | [name, top_n, n, asc|desc]],
+                                 #  rank_by: name, direction: desc|asc, require: name|null}
     holdings: quintile           # a number, or quintile / decile of the universe
     rebalance: monthly           # monthly | weekly | quarterly
     hold_rank: null              # keep a holding while it ranks inside this
@@ -15,6 +18,17 @@
     max_turnover: null
     require_traded_today: true   # false: a price on or before the date is enough (the N100)
     max_orders: null             # the N100 refuses a rebalance of more than 50
+
+The engine works out no indicator. Every value it ranks, screens or exits on
+is read from the indicator store (indicator_store.py), by name on the run's
+price basis (`<name>@raw`, `<name>@adjusted`, or `<name>` for one that reads
+no prices). It refuses to start, naming the indicator, if one it needs is not
+in the store, was built by an older definition (`versions`, handed in by the
+caller: indicator_job.workspace), or was built from an older data version
+(data_version.py). Each run records the definition and data version of every
+indicator it read, and the data version. Portfolio rules stay here and in
+engine.py: blends of stored indicators, screens over them, quintiles, hold
+rank, drift band, the two-closes exit.
 """
 from __future__ import annotations
 
@@ -28,12 +42,13 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from . import engine, metrics, periods
+import operator as op
+
+from . import data_version, engine, metrics, periods
 from .config import Config
 from .costs import CHECKED_ON, from_dict
-from .pit import Fundamentals
+from .indicator_store import IndicatorStore, StoreError
 from .runlog import RunLog, git_commit
-from .signals import REGISTRY, Context, blend
 from .store import Market, load_market
 from .universe import fixed_universe, membership
 
@@ -69,14 +84,66 @@ class Spec:
                             rebalance_asof=tuple(r["rebalance_asof"]) if r.get("rebalance_asof") else None)
 
 
+class IndicatorRefused(RuntimeError):
+    """The run needs an indicator the store does not hold, or holds out of date. `indicator` names it."""
+
+    def __init__(self, indicator: str, why: str):
+        super().__init__(f"indicator {indicator}: {why}")
+        self.indicator = indicator
+
+
 def load_spec(path: str | Path) -> Spec:
     path = Path(path)
     text = path.read_bytes()
     raw = yaml.safe_load(text)
-    for s in raw.get("signals", {}):
-        if s not in REGISTRY:
-            raise ValueError(f"{path.name}: unknown signal {s!r}; known: {', '.join(sorted(REGISTRY))}")
+    if not raw.get("signals") and not raw.get("screen"):
+        raise ValueError(f"{path.name}: no signals and no screen")
     return Spec(raw=raw, path=path, hash=hashlib.sha256(text).hexdigest()[:16])
+
+
+# ---- portfolio rules over stored indicators
+COMPARE = {">": op.gt, ">=": op.ge, "<": op.lt, "<=": op.le, "=": op.eq, "!=": op.ne}
+
+
+def blend_ranks(values: dict, weights: dict, universe: list[str]) -> pd.Series:
+    """Weighted average of the percentile ranks of several indicators, within the universe."""
+    total = weights_sum = None
+    for name, w in weights.items():
+        r = values[name].reindex(universe).rank(pct=True) * float(w)
+        present = r.notna().astype(float) * float(w)
+        total = r.fillna(0) if total is None else total + r.fillna(0)
+        weights_sum = present if weights_sum is None else weights_sum + present
+    return total / weights_sum.replace(0, np.nan)
+
+
+def screen_names(screen: dict) -> list[str]:
+    names = [screen["rank_by"]] + ([screen["require"]] if screen.get("require") else [])
+    for c in screen.get("criteria") or []:
+        names.append(c[0])
+        if c[1] != "top_n" and c[3] is not None:
+            names.append(c[3])
+    return list(dict.fromkeys(names))
+
+
+def screen_scores(screen: dict, values: dict, members) -> pd.Series:
+    """A screen as build_screen() applies it: comparisons intersected, then each top_n in order keeping
+    the best N of what is left, scored by rank_by (negated for an ascending order). Only members."""
+    keep = pd.Index(members)
+    for name, oper, const, other in [c for c in screen.get("criteria") or [] if c[1] != "top_n"]:
+        left = values[name].reindex(keep)
+        right = const if other is None else values[other].reindex(keep)
+        ok = COMPARE[oper](left, right) & left.notna()
+        if other is not None:
+            ok &= right.notna()
+        keep = keep[ok.fillna(False).astype(bool).to_numpy()]
+    if screen.get("require"):
+        keep = keep[values[screen["require"]].reindex(keep).notna().to_numpy()]
+    for name, _, n, d in [c for c in screen.get("criteria") or [] if c[1] == "top_n"]:
+        v = values[name].reindex(keep).dropna()
+        v = v.sort_index().sort_values(ascending=(d == "asc"), kind="mergesort")
+        keep = v.index[: int(n)]
+    score = values[screen["rank_by"]].reindex(keep)
+    return score if screen.get("direction", "desc") == "desc" else -score
 
 
 def spec_from_dict(raw: dict) -> Spec:
@@ -87,11 +154,13 @@ def spec_from_dict(raw: dict) -> Spec:
 class Workspace:
     """The market, accounts and universe, loaded once for any number of runs."""
 
-    def __init__(self, cfg: Config, market: Market | None = None, universe: pd.DataFrame | None = None):
+    def __init__(self, cfg: Config, market: Market | None = None, universe: pd.DataFrame | None = None, *,
+                 versions: dict[str, str]):
+        """`versions`: every indicator key -> its definition's version now (indicator_job.versions)."""
         self.cfg = cfg
         self.m = market or load_market(cfg.data_dir)
-        pit = cfg["point_in_time"]
-        self.f = Fundamentals(self.m.statements, pit["annual_lag_months"], pit["half_year_lag_months"])
+        self.store = IndicatorStore.for_config(cfg)
+        self.versions = dict(versions)
         if universe is None:
             up = cfg.data_dir / "universe.parquet"
             if not up.exists():
@@ -115,6 +184,8 @@ class Workspace:
         """
         if basis == "adjusted":
             return self.m
+        if basis != "raw":
+            raise ValueError(f"price basis is raw or adjusted, not {basis!r}")
         if getattr(self, "_raw_market", None) is None:
             from dataclasses import replace
             self._raw_market = replace(self.m, adj=self.m.close, _ma200=None)
@@ -157,7 +228,6 @@ class Workspace:
         large = large.reindex(columns=self.m.close.columns, fill_value=False)
         basis = self.price_basis(spec)
         mk = self.market_for(basis)
-        ctx = Context(mk, self.f, member)
         rules = spec.rules()
         if spec.raw.get("targets_file"):
             from .universe import to_fmp
@@ -169,35 +239,74 @@ class Workspace:
                 if k >= 0:
                     fixed.setdefault(self.m.dates[k], []).extend(g["symbol"].map(to_fmp).tolist())
             rules.fixed_targets = fixed
+        # decision day -> the N100's as-of date, where they differ (a holiday or a weekend; the decision is
+        # taken on the last close before it). An indicator kept for every calendar day is read on the as-of date.
+        asof: dict = {}
         if rules.rebalance_asof:
             for a in pd.DatetimeIndex(pd.to_datetime(list(rules.rebalance_asof))):
                 k = int(self.m.dates.searchsorted(a, side="right")) - 1
                 if k >= 0:
-                    ctx.asof[self.m.dates[k]] = a
+                    asof[self.m.dates[k]] = a
         dates = self.m.dates[(self.m.dates >= start) & (self.m.dates <= end)]
         flags = engine.rebalance_flags(dates, rules.rebalance, rules.rebalance_asof)
         flags[0] = True
-        parts = [(REGISTRY[s], float(w)) for s, w in spec.raw["signals"].items()]
+        decision_days = dates[flags]
+
+        # Every indicator the run needs, checked before anything is worked out.
+        weights = {str(n): float(w) for n, w in (spec.raw.get("signals") or {}).items()}
+        screen = spec.raw.get("screen")
+        names = list(weights) + (screen_names(screen) if screen else [])
+        names = list(dict.fromkeys(names))
+        if not names:
+            raise ValueError(f"{spec.name}: no signals and no screen")
+        exit_names = ["close_price", "ma200"] if rules.exit_ma200 else []
+        data_now = self._data_version()
+        keys = {n: self._key(n, basis, data_now) for n in dict.fromkeys(names + exit_names)}
+        used = {}
+        values: dict = {}                       # name -> {decision day: Series}
+        for n in names:
+            k = keys[n]
+            cal = self.store.meta(k)["calendar"]
+            read_on = {d: (asof.get(d, d) if cal == "daily" else d) for d in decision_days}
+            got = self._read(k, list(read_on.values()))
+            used[k] = {"version": got.version, "data_version": got.data_version}
+            values[n] = {d: got.frame.loc[pd.Timestamp(read_on[d])] for d in decision_days}
+
         scores, cover = {}, []
-        for d in dates[flags]:
+        for d in decision_days:
             row = member.loc[d]
             uni_syms = list(row.index[row.to_numpy()])
             line = {"date": d, "members": len(uni_syms)}
-            if len(parts) == 1:
-                scores[d] = parts[0][0](ctx, d).reindex(uni_syms)
-                line[parts[0][0].signal_name] = int(scores[d].notna().sum())
+            today = {n: values[n][d] for n in names}
+            for n in names:
+                line[n] = int(today[n].reindex(uni_syms).notna().sum())
+            if screen:
+                scores[d] = screen_scores(screen, today, uni_syms).reindex(uni_syms)
+            elif len(weights) == 1:
+                scores[d] = today[next(iter(weights))].reindex(uni_syms)
             else:
-                for fn, _ in parts:
-                    line[fn.signal_name] = int(fn(ctx, d).reindex(uni_syms).notna().sum())
-                scores[d] = blend(ctx, d, parts, uni_syms)
+                scores[d] = blend_ranks(today, weights, uni_syms)
             line["scored"] = int(scores[d].notna().sum())
             cover.append(line)
         coverage = pd.DataFrame(cover).set_index("date")
-        if rules.exit_ma200 and spec.raw.get("exit_calendar"):
-            cal = pd.read_csv(Path(spec.raw["exit_calendar"]).expanduser())["date"]
-            exit_flags = engine.ma200_below_twice_calendar(mk.adj, mk.ma200, cal)
-        else:
-            exit_flags = engine.ma200_below_twice(mk.adj, mk.ma200) if rules.exit_ma200 else None
+
+        exit_flags = None
+        if rules.exit_ma200:
+            # Two statistics rows in a row with the close below its 200-day average: every trading day from
+            # the one before the start, plus the N100's calendar rows (some Sundays) when exit_calendar is set.
+            i0 = int(self.m.dates.searchsorted(start, side="left"))
+            first = self.m.dates[max(i0 - 1, 0)]
+            ck, mk_ = keys["close_price"], keys["ma200"]
+            built_from = max(self.store.meta(ck)["dates"][0], self.store.meta(mk_)["dates"][0])
+            first = max(first, built_from)
+            rows = self.m.dates[(self.m.dates >= first) & (self.m.dates <= end)]
+            if spec.raw.get("exit_calendar"):
+                cal = pd.to_datetime(pd.read_csv(Path(spec.raw["exit_calendar"]).expanduser())["date"])
+                rows = rows.union(pd.DatetimeIndex(cal[(cal >= first) & (cal <= end)]))
+            cv, mv = self._read(ck, rows), self._read(mk_, rows)
+            for g in (cv, mv):
+                used[g.key] = {"version": g.version, "data_version": g.data_version}
+            exit_flags = engine.exit_below_twice(cv.frame, mv.frame, self.m.dates)
         costs = from_dict(spec.raw.get("costs"))
         res = engine.simulate(mk, member, large, scores, rules, costs, start, end, exit_flags)
         free = engine.simulate(mk, member, large, scores, rules, costs.free(), start, end, exit_flags)
@@ -231,16 +340,48 @@ class Workspace:
             "parameters": {k: v for k, v in spec.raw.items() if k not in ("name", "family", "signals")},
             "universe": spec.raw.get("universe", "ftse350"), "period": period,
             "final": bool(final), "touches_holdout": bool(touches), "costs_checked_on": CHECKED_ON,
-            "price_basis": basis,
+            "price_basis": basis, "data_version": data_now, "indicators": used,
             **out,
         }
         self.log.append(record)
         if final and kind == "research":
             self.log.freeze(spec.name, spec.hash, run_id)
         result = {"record": record, "result": res, "zero_cost": free, "bench": bench, "coverage": coverage,
-                  "scores": scores, "member": member, "market": mk,
+                  "scores": scores, "asof": asof, "member": member, "market": mk,
                   "yearly": metrics.yearly(res.values["total"], bench)}
         if write_report:
             from .report import write_report as wr
             result["report"] = wr(cfg, result, self.log.trials(spec.family), periods.LABELS.get(period))
         return result
+
+    # ---- the store
+    def _data_version(self) -> int:
+        try:
+            return data_version.current(self.cfg.data_dir)
+        except data_version.UnrecordedChange as e:
+            raise IndicatorRefused("(all)", str(e)) from None
+
+    def _key(self, name: str, basis: str, data_now: int) -> str:
+        """The stored indicator for a name on the price basis, checked up to date."""
+        for k in (f"{name}@{basis}", name):
+            if self.store.has(k):
+                break
+        else:
+            raise IndicatorRefused(f"{name}@{basis}", "not in the store; run `research indicators`")
+        meta = self.store.meta(k)
+        want = self.versions.get(k)
+        if want is None:
+            raise IndicatorRefused(k, "this code has no definition of it")
+        if meta["version"] != want:
+            raise IndicatorRefused(k, f"out of date: stored at definition version {meta['version']}, the "
+                                      f"definition is now {want}; run `research indicators`")
+        if int(meta["data_version"]) != int(data_now):
+            raise IndicatorRefused(k, f"out of date: built from data version {meta['data_version']}, the data "
+                                      f"is at version {data_now}; run `research indicators`")
+        return k
+
+    def _read(self, k: str, dates):
+        try:
+            return self.store.read(k, dates)
+        except StoreError as e:
+            raise IndicatorRefused(k, str(e)) from None

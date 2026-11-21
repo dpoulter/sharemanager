@@ -9,11 +9,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from conftest import make_market
+from conftest import built_workspace, make_market
 from research import config as config_mod
 from research import worker as worker_mod
 from research.from_rules import Untranslatable, translate
-from research.signals import REGISTRY, Context
+from research.indicators import REGISTRY, Context
 from research.strategy import Workspace, spec_from_dict
 from research.universe import build_universe, membership
 from research.validate import RUN9
@@ -38,6 +38,19 @@ TREND_CLAIM = {
 }
 
 
+class Keys:
+    """The store as the translator sees it (has() only): every indicator the definitions build."""
+
+    def __init__(self, keys):
+        self.keys = set(keys)
+
+    def has(self, k):
+        return k in self.keys
+
+
+STORE = Keys({k for d in REGISTRY.values() for k in d.keys()})
+
+
 def claim(**changes):
     c = json.loads(json.dumps(TREND_CLAIM))
     for k, v in changes.items():
@@ -50,7 +63,7 @@ def claim(**changes):
 
 # ---------------------------------------------------------------- test 6: the translator
 def test_trend_following_snapshot_becomes_the_run9_strategy():
-    s = translate(claim())
+    s = translate(claim(), STORE)
     from research.costs import from_dict
     # The engine's rules and costs are the ones run 9 passed with: same signal, holdings, rebalance,
     # hold rank, exit, drift band, turnover cap, N100 mechanics and Trading 212 costs.
@@ -65,7 +78,7 @@ def test_unknown_criterion_is_refused_and_named():
     c = claim(indicators={"212": {"name": "close_price"}, "99": {"name": "pe_ratio", "rank_order": "value ASC"}})
     c["rules_snapshot"]["criteria"].append(["99", "<", "15", None])
     with pytest.raises(Untranslatable) as e:
-        translate(c)
+        translate(c, STORE)
     assert "pe_ratio" in str(e.value) and e.value.rule.startswith("criteria[1]")
 
 
@@ -78,7 +91,7 @@ def test_unknown_criterion_is_refused_and_named():
 ])
 def test_every_rule_it_cannot_run_is_refused_by_name(rule, value, named):
     with pytest.raises(Untranslatable) as e:
-        translate(claim(**{rule: value}))
+        translate(claim(**{rule: value}), STORE)
     assert e.value.rule == named
 
 
@@ -86,11 +99,11 @@ def test_an_operator_it_does_not_know_and_an_unknown_rule_field_are_refused():
     c = claim()
     c["rules_snapshot"]["criteria"][0][1] = "top_percent"
     with pytest.raises(Untranslatable, match="top_percent"):
-        translate(c)
+        translate(c, STORE)
     c = claim()
     c["rules_snapshot"]["rules"]["trailing_stop"] = 0.1
     with pytest.raises(Untranslatable) as e:
-        translate(c)
+        translate(c, STORE)
     assert e.value.rule == "trailing_stop"
 
 
@@ -98,8 +111,8 @@ def test_research_signal_can_rank_and_paper_costs_are_carried():
     c = claim(rank_by="research:momentum_12_1", cost_model="paper",
               cost_settings={"commission": 5.95, "stamp_duty": 0.005, "spread_bp": 25.0, "minimum_order": 250.0,
                              "whole_shares": True})
-    s = translate(c)
-    assert s["signals"] != {"trend_following": 1} and list(s["signals"])[0] in REGISTRY
+    s = translate(c, STORE)
+    assert s["signals"] == {} and s["screen"]["rank_by"] == "momentum_12_1"
     assert s["costs"]["commission"] == 5.95 and s["costs"]["spread_mid_bp"] == 25.0
 
 
@@ -110,23 +123,29 @@ def _trend_market():
     return make_market(prices, start="2024-01-01")
 
 
-def test_a_generic_screen_scores_as_the_engine_signal_it_matches():
-    """The generic screen (close above ma200, rank 6mnth) gives the trend following signal's scores."""
+def test_a_generic_screen_scores_as_the_engine_signal_it_matches(cfg):
+    """The generic screen (close above ma200, rank 6mnth), evaluated by the engine over stored values,
+    gives the stored trend following indicator's scores."""
     m = _trend_market()
     u = build_universe(m, size=10, large=5, start="2024-01-01")
-    member, _ = membership(u, m.dates)
-    ctx = Context(m, None, member.reindex(columns=m.close.columns, fill_value=False))
-    from research.from_rules import _screen_signal
-    generic = _screen_signal((("close_price", ">", None, "ma200"),), "6mnth", "desc", "t")
+    cfg.raw["universe"]["start"] = "2024-01-01"
+    ws = built_workspace(cfg, m, u, names=["trend_following", "close_price", "ma200", "6mnth"])
+    from research.strategy import screen_scores
     d = m.dates[-1]
-    want = REGISTRY["trend_following"](ctx, d) * 100.0
-    got = generic(ctx, d)
+    vals = {n: ws.store.read(f"{n}@raw", [d]).frame.iloc[0] for n in ("close_price", "ma200", "6mnth")}
+    screen = {"criteria": [["close_price", ">", None, "ma200"]], "rank_by": "6mnth", "direction": "desc",
+              "require": None}
+    got = screen_scores(screen, vals, list(m.close.columns))
+    want = ws.store.read("trend_following@raw", [d]).frame.iloc[0] * 100.0
     pd.testing.assert_series_equal(got.dropna().sort_index(), want.dropna().sort_index(), check_names=False)
+    # And the translator hands the engine that screen when the canonical indicator is not stored.
+    s = translate(claim(), Keys(STORE.keys - {"trend_following@raw"}))
+    assert s["signals"] == {} and s["screen"]["criteria"] == [["close_price", ">", None, "ma200"]]
 
 
 def test_value_figures_ranked_through_a_research_signal_use_the_publication_lag():
     import inspect
-    from research.signals import osap
+    from research.indicators import osap
     src = inspect.getsource(osap)
     assert "ctx.f." in src     # accounts reach a signal only through pit.Fundamentals
 
@@ -150,20 +169,21 @@ class FakeApi:
         return {"ok": True}
 
 
-def _ws_factory():
-    def make(cfg):
-        rng = np.random.default_rng(1)
-        n = 560
-        prices = {f"S{i}.L": list(100 * np.cumprod(1 + rng.normal(0.0004, 0.01, n))) for i in range(20)}
-        m = make_market(prices, start="2024-01-01")
-        cfg.raw["universe"]["start"] = "2024-01-01"
-        return Workspace(cfg, market=m, universe=build_universe(m, size=20, large=5, start="2024-01-01"))
-    return make
+def _ws_factory(cfg):
+    """Built before the worker holds a run: the indicator job refuses to run while it does."""
+    rng = np.random.default_rng(1)
+    n = 560
+    prices = {f"S{i}.L": list(100 * np.cumprod(1 + rng.normal(0.0004, 0.01, n))) for i in range(20)}
+    m = make_market(prices, start="2024-01-01")
+    cfg.raw["universe"]["start"] = "2024-01-01"
+    ws = built_workspace(cfg, m, build_universe(m, size=20, large=5, start="2024-01-01"),
+                         names=["trend_following", "close_price", "ma200", "6mnth"])
+    return lambda cfg: ws
 
 
 def test_worker_runs_a_claim_logs_it_and_posts_the_result(cfg):
     api = FakeApi([claim(holdings=5, hold_rank=8)])
-    w = worker_mod.Worker(cfg, api, workspace_factory=_ws_factory(), gate=lambda c: None)
+    w = worker_mod.Worker(cfg, api, workspace_factory=_ws_factory(cfg), gate=lambda c: None)
     assert w.run_once() is True
     kind, run_id, fp, result, report = api.calls[-1]
     assert kind == "result" and run_id == 41 and fp == TREND_CLAIM["fingerprint"]
@@ -183,7 +203,7 @@ def test_a_failure_is_posted_and_does_not_stop_the_next(cfg):
     bad = claim(run_id=1, rebalance="fortnightly")
     good = claim(run_id=2, holdings=5, hold_rank=8)
     api = FakeApi([bad, good])
-    w = worker_mod.Worker(cfg, api, workspace_factory=_ws_factory(), gate=lambda c: None)
+    w = worker_mod.Worker(cfg, api, workspace_factory=_ws_factory(cfg), gate=lambda c: None)
     w.run_once()
     w.run_once()
     kinds = [(c[0], c[1]) for c in api.calls if c[0] != "claim"]
@@ -193,7 +213,7 @@ def test_a_failure_is_posted_and_does_not_stop_the_next(cfg):
 
 def test_the_worker_never_runs_over_the_holdout(cfg):
     api = FakeApi([claim(to="2025-06-01")])
-    w = worker_mod.Worker(cfg, api, workspace_factory=_ws_factory(), gate=lambda c: None)
+    w = worker_mod.Worker(cfg, api, workspace_factory=_ws_factory(cfg), gate=lambda c: None)
     w.run_once()
     f = [c for c in api.calls if c[0] == "failure"]
     assert f and "holdout" in f[0][3]
@@ -202,6 +222,7 @@ def test_the_worker_never_runs_over_the_holdout(cfg):
 
 # ---------------------------------------------------------------- test 7: a restart during a run
 def test_a_restart_during_a_run_posts_it_as_failed_and_does_not_run_it_again(cfg):
+    factory = _ws_factory(cfg)
     api = FakeApi([claim()])
 
     class Crash(Exception):
@@ -216,7 +237,7 @@ def test_a_restart_during_a_run_posts_it_as_failed_and_does_not_run_it_again(cfg
     assert w.state_path.exists() and not [c for c in api.calls if c[0] in ("result", "failure")]
 
     api2 = FakeApi([])
-    w2 = worker_mod.Worker(cfg, api2, workspace_factory=_ws_factory(), gate=lambda c: None)
+    w2 = worker_mod.Worker(cfg, api2, workspace_factory=factory, gate=lambda c: None)
     w2.loop(once=True)
     f = [c for c in api2.calls if c[0] == "failure"]
     assert f and f[0][1] == 41 and "interrupted" in f[0][3]
@@ -239,7 +260,7 @@ def test_a_stop_signal_mid_run_posts_the_run_as_failed(cfg):
 
 def test_refuses_to_start_unless_the_run9_replay_check_passed_at_this_commit(cfg, tmp_path):
     api = FakeApi([claim()])
-    w = worker_mod.Worker(cfg, api, workspace_factory=_ws_factory())
+    w = worker_mod.Worker(cfg, api, workspace_factory=_ws_factory(cfg))
     with pytest.raises(worker_mod.WorkerError, match="refusing to start"):
         w.loop(once=True)
     assert not [c for c in api.calls if c[0] == "claim"]

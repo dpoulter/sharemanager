@@ -47,6 +47,18 @@ class Fundamentals:
             if "reportedCurrency" not in self.st:
                 self.st["reportedCurrency"] = "GBP"
         self.st = self.st.sort_values(["symbol", "usable_from", "period_end"]).reset_index(drop=True)
+        # What is known on a date depends only on how many statements are usable by then, so each
+        # answer is kept per count: an indicator worked out for every day of 18 years asks the same
+        # question thousands of times between two publication dates.
+        self._usable = np.sort(pd.to_datetime(self.st["usable_from"]).to_numpy(dtype="datetime64[ns]"))
+        self._memo: dict = {}
+
+    def _cached(self, what: str, date, args: tuple, make):
+        n = int(np.searchsorted(self._usable, np.datetime64(pd.Timestamp(date), "ns"), side="right"))
+        key = (what, n, args)
+        if key not in self._memo:
+            self._memo[key] = make()
+        return self._memo[key].copy()
 
     def known(self, date) -> pd.DataFrame:
         date = pd.Timestamp(date)
@@ -54,6 +66,9 @@ class Fundamentals:
 
     def annual(self, date, back: int = 0) -> pd.DataFrame:
         """The latest usable annual accounts per symbol (back=1 for the year before)."""
+        return self._cached("annual", date, (back,), lambda: self._annual(date, back))
+
+    def _annual(self, date, back: int) -> pd.DataFrame:
         k = self.known(date)
         k = k[k["freq"] == "annual"].sort_values(["symbol", "period_end"])
         from_end = k.groupby("symbol").cumcount(ascending=False)
@@ -61,6 +76,9 @@ class Fundamentals:
 
     def latest(self, date) -> pd.DataFrame:
         """The latest usable balance sheet of either frequency per symbol."""
+        return self._cached("latest", date, (), lambda: self._latest(date))
+
+    def _latest(self, date) -> pd.DataFrame:
         k = self.known(date).sort_values(["symbol", "period_end", "freq"])
         return k.groupby("symbol").tail(1).set_index("symbol")
 
@@ -71,29 +89,42 @@ class Fundamentals:
         the latest (two halves or four quarters) and end after the latest
         annual; otherwise the latest annual figures.
         """
+        return self._cached("ttm", date, tuple(fields), lambda: self._ttm(date, fields))
+
+    def _ttm(self, date, fields) -> pd.DataFrame:
+        fields = list(fields)
         k = self.known(date)
         ann = k[k["freq"] == "annual"].sort_values("period_end").groupby("symbol").tail(1).set_index("symbol")
+        fields = list(fields)
         out = ann[[c for c in fields] + ["period_end", "reportedCurrency"]].copy()
         inter = k[k["freq"] == "interim"].sort_values(["symbol", "period_end"])
         if len(inter):
-            for sym, g in inter.groupby("symbol"):
-                last_end = g["period_end"].iloc[-1]
-                if sym in out.index and pd.notna(out.at[sym, "period_end"]) and last_end <= out.at[sym, "period_end"]:
-                    continue
-                window = g[g["period_end"] > last_end - pd.DateOffset(months=12) + pd.Timedelta(days=20)]
-                n = len(window)
-                if n not in (2, 4):
-                    continue
-                gaps = window["period_end"].diff().dropna().dt.days
-                step = 182 if n == 2 else 91
-                if len(gaps) and (gaps - step).abs().max() > 40:
-                    continue
-                sums = window[fields].sum(min_count=1)
-                if sym not in out.index:
-                    out.loc[sym] = np.nan
-                out.loc[sym, fields] = sums.to_numpy(dtype=float)
-                out.loc[sym, "period_end"] = last_end
-                out.loc[sym, "reportedCurrency"] = window["reportedCurrency"].iloc[-1]
+            # Per symbol: the interims in the twelve months to its latest, used when there are two halves
+            # or four quarters about evenly spaced and they end after the latest annual.
+            last_end = inter.groupby("symbol")["period_end"].transform("max")
+            w = inter[inter["period_end"] > last_end - pd.DateOffset(months=12) + pd.Timedelta(days=20)].copy()
+            w["gap"] = w.groupby("symbol")["period_end"].diff().dt.days
+            g = w.groupby("symbol")
+            n = g.size()
+            step = n.map({2: 182, 4: 91})
+            worst = (w["gap"] - w["symbol"].map(step)).abs().groupby(w["symbol"]).max()
+            ok = n.isin([2, 4]) & ~(worst > 40)
+            ends = g["period_end"].max()
+            if len(out):
+                ann_end = out["period_end"].reindex(ends.index)
+                ok &= ~(ann_end.notna() & (ends <= ann_end))
+            use = ok[ok].index
+            if len(use):
+                ww = w[w["symbol"].isin(use)]
+                sums = ww.groupby("symbol")[fields].sum(min_count=1)
+                cur = ww.groupby("symbol")["reportedCurrency"].last()
+                new = out.reindex(out.index.union(use))
+                new["period_end"] = pd.to_datetime(new["period_end"])
+                new["reportedCurrency"] = new["reportedCurrency"].astype(object)
+                new.loc[use, fields] = sums.loc[use, fields].to_numpy(dtype=float)
+                new.loc[use, "period_end"] = ends.loc[use]
+                new.loc[use, "reportedCurrency"] = cur.loc[use]
+                out = new
         return out
 
     def reported_currency(self, date) -> pd.Series:

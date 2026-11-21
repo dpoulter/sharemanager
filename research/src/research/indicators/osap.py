@@ -4,7 +4,7 @@ definitions at openassetpricing.com). Each is adapted to UK reporting, where
 companies publish half-yearly: flows are trailing twelve months built from
 the two latest halves where both are usable, otherwise the latest annual.
 
-Every score is oriented so that higher is what the paper found to earn more.
+Every value is oriented so that higher is what the paper found to earn more.
 Accounts are only those usable by the date (see pit.py).
 
 Missing data: a company whose input field is missing (a bank has no revenue
@@ -18,10 +18,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .base import Context, signal
+from .base import Context, indicator
 
 
-@signal("momentum_12_1")
+@indicator("momentum_12_1", uses={"prices"})
 def momentum_12_1(ctx: Context, date) -> pd.Series:
     """Return from 12 months to 1 month before the date.
 
@@ -31,7 +31,7 @@ def momentum_12_1(ctx: Context, date) -> pd.Series:
     return ctx.adj_months_back(date, 1) / ctx.adj_months_back(date, 12) - 1
 
 
-@signal("reversal_1m")
+@indicator("reversal_1m", uses={"prices"})
 def reversal_1m(ctx: Context, date) -> pd.Series:
     """Minus the last month's return (last month's losers do better).
 
@@ -41,7 +41,7 @@ def reversal_1m(ctx: Context, date) -> pd.Series:
     return -(ctx.adj_at(date) / ctx.adj_months_back(date, 1) - 1)
 
 
-@signal("high_52w")
+@indicator("high_52w", uses={"prices"})
 def high_52w(ctx: Context, date) -> pd.Series:
     """Price relative to its highest close in the last 52 weeks.
 
@@ -55,7 +55,7 @@ def high_52w(ctx: Context, date) -> pd.Series:
     return (ctx.adj_at(date) / hi).where(enough)
 
 
-@signal("low_volatility")
+@indicator("low_volatility", uses={"prices"})
 def low_volatility(ctx: Context, date) -> pd.Series:
     """Minus the volatility of daily returns over the last 12 months.
 
@@ -70,7 +70,7 @@ def low_volatility(ctx: Context, date) -> pd.Series:
     return (-vol).where(window.notna().sum() >= 200)
 
 
-@signal("gross_profitability")
+@indicator("gross_profitability", uses={"statements"})
 def gross_profitability(ctx: Context, date) -> pd.Series:
     """Gross profit over total assets.
 
@@ -87,7 +87,7 @@ def gross_profitability(ctx: Context, date) -> pd.Series:
     return (gp / ta).where(ta > 0)
 
 
-@signal("asset_growth")
+@indicator("asset_growth", uses={"statements"})
 def asset_growth(ctx: Context, date) -> pd.Series:
     """Minus the annual growth in total assets (low growth does better).
 
@@ -103,7 +103,7 @@ def asset_growth(ctx: Context, date) -> pd.Series:
     return (-g).where(ta1 > 0)
 
 
-@signal("accruals")
+@indicator("accruals", uses={"statements"})
 def accruals(ctx: Context, date) -> pd.Series:
     """Minus accruals: (net income - operating cash flow) / average total assets.
 
@@ -120,7 +120,7 @@ def accruals(ctx: Context, date) -> pd.Series:
     return (-acc).where(avg_ta > 0)
 
 
-@signal("net_share_issuance")
+@indicator("net_share_issuance", uses={"statements"})
 def net_share_issuance(ctx: Context, date) -> pd.Series:
     """Minus the log change in shares outstanding over the last year.
 
@@ -136,7 +136,7 @@ def net_share_issuance(ctx: Context, date) -> pd.Series:
     return (-np.log(s0 / s1)).where(ok)
 
 
-@signal("book_to_market")
+@indicator("book_to_market", uses={"statements", "caps", "fx"})
 def book_to_market(ctx: Context, date) -> pd.Series:
     """Book equity over market cap; negative book excluded.
 
@@ -151,7 +151,7 @@ def book_to_market(ctx: Context, date) -> pd.Series:
     return (be / cap).where((be > 0) & (cap > 0))
 
 
-@signal("earnings_yield")
+@indicator("earnings_yield", uses={"statements", "caps", "fx"})
 def earnings_yield(ctx: Context, date) -> pd.Series:
     """Trailing twelve-month net income over market cap.
 

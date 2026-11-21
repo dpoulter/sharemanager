@@ -34,6 +34,15 @@ def make_market(prices: dict[str, list[float]], start="2020-01-01", caps: dict |
                                 statements=statements if statements is not None else pd.DataFrame()))
 
 
+def built_workspace(cfg, m, u, names=None):
+    """Build the indicators a test needs into the store, then the engine's workspace over them."""
+    from research import indicator_job
+    reports = indicator_job.run(cfg, names=names, market=m, universe=u)
+    bad = [r for r in reports if not r["ok"]]
+    assert not bad, bad
+    return indicator_job.workspace(cfg, market=m, universe=u)
+
+
 @pytest.fixture
 def cfg(tmp_path):
     return load_config(overrides={"paths": {"data": str(tmp_path / "data"), "reports": str(tmp_path / "reports"),

@@ -18,31 +18,28 @@ The claim adds `indicators` (indicator_id -> {name, rank_order}) and
 rank_order is 'value DESC' or 'value ASC', and anything else is read as DESC,
 which is what sharemanager's screen_rank_order() does.
 
-Indicators the engine computes, by sharemanager name:
-
-    close_price     the latest close on the run's price basis
-    ma50, ma200     the 50 and 200 day averages of it
-    1mnth 3mnth 6mnth 12mnth
-                    the N100's calendar-month return (Context.n100_return), in
-                    per cent as sharemanager stores it, so a constant such as
-                    "6mnth > 0" means the same thing on both sides
-
-A ranking indicator may also be a research signal by name, written
-`research:<signal>` (signals/): value and quality signals read accounts
-through pit.Fundamentals, so they go through the engine's publication lag.
-Sharemanager's own value and quality figures (pe, value_score and the rest)
-are not recomputed here: the engine has no definition that is theirs, so a
-snapshot that uses one is refused, naming it.
+Indicators: a ranking or screen indicator is translated only if the
+indicator store holds it on the run's price basis (raw: `<name>@raw`, or
+`<name>` for one that reads no prices). The N100-style indicators are stored
+under their sharemanager names (close_price, ma50, ma200, 1mnth, 3mnth,
+6mnth, 12mnth; indicators/live.py). A ranking indicator may also be any other
+stored indicator, written `research:<name>` (indicators/); value and quality
+indicators read accounts through the publication lag. Sharemanager's own
+value and quality figures (pe, value_score and the rest) are refused, naming
+them, unless the store holds an indicator of that name.
 
 Screens: comparison criteria (> >= < <= = !=) against a constant or another
 indicator, intersected, then top_n criteria in criteria order, each keeping the
 best N of what is left, as build_screen() applies them. Selection 'score' is
 every share with a value for the score indicator. rank_by (or the score
-indicator) orders the result.
+indicator) orders the result. The screen is handed to the engine as data
+(strategy.screen_scores evaluates it over stored values); nothing is worked
+out here.
 
 A screen that is exactly an engine strategy already validated against the N100
-(CANONICAL) is given that engine signal by name, so the trend following rules
-become the strategy the run 9 replay check passed with.
+(CANONICAL) is given that stored indicator by name when the store holds it, so
+the trend following rules become the strategy the run 9 replay check passed
+with.
 
 The engine runs a sharemanager rule the N100's way: raw closes with no
 dividends credited, a price on or before the day is enough, and at most 50
@@ -50,16 +47,9 @@ orders a rebalance (validate.RUN9).
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-import operator as op
 
-import numpy as np
-import pandas as pd
-
-from .signals import REGISTRY, Context, signal
-from .store import moving_average
+BASIS = "raw"         # N100_MECHANICS
 
 
 class Untranslatable(ValueError):
@@ -77,7 +67,7 @@ N100_MECHANICS = {"price_basis": "raw", "require_traded_today": False, "max_orde
 
 REBALANCE = {"monthly": "monthly", "weekly": "weekly", "quarterly": "quarterly"}
 EXITS = {"below_ma200_2d": "below_ma200_2d"}
-COMPARE = {">": op.gt, ">=": op.ge, "<": op.lt, "<=": op.le, "=": op.eq, "!=": op.ne}
+COMPARE = {">", ">=", "<", "<=", "=", "!="}
 MONTHS = {"1mnth": 1, "3mnth": 3, "6mnth": 6, "12mnth": 12}
 
 # Screens that are an engine signal already, keyed by (criteria, rank_by, direction).
@@ -87,40 +77,22 @@ CANONICAL = {
 
 
 # ---- indicators
-
-def _ma50(ctx: Context) -> pd.DataFrame:
-    if getattr(ctx, "_ma50", None) is None:
-        ctx._ma50 = moving_average(ctx.m.adj, 50)
-    return ctx._ma50
+def _stored(store, name: str) -> bool:
+    return store.has(f"{name}@{BASIS}") or store.has(name)
 
 
-def indicator_value(ctx: Context, name: str, date) -> pd.Series:
-    """The value of one sharemanager indicator for every share on the date."""
-    if name == "close_price":
-        return ctx.adj_at(date)
-    if name == "ma200":
-        return ctx.ma200.iloc[ctx.pos(date)]
-    if name == "ma50":
-        return _ma50(ctx).iloc[ctx.pos(date)]
-    if name in MONTHS:
-        return ctx.n100_return(date, MONTHS[name]) * 100.0
-    if name.startswith("research:"):
-        return REGISTRY[name.split(":", 1)[1]](ctx, date)
-    raise KeyError(name)
-
-
-def _known(name: str, rule: str, ranking: bool) -> str:
+def _known(name: str, rule: str, ranking: bool, store) -> str:
     name = (name or "").strip()
-    if name in ("close_price", "ma50", "ma200") or name in MONTHS:
-        return name
     if name.startswith("research:"):
         sig = name.split(":", 1)[1]
-        if sig not in REGISTRY:
-            raise Untranslatable(rule, f"research signal {sig!r} is not one the engine has")
+        if not _stored(store, sig):
+            raise Untranslatable(rule, f"research indicator {sig!r} is not in the indicator store")
         if not ranking:
-            raise Untranslatable(rule, f"a research signal ({sig}) can rank, not be compared in a screen")
-        return name
-    raise Untranslatable(rule, f"indicator {name!r} is not one the engine computes")
+            raise Untranslatable(rule, f"a research indicator ({sig}) can rank, not be compared in a screen")
+        return sig
+    if not name or not _stored(store, name):
+        raise Untranslatable(rule, f"indicator {name!r} is not in the indicator store")
+    return name
 
 
 def _direction(rank_order) -> str:
@@ -130,7 +102,7 @@ def _direction(rank_order) -> str:
 
 # ---- the translation
 
-def _criterion(c, indicators: dict, k: int) -> tuple:
+def _criterion(c, indicators: dict, k: int, store) -> tuple:
     rule = f"criteria[{k}]"
     if not isinstance(c, (list, tuple)) or len(c) != 4:
         raise Untranslatable(rule, "a criterion is [indicator_id, operator, first_operand, second_operand]")
@@ -138,7 +110,7 @@ def _criterion(c, indicators: dict, k: int) -> tuple:
     info = indicators.get(str(ind_id))
     if not info:
         raise Untranslatable(rule, f"indicator id {ind_id} has no name in the claim")
-    name = _known(info.get("name"), f"{rule} ({info.get('name')})", ranking=False)
+    name = _known(info.get("name"), f"{rule} ({info.get('name')})", ranking=False, store=store)
     oper = str(oper or "").strip()
     first = None if first is None or str(first).strip() == "" else str(first).strip()
     second = None if second is None or str(second).strip() == "" else str(second).strip()
@@ -158,43 +130,7 @@ def _criterion(c, indicators: dict, k: int) -> tuple:
         return (name, oper, value, None)
     if second is None:
         raise Untranslatable(rule, "it compares with nothing (no constant and no indicator)")
-    return (name, oper, None, _known(second, f"{rule} ({second})", ranking=False))
-
-
-def _screen_signal(criteria: tuple, rank: str, direction: str, sig_name: str):
-    """A signal for a screen: filters intersected, top_n in order, scored by the rank indicator."""
-    filters = [c for c in criteria if c[1] != "top_n"]
-    tops = [c for c in criteria if c[1] == "top_n"]
-
-    def fn(ctx: Context, date) -> pd.Series:
-        keep = None
-        for name, oper, const, other in filters:
-            left = indicator_value(ctx, name, date)
-            right = const if other is None else indicator_value(ctx, other, date).reindex(left.index)
-            ok = COMPARE[oper](left, right) & left.notna()
-            if other is not None:
-                ok &= pd.Series(right).notna()
-            ok = ok.fillna(False).astype(bool)
-            keep = ok if keep is None else (keep.reindex(ok.index, fill_value=False) & ok)
-        index = keep.index[keep.to_numpy()] if keep is not None else None
-        if ctx.member is not None and pd.Timestamp(date) in ctx.member.index:
-            row = ctx.member.loc[pd.Timestamp(date)]
-            members = row.index[row.to_numpy()]
-            index = members if index is None else index.intersection(members)
-        for name, _, n, d in tops:
-            v = indicator_value(ctx, name, date).reindex(index).dropna()
-            v = v.sort_index().sort_values(ascending=(d == "asc"), kind="mergesort")
-            index = v.index[:n]
-        score = indicator_value(ctx, rank, date)
-        score = score if direction == "desc" else -score
-        cols = ctx.m.adj.columns
-        out = pd.Series(np.nan, index=cols)
-        if index is not None and len(index):
-            out.loc[index] = score.reindex(index).to_numpy()
-        return out
-
-    fn.signal_name = sig_name
-    return fn
+    return (name, oper, None, _known(second, f"{rule} ({second})", ranking=False, store=store))
 
 
 def _costs(model: str, settings) -> dict:
@@ -210,10 +146,11 @@ def _costs(model: str, settings) -> dict:
             "decimals": 0 if settings["whole_shares"] else 2, "ptm_levy": 0.0}
 
 
-def translate(claim: dict) -> dict:
+def translate(claim: dict, store) -> dict:
     """A claim from backtest_api -> the engine's strategy (a dict for strategy.spec_from_dict).
 
-    Raises Untranslatable naming the rule it cannot translate.
+    `store` is the indicator store (indicator_store.IndicatorStore; only has() is used). Raises
+    Untranslatable naming the rule it cannot translate.
     """
     snap = claim.get("rules_snapshot")
     if not isinstance(snap, dict) or not isinstance(snap.get("rules"), dict):
@@ -272,40 +209,34 @@ def translate(claim: dict) -> dict:
         crits = snap.get("criteria")
         if not isinstance(crits, list) or not crits:
             raise Untranslatable("criteria", "the screen has no criteria")
-        criteria = tuple(_criterion(c, indicators, k) for k, c in enumerate(crits))
+        criteria = tuple(_criterion(c, indicators, k, store) for k, c in enumerate(crits))
         if rank_raw in (None, ""):
             raise Untranslatable("rank_by", "a screen with no rank_by has no order the engine can reproduce")
     elif selection == "score":
         score = r.get("score_indicator")
         if score in (None, ""):
             raise Untranslatable("score_indicator", "selection is 'score' but there is no score indicator")
-        _known(str(score), "score_indicator", ranking=True)
+        _known(str(score), "score_indicator", ranking=True, store=store)
         if snap.get("criteria"):
             raise Untranslatable("criteria", "a score selection carries screen criteria")
         criteria = ()
     else:
         raise Untranslatable("selection", f"{selection!r} is not screen or score")
 
+    research = str(rank_raw).strip().startswith("research:")
     rank = _known(str(rank_raw), "rank_by" if r.get("rank_by") not in (None, "") else "score_indicator",
-                  ranking=True)
-    direction = "desc" if rank.startswith("research:") else _direction(rank_orders.get(rank))
+                  ranking=True, store=store)
+    direction = "desc" if research else _direction(rank_orders.get(rank))
 
     sig = CANONICAL.get((tuple(c for c in criteria), rank, direction))
-    if sig is None:
-        key = json.dumps([selection, r.get("score_indicator"), criteria, rank, direction], default=str)
-        sig = "rules_" + hashlib.sha256(key.encode()).hexdigest()[:12]
-        if sig not in REGISTRY:
-            if selection == "score":
-                score_name = _known(str(r.get("score_indicator")), "score_indicator", ranking=True)
-                base = _screen_signal((), rank, direction, sig)
-
-                def fn(ctx, date, _base=base, _score=score_name):
-                    has = indicator_value(ctx, _score, date).notna()
-                    return _base(ctx, date).where(has.reindex(ctx.m.adj.columns, fill_value=False))
-                fn.signal_name = sig
-                signal(sig)(fn)
-            else:
-                signal(sig)(_screen_signal(criteria, rank, direction, sig))
+    require = None
+    if selection == "score":
+        require = _known(str(r.get("score_indicator")), "score_indicator", ranking=True, store=store)
+    if sig is not None and _stored(store, sig):
+        chosen = {"signals": {sig: 1}}
+    else:
+        chosen = {"signals": {}, "screen": {"criteria": [list(c) for c in criteria], "rank_by": rank,
+                                            "direction": direction, "require": require}}
 
     # cash and costs
     try:
@@ -321,7 +252,7 @@ def translate(claim: dict) -> dict:
     return {
         "name": f"sm_{strategy}_{fingerprint[:10]}",
         "family": f"sm_{strategy}",
-        "signals": {sig: 1},
+        **chosen,
         "holdings": holdings,
         "rebalance": rebalance,
         "hold_rank": hold_rank,

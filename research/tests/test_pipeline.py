@@ -8,7 +8,7 @@ from research.checks import write_data_report
 from research.config import mask
 from research.fetch import Fetcher, exclusion_reason
 from research.store import load_market
-from research.strategy import Workspace, load_spec
+from research.strategy import load_spec
 from research.universe import build_universe
 
 DATES = pd.bdate_range("2006-06-01", "2008-12-31")
@@ -105,7 +105,10 @@ def test_pipeline_end_to_end(cfg, tmp_path):
     assert u.groupby("date").size().max() == 3
     assert "DED.L" not in set(u[u["date"] > "2008-07-01"]["symbol"])
 
-    ws = Workspace(cfg)
+    from research import indicator_job
+    reports = indicator_job.run(cfg, names=["trend_following", "close_price", "ma200", "book_to_market"])
+    assert all(r["ok"] for r in reports), reports
+    ws = indicator_job.workspace(cfg)
     spec = load_spec(cfg.path.parent / "strategies" / "trend_following.yaml")
     spec.raw["holdings"] = 2
     out = ws.run(spec, start="2007-03-01", end="2008-12-31")

@@ -25,6 +25,11 @@ kind "research", so it is written to the test log as a hand-started run is,
 counts as a trial of its family, and is refused by periods.check_holdout() if
 it reaches the holdout.
 
+Indicators come only from the indicator store (indicator_store.py). The worker
+claims nothing while the indicator job runs (data/indicators/.job.lock), and a
+run it has claimed waits for a job that started in the meantime; the job in
+turn does not start while the worker holds a run (its state file).
+
 It refuses to start unless the run 9 replay check (research validate
 --replay-targets) passed at the current, clean git commit.
 
@@ -196,6 +201,7 @@ class Worker:
         self.poll_seconds = poll_seconds
         self.gate = gate
         self.stop = False
+        self.job_wait_seconds = 10.0
 
     # state
     def _write_state(self, claim: dict) -> None:
@@ -221,8 +227,8 @@ class Worker:
     def workspace(self):
         if self._ws is None:
             if self._factory is None:
-                from .strategy import Workspace
-                self._ws = Workspace(self.cfg)
+                from .indicator_job import workspace
+                self._ws = workspace(self.cfg)
             else:
                 self._ws = self._factory(self.cfg)
         return self._ws
@@ -230,16 +236,25 @@ class Worker:
     def run_claim(self, claim: dict) -> dict:
         """Translate and run one claimed run. Returns the engine's result dict."""
         from .from_rules import translate
+        from .indicator_job import job_running
         from .strategy import spec_from_dict
         holdout = pd.Timestamp(self.cfg["periods"]["holdout_start"])
         if pd.Timestamp(claim["to"]) >= holdout:
             raise WorkerError(f"the run ends on {claim['to']}, inside the holdout (from {holdout.date()})")
-        spec = spec_from_dict(translate(claim))
-        return self.workspace().run(spec, period=f"{claim['from']}:{claim['to']}", kind="research",
+        while job_running(self.cfg):        # the job started between the check and the claim
+            log.info("run %s waits for the indicator job", claim.get("run_id"))
+            time.sleep(self.job_wait_seconds)
+        ws = self.workspace()
+        spec = spec_from_dict(translate(claim, ws.store))
+        return ws.run(spec, period=f"{claim['from']}:{claim['to']}", kind="research",
                                     start=claim["from"], end=claim["to"])
 
     def run_once(self) -> bool:
-        """Claim and run at most one. False when nothing was queued."""
+        """Claim and run at most one. False when nothing was queued (or the indicator job is running)."""
+        from .indicator_job import job_running
+        if job_running(self.cfg):
+            log.info("the indicator job is running; nothing claimed")
+            return False
         claim = self.api.claim()
         if not claim:
             return False

@@ -19,9 +19,10 @@ Data goes to `~/sharemanager-research/data/` as Parquet, reports to `~/sharemana
 |---|---|---|
 | 1 | `nohup uv run research fetch --full > ~/sharemanager-research/logs/fetch.out 2>&1 &` | `data/data_report.md`; progress in `data/fetch_state.json` |
 | 2 | `uv run research universe --live stock_symbols.csv` | overlap with the N100's list, also in `data/universe_overlap.json` |
-| 3 | `uv run research validate` | must pass before anything else is trusted; reads the three files in `data/validation/` |
-| 4 | `uv run research signals` | one comparison table for Dale |
-| nightly | `uv run research fetch` | top-up: new prices, market caps and statements |
+| 3 | `uv run research indicators --coverage` | every indicator worked out for the whole history and stored; the coverage printed |
+| 4 | `uv run research validate` | must pass before anything else is trusted; reads the three files in `data/validation/` |
+| 5 | `uv run research signals` | one comparison table for Dale |
+| nightly | `uv run research fetch && uv run research indicators` | top-up: new prices, market caps and statements, then the new day for every indicator |
 | any time | `uv run research fetch --merge-only` | no downloads: merge, master pass, price cleaning, data report |
 
 After every merge, `master.py` makes a second pass over the symbol master using the prices. It sets each line's quote currency and market-cap currency from price × shares, because FMP's profile currency is sometimes the reporting currency. It also drops loan stock and bond-like series, second share classes, and a second London line under the same company name (INVP/INVR).
@@ -54,15 +55,30 @@ A strategy is a small YAML file in `strategies/`. The docstring in `src/research
 |---|---|
 | `fetch.py` | Symbol master (listed + delisted `.L`, exclusions with reasons), prices (raw and dividend-adjusted, in 15-year chunks), dividends, market cap from 2007, statements (annual and interim), FX |
 | `checks.py` | The data report: gaps over 10 sessions, day moves over 50%, pounds-not-pence, empty revenue/total assets, counts per year |
-| `pit.py` | The publication lag: accounts are usable from period end + 4 months (annual) or + 3 months (interim) |
+| `indicators/pit.py` | The publication lag: accounts are usable from period end + 4 months (annual) or + 3 months (interim) |
 | `universe.py` | The top 350 by market cap, main market only (AIM can be switched on), rebuilt on the first trading day of each month from 2007; "FTSE 100-like" and "FTSE 250-like" tiers |
 | `engine.py` | The portfolio simulation, using the N100's rules (see the module docstring) |
 | `costs.py` | Trading 212 costs, with the date they were checked |
-| `signals/` | The ten Open Source Asset Pricing signals (`osap.py`, each citing its paper) and the two N100 strategies (`live.py`) |
+| `indicators/` | How each indicator is defined: the ten Open Source Asset Pricing indicators (`osap.py`, each citing its paper), the N100-style indicators and the two N100 strategies (`live.py`) |
+| `indicator_store.py` | Where the values are kept: one file per indicator in `data/indicators/` |
+| `indicator_job.py` | `research indicators`: keeps the store up to date after the nightly fetch |
+| `data_version.py` | The data version and the record of what changed in the data (written by fetch and universe) |
 | `periods.py` | The development, validation and locked holdout periods |
 | `runlog.py` | The append-only test log (`log/runs.parquet`, one part file per run) and the freeze after `--final` |
 | `metrics.py` | Metrics, and the deflated Sharpe ratio (Bailey and López de Prado, 2014) |
 | `report.py` | One self-contained HTML file per run |
+
+## Indicators
+
+The engine does not work out indicators. How an indicator is defined (`indicators/`), how its values are kept (`indicator_store.py`) and when they are refreshed (`indicator_job.py`) are separate from replaying a strategy, so a new paper touches only `indicators/`, and every value can be checked before a backtest uses it.
+
+- **Definitions.** A function of (context, date) giving a value per company, registered with what it reads (prices, caps, statements, fx, universe, master) and its calendar. One that reads prices is stored once per price basis: `momentum_12_1@raw`, `momentum_12_1@adjusted`. Accounts only through `pit.Fundamentals`. The N100-style indicators (`close_price`, `ma50`, `ma200`, `1mnth`, `3mnth`, `6mnth`, `12mnth`, and `trend_following`) are kept for every calendar day, because the N100's statistics carry Sunday and holiday rows that its rebalances and exit read; the rest for every trading day, from the universe start.
+- **Version.** The first 16 hex characters of a SHA-256 over the definition function's source, the source of the helpers it lists (the `Context` class always, `pit.Fundamentals` when it reads accounts, `store.moving_average` for the averages), and its settings (basis, calendar, start, publication lags, universe settings). Any change rebuilds that indicator whole.
+- **Store.** `data/indicators/<key>.parquet`: date, symbol, value, with the version, the data version it was built from, the calendar and every built date in the file's metadata. A read for dates that were not built is refused, naming them. `research indicators --coverage-only` lists first and last dates and companies per year.
+- **Data version.** `fetch` and `universe` record what changed (`data/data_version.json`, `data/data_changes.parquet`): per company and panel (closes, adjusted closes, caps, statements, FX, the universe, the sector), the months changed, or the day for the last two months. A full re-fetch is a change to everything. A data file changed without a record is refused (`research data-version` records it).
+- **The job.** After the nightly fetch: adds the new days to every indicator; rebuilds whole any whose version changed; for every recorded change since its data version, rebuilds the affected companies from the first affected date (every company, for an indicator ranked across the universe, `value_composite` and `trending_value`, or after an FX or universe change). One failing does not stop the others; each is logged in `logs/indicator_job.jsonl`. It does not run while the worker has a run in hand, and the worker claims nothing while it runs. `research indicators --rebuild NAME` rebuilds one whole.
+- **The engine.** Reads every ranking, screen and exit value from the store, on the run's price basis, and refuses to start, naming the indicator, if one is missing, built by an older definition, or built from an older data version. Each run records the version and data version of every indicator it read (`indicators`) and the data version (`data_version`). Blends, screens, quintiles, hold rank, the drift band and the two-closes exit stay in the engine. The engine imports nothing from `indicators/` (a test checks it).
+- **Disk.** Each indicator is about 30 to 45 MB for 800 companies over 20 years (the calendar-day ones are the larger), about 1.5 GB for all of them.
 
 ## Sharemanager's backtests (the worker)
 
@@ -87,7 +103,7 @@ The N100's own dealing rules are used for these runs: raw closes, a price on or 
 
 ## The N100's definitions, copied exactly
 
-- **6-month return** (`signals/base.py: n100_return_detail`, from `calc_momentum()` and `backfill_trend_statistics.php`): calendar months, not trading days. It runs from the first price on or after (date − 6 months) to the last price on or before the date, using each share's own prices, and only where the start is before the end. A share with less history than the window gets the return over the history it has.
+- **6-month return** (`indicators/base.py: n100_return_detail`, from `calc_momentum()` and `backfill_trend_statistics.php`): calendar months, not trading days. It runs from the first price on or after (date − 6 months) to the last price on or before the date, using each share's own prices, and only where the start is before the end. A share with less history than the window gets the return over the history it has.
 - **Price basis** (`price_basis`): the N100 uses raw closes with no dividends, so `validate` runs `raw`. Research runs use `adjusted`.
 - **Selection and fills** (read from `strategy_functions.php`): a candidate needs only a price on or before the date (`strategy_price_asof`), traded that day or not; a rebalance of more than 50 orders is refused whole; the two-closes-below exit reads rows that carry a stale close over a no-trade day; a holding more than 2% from target is topped up or trimmed, otherwise left alone; a buy the cash no longer covers is trimmed to fit. `validate` sets the first two (`require_traded_today: false`, `max_orders: 50`).
 - **Order of orders:** `strategy_plan_orders` reads `strategy_targets` (primary key strategy, as_of_date, symbol) with no `ORDER BY`, so targets are planned in symbol order, then held shares that are no longer targets, also by symbol. The executor puts every sell before any buy (a stable `usort`). So cash runs out on the buy that is last alphabetically (on 2 Nov 2022 that was TRN, not the lowest-ranked DOCS), and the trim has no minimum order. `engine.n100_symbol_key` gives the order; FMP's `BT-A.L` is the N100's `BT.A`.

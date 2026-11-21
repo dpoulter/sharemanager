@@ -429,8 +429,8 @@ def test_the_six_month_base_counts_back_from_the_n100_as_of_not_the_decision_day
     import sys
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
     from conftest import make_market
-    from research.pit import Fundamentals
-    from research.signals import Context
+    from research.indicators import Fundamentals
+    from research.indicators import Context
     dates = pd.bdate_range("2022-06-01", "2023-01-31").drop(pd.to_datetime(["2023-01-02"]))
     px = list(100.0 + np.arange(len(dates), dtype=float))
     m = make_market({"A.L": px}, start="2022-06-01")

@@ -121,11 +121,31 @@ def rebalance_flags(dates: pd.DatetimeIndex, how: str, as_of=None) -> np.ndarray
     return first == np.arange(len(dates))
 
 
-def ma200_below_twice(adj: pd.DataFrame, ma: pd.DataFrame | None = None) -> pd.DataFrame:
+def exit_below_twice(close: pd.DataFrame, ma: pd.DataFrame, trading_dates) -> pd.DataFrame:
+    """The 200-day exit from the stored close_price and ma200, on a set of statistics rows.
+
+    `close` and `ma` hold the stored values on each row date: trading days, and any calendar rows the
+    N100 has (a Sunday carries Friday's close and average). A row is below when the close is under the
+    average; two rows in a row are the signal; the flag lands on the last trading day on or before the
+    second row, and the sell fills the trading day after. On trading days alone this is ma200_below_twice;
+    with the N100's calendar rows it is ma200_below_twice_calendar.
+    """
+    rows = close.index.union(ma.index)
+    cols = close.columns.union(ma.columns)
+    c = close.reindex(index=rows, columns=cols)
+    m = ma.reindex(index=rows, columns=cols)
+    b = ((c < m) & m.notna()).to_numpy()
+    prev = np.vstack([np.zeros((1, b.shape[1]), dtype=bool), b[:-1]])
+    trading = pd.DatetimeIndex(trading_dates)
+    pos = trading.searchsorted(rows, side="right") - 1
+    out = np.zeros((len(trading), len(cols)), dtype=bool)
+    ok = pos >= 0
+    np.logical_or.at(out, pos[ok], (b & prev)[ok])
+    return pd.DataFrame(out, index=trading, columns=cols)
+
+
+def ma200_below_twice(adj: pd.DataFrame, ma: pd.DataFrame) -> pd.DataFrame:
     """True where the close is below its 200-day average today and the previous close."""
-    if ma is None:
-        from .store import moving_average
-        ma = moving_average(adj, 200)
     # The N100 reads two rows of statistics (close_price, ma200), written for every trading date
     # with the last price carried over a day the share did not trade: so a no-trade day is still
     # "below" if the carried close is, and does not break the two in a row.

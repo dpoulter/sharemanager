@@ -23,6 +23,10 @@ Jarvis's exports from the N100 (rerun as run 10, identical to run 9:
     rebalances on the first of those dates on or after the 1st, which includes some holidays and
     Sundays, and fills the next trading day; without it the engine rebalances on the first trading day
 
+The run reads trend_following, close_price and ma200 (raw) from the indicator
+store, like every run; the diagnostics in the report work them out again from
+indicators/ to explain a difference.
+
 This run covers holdout dates. It is an engine check, logged as kind
 'engine_validation' and not as research, but it does show trend following's
 holdout-period result on a survivorship-biased universe; treat that number as
@@ -63,6 +67,13 @@ RUN9 = {
 }
 
 
+def _fund(ws: Workspace):
+    """Accounts for the diagnostics below (the run itself reads indicators only from the store)."""
+    from .indicators import Fundamentals
+    pit = ws.cfg["point_in_time"]
+    return Fundamentals(ws.m.statements, pit["annual_lag_months"], pit["half_year_lag_months"])
+
+
 def universe_list(path: Path, out: Path) -> Path:
     """The N100 list without its funds, written as a one-column CSV the engine reads."""
     from .universe import read_symbol_list
@@ -73,15 +84,15 @@ def universe_list(path: Path, out: Path) -> Path:
 
 def trace_first_month(ws: Workspace, orders: pd.DataFrame, listed: Path) -> list[dict]:
     """For each share the N100 bought in its first month: what the research engine saw on day one."""
-    from .signals.live import six_month_return
-    from .signals.base import Context
+    from .indicators.live import six_month_return
+    from .indicators import Context
     m = ws.m
     start = m.dates[m.dates.searchsorted(pd.Timestamp("2022-11-01"))]
     first_month = orders["date"].dt.to_period("M").min()
     buys = orders[(orders["date"].dt.to_period("M") == first_month) & (orders["side"].str.upper() == "BUY")]
     syms = sorted({s if s.endswith(".L") else s + ".L" for s in buys["symbol"].astype(str)})
     uni = set(pd.read_csv(listed)["symbol"])
-    ctx = Context(m, ws.f)
+    ctx = Context(m, _fund(ws))
     six = six_month_return(ctx, start)
     i = ctx.pos(start)
     ma = m.ma200.iloc[i]
@@ -303,8 +314,8 @@ def statistics_check(ws: Workspace, out: dict, rebalance_date: str | None) -> di
     i = int(mk.dates.searchsorted(d, side="right") - 1)
     ours_close = mk.adj.ffill(limit=10).iloc[i]
     ours_ma = mk.ma200.iloc[i]
-    from .signals.base import Context
-    ctx = Context(mk, ws.f)
+    from .indicators import Context
+    ctx = Context(mk, _fund(ws))
     ours_6m = ctx.n100_return(d, 6) * 100                 # the N100 stores per cent
     common = [s for s in n.index if s in ours_close.index and pd.notna(ours_close[s]) and ours_close[s] > 0
               and pd.notna(n.at[s, "close_price"]) and n.at[s, "close_price"] > 0]
@@ -398,11 +409,11 @@ def rankings(ws: Workspace, out: dict, d, month, differing: list[str]) -> dict:
     """Our top 20 on the rebalance date, with the 6-month return and its base dates, beside the
     N100's own 6mnth ranking where Jarvis has exported it (data/validation/n100_6mnth_YYYY-MM.csv:
     symbol,value). Without that file the N100 side is its buys, valued the same way as ours."""
-    from .signals.base import Context
+    from .indicators import Context
     from .universe import to_fmp
     if d is None:
         return {}
-    ctx = Context(out["market"], ws.f)
+    ctx = Context(out["market"], _fund(ws))
     det = ctx.n100_return_detail(d, 6)
     s = out["scores"].get(d, pd.Series(dtype=float)).dropna().sort_values(ascending=False)
 
@@ -448,10 +459,10 @@ def explain_screens(out: dict, ws: Workspace, pairs: list[tuple[str, str]], asof
     Universe membership, a price, the 200-day average (and how many prices stand behind it), above it,
     the six-month return with its two base dates, and the score and rank among the scored shares.
     """
-    from .signals.base import Context
+    from .indicators import Context
     from .universe import to_fmp
     mk, member, scores = out["market"], out["member"], out["scores"]
-    ctx = Context(mk, ws.f)
+    ctx = Context(mk, _fund(ws))
     for a in pd.DatetimeIndex(pd.to_datetime(list(asof or []))):
         k = ctx.pos(a)
         if k >= 0:

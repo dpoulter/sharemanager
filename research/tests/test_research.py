@@ -7,13 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from conftest import make_market
+from conftest import built_workspace, make_market
 from research import engine, metrics
 from research.costs import T212, Costs, from_dict
 from research.periods import HoldoutLocked, check_holdout
-from research.pit import Fundamentals
+from research.indicators import Fundamentals
 from research.runlog import Frozen, RunLog
-from research.signals import Context, REGISTRY
+from research.indicators import Context, REGISTRY
 from research.strategy import Workspace, spec_from_dict
 from research.universe import build_universe, membership
 
@@ -230,7 +230,7 @@ def _workspace(cfg, n=560):
     m = make_market(prices, start="2024-01-01")
     u = build_universe(m, size=10, large=5, start="2024-01-01")
     cfg.raw["universe"]["start"] = "2024-01-01"
-    return Workspace(cfg, market=m, universe=u)
+    return built_workspace(cfg, m, u, names=["momentum_12_1"])
 
 
 def test_run_touching_holdout_needs_final_and_is_logged_and_frozen(cfg):
@@ -322,7 +322,8 @@ def test_exit_rule_two_closes_below_ma200():
     up = list(np.linspace(100, 200, 220))
     down = [150.0, 140.0, 130.0, 130.0, 130.0, 130.0]
     m = make_market({"A.L": up + down})
-    flags = engine.ma200_below_twice(m.adj)
+    from research.store import moving_average
+    flags = engine.ma200_below_twice(m.adj, moving_average(m.adj, 200))
     first_below = 220
     assert not flags["A.L"].iloc[first_below]
     assert flags["A.L"].iloc[first_below + 1]
@@ -397,14 +398,14 @@ def test_trend_strategy_builds_on_day_one_with_gaps_in_the_panel():
     m = drop_thin_dates(m)
     assert len(m.dates) == n - 1                    # the thin date is not a trading day
     member = pd.DataFrame(True, index=m.dates, columns=m.close.columns)
-    from research.pit import Fundamentals
+    from research.indicators import Fundamentals
     ctx = Context(m, Fundamentals(pd.DataFrame()))
     d = m.dates[260]
     score = REGISTRY["trend_following"](ctx, d)
     assert score.notna().sum() >= 15                # the averages exist
     rules = engine.Rules(holdings=15, hold_rank=30, exit_ma200=True)
     res = engine.simulate(m, member, member, {d: score}, rules, T212, d, m.dates[-1],
-                          engine.ma200_below_twice(m.adj))
+                          engine.ma200_below_twice(m.adj, m.ma200))
     first = res.fills[res.fills["date"] == m.dates[261]]
     assert len(first) == 15 and (first["side"] == "BUY").all()
 
@@ -418,7 +419,7 @@ def _ws_with_dividends(cfg):
     m = make_market(raw, start="2024-01-01", adj=adj)
     u = build_universe(m, size=6, large=3, start="2024-01-01")
     cfg.raw["universe"]["start"] = "2024-01-01"
-    return Workspace(cfg, market=m, universe=u), m
+    return built_workspace(cfg, m, u, names=["momentum_12_1", "trend_following", "close_price", "ma200"]), m
 
 
 def test_raw_basis_credits_no_dividends(cfg):
@@ -743,7 +744,7 @@ def test_explain_screens_names_the_screen_that_dropped_a_share(cfg):
     m = make_market(prices, start="2023-01-02")
     u = build_universe(m, size=10, large=5, start="2023-01-02")
     cfg.raw["universe"]["start"] = "2023-01-02"
-    ws = Workspace(cfg, market=m, universe=u)
+    ws = built_workspace(cfg, m, u, names=["trend_following", "close_price", "ma200"])
     spec = spec_from_dict({"name": "tf", "signals": {"trend_following": 1}, "holdings": 3, "exit": "below_ma200_2d"})
     out = ws.run(spec, start="2024-06-03", end="2024-09-30", write_report=False, kind="engine_validation")
     d = sorted(out["scores"])[0]

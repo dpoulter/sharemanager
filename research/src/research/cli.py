@@ -9,6 +9,9 @@
   validate --universe CSV [--orders CSV] [--values CSV]
                                   reproduce the N100's run 9; nothing else is trusted until it passes
   worker [--once]                 run sharemanager's queued backtests through backtest_api (worker.py)
+  indicators [--rebuild NAME] [--coverage]
+                                  bring the indicator store up to date (indicator_job.py); after the nightly fetch
+  data-version                    record what changed in the data since the last version, and print it
 """
 from __future__ import annotations
 
@@ -76,7 +79,12 @@ def cmd_fetch(cfg, a):
     else:
         summary = Fetcher(cfg).run(full=a.full, merge_only=a.merge_only)
     log.info("fetch done: %s", summary)
-    path = write_data_report(load_market(cfg.data_dir), cfg.data_dir)
+    from .data_version import record
+    m = load_market(cfg.data_dir)
+    rec = record(cfg, "fetch --full" if a.full else "fetch --merge-only" if a.merge_only else "fetch",
+                 market=m, full=bool(a.full))
+    log.info("data version %d (%d changes)", rec["version"], rec["changed"])
+    path = write_data_report(m, cfg.data_dir)
     log.info("data report: %s", path)
 
 
@@ -140,6 +148,9 @@ def cmd_universe(cfg, a):
     counted, top_trusts = dict(uni.attrs.get("trusts_counted", {})), dict(uni.attrs.get("trusts_top", {}))
     uni.attrs = {}
     uni.to_parquet(cfg.data_dir / "universe.parquet")
+    from .data_version import record
+    rec = record(cfg, "universe", market=m)
+    log.info("data version %d (%d changes)", rec["version"], rec["changed"])
     last = uni[uni["date"] == uni["date"].max()]
     if counted:
         latest_d = max(counted)
@@ -228,8 +239,9 @@ def explain_missing(cfg, m, symbols, uni) -> dict:
 
 
 def cmd_run(cfg, a):
-    from .strategy import Workspace, load_spec
-    ws = Workspace(cfg)
+    from .indicator_job import workspace
+    from .strategy import load_spec
+    ws = workspace(cfg)
     for path in a.strategy:
         spec = load_spec(path)
         t = time.time()
@@ -242,8 +254,9 @@ def cmd_run(cfg, a):
 
 
 def cmd_signals(cfg, a):
-    from .strategy import Workspace, spec_from_dict
-    ws = Workspace(cfg)
+    from .indicator_job import workspace
+    from .strategy import spec_from_dict
+    ws = workspace(cfg)
     names = FIRST_SIGNALS + ["trend_following", "trending_value"]
     periods = [a.period] if a.period else ["dev", "val"]
     rows = []
@@ -320,7 +333,7 @@ def cmd_report(cfg, a):
 
 
 def cmd_validate(cfg, a):
-    from .strategy import Workspace
+    from .indicator_job import workspace
     from .validate import run9
     v = cfg.data_dir / "validation"
     uni = Path(a.universe) if a.universe else v / "n100_universe_2026-11-18.tsv"
@@ -329,7 +342,7 @@ def cmd_validate(cfg, a):
     replay = None
     if a.replay_targets is not None:
         replay = Path(a.replay_targets) if a.replay_targets else v / "n100_run9_targets.csv"
-    rep = run9(Workspace(cfg), uni, orders if orders.exists() else None, values if values.exists() else None,
+    rep = run9(workspace(cfg), uni, orders if orders.exists() else None, values if values.exists() else None,
                replay_targets=replay)
     pct = lambda x: "-" if x is None else f"{x * 100:+.2f}%"
     print(f"| | N100 run 9 | Research engine ({rep.get('price_basis')}) |\n|---|---|---|")
@@ -350,9 +363,9 @@ def cmd_bench_weights(cfg, a):
     and price-only returns: how much rests on the unchecked caps before 2016."""
     from dataclasses import replace
     from . import engine
-    from .strategy import Workspace
+    from .indicator_job import workspace
     from .universe import membership
-    ws = Workspace(cfg)
+    ws = workspace(cfg)
     member, _ = membership(ws.universe, ws.m.dates)
     member = member.reindex(columns=ws.m.close.columns, fill_value=False)
     tr = engine.benchmarks(ws.m, member, a.start, a.end)["cap_weight"]
@@ -365,6 +378,42 @@ def cmd_bench_weights(cfg, a):
         print(f"{y}: total {t.iloc[-1] / t.iloc[0] - 1:+.1%}, price only {p.iloc[-1] / p.iloc[0] - 1:+.1%}; top: "
               + ", ".join(f"{k} {v:.1%}" for k, v in w.items()))
     print(f"whole period: total {tr.iloc[-1] - 1:+.1%}, price only {px.iloc[-1] - 1:+.1%}")
+
+
+def cmd_indicators(cfg, a):
+    from .indicator_job import run
+    from .indicator_store import IndicatorStore
+    if not a.coverage_only:
+        reports = run(cfg, rebuild=a.rebuild or None, names=a.only or None)
+        for r in reports:
+            if r["ok"]:
+                extra = (f", rebuilt {r.get('dates_rebuilt')} dates from {r.get('rebuilt_from')} for "
+                         f"{r.get('companies_rebuilt')} companies" if r.get("dates_rebuilt") else "")
+                print(f"{r['indicator']}: {r['action']}{' (' + r['why'] + ')' if r.get('why') else ''}, "
+                      f"{r['dates_added']} dates added{extra}, {r['companies_covered']} companies on the last "
+                      f"date, {r['seconds']}s")
+            else:
+                print(f"{r['indicator']}: FAILED in {r['seconds']}s: {r['reason']}")
+        failed = [r["indicator"] for r in reports if not r["ok"]]
+    else:
+        failed = []
+    if a.coverage or a.coverage_only:
+        cov = IndicatorStore.for_config(cfg).coverage()
+        for _, c in cov.iterrows():
+            years = ", ".join(f"{y}: {n}" for y, n in sorted(c["companies_per_year"].items()))
+            print(f"{c['indicator']}: {c['first']} to {c['last']} ({c['dates']} dates, {c['calendar']}), version "
+                  f"{c['version']}, data version {c['data_version']}; companies a year: {years}")
+    if failed:
+        sys.exit(f"failed: {', '.join(failed)}")
+
+
+def cmd_data_version(cfg, a):
+    from .data_version import changes_since, record
+    rec = record(cfg, "by hand", full=a.full)
+    print(f"data version {rec['version']}: {rec['changed']} company/panel changes recorded now")
+    ch = changes_since(cfg.data_dir, max(0, rec["version"] - 1))
+    if len(ch):
+        print(ch.groupby(["version", "reason", "panel"]).size().to_string())
 
 
 def cmd_worker(cfg, a):
@@ -406,13 +455,22 @@ def main(argv=None):
     s.add_argument("--top", type=int, default=5)
     s = sub.add_parser("worker", help="run sharemanager's queued backtests, one at a time (worker.py)")
     s.add_argument("--once", action="store_true", help="claim and run at most one, then stop")
+    s = sub.add_parser("indicators", help="bring the indicator store up to date (indicator_job.py)")
+    s.add_argument("--rebuild", action="append", metavar="NAME",
+                   help="rebuild this indicator whole (a name builds every price basis of it; repeatable)")
+    s.add_argument("--only", action="append", metavar="NAME", help="only these definitions (repeatable)")
+    s.add_argument("--coverage", action="store_true", help="then print each indicator's coverage")
+    s.add_argument("--coverage-only", action="store_true", help="print the coverage and change nothing")
+    s = sub.add_parser("data-version", help="record what changed in the data since the last version")
+    s.add_argument("--full", action="store_true", help="record a change to everything (after a full re-fetch)")
     a = p.parse_args(argv)
     cfg = load_config(a.config)
     _setup_logging(cfg)
     try:
         {"fetch": cmd_fetch, "cap-trace": cmd_cap_trace, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
          "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate,
-         "worker": cmd_worker, "bench-weights": cmd_bench_weights}[a.cmd](cfg, a)
+         "worker": cmd_worker, "bench-weights": cmd_bench_weights, "indicators": cmd_indicators,
+         "data-version": cmd_data_version}[a.cmd](cfg, a)
     except Exception as e:     # never let a key reach the terminal in a traceback
         log.error("%s failed: %s", a.cmd, mask(e))
         if __import__("os").environ.get("RESEARCH_DEBUG"):
