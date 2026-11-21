@@ -3,6 +3,8 @@
     require_once("constants.php");
     include("functions.php");
 	include("share_functions.php");
+	/* Which statistics the Mac mini owns and publishes; those are not worked out here. */
+	require_once(__DIR__ . "/data_ownership.php");
 	
 	log_job("get_statistics");
 
@@ -42,6 +44,10 @@
 	    //Get statistics to calculate
 		$indicators=get_stats_indicators();
 		foreach ($indicators as $indicator){
+
+			/* Published by the Mac mini (data_import): not worked out here once it has
+			   published. They are still ranked below. */
+			if (data_published_statistic($indicator["name"]) && data_mac_mini_publishes()) { continue; }
 	
 			print_r( $indicator);
 			//write_log("get_statistics.php","Indicator=".$indicator["name"]);

@@ -22,7 +22,7 @@ Data goes to `~/sharemanager-research/data/` as Parquet, reports to `~/sharemana
 | 3 | `uv run research indicators --coverage` | every indicator worked out for the whole history and stored; the coverage printed |
 | 4 | `uv run research validate` | must pass before anything else is trusted; reads the three files in `data/validation/` |
 | 5 | `uv run research signals` | one comparison table for Dale |
-| nightly | `uv run research fetch && uv run research indicators` | top-up: new prices, market caps and statements, then the new day for every indicator |
+| nightly | `deploy/nightly.sh` at 00:30: `research fetch && research indicators && research publish` | top-up, then the new day for every indicator, then the publish to the N100 |
 | any time | `uv run research fetch --merge-only` | no downloads: merge, master pass, price cleaning, data report |
 
 After every merge, `master.py` makes a second pass over the symbol master using the prices. It sets each line's quote currency and market-cap currency from price × shares, because FMP's profile currency is sometimes the reporting currency. It also drops loan stock and bond-like series, second share classes, and a second London line under the same company name (INVP/INVR).
@@ -79,6 +79,17 @@ The engine does not work out indicators. How an indicator is defined (`indicator
 - **The job.** After the nightly fetch: adds the new days to every indicator; rebuilds whole any whose version changed; for every recorded change since its data version, rebuilds the affected companies from the first affected date (every company, for an indicator ranked across the universe, `value_composite` and `trending_value`, or after an FX or universe change). One failing does not stop the others; each is logged in `logs/indicator_job.jsonl`. It does not run while the worker has a run in hand, and the worker claims nothing while it runs. `research indicators --rebuild NAME` rebuilds one whole.
 - **The engine.** Reads every ranking, screen and exit value from the store, on the run's price basis, and refuses to start, naming the indicator, if one is missing, built by an older definition, or built from an older data version. Each run records the version and data version of every indicator it read (`indicators`) and the data version (`data_version`). Blends, screens, quintiles, hold rank, the drift band and the two-closes exit stay in the engine. The engine imports nothing from `indicators/` (a test checks it).
 - **Disk.** Each indicator is about 30 to 45 MB for 800 companies over 20 years (the calendar-day ones are the larger), about 1.5 GB for all of them.
+
+## The publish to the N100 (data_publish)
+
+The Mac mini is the one source of prices and of `close_price`, `ma50`, `ma200`, `1mnth`, `3mnth`, `6mnth` and `12mnth` (Dale, 21 Nov 2026). `uv run research publish` (`publish.py`) sends them to the N100 through `data_api.php` (the data_import module), never through `backtest_api`. Its docstring has the detail; in short:
+
+- It sends nothing unless the last `research fetch` finished (`logs/fetch_last.json`) and each published indicator's last job entry is ok and built from the current data version.
+- It asks the N100 for its symbols and the data version it holds, and sends every date added or changed since then, trading days only, prices as raw closes in the N100's unit (pence) and the averages in pence too.
+- Batches, then a close; a failure sends `abort` and the N100 keeps its previous version. N100 symbols with no data here are named.
+- `--full` sends 2021 to date (the first publish). `--dry-run` sends nothing. Each publish writes `reports/publish-<id>.md`: rows replaced, symbols missing, and the largest differences against the N100's old values per statistic.
+
+Add `SM_DATA_API_URL=http://<n100 tailscale name>/data_api.php` to `worker.env`; the token is the worker's.
 
 ## Sharemanager's backtests (the worker)
 

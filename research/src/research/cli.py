@@ -60,8 +60,18 @@ def _setup_logging(cfg) -> None:
         root.addHandler(h)
 
 
+def _fetch_marker(cfg, **fields) -> None:
+    """logs/fetch_last.json: whether the last fetch finished. `research publish` sends nothing after one that did not."""
+    import datetime as _dt
+    import json as _json
+    p = cfg.p("logs") / "fetch_last.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps({"time": _dt.datetime.now().isoformat(timespec="seconds"), **fields}))
+
+
 def cmd_fetch(cfg, a):
     from .checks import write_data_report
+    _fetch_marker(cfg, ok=False, started=time.strftime("%Y-%m-%d %H:%M:%S"))
     from .fetch import Fetcher
     from .store import load_market
     if a.profile_country:
@@ -86,6 +96,7 @@ def cmd_fetch(cfg, a):
     log.info("data version %d (%d changes)", rec["version"], rec["changed"])
     path = write_data_report(m, cfg.data_dir)
     log.info("data report: %s", path)
+    _fetch_marker(cfg, ok=True, data_version=rec["version"])
 
 
 def cmd_cap_trace(cfg, a):
@@ -416,6 +427,11 @@ def cmd_data_version(cfg, a):
         print(ch.groupby(["version", "reason", "panel"]).size().to_string())
 
 
+def cmd_publish(cfg, a):
+    from .publish import main as publish_main
+    publish_main(cfg, full=a.full, dry_run=a.dry_run)
+
+
 def cmd_worker(cfg, a):
     from .worker import main as worker_main
     worker_main(cfg, once=a.once)
@@ -461,6 +477,9 @@ def main(argv=None):
     s.add_argument("--only", action="append", metavar="NAME", help="only these definitions (repeatable)")
     s.add_argument("--coverage", action="store_true", help="then print each indicator's coverage")
     s.add_argument("--coverage-only", action="store_true", help="print the coverage and change nothing")
+    s = sub.add_parser("publish", help="send prices and the published statistics to the N100 (publish.py)")
+    s.add_argument("--full", action="store_true", help="the whole history since 2021 (the first publish)")
+    s.add_argument("--dry-run", action="store_true", help="work out what would be sent; send nothing")
     s = sub.add_parser("data-version", help="record what changed in the data since the last version")
     s.add_argument("--full", action="store_true", help="record a change to everything (after a full re-fetch)")
     a = p.parse_args(argv)
@@ -470,7 +489,7 @@ def main(argv=None):
         {"fetch": cmd_fetch, "cap-trace": cmd_cap_trace, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
          "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate,
          "worker": cmd_worker, "bench-weights": cmd_bench_weights, "indicators": cmd_indicators,
-         "data-version": cmd_data_version}[a.cmd](cfg, a)
+         "data-version": cmd_data_version, "publish": cmd_publish}[a.cmd](cfg, a)
     except Exception as e:     # never let a key reach the terminal in a traceback
         log.error("%s failed: %s", a.cmd, mask(e))
         if __import__("os").environ.get("RESEARCH_DEBUG"):

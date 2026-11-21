@@ -60,18 +60,18 @@ fi
 PROVIDER="${SM_DATA_PROVIDER:-eodhd}"
 echo "refresh_all: $(date '+%Y-%m-%d %H:%M:%S') provider=$PROVIDER app=$APP_DIR"
 
-# Prices first. The as of date every later job keys on is the newest date in
-# historical_prices, so the session's prices have to be in before anything
-# resolves it: the fundamentals loader stamps stock_info with that date,
-# get_api_stats.py reads stock_info back at exactly that date, and
-# get_statistics.php ranks it. Loading the prices after them left the Python
-# half of the run a day behind the PHP half, and the join between them finds
-# nothing when they disagree.
+# Prices and the published statistics come from the Mac mini, never from FMP
+# here (Dale, 21 Nov 2026; includes/data_ownership.php lists who owns what).
+# It publishes through data_import after its own refresh at 00:30; this waits,
+# polling until 03:30, for a closed publish covering the latest trading day.
+# It goes first for the reason the price fetch used to: the as of date every
+# later job keys on is the newest date in historical_prices.
 #
-# If the price load fails, every job behind it keys on the previous session
-# instead, which is the right way to degrade: a complete set of figures for
-# the last day the market was open beats half a set for today.
-"$PHP" "$APP_DIR/includes/get_share_prices.php"
+# No publish by then: the jobs below still run on the last day that was
+# published, but no strategy is planned tonight. The wait logs why and emails
+# Dale. Nothing here fetches prices in its place.
+PUBLISHED=1
+"$PHP" "$APP_DIR/includes/data_publish_wait.php" || PUBLISHED=0
 
 # Fundamentals, from whichever provider is configured. Both are supported; see
 # python/README-fmp.md and python/README-eodhd.md. fetch_stock_info.py
@@ -103,10 +103,6 @@ fi
 # 85% scored nought, which is what regulatory announcements are here to fix.
 "$PHP" "$APP_DIR/includes/fetch_rns.php" || echo "refresh_all: announcements failed" >&2
 
-# Incremental by default (most recent as of date per symbol). To rebuild
-# history run manually with a date range, e.g.
-#   php /var/www/sharemanager/includes/get_momentum_statistics.php 2015-01-01 2025-12-31
-"$PHP" "$APP_DIR/includes/get_momentum_statistics.php"
 "$PHP" "$APP_DIR/includes/get_statistics.php"
 "$PHP" "$APP_DIR/includes/performance_function.php"
 
@@ -146,7 +142,11 @@ fi
 # decide what to hold tonight is a strategy that does nothing tonight, which
 # is a worse page rather than a broken database - and the one job after this
 # has nothing to do with strategies.
-"$PHP" "$APP_DIR/includes/run_strategies.php" || echo "refresh_all: strategies failed" >&2
+if [ "$PUBLISHED" = 1 ]; then
+  "$PHP" "$APP_DIR/includes/run_strategies.php" || echo "refresh_all: strategies failed" >&2
+else
+  echo "refresh_all: no publish from the Mac mini for the latest trading day; no strategy planned tonight" >&2
+fi
 
 # What the broker says we hold. After the strategies, because it is a record
 # of somebody else's account rather than an input to anything here: nothing in

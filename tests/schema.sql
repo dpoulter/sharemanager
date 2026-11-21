@@ -31,6 +31,11 @@ drop table if exists strategy_rules, strategy_values, strategy_backtest_runs;
 -- blind when nothing in this run had been.
 drop table if exists broker_order_book_state;
 
+-- The Mac mini's publishes (sql/data_import.sql): a publish left from an
+-- earlier run would tell get_statistics.php the Mac mini owns the published
+-- statistics before this run's data_import tests have made one.
+drop table if exists data_publishes, data_import_batches, data_import_prices, data_import_statistics;
+
 -- The live orders tables (sql/strategy_live.sql). Dropped for the reason
 -- above, and one more: they hold the record of who armed an account and what
 -- was approved, so a row from an earlier run is a row the next run's expiry,

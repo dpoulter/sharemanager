@@ -9685,16 +9685,16 @@
         }
         return -1;
     };
-    check('the nightly run loads prices before the fundamentals',
-          $cx_line('get_share_prices.php') >= 0
-          && $cx_line('get_share_prices.php') < $cx_line('fetch_fmp_fundamentals.py')
-          && $cx_line('get_share_prices.php') < $cx_line('fetch_eodhd_fundamentals.py'),
-          'prices on line ' . $cx_line('get_share_prices.php')
+    check('the nightly run waits for the Mac mini\'s prices before the fundamentals',
+          $cx_line('data_publish_wait.php') >= 0
+          && $cx_line('data_publish_wait.php') < $cx_line('fetch_fmp_fundamentals.py')
+          && $cx_line('data_publish_wait.php') < $cx_line('fetch_eodhd_fundamentals.py'),
+          'prices on line ' . $cx_line('data_publish_wait.php')
           . ', fmp on ' . $cx_line('fetch_fmp_fundamentals.py'));
     check('and before the job that reads the loader back',
-          $cx_line('get_share_prices.php') < $cx_line('get_api_stats.py'));
+          $cx_line('data_publish_wait.php') < $cx_line('get_api_stats.py'));
     check('and before the statistics job that ranks the result',
-          $cx_line('get_share_prices.php') < $cx_line('get_statistics.php'));
+          $cx_line('data_publish_wait.php') < $cx_line('get_statistics.php'));
 
     echo "\n--- the currency settings are configuration, not code ---\n";
 
@@ -20304,6 +20304,208 @@ STUB
 
         @unlink($jar);
     }
+
+
+    /* ---------------- data_import, data_publish's N100 side, and the nightly wait ---------------- */
+
+    echo "\n--- data_import: the Mac mini's publish ---\n";
+
+    require_once(dirname(__DIR__) . '/includes/data_import.php');
+    require_once(dirname(__DIR__) . '/includes/data_publish_wait.php');
+
+    $DI_TOKEN = 'test-data-token-' . bin2hex(random_bytes(6));
+    putenv('SM_BACKTEST_API_TOKEN=' . $DI_TOKEN);
+    $di_api = function ($body, $ip = '100.101.102.104', $token = null) use (&$DI_TOKEN) {
+        $token = $token ?? $DI_TOKEN;
+        return data_import_handle(['method' => 'POST', 'remote_addr' => $ip,
+                                   'authorization' => $token === '' ? '' : 'Bearer ' . $token,
+                                   'body' => json_encode($body)]);
+    };
+    $di_print = function () {
+        return [scalar("select concat(count(*), ':', coalesce(sum(crc32(concat_ws('|', symbol, exchange, date, price))), 0)) from historical_prices"),
+                scalar("select concat(count(*), ':', coalesce(sum(crc32(concat_ws('|', symbol, exchange, date, indicator, value, coalesce(stat_rank,''), coalesce(percentile,'')))), 0)) from statistics")];
+    };
+    db()->exec("delete from data_publishes"); db()->exec("delete from data_import_batches");
+    db()->exec("delete from data_import_prices"); db()->exec("delete from data_import_statistics");
+
+    $di_syms = array_column(rows("select symbol from stock_symbols where exchange='XLON' and enabled='Y' order by symbol limit 2"), 'symbol');
+    [$di_s1, $di_s2] = $di_syms;
+    $di_days = array_column(rows("select distinct date from historical_prices where exchange='XLON' and symbol=? order by date desc limit 5", [$di_s1]), 'date');
+    sort($di_days);
+    $di_from = $di_days[0];
+    $di_old_price = (float) scalar("select price from historical_prices where symbol=? and exchange='XLON' and date=?", [$di_s1, $di_from]);
+    /* What the strategies read beside the published rows: an N100-owned
+       statistic, a rank on a published one, and a carried weekend row. */
+    db()->prepare("delete from statistics where symbol=? and exchange='XLON' and date>=? and indicator in ('close_price','ma200','di_n100_owned')")->execute([$di_s1, $di_from]);
+    db()->prepare("insert into statistics (symbol, date, indicator, value, exchange, stat_rank, percentile) values (?,?,?,?,?,?,?)")
+        ->execute([$di_s1, $di_from, 'close_price', 1, 'XLON', 7, 42.5]);
+    db()->prepare("insert into statistics (symbol, date, indicator, value, exchange) values (?,?,?,?,?)")
+        ->execute([$di_s1, $di_from, 'di_n100_owned', 5, 'XLON']);
+    $di_sunday = date('Y-m-d', strtotime('next sunday', strtotime($di_from)));
+    db()->prepare("insert into statistics (symbol, date, indicator, value, exchange) values (?,?,?,?,?)")
+        ->execute([$di_s1, $di_sunday, 'ma200', 99, 'XLON']);
+    $di_s2_before = scalar("select concat(count(*), ':', coalesce(sum(crc32(concat_ws('|', date, price))), 0)) from historical_prices where symbol=?", [$di_s2]);
+
+    $di_prices = []; $di_stats = [];
+    foreach ($di_days as $d) {
+        $p = (float) scalar("select price from historical_prices where symbol=? and exchange='XLON' and date=?", [$di_s1, $d]);
+        $di_prices[] = [$di_s1, $d, round($p * 1.01 + 0.5, 4)];
+        $di_stats[] = [$di_s1, $d, 'close_price', round($p * 1.01 + 0.5, 4)];
+        $di_stats[] = [$di_s1, $d, 'ma200', 123.25];
+    }
+
+    /* Test 4: the door. */
+    $di_log0 = (int) scalar("select coalesce(max(id),0) from message_log");
+    [$a1] = $di_api(['action' => 'symbols'], '100.101.102.104', '');
+    [$a2] = $di_api(['action' => 'symbols'], '100.101.102.104', 'wrong-' . $DI_TOKEN);
+    [$a3] = $di_api(['action' => 'symbols'], '203.0.113.9');
+    [$a4] = $di_api(['action' => 'symbols'], '192.168.1.20');
+    check('data_import test 4: no token, a wrong token and a caller outside Tailscale are refused',
+          [$a1, $a2, $a3, $a4] === [401, 401, 403, 403], json_encode([$a1, $a2, $a3, $a4]));
+    $di_logged = rows("select message_text from message_log where id > ? and module='data_import'", [$di_log0]);
+    check('and each refusal is logged, without the token',
+          count($di_logged) === 4 && strpos(json_encode($di_logged), $DI_TOKEN) === false, json_encode($di_logged));
+    check('a GET with the right token is refused',
+          data_import_handle(['method' => 'GET', 'remote_addr' => '100.64.0.9', 'authorization' => 'Bearer ' . $DI_TOKEN, 'body' => ''])[0] === 405);
+
+    [$st, $sy] = $di_api(['action' => 'symbols']);
+    check('symbols hands out the N100\'s enabled symbols and no data version before the first publish',
+          $st === 200 && in_array($di_s1, $sy['symbols'], true) && $sy['data_version'] === null
+          && $sy['statistics'] === DATA_PUBLISHED_STATISTICS, json_encode($sy));
+
+    /* Test 3: refused rows. */
+    $di_p0 = $di_print();
+    $di_bad = [
+        'a symbol not in stock_symbols' => ['prices' => [['NOSUCH', $di_from, 1.0]]],
+        'a statistic the N100 owns'     => ['statistics' => [[$di_s1, $di_from, 'value_score', 1.0]]],
+        'a statistic nobody has'        => ['statistics' => [[$di_s1, $di_from, 'pe_ratio', 1.0]]],
+        'a weekend statistic'           => ['statistics' => [[$di_s1, $di_sunday, 'ma200', 1.0]]],
+        'a price that is text'          => ['prices' => [[$di_s1, $di_from, 'lots']]],
+    ];
+    foreach ($di_bad as $what => $rows_) {
+        [$s, $o] = $di_api(array_merge(['action' => 'batch', 'publish_id' => 'bad-publish-0001', 'seq' => 0,
+                                         'prices' => [[$di_s1, $di_from, 2.0]]], $rows_));
+        check("data_import test 3: a batch with $what is refused whole, and says why",
+              $s === 409 && !$o['ok'] && (int) scalar("select count(*) from data_import_prices") === 0
+              && (int) scalar("select count(*) from data_import_statistics") === 0, json_encode($o));
+    }
+
+    /* Test 1: batches that never close change nothing. */
+    $di_pid = 'test-unclosed-0001';
+    [$s1] = $di_api(['action' => 'batch', 'publish_id' => $di_pid, 'seq' => 0, 'prices' => $di_prices, 'statistics' => []]);
+    [$s2] = $di_api(['action' => 'batch', 'publish_id' => $di_pid, 'seq' => 1, 'prices' => [], 'statistics' => $di_stats]);
+    [$s3, $o3] = $di_api(['action' => 'batch', 'publish_id' => $di_pid, 'seq' => 1, 'prices' => [], 'statistics' => $di_stats]);
+    check('two batches are staged, and a batch sent twice is refused', $s1 === 200 && $s2 === 200 && $s3 === 409, json_encode($o3));
+    check('data_import test 1: a publish that sends batches and never closes leaves historical_prices and statistics unchanged',
+          $di_print() === $di_p0 && (int) scalar("select count(*) from data_publishes") === 0);
+    [$sc, $oc] = $di_api(['action' => 'close', 'publish_id' => $di_pid, 'data_version' => 41, 'full' => false,
+                          'replace_from' => [$di_s1 => $di_from], 'batches' => 2, 'price_rows' => count($di_prices) + 1,
+                          'statistic_rows' => count($di_stats), 'missing' => []]);
+    check('a close whose counts do not match what was staged is refused and changes nothing',
+          $sc === 409 && stripos($oc['why'], 'incomplete') !== false && $di_print() === $di_p0, json_encode($oc));
+    [$sa] = $di_api(['action' => 'abort', 'publish_id' => $di_pid]);
+    check('abort throws the staged rows away', $sa === 200 && (int) scalar("select count(*) from data_import_prices") === 0
+          && $di_print() === $di_p0);
+
+    /* Test 2: a closed publish replaces exactly the rows sent. */
+    $di_pid = 'test-closed-0002';
+    $di_api(['action' => 'batch', 'publish_id' => $di_pid, 'seq' => 0, 'prices' => $di_prices, 'statistics' => $di_stats]);
+    [$sc, $oc] = $di_api(['action' => 'close', 'publish_id' => $di_pid, 'data_version' => 42, 'full' => false,
+                          'replace_from' => [$di_s1 => $di_from], 'batches' => 1, 'price_rows' => count($di_prices),
+                          'statistic_rows' => count($di_stats), 'missing' => ['GONE']]);
+    check('data_import test 2: the close is accepted', $sc === 200 && $oc['ok'], json_encode($oc));
+    $di_now = rows("select date, price from historical_prices where symbol=? and exchange='XLON' and date>=? order by date", [$di_s1, $di_from]);
+    check('the symbol\'s prices from the date on are exactly the rows sent',
+          array_map(function ($r) { return [$r['date'], round((float) $r['price'], 4)]; }, $di_now)
+          === array_map(function ($r) { return [$r[1], $r[2]]; }, $di_prices), json_encode($di_now));
+    check('the published statistics from the date on are exactly the rows sent, and the weekend row is gone',
+          (int) scalar("select count(*) from statistics where symbol=? and exchange='XLON' and date>=? and indicator in ('close_price','ma200')", [$di_s1, $di_from]) === count($di_stats)
+          && (int) scalar("select count(*) from statistics where symbol=? and date=?", [$di_s1, $di_sunday]) === 0);
+    check('the rank and percentile on a replaced row are kept',
+          (int) scalar("select stat_rank from statistics where symbol=? and date=? and indicator='close_price'", [$di_s1, $di_from]) === 7
+          && (float) scalar("select percentile from statistics where symbol=? and date=? and indicator='close_price'", [$di_s1, $di_from]) === 42.5);
+    check('an N100-owned statistic and another symbol\'s prices are untouched',
+          (float) scalar("select value from statistics where symbol=? and date=? and indicator='di_n100_owned'", [$di_s1, $di_from]) === 5.0
+          && scalar("select concat(count(*), ':', coalesce(sum(crc32(concat_ws('|', date, price))), 0)) from historical_prices where symbol=?", [$di_s2]) === $di_s2_before);
+    $di_pub = rows("select * from data_publishes where publish_id=?", [$di_pid]);
+    check('the publish is recorded: data version, latest date, rows, the symbols missing',
+          count($di_pub) === 1 && (int) $di_pub[0]['data_version'] === 42 && $di_pub[0]['latest_date'] === end($di_days)
+          && (int) $di_pub[0]['price_rows'] === count($di_prices) && json_decode($di_pub[0]['symbols_missing'], true) === ['GONE'],
+          json_encode($di_pub));
+    check('the close reports the differences against the old values',
+          $oc['differences']['price']['compared'] === count($di_prices) && $oc['differences']['price']['differing'] >= 1
+          && (float) $oc['differences']['price']['largest'][0]['old_value'] > 0, json_encode($oc['differences']['price']));
+    check('nothing is left staged after the close',
+          (int) scalar("select count(*) from data_import_prices") + (int) scalar("select count(*) from data_import_statistics")
+          + (int) scalar("select count(*) from data_import_batches") === 0);
+    [, $sy] = $di_api(['action' => 'symbols']);
+    check('symbols now says the N100 holds data version 42', $sy['data_version'] === 42);
+    [$sc] = $di_api(['action' => 'close', 'publish_id' => 'test-older-0003', 'data_version' => 40, 'full' => false,
+                     'replace_from' => [], 'batches' => 0, 'price_rows' => 0, 'statistic_rows' => 0, 'missing' => []]);
+    check('a publish older than the version held is refused', $sc === 409);
+    check('data_import writes no table but its own and the two it replaces',
+          preg_match_all('~(?:insert\s+into|update|delete\s+\w*\s*from)\s+(\w+)~i',
+                         (string) file_get_contents(dirname(__DIR__) . '/includes/data_import.php'), $di_m) > 0
+          && array_diff(array_unique(array_map('strtolower', $di_m[1])),
+                        ['historical_prices', 'statistics', 'data_import_prices', 'data_import_statistics',
+                         'data_import_batches', 'data_publishes', 'data_import_ranges', 'message_log', 'h', 's']) === [],
+          json_encode(array_unique($di_m[1] ?? [])));
+
+    /* Test 5: the nightly job waits for the publish, and plans nothing without one. */
+    echo "\n--- nightly_job: the wait for the Mac mini ---\n";
+    check('the latest trading day skips weekends and bank holidays',
+          data_wait_expected_day('2026-11-24') === '2026-11-23' && data_wait_expected_day('2026-11-23') === '2026-11-20'
+          && data_wait_expected_day('2026-12-29') === '2026-12-24');
+    $di_after = date('Y-m-d', strtotime(end($di_days) . ' +10 days'));
+    $di_log0 = (int) scalar("select coalesce(max(id),0) from message_log");
+    [$out, $rc] = run_script('data_publish_wait.php', ['--today=' . $di_after, '--once']);
+    $di_why = rows("select message_text from message_log where id > ? and module='nightly_job'", [$di_log0]);
+    check('data_import test 5: with no publish for the day the wait gives up, says no strategy is planned, and why',
+          $rc === 3 && count($di_why) === 1 && stripos($di_why[0]['message_text'], 'no strategy planned') !== false
+          && strpos($di_why[0]['message_text'], 'test-closed-0002') !== false, $out . json_encode($di_why));
+    check('and says whether Dale was told (no SMTP host in the suite: no email sent, and it says so)',
+          stripos($di_why[0]['message_text'], 'no email sent') !== false);
+    [$out, $rc] = run_script('data_publish_wait.php', ['--today=' . date('Y-m-d', strtotime(end($di_days) . ' +1 day')), '--once']);
+    check('with a publish covering the latest trading day it lets the strategies run', $rc === 0, $out);
+
+    /* refresh_all.sh, against stand-in jobs that record that they ran. */
+    $di_app = sys_get_temp_dir() . '/sm_refresh_' . bin2hex(random_bytes(4));
+    @mkdir("$di_app/includes", 0777, true); @mkdir("$di_app/python", 0777, true);
+    $di_ran = "$di_app/ran.txt";
+    copy(dirname(__DIR__) . '/includes/refresh_all.sh', "$di_app/includes/refresh_all.sh");
+    foreach (['data_publish_wait.php', 'get_share_prices.php', 'get_momentum_statistics.php', 'fetch_rns.php', 'get_statistics.php',
+              'performance_function.php', 'write_market_breadth.php', 'run_strategies.php', 'sync_broker.php'] as $f) {
+        $exit = $f === 'data_publish_wait.php' ? '(int) getenv("STUB_WAIT")' : '0';
+        file_put_contents("$di_app/includes/$f", "<?php file_put_contents('$di_ran', '$f' . PHP_EOL, FILE_APPEND); exit($exit);");
+    }
+    file_put_contents("$di_app/py", "#!/bin/sh\necho \"\$(basename \"\$1\")\" >> '$di_ran'\n"); chmod("$di_app/py", 0755);
+    file_put_contents("$di_app/env", "SM_DATA_PROVIDER=fmp\n");
+    $di_refresh = function ($wait) use ($di_app, $di_ran) {
+        @unlink($di_ran);
+        exec('STUB_WAIT=' . (int) $wait . ' SM_APP_DIR=' . escapeshellarg($di_app) . ' SM_ENV_FILE=' . escapeshellarg("$di_app/env")
+             . ' SM_PYTHON=' . escapeshellarg("$di_app/py") . ' bash ' . escapeshellarg("$di_app/includes/refresh_all.sh") . ' 2>&1', $o);
+        return [array_map('trim', file($di_ran)), implode("\n", $o)];
+    };
+    [$di_r0, $di_o0] = $di_refresh(0);
+    [$di_r3, $di_o3] = $di_refresh(3);
+    check('the nightly job with a publish waits first, then plans the strategies as before',
+          $di_r0[0] === 'data_publish_wait.php' && in_array('run_strategies.php', $di_r0, true)
+          && array_search('get_statistics.php', $di_r0) < array_search('run_strategies.php', $di_r0), json_encode($di_r0));
+    check('without one it plans no strategy, says so, and the other N100 jobs still run',
+          !in_array('run_strategies.php', $di_r3, true) && in_array('get_statistics.php', $di_r3, true)
+          && in_array('sync_broker.php', $di_r3, true) && stripos($di_o3, 'no strategy planned') !== false, json_encode($di_r3) . $di_o3);
+    check('it never fetches prices or works out momentum itself, published or not',
+          !array_intersect(['get_share_prices.php', 'get_momentum_statistics.php'], array_merge($di_r0, $di_r3)));
+    /* Once the Mac mini has published, get_statistics.php works out none of
+       its statistics (and still works out the N100's own). */
+    $di_asof = asof_date();
+    db()->prepare("delete from statistics where exchange='XLON' and date=? and indicator in ('close_price','ma50','ma200','1mnth','3mnth','6mnth','12mnth','high_52w')")->execute([$di_asof]);
+    [$out, $rc] = run_script('get_statistics.php');
+    check('after the first publish get_statistics.php works out no statistic the Mac mini publishes, and still its own',
+          $rc === 0
+          && (int) scalar("select count(*) from statistics where date=? and indicator in ('close_price','ma50','ma200','1mnth','3mnth','6mnth','12mnth')", [$di_asof]) === 0
+          && (int) scalar("select count(*) from statistics where date=? and indicator='high_52w'", [$di_asof]) > 0, substr($out, -400));
+    exec('rm -rf ' . escapeshellarg($di_app));
 
     if ($pid > 0) { exec("kill $pid 2>/dev/null"); }
     if (!empty($stub_pid)) { exec("kill $stub_pid 2>/dev/null"); }
