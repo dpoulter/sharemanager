@@ -19,6 +19,9 @@ Sent, for every N100 symbol, in the N100's own units:
                         from the store's `<name>@raw`, turned from pounds back to the quote unit
     1mnth 3mnth 6mnth 12mnth
                         per cent, as stored
+    piotroski_score, book_to_market
+                        the accounts indicators (brief of 22 Nov 2026), stored once
+                        (no price basis), as stored, with their whole history
 
 Statistics for trading days only: the weekend and holiday rows the store keeps
 for backtests are never sent, so the N100's live 200-day exit counts trading
@@ -30,6 +33,16 @@ holds. For each symbol, the first date whose prices changed since then
 day after the N100's latest date, whichever is earlier; from there to the last
 date, prices and statistics, replacing what the N100 has from that date on.
 With --full, or before the first publish, 2021-01-01 for every symbol.
+
+The accounts indicators (ACCOUNTS) go further back than the prices: their
+whole history, from the first date the store holds, is sent on --full, the
+first publish, and whenever the stored version is not the one the last
+successful publish sent (a new definition rebuilds them whole). Otherwise,
+for each symbol, from the earliest date a change to the data they read
+(statements, market caps, FX) touches, or from the prices' date if that is
+earlier. The close names those dates per indicator and symbol
+(`statistic_from`); the N100 replaces each indicator's rows for a symbol from
+the earlier of that and the symbol's replace_from.
 
 Whole or nothing: batches, then a closing call with the data version. A
 failure part way sends `abort`, and the N100 stays on its previous version
@@ -76,6 +89,8 @@ from .engine import n100_symbol_key
 log = logging.getLogger("research.publish")
 
 PUBLISHED = ["close_price", "ma50", "ma200", "1mnth", "3mnth", "6mnth", "12mnth"]
+# Read no prices, so stored once as `<name>`; sent with their whole history (the docstring).
+ACCOUNTS = ["piotroski_score", "book_to_market"]
 IN_POUNDS = {"close_price", "ma50", "ma200"}       # stored in pounds; the N100 holds the quote unit
 BASIS = "raw"                                      # the N100 prices on the raw close
 FULL_FROM = pd.Timestamp("2021-01-01")
@@ -178,16 +193,15 @@ def check_ready(cfg, market, store, extra_market=None, extra_store=None) -> int:
             except ValueError:
                 continue
             last_jobs[r.get("indicator")] = r
-    _check_built(store, market, last_jobs, version, "")
+    _check_built(store, market, last_jobs, version, "", [f"{n}@{BASIS}" for n in PUBLISHED] + ACCOUNTS)
     if extra_market is not None:
-        _check_built(extra_store, extra_market, last_jobs, version, "n100_extra/")
+        _check_built(extra_store, extra_market, last_jobs, version, "n100_extra/", [f"{n}@{BASIS}" for n in PUBLISHED])
     return version
 
 
-def _check_built(store, market, last_jobs: dict, version: int, prefix: str) -> None:
+def _check_built(store, market, last_jobs: dict, version: int, prefix: str, keys: list[str]) -> None:
     last_day = market.dates[-1]
-    for name in PUBLISHED:
-        k = f"{name}@{BASIS}"
+    for k in keys:
         job = last_jobs.get(prefix + k)
         k = prefix + k
         if job is None:
@@ -249,23 +263,78 @@ def replace_from(cfg, mapping: dict[str, str], held_version, held_latest, full: 
     return out
 
 
-def rows_to_send(market, store, mapping: dict[str, str], starts: dict[str, pd.Timestamp]):
-    """(prices, statistics): lists of [symbol, date, price] and [symbol, date, indicator, value], trading days only."""
+def sent_versions(cfg) -> dict[str, str]:
+    """Each accounts indicator -> the stored version the last successful publish sent."""
+    p = cfg.p("logs") / "publish.jsonl"
+    out: dict[str, str] = {}
+    if p.exists():
+        for line in p.read_text().splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("ok") and not r.get("dry_run") and isinstance(r.get("accounts_versions"), dict):
+                out = dict(r["accounts_versions"])
+    return out
+
+
+def accounts_from(cfg, store, mapping: dict[str, str], starts: dict[str, pd.Timestamp], held_version,
+                  held_latest, full: bool) -> tuple[dict[str, dict[str, pd.Timestamp]], list[str]]:
+    """({indicator: {N100 symbol: first date sent}}, the indicators sent whole) for ACCOUNTS.
+
+    Whole history (from the store's first date) on --full, before the first publish, or when the stored
+    version is not the one last sent; otherwise from the earliest change to what the indicator reads,
+    or the symbol's price start, whichever is earlier.
+    """
+    from .indicators import REGISTRY
+    sent = sent_versions(cfg)
+    out, whole_names = {}, []
+    for name in ACCOUNTS:
+        meta = store.meta(name)
+        first = meta["dates"][0]
+        if full or held_version is None or held_latest is None or sent.get(name) != meta["version"]:
+            out[name] = {n: first for n in mapping}
+            whole_names.append(name)
+            continue
+        per = {n: max(starts[n], first) for n in mapping}
+        uses = set(REGISTRY[name].uses) | {dv.EVERYTHING}
+        ch = dv.changes_since(cfg.data_dir, int(held_version))
+        ch = ch[ch["panel"].map(dv.PANEL_INPUT).isin(uses)]
+        if len(ch):
+            froms = pd.to_datetime(ch["from"])
+            if (ch["symbol"] == dv.EVERYTHING).any() or ch["panel"].isin({dv.EVERYTHING, "fx"}).any():
+                d = froms.min()
+                d = first if pd.isna(d) or ch["panel"].eq(dv.EVERYTHING).any() else max(d, first)
+                per = {n: min(v, d) for n, v in per.items()}
+            else:
+                back = {fmp: n for n, fmp in mapping.items()}
+                for sym, f in zip(ch["symbol"], froms):
+                    n = back.get(sym)
+                    if n is not None:
+                        per[n] = min(per[n], first if pd.isna(f) else max(pd.Timestamp(f), first))
+        out[name] = per
+    return out, whole_names
+
+
+def rows_to_send(market, store, mapping: dict[str, str], starts: dict[str, pd.Timestamp],
+                 accounts: dict[str, dict[str, pd.Timestamp]] | None = None):
+    """(prices, statistics): lists of [symbol, date, price] and [symbol, date, indicator, value], trading days only.
+    `accounts`: the ACCOUNTS indicators to send too, each from its own date per symbol (accounts_from)."""
     from .store import to_pounds_factor
     if not starts:
         return [], []
     first = min(starts.values())
     days = market.dates[(market.dates >= first) & (market.dates.day_of_week < 5)]
-    if not len(days):
-        return [], []
     fmps = list(mapping.values())
-    factor = to_pounds_factor(market.master.loc[fmps], market.fx, days)
-    start_of = pd.Series({fmp: starts[n] for n, fmp in mapping.items()})
-    keep = pd.DataFrame(days.to_numpy()[:, None] >= start_of[fmps].to_numpy()[None, :], index=days, columns=fmps)
     n100_of = {fmp: n for n, fmp in mapping.items()}
 
-    def long(frame: pd.DataFrame, decimals: int) -> pd.DataFrame:
-        f = frame.reindex(index=days, columns=fmps).where(keep)
+    def keep_from(on, start_by_n100) -> pd.DataFrame:
+        start_of = pd.Series({fmp: start_by_n100[n] for n, fmp in mapping.items()})
+        return pd.DataFrame(on.to_numpy()[:, None] >= start_of[fmps].to_numpy()[None, :], index=on, columns=fmps)
+
+    def long(frame: pd.DataFrame, decimals: int, on=None, keep_=None) -> pd.DataFrame:
+        on = days if on is None else on
+        f = frame.reindex(index=on, columns=fmps).where(keep if keep_ is None else keep_)
         s = f.stack().dropna()
         s = s[np.isfinite(s.to_numpy(dtype=float))]
         out = s.round(decimals).rename("value").reset_index()
@@ -274,10 +343,23 @@ def rows_to_send(market, store, mapping: dict[str, str], starts: dict[str, pd.Ti
         out["date"] = pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
         return out
 
+    stats = []
+    for name, per in (accounts or {}).items():
+        built = store.meta(name)["dates"]
+        lo = min(per.values()) if per else None
+        on = built[(built >= lo) & (built.day_of_week < 5)] if lo is not None else built[:0]
+        on = on[on.isin(market.dates)]
+        if not len(on):
+            continue
+        st = long(store.read(name, on).frame, 6, on, keep_from(on, per))
+        stats.extend([s, d, name, float(v)] for s, d, v in zip(st["symbol"], st["date"], st["value"]))
+    if not len(days):
+        return [], stats
+    factor = to_pounds_factor(market.master.loc[fmps], market.fx, days)
+    keep = keep_from(days, starts)
     p = long(market.close / factor, 4)
     p = p[p["value"] > 0]
     prices = [[s, d, float(v)] for s, d, v in zip(p["symbol"], p["date"], p["value"])]
-    stats = []
     for name in PUBLISHED:
         vals = store.read(f"{name}@{BASIS}", days).frame
         if name in IN_POUNDS:
@@ -318,7 +400,8 @@ def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | No
     n100 = [str(x) for x in held.get("symbols") or []]
     mapping, missing = symbol_map(market, n100)
     starts = replace_from(cfg, mapping, held.get("data_version"), held.get("latest_date"), full)
-    prices, stats = rows_to_send(market, store, mapping, starts)
+    accounts, whole = accounts_from(cfg, store, mapping, starts, held.get("data_version"), held.get("latest_date"), full)
+    prices, stats = rows_to_send(market, store, mapping, starts, accounts)
     # The trusts and funds the research data leaves out, from their own data and store (extra.py).
     if extra_market is not None and missing:
         xmap, missing = symbol_map(extra_market, missing)
@@ -329,13 +412,20 @@ def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | No
     # a symbol with nothing new and no change is left as it is on the N100
     held_latest = pd.Timestamp(held["latest_date"]) if held.get("latest_date") else None
     ranges = {n: str(d.date()) for n, d in starts.items()
-              if full or n in sent or held_latest is None or d <= held_latest}
+              if full or n in sent or held_latest is None or d <= held_latest
+              or any(n in per and per[n] <= held_latest for per in accounts.values())}
+    # per accounts indicator and symbol, where it starts before the symbol's replace_from
+    statistic_from = {name: {n: str(d.date()) for n, d in per.items() if n in ranges and str(d.date()) < ranges[n]}
+                      for name, per in accounts.items()}
     pid = f"{dt.datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
     summary = {"publish_id": pid, "data_version": version, "held_version": held.get("data_version"),
                "held_latest": held.get("latest_date"), "full": bool(full), "prices": len(prices),
                "statistics": len(stats), "symbols": len(ranges), "missing": missing,
                "first_date": min(ranges.values()) if ranges else None,
-               "last_date": str(market.dates[-1].date())}
+               "last_date": str(market.dates[-1].date()),
+               "accounts_whole": whole,
+               "accounts_versions": {n: store.meta(n)["version"] for n in ACCOUNTS},
+               "accounts_first_date": min((d for per in statistic_from.values() for d in per.values()), default=None)}
     if missing:
         log.warning("N100 symbols with no Mac mini data, not sent: %s", ", ".join(missing))
     if dry_run:
@@ -349,7 +439,7 @@ def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | No
             api.must({"action": "batch", "publish_id": pid, "seq": seq, "prices": bp, "statistics": bs})
             seq += 1
         close = {"action": "close", "publish_id": pid, "data_version": version, "full": bool(full),
-                 "replace_from": ranges, "batches": seq, "price_rows": len(prices),
+                 "replace_from": ranges, "statistic_from": statistic_from, "batches": seq, "price_rows": len(prices),
                  "statistic_rows": len(stats), "missing": missing}
         try:
             out = api.call(close)

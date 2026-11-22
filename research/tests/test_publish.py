@@ -13,6 +13,20 @@ from research.universe import build_universe
 
 N = 330
 NAMES = ["close_price", "ma50", "ma200", "1mnth", "3mnth", "6mnth", "12mnth"]
+ACCOUNTS = ["piotroski_score", "book_to_market"]
+
+
+def _accounts(symbols):
+    """Annual accounts for 2020-2023, so book_to_market and the F-score have values from 2024."""
+    rows = []
+    for i, s in enumerate(symbols):
+        for k, y in enumerate((2020, 2021, 2022, 2023)):
+            rows.append({"symbol": s, "period_end": f"{y}-12-31", "freq": "annual", "reportedCurrency": "GBP",
+                         "totalAssets": 3e8 + 1e7 * k, "totalStockholdersEquity": 1e8 * (i + 1),
+                         "netIncome": 1e7 * (k + 1), "operatingCashFlow": 1.5e7 * (k + 1), "longTermDebt": 5e7,
+                         "totalCurrentAssets": 1e8 + 1e6 * k, "totalCurrentLiabilities": 8e7,
+                         "weightedAverageShsOut": 1e6, "revenue": 2e8 + 1e7 * k, "grossProfit": 6e7 + 4e6 * k})
+    return pd.DataFrame(rows)
 
 
 class FakeImport(pub.DataApi):
@@ -48,10 +62,10 @@ def built(cfg):
     rng = np.random.default_rng(7)
     syms = [f"S{i}.L" for i in range(5)] + ["BT-A.L"]
     prices = {s: list(100 * np.cumprod(1 + rng.normal(0.0004, 0.01, N))) for s in syms}
-    m = make_market(prices, start="2024-01-01")
+    m = make_market(prices, start="2024-01-01", statements=_accounts(syms))
     u = build_universe(m, size=6, large=3, start="2024-01-01")
     cfg.raw["universe"]["start"] = "2024-01-01"
-    built_workspace(cfg, m, u, names=NAMES)
+    built_workspace(cfg, m, u, names=NAMES + ACCOUNTS)
     mk = pub.fetch_marker(cfg)
     mk.parent.mkdir(parents=True, exist_ok=True)
     mk.write_text(json.dumps({"ok": True}))
@@ -78,7 +92,7 @@ def test_full_publish_sends_trading_days_only_and_names_the_missing(built):
     assert set(close["replace_from"]) == set(N100) - {"NOPE"}
     assert close["batches"] == len(api.batches()) > 1
     assert close["price_rows"] == len(prices) and close["statistic_rows"] == len(stats)
-    assert {r[2] for r in stats} == set(NAMES)
+    assert {r[2] for r in stats} == set(NAMES + ACCOUNTS)
     assert "BT.A" in {r[0] for r in prices}          # FMP's BT-A.L is the N100's BT.A
 
 
@@ -97,10 +111,21 @@ def test_prices_and_averages_go_in_pence_returns_in_per_cent(built):
     assert abs(st[("S0", str(d.date()), "1mnth")]) < 100        # per cent, not a fraction times 100 again
 
 
+def _sent_accounts_before(cfg):
+    """A successful publish in the log that sent the accounts indicators at their stored versions."""
+    from research.indicator_store import IndicatorStore
+    store = IndicatorStore.for_config(cfg)
+    p = cfg.p("logs") / "publish.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a") as fh:
+        fh.write(json.dumps({"ok": True, "accounts_versions": {n: store.meta(n)["version"] for n in ACCOUNTS}}) + "\n")
+
+
 def test_incremental_publish_sends_only_what_is_new(built):
     cfg, m = built
     from research import data_version as dv
     latest = m.dates[-4]
+    _sent_accounts_before(cfg)
     api = FakeImport(N100, version=dv.current(cfg.data_dir), latest=str(latest.date()))
     pub.publish(cfg, api=api, market=m)
     prices, stats = api.sent()
@@ -272,3 +297,72 @@ def test_4_a_refused_batch_closes_nothing_and_a_refused_close_is_a_failure(built
         pub.publish(cfg, full=True, api=api, market=m)
     assert [c["action"] for c in api.calls][-1] == "abort"
     assert not list(cfg.p("reports").glob("publish-*.md"))
+
+
+# ---------------------------------------------------------------- brief of 22 Nov 2026, test 6
+def test_6_the_publish_carries_piotroski_score_and_book_to_market_with_their_whole_history(built):
+    cfg, m = built
+    from research import data_version as dv
+    from research.indicator_store import IndicatorStore
+    store = IndicatorStore.for_config(cfg)
+    latest = m.dates[-4]
+    # the N100 already holds a publish, but these two have never been sent: their whole history goes
+    api = FakeImport(N100, version=dv.current(cfg.data_dir), latest=str(latest.date()))
+    s = pub.publish(cfg, api=api, market=m)
+    _, stats = api.sent()
+    close = api.calls[-1]
+    for name in ACCOUNTS:
+        mine = [r for r in stats if r[2] == name]
+        frame = store.frame(name)
+        frame = frame[frame["date"].dt.day_of_week < 5]
+        want = {(r.symbol.removesuffix(".L"), str(r.date.date())) for r in frame.itertuples() if r.symbol != "BT-A.L"}
+        assert len(want) > 100
+        assert {(r[0], r[1]) for r in mine if r[0] != "BT.A"} == want      # every stored weekday row
+        first = str(store.meta(name)["dates"][0].date())
+        assert set(close["statistic_from"][name].values()) == {first}
+        assert first < str(latest.date())
+    assert sorted(s["accounts_whole"]) == sorted(ACCOUNTS)
+    assert set(r[2] for r in stats) >= set(ACCOUNTS)
+    # the scores are scores
+    assert {r[3] for r in stats if r[2] == "piotroski_score"} <= set(map(float, range(10)))
+
+    # the next night: only what is new, as for the prices
+    api2 = FakeImport(N100, version=dv.current(cfg.data_dir), latest=str(m.dates[-2].date()))
+    pub.publish(cfg, api=api2, market=m)
+    _, stats2 = api2.sent()
+    assert all(pd.Timestamp(r[1]) == m.dates[-1] for r in stats2)
+    assert api2.calls[-1]["statistic_from"] == {n: {} for n in ACCOUNTS}
+
+
+def test_6_a_restated_account_resends_that_company_from_the_change(built):
+    cfg, m = built
+    from research import data_version as dv
+    _sent_accounts_before(cfg)
+    held = dv.current(cfg.data_dir)
+    ch = pd.DataFrame([{"version": held + 1, "time": "t", "reason": "test", "panel": "statements", "symbol": "S2.L",
+                        "from": pd.Timestamp("2024-03-01"), "to": None}])
+    import research.data_version as dvm
+    orig = dvm.changes_since
+    try:
+        dvm.changes_since = lambda d, v: ch
+        from research.indicator_store import IndicatorStore
+        accounts, whole = pub.accounts_from(cfg, IndicatorStore.for_config(cfg), {"S2": "S2.L", "S3": "S3.L"},
+                                            {"S2": m.dates[-1], "S3": m.dates[-1]}, held, str(m.dates[-2].date()), False)
+    finally:
+        dvm.changes_since = orig
+    assert whole == []
+    for name in ACCOUNTS:
+        assert accounts[name]["S2"] == pd.Timestamp("2024-03-01")
+        assert accounts[name]["S3"] == m.dates[-1]
+
+
+@pytest.mark.parametrize("name", ACCOUNTS)
+def test_6_a_failed_accounts_indicator_stops_the_publish(built, name):
+    cfg, m = built
+    jl = cfg.p("logs") / "indicator_job.jsonl"
+    with jl.open("a") as fh:
+        fh.write(json.dumps({"indicator": name, "ok": False, "reason": "ValueError: boom"}) + "\n")
+    api = FakeImport(N100)
+    with pytest.raises(pub.PublishRefused, match=f"{name}: the last indicator job failed"):
+        pub.publish(cfg, api=api, market=m)
+    assert api.calls == []

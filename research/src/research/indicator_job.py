@@ -101,6 +101,7 @@ def _subset(m, symbols):
 def compute(cfg, defn, k: str, market, member, dates, symbols=None) -> pd.DataFrame:
     """The definition's values on `dates`, long (date, symbol, value), for `symbols` or every company."""
     from .indicators import Context, Fundamentals, market_on_basis
+    from .indicators.base import params
     m = market_on_basis(market, defn.basis_of(k)) if defn.by_basis else market
     if symbols is not None:
         m = _subset(m, symbols)
@@ -108,6 +109,7 @@ def compute(cfg, defn, k: str, market, member, dates, symbols=None) -> pd.DataFr
     f = Fundamentals(m.statements, pit["annual_lag_months"], pit["half_year_lag_months"])
     mem = None if member is None else member.reindex(columns=m.close.columns, fill_value=False)
     ctx = Context(m, f, mem)
+    ctx.params = params(cfg, defn)
     parts = []
     for d in pd.DatetimeIndex(dates):
         s = defn.fn(ctx, d)
@@ -124,9 +126,10 @@ def compute(cfg, defn, k: str, market, member, dates, symbols=None) -> pd.DataFr
 
 
 def calendar(cfg, defn, market) -> pd.DatetimeIndex:
-    """The dates an indicator is kept for: trading days, or every calendar day, from the universe start."""
+    """The dates an indicator is kept for: trading days, or every calendar day, from the universe start
+    (or the definition's own start: an accounts-only indicator is kept from when the accounts allow)."""
     dates = market.dates
-    start = max(pd.Timestamp(cfg["universe"]["start"]), dates[0])
+    start = max(pd.Timestamp(defn.start or cfg["universe"]["start"]), dates[0])
     if defn.calendar == "daily":
         return pd.date_range(start, dates[-1], freq="D")
     return dates[dates >= start]
@@ -288,6 +291,37 @@ def _log(cfg, reports: list[dict]) -> None:
     with p.open("a") as fh:
         for r in reports:
             fh.write(json.dumps(r, default=str) + "\n")
+
+
+def universe_share(cfg, k: str, market=None, universe=None) -> pd.DataFrame:
+    """For each year: the share of the universe with a stored value of `k`, at each month end (the last
+    built date of the month), as the median and the lowest over the year's months, with the members."""
+    from .universe import membership
+    store = IndicatorStore.for_config(cfg)
+    if market is None:
+        from .store import load_market
+        market = load_market(cfg.data_dir)
+    if universe is None:
+        universe = pd.read_parquet(cfg.data_dir / "universe.parquet")
+    member, _ = membership(universe, market.dates)
+    built = store.meta(k)["dates"]
+    days = built[built.isin(member.index)]
+    if not len(days):
+        return pd.DataFrame(columns=["year", "share_median", "share_min", "members_median", "scored_median"])
+    month_ends = pd.Series(days, index=days).groupby(days.to_period("M")).last()
+    vals = store.read(k, month_ends.to_numpy()).frame
+    rows = []
+    for d in month_ends:
+        m = member.loc[d]
+        syms = m.index[m.to_numpy()]
+        n = len(syms)
+        got = int(vals.loc[d].reindex(syms).notna().sum()) if n else 0
+        rows.append({"date": d, "members": n, "scored": got, "share": got / n if n else np.nan})
+    df = pd.DataFrame(rows)
+    g = df.groupby(pd.DatetimeIndex(df["date"]).year)
+    return pd.DataFrame({"share_median": g["share"].median(), "share_min": g["share"].min(),
+                         "members_median": g["members"].median(), "scored_median": g["scored"].median()}) \
+        .rename_axis("year").reset_index()
 
 
 # ---- what the engine's callers hand it

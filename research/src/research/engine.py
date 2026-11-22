@@ -63,7 +63,7 @@ def n100_symbol_key(symbol: str) -> str:
 
 @dataclass
 class Rules:
-    holdings: int | str = 15          # an int, or "quintile" / "decile" of the universe
+    holdings: int | str = 15          # an int, "quintile" / "decile" of the universe, or "all" with a score
     rebalance: str = "monthly"        # monthly | weekly | quarterly
     hold_rank: int | None = None
     exit_ma200: bool = False
@@ -86,6 +86,8 @@ class Rules:
     fixed_targets: dict | None = None
 
     def n_holdings(self, universe_size: int) -> int:
+        if self.holdings == "all":          # every share with a score; the count is set on the day
+            return universe_size
         if isinstance(self.holdings, str):
             frac = {"quintile": 5, "decile": 10, "tercile": 3}[self.holdings]
             return max(1, math.ceil(universe_size / frac))
@@ -393,6 +395,9 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
     cand = s[ok]
     ranked = pd.Series(cand.values, index=cand.index).iloc[
         np.lexsort((np.array(cand.index, dtype=str), -cand.to_numpy(dtype=float)))]
+    if rules.holdings == "all":
+        # hold every share with a score, equally weighted among them (none: all cash)
+        n = len(ranked)
     depth = n if rules.hold_rank is None else max(n, int(rules.hold_rank))
     top = list(ranked.index[:depth])
     if rules.hold_rank is None:

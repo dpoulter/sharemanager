@@ -57,6 +57,8 @@ class Definition:
     deps: tuple = ()
     unit: str = ""
     source: str = ""          # the paper, or where the N100 defines it
+    start: str | None = None  # the first stored date, where it is not the universe start (accounts-only)
+    config: str | None = None # its own settings, cfg["indicators"][config], handed in as ctx.params
 
     def __call__(self, ctx, date) -> pd.Series:
         return self.fn(ctx, date)
@@ -80,6 +82,11 @@ class Definition:
         if "universe" in self.uses:
             u = cfg["universe"]
             out["universe"] = {k2: u.get(k2) for k2 in ("size", "start", "include_aim", "rank_with_trusts")}
+        # Only definitions that set these carry them, so no other definition's version moves.
+        if self.start:
+            out["start"] = str(self.start)
+        if self.config:
+            out["config"] = params(cfg, self)
         return out
 
     def version(self, cfg, k: str) -> str:
@@ -95,6 +102,13 @@ def _source(obj) -> str:
         return repr(obj)
 
 
+def params(cfg, defn: "Definition") -> dict:
+    """A definition's own settings (config.yaml indicators.<config>), or {}."""
+    if not defn.config:
+        return {}
+    return dict(((cfg.get("indicators") if hasattr(cfg, "get") else None) or {}).get(defn.config) or {})
+
+
 def key(name: str, basis: str | None) -> str:
     return f"{name}@{basis}" if basis else name
 
@@ -103,7 +117,7 @@ REGISTRY: dict[str, Definition] = {}
 
 
 def indicator(name: str, uses, calendar: str = "trading", cross_sectional: bool = False, deps=(),
-              unit: str = "", source: str = ""):
+              unit: str = "", source: str = "", start: str | None = None, config: str | None = None):
     uses = frozenset(uses)
     bad = uses - USES
     if bad:
@@ -115,7 +129,8 @@ def indicator(name: str, uses, calendar: str = "trading", cross_sectional: bool 
         deps2 = tuple(deps) + ((Fundamentals,) if "statements" in uses else ())
         REGISTRY[name] = Definition(name=name, fn=fn, uses=uses, calendar=calendar,
                                     cross_sectional=cross_sectional or "universe" in uses, deps=deps2,
-                                    unit=unit, source=source or " ".join((fn.__doc__ or "").split()))
+                                    unit=unit, source=source or " ".join((fn.__doc__ or "").split()),
+                                    start=start, config=config)
         fn.signal_name = name
         return fn
     return wrap

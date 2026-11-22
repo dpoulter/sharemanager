@@ -4,8 +4,15 @@
     family: momentum             # variants of one idea share a family (trial count)
     signals: {momentum_12_1: 1}  # one stored indicator, or weights for a blend of percentile ranks
     screen: null                 # or a screen of stored indicators (from_rules.py writes these):
-                                 # {criteria: [[name, op, constant, other_name] | [name, top_n, n, asc|desc]],
-                                 #  rank_by: name, direction: desc|asc, require: name|null}
+                                 # {criteria: [[name, op, constant, other_name] | [name, top_n, n, asc|desc]
+                                 #             | [name, top_frac, f, asc|desc]],
+                                 #  rank_by: name, direction: desc|asc, require: name|null,
+                                 #  industry_map_file: path|null}
+                                 # top_frac: the best fraction f of the universe members with a value,
+                                 # taken first, before any other criterion (a research file's "cheapest
+                                 # fifth"; sharemanager screens have none). industry_map_file: a saved
+                                 # backtest claim (or its industry_map alone) whose map gives the
+                                 # industries for ind_in / ind_not_in (from_rules.industries_from_map).
     holdings: quintile           # a number, or quintile / decile of the universe
     rebalance: monthly           # monthly | weekly | quarterly
     hold_rank: null              # keep a holding while it ranks inside this
@@ -122,12 +129,12 @@ INDUSTRY = {"ind_in", "ind_not_in"}       # sharemanager's industry criteria (fr
 
 
 def screen_names(screen: dict) -> list[str]:
-    names = [screen["rank_by"]] + ([screen["require"]] if screen.get("require") else [])
+    names = ([screen["rank_by"]] if screen.get("rank_by") else []) + ([screen["require"]] if screen.get("require") else [])
     for c in screen.get("criteria") or []:
         if c[1] in INDUSTRY:              # not an indicator: decided by screen["industries"]
             continue
         names.append(c[0])
-        if c[1] != "top_n" and c[3] is not None:
+        if c[1] not in ("top_n", "top_frac") and c[3] is not None:
             names.append(c[3])
     return list(dict.fromkeys(names))
 
@@ -136,7 +143,11 @@ def screen_scores(screen: dict, values: dict, members) -> pd.Series:
     """A screen as build_screen() applies it: comparisons intersected, then each top_n in order keeping
     the best N of what is left, scored by rank_by (negated for an ascending order). Only members."""
     keep = pd.Index(members)
-    for name, oper, const, other in [c for c in screen.get("criteria") or [] if c[1] != "top_n"]:
+    for name, _, f, d in [c for c in screen.get("criteria") or [] if c[1] == "top_frac"]:
+        v = values[name].reindex(keep).dropna()
+        v = v.sort_index().sort_values(ascending=(d == "asc"), kind="mergesort")
+        keep = v.index[: int(np.ceil(float(f) * len(v)))]
+    for name, oper, const, other in [c for c in screen.get("criteria") or [] if c[1] not in ("top_n", "top_frac")]:
         if oper in INDUSTRY:
             # "is one of": the share's industry is listed. "is not": it is not. The industries are
             # the translator's (from_rules.py), today's for every date; nothing is looked up here.
@@ -156,8 +167,26 @@ def screen_scores(screen: dict, values: dict, members) -> pd.Series:
         v = values[name].reindex(keep).dropna()
         v = v.sort_index().sort_values(ascending=(d == "asc"), kind="mergesort")
         keep = v.index[: int(n)]
+    if not screen.get("rank_by"):
+        # every share left is held, equally: no order among them
+        return pd.Series(1.0, index=keep)
     score = values[screen["rank_by"]].reindex(keep)
     return score if screen.get("direction", "desc") == "desc" else -score
+
+
+def _with_industries(spec: Spec, master, universe) -> Spec:
+    """A research file's screen with the industries of a saved claim's map (from_rules.industries_from_map):
+    the map is the N100's, taken as it is; this keeps no list of its own."""
+    import copy
+    import json
+    from .from_rules import industries_from_map
+    raw = copy.deepcopy(spec.raw)
+    sc = raw["screen"]
+    m = json.loads(Path(sc["industry_map_file"]).expanduser().read_text())
+    m = m.get("industry_map", m)
+    industries, version = industries_from_map(m, master, universe)
+    sc.update({"industries": industries, "industry_map_version": version})
+    return Spec(raw=raw, path=spec.path, hash=spec.hash)
 
 
 def spec_from_dict(raw: dict) -> Spec:
@@ -245,6 +274,8 @@ class Workspace:
         self.log.check_frozen(spec.name, spec.hash, final)
 
         uni = self.universe_for(spec.raw.get("universe", "ftse350"))
+        if spec.raw.get("screen") and spec.raw["screen"].get("industry_map_file"):
+            spec = _with_industries(spec, self.m.master, uni["symbol"].unique() if "symbol" in uni else [])
         member, large = membership(uni, self.m.dates)
         member = member.reindex(columns=self.m.close.columns, fill_value=False)
         large = large.reindex(columns=self.m.close.columns, fill_value=False)

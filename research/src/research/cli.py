@@ -9,7 +9,7 @@
   validate --universe CSV [--orders CSV] [--values CSV]
                                   reproduce the N100's run 9; nothing else is trusted until it passes
   worker [--once]                 run sharemanager's queued backtests through backtest_api (worker.py)
-  indicators [--rebuild NAME] [--coverage]
+  indicators [--rebuild NAME] [--coverage] [--universe-share NAME]
                                   bring the indicator store up to date (indicator_job.py); after the nightly fetch
   data-version                    record what changed in the data since the last version, and print it
 """
@@ -27,6 +27,9 @@ import pandas as pd
 from .config import RESEARCH_DIR, load_config, mask
 
 log = logging.getLogger("research")
+
+# Strategy files run beside the signals in the comparison table (brief of 22 Nov 2026: the piotroski family).
+TABLE_FILES = ["piotroski_value.yaml", "piotroski_f_q5.yaml"]
 
 FIRST_SIGNALS = ["momentum_12_1", "reversal_1m", "high_52w", "low_volatility", "gross_profitability",
                  "asset_growth", "accruals", "net_share_issuance", "book_to_market", "earnings_yield"]
@@ -332,12 +335,33 @@ def cmd_signals(cfg, a):
                          "vs_equal_weight": r["excess_equal_weight_annual"], "max_fall": r["max_drawdown"],
                          "turnover": r["turnover_a_year"], "costs_a_year": r["costs_pct_a_year"],
                          "deflated_sharpe": r["deflated_sharpe"], "run_id": r["run_id"]})
+    from .strategy import load_spec
+    for f in TABLE_FILES:
+        spec = load_spec(RESEARCH_DIR / "strategies" / f)
+        for p in periods:
+            res = ws.run(spec, p)
+            r = res["record"]
+            h = holdings_over_time(res)
+            rows.append({"signal": spec.name, "period": p, "return_a_year": r["annual_return"],
+                         "vs_equal_weight": r["excess_equal_weight_annual"], "max_fall": r["max_drawdown"],
+                         "turnover": r["turnover_a_year"], "costs_a_year": r["costs_pct_a_year"],
+                         "deflated_sharpe": r["deflated_sharpe"], "run_id": r["run_id"],
+                         "holdings_median": float(h.median()), "months_all_cash": int((h == 0).sum())})
+            hp = cfg.p("reports") / f"holdings-{spec.name}-{p}-{r['run_id']}.csv"
+            hp.parent.mkdir(parents=True, exist_ok=True)
+            h.rename("holdings").to_csv(hp)
     df = pd.DataFrame(rows)
     out = cfg.p("reports") / f"signals-{time.strftime('%Y%m%d-%H%M%S')}.csv"
     df.to_csv(out, index=False)
     with pd.option_context("display.width", 200, "display.float_format", "{:.3f}".format):
         print(df.drop(columns="run_id").to_string(index=False))
     print(f"\nwritten to {out}\nDevelopment rows are survivorship-biased.")
+
+
+def holdings_over_time(res) -> pd.Series:
+    """The number of shares held at each month end of a run (0: all cash)."""
+    h = res["result"].values["holdings"]
+    return h.groupby(pd.DatetimeIndex(h.index).to_period("M")).last()
 
 
 def cmd_lse_rows(cfg, a):
@@ -466,6 +490,13 @@ def cmd_indicators(cfg, a):
             years = ", ".join(f"{y}: {n}" for y, n in sorted(c["companies_per_year"].items()))
             print(f"{c['indicator']}: {c['first']} to {c['last']} ({c['dates']} dates, {c['calendar']}), version "
                   f"{c['version']}, data version {c['data_version']}; companies a year: {years}")
+    for k in a.universe_share or []:
+        from .indicator_job import universe_share
+        us = universe_share(cfg, k)
+        print(f"{k}: share of the universe with a value, by year (median and lowest month end)")
+        for _, r in us.iterrows():
+            print(f"  {int(r['year'])}: {r['share_median']:.1%} (lowest {r['share_min']:.1%}), "
+                  f"{r['scored_median']:.0f} of {r['members_median']:.0f}")
     if failed:
         sys.exit(f"failed: {', '.join(failed)}")
 
@@ -531,6 +562,8 @@ def main(argv=None):
     s.add_argument("--only", action="append", metavar="NAME", help="only these definitions (repeatable)")
     s.add_argument("--coverage", action="store_true", help="then print each indicator's coverage")
     s.add_argument("--coverage-only", action="store_true", help="print the coverage and change nothing")
+    s.add_argument("--universe-share", action="append", metavar="NAME",
+                   help="then print the share of the universe with a value of NAME, by year (piotroski_score)")
     s = sub.add_parser("publish", help="send prices and the published statistics to the N100 (publish.py)")
     s.add_argument("--full", action="store_true", help="the whole history since 2021 (the first publish)")
     s.add_argument("--dry-run", action="store_true", help="work out what would be sent; send nothing")

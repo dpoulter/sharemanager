@@ -154,6 +154,27 @@ def _clean(v) -> str:
     return "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v).strip()
 
 
+def _map_parts(m: dict) -> tuple[str, list, dict, dict]:
+    """An industry map checked: (version, industries, FMP sector -> industry, (sector, industry) -> industry)."""
+    rule = "industry_map"
+    if not isinstance(m, dict) or not isinstance(m.get("fmp"), dict):
+        raise Untranslatable(rule, "no industry map")
+    version = str(m.get("version") or "")
+    known = [str(x) for x in m.get("industries") or []]
+    sectors = {str(k).strip(): str(v) for k, v in (m["fmp"].get("sectors") or {}).items()}
+    exceptions = {}
+    for e in m["fmp"].get("exceptions") or []:
+        if not isinstance(e, (list, tuple)) or len(e) != 3:
+            raise Untranslatable(rule, "an exception is [FMP sector, FMP industry, industry]")
+        exceptions[(str(e[0]).strip(), str(e[1]).strip())] = str(e[2])
+    if not known:
+        raise Untranslatable(rule, "the map does not list its industries")
+    bad = sorted((set(sectors.values()) | set(exceptions.values())) - set(known))
+    if bad:
+        raise Untranslatable(rule, f"the map names {', '.join(bad)}, not among its own industries")
+    return version, known, sectors, exceptions
+
+
 def _industries(claim: dict, snap: dict, criteria: tuple, master, universe) -> tuple[dict, str]:
     """Each universe share's industry by the map in the claim: ({symbol: industry}, the map's version).
 
@@ -168,24 +189,22 @@ def _industries(claim: dict, snap: dict, criteria: tuple, master, universe) -> t
     if not version or version != str(snap.get("industry_map") or ""):
         raise Untranslatable(rule, f"the claim's industry map is version {version or 'none'}, the rules were "
                                    f"fingerprinted with {snap.get('industry_map') or 'none'}")
-    known = [str(x) for x in m.get("industries") or []]
-    sectors = {str(k).strip(): str(v) for k, v in (m["fmp"].get("sectors") or {}).items()}
-    exceptions = {}
-    for e in m["fmp"].get("exceptions") or []:
-        if not isinstance(e, (list, tuple)) or len(e) != 3:
-            raise Untranslatable(rule, "an exception is [FMP sector, FMP industry, industry]")
-        exceptions[(str(e[0]).strip(), str(e[1]).strip())] = str(e[2])
-    if not known:
-        raise Untranslatable(rule, "the map does not list its industries")
-    bad = sorted((set(sectors.values()) | set(exceptions.values())) - set(known))
-    if bad:
-        raise Untranslatable(rule, f"the map names {', '.join(bad)}, not among its own industries")
+    known = _map_parts(m)[1]
     for k, c in enumerate(criteria):
         if c[1] in INDUSTRY:
             unknown = [n for n in c[2] if n not in known]
             if unknown:
                 raise Untranslatable(f"criteria[{k}]", f"{', '.join(unknown)} is not an industry the map knows")
+    return industries_from_map(m, master, universe)
+
+
+def industries_from_map(m: dict, master, universe) -> tuple[dict, str]:
+    """Each universe share's industry by an N100 industry map (a claim's `industry_map`), as it is:
+    ({symbol: industry}, the map's version). A share it does not cover is refused, naming it."""
+    rule = "industry_map"
+    version, known, sectors, exceptions = _map_parts(m)
     if master is None or universe is None:
+
         raise Untranslatable(rule, "an industry criterion needs the symbol master and the universe, and neither was given")
     if "sector" not in master or "industry" not in master:
         raise Untranslatable(rule, "symbols.parquet has no FMP sector and industry")

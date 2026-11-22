@@ -1,0 +1,10 @@
+# The F-score alone (Piotroski 2000; indicators/piotroski.py): top quintile
+# of the FTSE 350-like universe by piotroski_score, equal weight, monthly,
+# Trading 212 costs. Ties at the quintile edge are broken by symbol, as the
+# engine always does.
+name: piotroski_f_q5
+family: piotroski
+signals: {piotroski_score: 1}
+holdings: quintile
+rebalance: monthly
+universe: ftse350

@@ -1,0 +1,23 @@
+# Piotroski (2000), "Value Investing: The Use of Historical Financial Statement
+# Information to Separate Winners from Losers", Journal of Accounting Research
+# 38 (supplement), 1-41: among the cheapest fifth by book-to-market, buy the
+# high F-score firms. The cheapest fifth of the universe by book_to_market on
+# the date, then financial companies left out by the N100's industry map (the
+# one a backtest claim carries: save a recent claim, or its industry_map, as
+# the file below; no list of our own), then every share with an F-score of 8
+# or 9, equal weight, monthly, Trading 212 costs (the default). Cash when none
+# qualify; the report's holdings column is the count over time.
+name: piotroski_value
+family: piotroski
+signals: {}
+screen:
+  criteria:
+    - [book_to_market, top_frac, 0.2, desc]
+    - [industry, ind_not_in, [Financials], null]
+    - [piotroski_score, ">=", 8, null]
+  rank_by: null
+  require: null
+  industry_map_file: ~/sharemanager-research/industry_map.json
+holdings: all
+rebalance: monthly
+universe: ftse350

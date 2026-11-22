@@ -71,3 +71,11 @@ caveats:
   - "Restatements: FMP holds the latest figures, not those first published, so accounts-based signals may see corrections made later."
   - "Accounts are lagged from period end (4 months annual, 3 months half-year) because FMP's UK filing dates are period ends."
   - "Development period (2007-2022) is survivorship-biased: the data holds few companies that died before 2023."
+
+indicators:
+  # Piotroski F-score (indicators/piotroski.py). Test 7, no new equity: the
+  # weighted average shares may grow this much (scrip, options) and still pass.
+  # A company with more missing tests than max_missing_tests has no score.
+  piotroski_score:
+    share_issue_tolerance: 0.005
+    max_missing_tests: 2

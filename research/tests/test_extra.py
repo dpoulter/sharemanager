@@ -51,13 +51,14 @@ class FakeFmp:
 def world(cfg):
     rng = np.random.default_rng(7)
     prices = {f"{s}.L": list(100 * np.cumprod(1 + rng.normal(0.0004, 0.01, N))) for s in RESEARCH}
-    m = make_market(prices, start="2024-01-01")
+    from test_publish import _accounts
+    m = make_market(prices, start="2024-01-01", statements=_accounts(list(prices)))
     u = build_universe(m, size=5, large=2, start="2024-01-01")
     cfg.raw["universe"]["start"] = "2024-01-01"
     extra.write_list(cfg, RESEARCH + EXTRAS, covered=set(RESEARCH))
     fake = FakeFmp(m.dates)
     extra.fetch(cfg, client=fake)
-    built_workspace(cfg, m, u, names=NAMES)
+    built_workspace(cfg, m, u, names=NAMES + pub.ACCOUNTS)   # the accounts indicators are published too
     mk = pub.fetch_marker(cfg)
     mk.parent.mkdir(parents=True, exist_ok=True)
     mk.write_text(json.dumps({"ok": True}))
