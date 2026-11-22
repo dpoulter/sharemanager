@@ -14,12 +14,25 @@ fmp:
   base_url: https://financialmodelingprep.com/stable
   # Premium is 750 a minute; stay under it.
   calls_per_minute: 600
+  # Calls in flight at once. Each takes about a second, so 600 a minute needs
+  # ten or more; the limit above still caps the rate whatever this is.
+  concurrency: 16
   max_retries: 6
   # Price history from this date where FMP has it.
   price_start: "1988-01-01"
   market_cap_start: "2007-01-01"
   # Rows per price call is capped at 5,000; 15 years of trading days is ~3,800.
   price_chunk_years: 15
+  # The nightly top-up (fetch.py). Statements are read again when FMP's list of
+  # the latest filings names the company, and otherwise once in this many days,
+  # spread over the nights; each company's own dividend list likewise (the
+  # dividend calendar is read every night).
+  statements_refresh_days: 7
+  dividends_refresh_days: 7
+  # More trading days behind than this and the top-up asks per symbol, not in bulk.
+  bulk_max_days: 10
+  # Symbols in one market-capitalization-batch call.
+  batch_symbols: 50
 
 point_in_time:
   # FMP's filingDate for UK companies is the period end, not the publication

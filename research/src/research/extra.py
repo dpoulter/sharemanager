@@ -99,7 +99,7 @@ def fetch(cfg, client=None, full: bool = False) -> dict:
     """Daily prices and dividends for the listed extras: from 2021 the first time, then topped up.
     Then merged, cleaned (bad ticks) and given the research FX. Returns {symbols, failures}."""
     from .clean import clean_prices
-    from .fetch import Fetcher, FmpError, consolidate
+    from .fetch import Fetcher, consolidate
     lst = read_list(cfg)
     d = extra_dir(cfg)
     if not len(lst):
@@ -111,13 +111,17 @@ def fetch(cfg, client=None, full: bool = False) -> dict:
     syms = lst["symbol"].tolist()
     prof = f.profiles(syms)
     cur = dict(zip(prof["symbol"], prof.get("currency", pd.Series(index=prof.index, dtype=object))))
-    for sym in syms:
-        try:
+    if full:
+        def one(sym):
             f.prices(sym, full, end, start=FIRST_FROM)
             f.dividends(sym, full)
-        except FmpError as e:
-            f.failures.append({"symbol": sym, "dataset": "extra", "error": str(e)})
-            log.warning("extra %s: %s", sym, e)
+        f._each(one, syms, "extra")
+    else:
+        # as the research top-up: bulk prices, a symbol's own history only when new or re-based
+        st = f._load_state()
+        f.top_up_dividends(syms, end, st)
+        f.top_up_prices(syms, end, st, start=FIRST_FROM)
+        f._save_state(st)
     consolidate(d)
     lst["currency"] = [cur.get(s) or c or "GBp" for s, c in zip(lst["symbol"], lst["currency"])]
     lst["quote_currency"] = lst["currency"]

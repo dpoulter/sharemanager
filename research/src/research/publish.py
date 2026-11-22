@@ -33,7 +33,13 @@ With --full, or before the first publish, 2021-01-01 for every symbol.
 
 Whole or nothing: batches, then a closing call with the data version. A
 failure part way sends `abort`, and the N100 stays on its previous version
-(the close is one transaction there). Every N100 symbol is covered: the trusts and funds the research master leaves
+(the close is one transaction there). A close with no answer is not a failure
+yet: the N100 finishes it regardless, so the N100 is asked which data version
+it holds (`symbols`) until it holds this publish, and the publish is then
+recorded as the success it was, with its report (the comparison with the old
+values stays in the N100's data_publishes row; the lost answer carried it).
+If it has not landed after CLOSE_WAIT_MINUTES nothing is aborted, and the next
+publish asks again before it sends anything. Every N100 symbol is covered: the trusts and funds the research master leaves
 out come from their own data and store (extra.py), so a symbol is named as
 missing - in the close and the log, never skipped silently - only when FMP has
 no data for it.
@@ -53,6 +59,7 @@ import json
 import logging
 import os
 import stat
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -73,6 +80,11 @@ IN_POUNDS = {"close_price", "ma50", "ma200"}       # stored in pounds; the N100 
 BASIS = "raw"                                      # the N100 prices on the raw close
 FULL_FROM = pd.Timestamp("2021-01-01")
 BATCH_ROWS = 20000
+# A close whose answer is lost: how long to keep asking the N100 whether it landed, and how often.
+# The first full publish (21 Nov 2026) was still inside its closing transaction when the wait for
+# the answer ran out, so asking once, at once, saw the old version.
+CLOSE_WAIT_MINUTES = 45
+CLOSE_POLL_SECONDS = 30
 DEFAULT_SETTINGS = Path("~/.config/sharemanager-research/worker.env")
 PRICE_PANELS = {"close", "master", "fx", dv.EVERYTHING}   # what the raw close and the @raw indicators read
 EXTRA_PANELS = {"extra_close", "fx", dv.EVERYTHING}       # the same, for the N100's extra symbols (extra.py)
@@ -285,7 +297,8 @@ def batches(prices: list, stats: list, size: int = BATCH_ROWS):
 # ---- the run
 
 def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | None = None,
-            market=None, extra_market=None, batch_rows: int = BATCH_ROWS) -> dict:
+            market=None, extra_market=None, batch_rows: int = BATCH_ROWS,
+            close_wait_minutes: float = CLOSE_WAIT_MINUTES, close_poll_seconds: float = CLOSE_POLL_SECONDS) -> dict:
     from . import extra
     from .indicator_store import IndicatorStore
     from .store import load_market
@@ -300,6 +313,7 @@ def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | No
         s = read_settings()
         api = DataApi(s["SM_DATA_API_URL"], s["SM_BACKTEST_API_TOKEN"])
     held = api.must({"action": "symbols"})
+    settle_pending(cfg, held)
     n100 = [str(x) for x in held.get("symbols") or []]
     mapping, missing = symbol_map(market, n100)
     starts = replace_from(cfg, mapping, held.get("data_version"), held.get("latest_date"), full)
@@ -328,6 +342,7 @@ def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | No
         _log(cfg, summary)
         return summary
     seq = 0
+    sent_close = None
     try:
         for bp, bs in batches(prices, stats, batch_rows):
             api.must({"action": "batch", "publish_id": pid, "seq": seq, "prices": bp, "statistics": bs})
@@ -337,28 +352,101 @@ def publish(cfg, *, full: bool = False, dry_run: bool = False, api: DataApi | No
                  "statistic_rows": len(stats), "missing": missing}
         try:
             out = api.call(close)
-        except Exception as e:          # a timeout: the N100 finishes the close regardless
-            out = {"ok": False, "why": f"no answer to the close ({e})"}
+        except Exception as e:          # no answer: the N100 carries on with the close regardless
+            sent_close = "unanswered"
+            log.warning("no answer to the close (%s); asking the N100 what it holds", mask(str(e)))
+            out = settle_close(api, pid, version, summary["last_date"], wait_minutes=close_wait_minutes,
+                               poll_seconds=close_poll_seconds)
+            if out is None:
+                raise PublishRefused(
+                    f"no answer to the close ({mask(str(e))}) and after {close_wait_minutes:g} minutes the N100 "
+                    f"does not yet hold publish {pid}; it may still land: the next `research publish` asks "
+                    "again and records it") from None
         if not out.get("ok"):
-            now = api.call({"action": "symbols"})
-            if now.get("ok") and now.get("publish_id") == pid:
-                out = {"ok": True, "latest_date": now.get("latest_date"),
-                       "note": "the close went through though its answer was lost; no difference report"}
-            else:
-                raise PublishRefused(f"data_import refused close: {mask(out.get('why'))}")
+            raise PublishRefused(f"data_import refused close: {mask(out.get('why'))}")
     except BaseException as e:
-        try:
-            api.call({"action": "abort", "publish_id": pid, "why": mask(str(e))[:500]})
-        except Exception:
-            pass
+        # An unanswered close may still be running on the N100: it is never told to abort, and the
+        # next publish asks whether it landed (settle_pending).
+        if sent_close == "unanswered":
+            _pending_path(cfg).write_text(json.dumps(summary, default=str))
+        else:
+            try:
+                api.call({"action": "abort", "publish_id": pid, "why": mask(str(e))[:500]})
+            except Exception:
+                pass
         summary.update({"ok": False, "why": mask(str(e)), "batches_sent": seq})
         _log(cfg, summary)
         raise
-    summary.update({"ok": True, "batches": seq, "latest_date": out.get("latest_date"),
+    return _closed(cfg, summary, out, seq)
+
+
+def _closed(cfg, summary: dict, out: dict, batches: int) -> dict:
+    """Record a publish the N100 closed: the log line and the report."""
+    summary.update({"ok": True, "batches": batches, "latest_date": out.get("latest_date"),
                     "prices_replaced": out.get("prices_replaced"), "statistics_replaced": out.get("statistics_replaced")})
-    summary["report"] = str(write_report(cfg, summary, out.get("differences") or {}))
+    if out.get("note"):
+        summary["note"] = out["note"]
+    # only a lost answer has no comparison; the N100 keeps that one in data_publishes.report
+    summary["report"] = str(write_report(cfg, summary, out.get("differences") if out.get("note")
+                                         else out.get("differences") or {}))
     _log(cfg, summary)
     return summary
+
+
+def landed(now: dict, pid: str, version: int, last_date: str | None) -> bool:
+    """Whether the N100's answer to `symbols` says publish `pid` is the one it holds."""
+    if not now.get("ok"):
+        return False
+    if now.get("publish_id") is not None:
+        return now["publish_id"] == pid
+    # a data_import that does not name the publish: the data version it holds and its latest date
+    return now.get("data_version") is not None and int(now["data_version"]) == int(version) \
+        and last_date is not None and str(now.get("latest_date")) == str(last_date)
+
+
+def settle_close(api: DataApi, pid: str, version: int, last_date: str | None, wait_minutes: float = 45,
+                 poll_seconds: float = 30, sleep=time.sleep, clock=time.monotonic) -> dict | None:
+    """After a close with no answer: ask the N100 which data version it holds until it holds this
+    publish (a full publish's close can take longer than the caller waits), or `wait_minutes` pass.
+    Returns the close as the N100's data_publishes row gives it through `symbols`, or None."""
+    until = clock() + wait_minutes * 60
+    while True:
+        try:
+            now = api.call({"action": "symbols"})
+        except Exception as e:          # the N100 is busy with the close: ask again
+            now = {"ok": False, "why": str(e)}
+        if landed(now, pid, version, last_date):
+            return {"ok": True, "latest_date": now.get("latest_date"),
+                    "note": "the close went through though its answer was lost: recorded from what the N100 "
+                            f"holds (data version {now.get('data_version')}, latest date {now.get('latest_date')})"}
+        if clock() >= until:
+            return None
+        sleep(poll_seconds)
+
+
+def _pending_path(cfg) -> Path:
+    p = cfg.p("logs") / "publish_pending.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def settle_pending(cfg, held: dict) -> dict | None:
+    """A close left unanswered and unconfirmed by an earlier run: if the N100 now holds that publish,
+    record it as the success it was, with its report. Either way it is no longer pending."""
+    p = _pending_path(cfg)
+    if not p.exists():
+        return None
+    try:
+        was = json.loads(p.read_text())
+    except ValueError:
+        was = None
+    p.unlink()
+    if not was or not landed({"ok": True, **held}, was.get("publish_id"), was.get("data_version"), was.get("last_date")):
+        return None
+    out = {"latest_date": held.get("latest_date"),
+           "note": "the close went through though its answer was lost: recorded by the next publish from what "
+                   f"the N100 holds (data version {held.get('data_version')}, latest date {held.get('latest_date')})"}
+    return _closed(cfg, was, out, was.get("batches_sent") or 0)
 
 
 def _log(cfg, summary: dict) -> None:
@@ -369,25 +457,28 @@ def _log(cfg, summary: dict) -> None:
     log.info("publish %s", mask(json.dumps({k: v for k, v in summary.items() if k != "missing"}, default=str)))
 
 
-def write_report(cfg, summary: dict, differences: dict) -> Path:
+def write_report(cfg, summary: dict, differences: dict | None) -> Path:
     """For Dale: rows replaced, symbols missing, and the largest differences against the old values."""
+    def replaced(n):
+        return "a number the N100 holds (its answer was lost)" if n is None else f"{n:,}"
+
     lines = [f"# Publish {summary['publish_id']}", "",
              f"Data version {summary['data_version']}{' (full, since 2021)' if summary['full'] else ''}; "
-             f"latest date {summary.get('latest_date')}.", "",
-             f"- Prices sent: {summary['prices']:,}, replacing {summary.get('prices_replaced') or 0:,} on the N100",
-             f"- Statistics sent: {summary['statistics']:,}, replacing {summary.get('statistics_replaced') or 0:,}",
-             f"- Symbols: {summary['symbols']}",
-             f"- N100 symbols with no Mac mini data ({len(summary['missing'])}): "
-             f"{', '.join(summary['missing']) or 'none'}", "",
-             "## Against the old values", "",
-             "Rows on both sides; 'differing' is more than 0.5% apart.", ""]
-    for what, d in differences.items():
-        lines.append(f"### {what}: {d.get('compared', 0):,} compared, {d.get('differing', 0):,} differing")
-        top = d.get("largest") or []
-        if top:
-            lines += ["", "| symbol | date | old | new | relative difference |", "|---|---|---|---|---|"]
-            lines += [f"| {r['symbol']} | {r['date']} | {r['old_value']} | {r['new_value']} | {r['rel_diff']} |" for r in top]
-        lines.append("")
+             f"latest date {summary.get('latest_date')}.", ""]
+    if summary.get("note"):
+        lines += [summary["note"][0].upper() + summary["note"][1:] + ".", ""]
+    lines += [f"- Prices sent: {summary['prices']:,}, replacing {replaced(summary.get('prices_replaced'))} on the N100",
+              f"- Statistics sent: {summary['statistics']:,}, replacing {replaced(summary.get('statistics_replaced'))}",
+              f"- Symbols: {summary['symbols']}",
+              f"- N100 symbols with no Mac mini data ({len(summary['missing'])}): "
+              f"{', '.join(summary['missing']) or 'none'}", "",
+              "## Against the old values", ""]
+    if differences is None:
+        lines += ["The comparison with the old values was in the lost answer. The N100 keeps it: "
+                  f"`select report from data_publishes where publish_id='{summary['publish_id']}'`.", ""]
+        differences = {}
+    else:
+        lines += ["Rows on both sides; 'differing' is more than 0.5% apart.", ""]
     out = cfg.p("reports") / f"publish-{summary['publish_id']}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines))

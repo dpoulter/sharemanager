@@ -173,3 +173,102 @@ def test_a_close_whose_answer_is_lost_is_found_closed(built):
     api = Lost(N100)
     s = pub.publish(cfg, full=True, api=api, market=m)
     assert s["ok"] and "abort" not in [c["action"] for c in api.calls]
+
+
+# ---- the close whose answer is lost (brief of 22 Nov 2026, test 4)
+
+class ClosesButNeverAnswers(FakeImport):
+    """The N100 on 21 Nov 2026: the close lands, its answer never comes, and for the first `busy`
+    times it is asked the N100 is still inside the closing transaction and holds the old version."""
+
+    def __init__(self, *a, busy=3, lands=True, **k):
+        super().__init__(*a, **k)
+        self.busy, self.lands, self.closing = busy, lands, None
+
+    def call(self, payload):
+        a = payload["action"]
+        if a == "close":
+            self.calls.append(payload)
+            self.closing = payload
+            raise TimeoutError("The read operation timed out")
+        if a == "symbols" and self.closing is not None:
+            self.calls.append(payload)
+            self.busy -= 1
+            if self.busy == 1:
+                raise TimeoutError("busy")              # a question lost too: asked again
+            if self.busy < 0 and self.lands:
+                self.version = self.closing["data_version"]
+                self.latest = max(r[1] for c in self.batches() for r in c["prices"])
+                return {"ok": True, "symbols": self.symbols, "data_version": self.version,
+                        "latest_date": self.latest, "publish_id": self.closing["publish_id"]}
+            return {"ok": True, "symbols": self.symbols, "data_version": self.version, "latest_date": self.latest,
+                    "publish_id": "an-older-publish"}
+        return super().call(payload)
+
+
+def test_4_a_close_that_lands_with_no_answer_is_a_success_with_its_report(built):
+    cfg, m = built
+    api = ClosesButNeverAnswers(N100)
+    s = pub.publish(cfg, full=True, api=api, market=m, close_poll_seconds=0)
+    actions = [c["action"] for c in api.calls]
+    assert s["ok"] and "abort" not in actions
+    assert actions.count("symbols") >= 5                 # asked until the N100 held it, not once
+    assert s["latest_date"] == str(m.dates[-1].date())
+    last = json.loads((cfg.p("logs") / "publish.jsonl").read_text().splitlines()[-1])
+    assert last["ok"] is True and last["publish_id"] == s["publish_id"] and "answer was lost" in last["note"]
+    report = (cfg.p("reports") / f"publish-{s['publish_id']}.md").read_text()
+    assert str(s["report"]).endswith(f"publish-{s['publish_id']}.md")
+    assert "answer was lost" in report and f"Prices sent: {s['prices']:,}" in report
+    assert f"publish_id='{s['publish_id']}'" in report   # where the N100 keeps the comparison
+    assert not (cfg.p("logs") / "publish_pending.json").exists()
+
+
+def test_4_a_data_import_that_does_not_name_the_publish_is_settled_by_the_data_version_it_holds(built):
+    cfg, m = built
+
+    class NoPublishId(ClosesButNeverAnswers):
+        def call(self, payload):
+            out = super().call(payload)
+            out.pop("publish_id", None)
+            return out
+
+    api = NoPublishId(N100, version=0, latest="2024-06-03")
+    s = pub.publish(cfg, full=True, api=api, market=m, close_poll_seconds=0)
+    assert s["ok"] and "abort" not in [c["action"] for c in api.calls]
+
+
+def test_4_a_close_not_seen_to_land_is_never_aborted_and_the_next_publish_records_it(built):
+    cfg, m = built
+    api = ClosesButNeverAnswers(N100, lands=False)
+    with pytest.raises(pub.PublishRefused, match="may still land"):
+        pub.publish(cfg, full=True, api=api, market=m, close_poll_seconds=0, close_wait_minutes=0)
+    assert "abort" not in [c["action"] for c in api.calls]
+    lines = (cfg.p("logs") / "publish.jsonl").read_text().splitlines()
+    first = json.loads(lines[-1])
+    assert first["ok"] is False
+    # it landed after all: the next night's publish finds the N100 holding it
+    from research import data_version as dv
+    nxt = FakeImport(N100, version=dv.current(cfg.data_dir), latest=str(m.dates[-1].date()))
+    held = nxt.call
+    nxt.call = lambda p: {**held(p), "publish_id": first["publish_id"]} if p["action"] == "symbols" else held(p)
+    pub.publish(cfg, api=nxt, market=m)
+    logged = [json.loads(x) for x in (cfg.p("logs") / "publish.jsonl").read_text().splitlines()[len(lines):]]
+    settled = [x for x in logged if x["publish_id"] == first["publish_id"]]
+    assert len(settled) == 1 and settled[0]["ok"] is True and "answer was lost" in settled[0]["note"]
+    assert (cfg.p("reports") / f"publish-{first['publish_id']}.md").exists()
+    assert not (cfg.p("logs") / "publish_pending.json").exists()
+
+
+def test_4_a_refused_batch_closes_nothing_and_a_refused_close_is_a_failure(built):
+    cfg, m = built
+    api = FakeImport(N100, fail_on="batch")
+    with pytest.raises(pub.PublishRefused, match="refused batch"):
+        pub.publish(cfg, full=True, api=api, market=m)
+    actions = [c["action"] for c in api.calls]
+    assert "close" not in actions and actions[-1] == "abort"
+    assert json.loads((cfg.p("logs") / "publish.jsonl").read_text().splitlines()[-1])["ok"] is False
+    api = FakeImport(N100, fail_on="close")              # the N100 answered, and said no
+    with pytest.raises(pub.PublishRefused, match="refused close"):
+        pub.publish(cfg, full=True, api=api, market=m)
+    assert [c["action"] for c in api.calls][-1] == "abort"
+    assert not list(cfg.p("reports").glob("publish-*.md"))

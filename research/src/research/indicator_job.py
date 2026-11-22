@@ -132,20 +132,32 @@ def calendar(cfg, defn, market) -> pd.DatetimeIndex:
     return dates[dates >= start]
 
 
-def _scope(defn, changes: pd.DataFrame, first) -> tuple[str, object, pd.Timestamp | None]:
-    """('none' | 'all' | 'some', symbols, from date) for the changes an indicator reads."""
+MAX_GROUPS = 25
+
+
+def _scope(defn, changes: pd.DataFrame, first) -> tuple[str, list[tuple[list[str] | None, pd.Timestamp]]]:
+    """What the record of changes (data_version.py) says to work out again, for the inputs this
+    indicator reads: 'none', 'everything', 'all' (every company from one date) or 'some', with
+    [(companies, from date), ...]. Each company is rebuilt from its own first changed date: one
+    company's restated 2009 does not send the others, which only have a new day, back to 2009.
+    """
     if changes.empty:
-        return "none", None, None
+        return "none", []
     c = changes[changes["panel"].map(dv.PANEL_INPUT).isin(set(defn.uses) | {dv.EVERYTHING})]
     if c.empty:
-        return "none", None, None
+        return "none", []
     if (c["panel"] == dv.EVERYTHING).any():
-        return "everything", None, None
-    start = pd.to_datetime(c["from"]).min()
-    start = first if pd.isna(start) else max(pd.Timestamp(start), first)
+        return "everything", []
+    first = pd.Timestamp(first)
+    starts = pd.to_datetime(c["from"]).fillna(first).clip(lower=first)
     if defn.cross_sectional or c["panel"].isin(["fx", "universe"]).any():
-        return "all", None, start
-    return "some", sorted(set(c["symbol"].astype(str))), start
+        return "all", [(None, starts.min())]
+    per = starts.groupby(c["symbol"].astype(str).to_numpy()).min().sort_values()
+    if per.nunique() > MAX_GROUPS:
+        # a few groups, each from the earliest date in it: the same companies, some from a little earlier
+        bucket = pd.qcut(per.rank(method="dense"), MAX_GROUPS, labels=False, duplicates="drop")
+        per = per.groupby(bucket.to_numpy()).transform("min")
+    return "some", [(sorted(g.index), pd.Timestamp(d)) for d, g in per.groupby(per)]
 
 
 def run(cfg, rebuild: list[str] | None = None, names: list[str] | None = None, market=None, universe=None,
@@ -231,7 +243,7 @@ def _one(cfg, store: IndicatorStore, defn, k: str, market, member, version_now: 
             whole, why = True, f"definition changed ({meta['version']} -> {v})"
     if not whole:
         changes = dv.changes_since(cfg.data_dir, meta["data_version"])
-        how, symbols, start = _scope(defn, changes, cal[0])
+        how, groups = _scope(defn, changes, cal[0])
         if how == "everything":
             whole, why = True, "the data changed everywhere (a full re-fetch)"
     if whole:
@@ -243,15 +255,22 @@ def _one(cfg, store: IndicatorStore, defn, k: str, market, member, version_now: 
     out = {"action": "updated", "version": v, "data_version": version_now, "dates_added": 0,
            "dates_rebuilt": 0, "companies_rebuilt": 0}
     built = meta["dates"]
-    if how in ("some", "all"):
+    rebuilt: list[str] = []
+    for symbols, start in groups:
         redo = cal[(cal >= start) & (cal <= built[-1])]
-        if len(redo):
-            rows = compute(cfg, defn, k, market, member, redo, symbols=symbols)
-            store.update(k, rows, version=v, data_version=None, dates=redo, symbols=symbols, data_last_date=last)
-            out.update({"dates_rebuilt": len(redo), "rebuilt_from": str(redo[0].date()),
-                        "companies_rebuilt": "all" if symbols is None else len(symbols)})
-            if symbols is not None and len(symbols) <= 20:
-                out["rebuilt_symbols"] = symbols
+        if not len(redo):
+            continue                # only new days for these companies: added below
+        rows = compute(cfg, defn, k, market, member, redo, symbols=symbols)
+        store.update(k, rows, version=v, data_version=None, dates=redo, symbols=symbols, data_last_date=last)
+        out["dates_rebuilt"] = max(out["dates_rebuilt"], len(redo))
+        out["rebuilt_from"] = min(out.get("rebuilt_from", "9999"), str(redo[0].date()))
+        if symbols is None:
+            out["companies_rebuilt"] = "all"
+        else:
+            rebuilt += symbols
+            out["companies_rebuilt"] = len(rebuilt)
+    if rebuilt and len(rebuilt) <= 20:
+        out["rebuilt_symbols"] = sorted(rebuilt)
     new = cal[cal > built[-1]] if len(built) else cal
     if len(new):
         rows = compute(cfg, defn, k, market, member, new)
