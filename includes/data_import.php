@@ -18,13 +18,17 @@
 	 *       that is not a number.
 	 *
 	 *   {"action": "close", "publish_id", "data_version", "full",
-	 *    "replace_from": {symbol: date, ...}, "batches", "price_rows",
-	 *    "statistic_rows", "missing": [symbols]}
+	 *    "replace_from": {symbol: date, ...},
+	 *    "statistic_from": {indicator: {symbol: date, ...}, ...},   (optional)
+	 *    "batches", "price_rows", "statistic_rows", "missing": [symbols]}
 	 *       make the staged publish live in one transaction: for each symbol in
 	 *       replace_from, its prices and published statistics from that date on
-	 *       are replaced by exactly the staged rows. Then the publish is
-	 *       recorded in data_publishes. The counts must match what was staged,
-	 *       or nothing changes.
+	 *       are replaced by exactly the staged rows. statistic_from moves one
+	 *       statistic's start earlier for a symbol (the accounts statistics,
+	 *       sent with their whole history from before the prices'): that
+	 *       statistic's rows for the symbol are replaced from the earlier of the
+	 *       two dates. Then the publish is recorded in data_publishes. The
+	 *       counts must match what was staged, or nothing changes.
 	 *
 	 *   {"action": "abort", "publish_id"}
 	 *       throw the staged rows away.
@@ -267,7 +271,7 @@
 		foreach (DATA_PUBLISHED_STATISTICS as $name) {
 			$out[$name] = $diff_sql(
 				"s.symbol, s.date, s.value v from statistics s
-				   join data_import_ranges r on r.symbol=s.symbol and s.date>=r.from_date
+				   join data_import_stat_ranges r on r.symbol=s.symbol and r.indicator=s.indicator and s.date>=r.from_date
 				  where s.exchange=? and s.indicator=?",
 				"join (select symbol, date, value v from data_import_statistics where publish_id=? and indicator=?) n
 				   on n.symbol=o.symbol and n.date=o.date",
@@ -292,7 +296,17 @@
 		$full = ($body['full'] ?? false) === true;
 		$ranges = $body['replace_from'] ?? [];
 		$missing = $body['missing'] ?? [];
+		$stat_from = $body['statistic_from'] ?? [];
 		if (!is_array($ranges) || !is_array($missing)) { return ['ok' => false, 'why' => "replace_from is a map and missing a list."]; }
+		if (!is_array($stat_from)) { return ['ok' => false, 'why' => "statistic_from is a map of statistic to a map of symbol to date."]; }
+		foreach ($stat_from as $n => $per) {
+			if (!data_published_statistic($n)) { return ['ok' => false, 'why' => "statistic_from names " . json_encode($n) . ", which is the N100's, not the Mac mini's."]; }
+			if (!is_array($per)) { return ['ok' => false, 'why' => "statistic_from for $n is not a map of symbol to date."]; }
+			foreach ($per as $s => $d) {
+				if (!array_key_exists((string) $s, $ranges)) { return ['ok' => false, 'why' => "statistic_from for $n names " . json_encode($s) . ", which is not in replace_from."]; }
+				if (!data_import_valid_date($d)) { return ['ok' => false, 'why' => "statistic_from for $n and $s is not a date."]; }
+			}
+		}
 
 		$known = data_import_known_symbols();
 		foreach ($ranges as $s => $d) {
@@ -314,6 +328,7 @@
 
 		/* The ranges, where SQL can join them. */
 		query("drop temporary table if exists data_import_ranges");
+		query("drop temporary table if exists data_import_stat_ranges");
 		query("create temporary table data_import_ranges (symbol varchar(50) not null primary key, from_date date not null)");
 		foreach (array_chunk(array_keys($ranges), 1000) as $chunk) {
 			$params = [];
@@ -322,11 +337,29 @@
 			      . implode(',', array_fill(0, count($chunk), '(?,?)')), ...$params);
 		}
 
-		/* Every staged row has to fall inside its symbol's range, or the close
-		   would add a row and leave an older one beside it. */
+		/* Each published statistic's range per symbol: the symbol's, or earlier
+		   where statistic_from says so. */
+		query("drop temporary table if exists data_import_stat_ranges");
+		query("create temporary table data_import_stat_ranges (indicator varchar(50) not null, symbol varchar(50) not null,
+		       from_date date not null, primary key (indicator, symbol))");
+		$stat_rows = [];
+		foreach (DATA_PUBLISHED_STATISTICS as $name) {
+			foreach ($ranges as $s => $d) {
+				$earlier = $stat_from[$name][$s] ?? null;
+				$stat_rows[] = [$name, (string) $s, ($earlier !== null && $earlier < $d) ? $earlier : $d];
+			}
+		}
+		foreach (array_chunk($stat_rows, 1000) as $chunk) {
+			query("insert into data_import_stat_ranges (indicator, symbol, from_date) values "
+			      . implode(',', array_fill(0, count($chunk), '(?,?,?)')), ...array_merge(...$chunk));
+		}
+
+		/* Every staged row has to fall inside its range, or the close would
+		   add a row and leave an older one beside it. */
 		$outside = (int) query("select count(*) n from data_import_prices p left join data_import_ranges r on r.symbol=p.symbol
 		                         where p.publish_id=? and (r.symbol is null or p.date < r.from_date)", $pid)[0]['n']
-		         + (int) query("select count(*) n from data_import_statistics p left join data_import_ranges r on r.symbol=p.symbol
+		         + (int) query("select count(*) n from data_import_statistics p left join data_import_stat_ranges r
+		                          on r.symbol=p.symbol and r.indicator=p.indicator
 		                         where p.publish_id=? and (r.symbol is null or p.date < r.from_date)", $pid)[0]['n'];
 		if ($outside > 0) {
 			return ['ok' => false, 'why' => "$outside staged rows fall outside replace_from. Nothing was changed."];
@@ -338,8 +371,8 @@
 
 		$prices_replaced = (int) query("select count(*) n from historical_prices h join data_import_ranges r
 		                                  on r.symbol=h.symbol and h.date>=r.from_date where h.exchange=?", $ex)[0]['n'];
-		$stats_replaced = (int) query("select count(*) n from statistics s join data_import_ranges r
-		                                 on r.symbol=s.symbol and s.date>=r.from_date
+		$stats_replaced = (int) query("select count(*) n from statistics s join data_import_stat_ranges r
+		                                 on r.symbol=s.symbol and r.indicator=s.indicator and s.date>=r.from_date
 		                                where s.exchange=? and s.indicator in ($in)", $ex, ...DATA_PUBLISHED_STATISTICS)[0]['n'];
 		$latest = query("select max(date) d from data_import_prices where publish_id=?", $pid)[0]['d'];
 		if ($latest === null) {
@@ -358,7 +391,8 @@
 			   where h.exchange=?", [$ex]],
 			["insert into historical_prices (symbol, exchange, date, price)
 			  select symbol, ?, date, price from data_import_prices where publish_id=?", [$ex, $pid]],
-			["delete s from statistics s join data_import_ranges r on r.symbol=s.symbol and s.date>=r.from_date
+			["delete s from statistics s join data_import_stat_ranges r
+			     on r.symbol=s.symbol and r.indicator=s.indicator and s.date>=r.from_date
 			   where s.exchange=? and s.indicator in ($in)", array_merge([$ex], DATA_PUBLISHED_STATISTICS)],
 			["insert into statistics (symbol, date, indicator, value, exchange, stat_rank, percentile)
 			  select symbol, date, indicator, value, ?, stat_rank, percentile from data_import_statistics where publish_id=?", [$ex, $pid]],
@@ -375,11 +409,13 @@
 			if (query($sql, ...$params) === false) {
 				query("rollback");
 				query("drop temporary table if exists data_import_ranges");
+				query("drop temporary table if exists data_import_stat_ranges");
 				return ['ok' => false, 'why' => "the close failed at step $i and was rolled back; nothing was changed."];
 			}
 		}
 		query("commit");
 		query("drop temporary table if exists data_import_ranges");
+		query("drop temporary table if exists data_import_stat_ranges");
 
 		write_log("data_import", sprintf("publish %s closed: data version %d%s, latest date %s, %d prices and %d statistics "
 		          . "(replacing %d and %d) for %d symbols; missing: %s", $pid, $version, $full ? " (full)" : "",

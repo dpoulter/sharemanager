@@ -10300,7 +10300,14 @@
         return ($v === false || $v === null) ? null : (float)$v;
     };
 
-    check('the Piotroski score arrives as the provider sent it',
+    /* Brief of 22 Nov 2026 (option 2): piotroski_score is the Mac mini's,
+       written only by data_import. get_api_stats.py leaves FMP's figure
+       alone; the scores arrive as data_import writes them. */
+    check('FMP\'s Piotroski score is not loaded: data_import is its only writer',
+          $hs_value('HMAN', 'piotroski_score') === null, var_export($hs_value('HMAN', 'piotroski_score'), true));
+    $hs_pub = db()->prepare("insert into statistics (symbol, date, indicator, value, exchange) values (?,?,'piotroski_score',?,'XLON')");
+    foreach ($hs_rows as $hs_s => $hs_r) { $hs_pub->execute([$hs_s, $hs_asof, $hs_r['p']]); }
+    check('the Piotroski score arrives as the Mac mini published it',
           $hs_value('HMAN', 'piotroski_score') === 7.0,
           var_export($hs_value('HMAN', 'piotroski_score'), true));
     check('and the Altman Z',
@@ -21070,8 +21077,10 @@ STUB
                          (string) file_get_contents(dirname(__DIR__) . '/includes/data_import.php'), $di_m) > 0
           && array_diff(array_unique(array_map('strtolower', $di_m[1])),
                         ['historical_prices', 'statistics', 'data_import_prices', 'data_import_statistics',
-                         'data_import_batches', 'data_publishes', 'data_import_ranges', 'message_log', 'h', 's']) === [],
+                         'data_import_batches', 'data_publishes', 'data_import_ranges', 'data_import_stat_ranges',
+                         'message_log', 'h', 's']) === [],
           json_encode(array_unique($di_m[1] ?? [])));
+
 
     /* Test 5: the nightly job waits for the publish, and plans nothing without one. */
     echo "\n--- nightly_job: the wait for the Mac mini ---\n";
@@ -21128,6 +21137,123 @@ STUB
           && (int) scalar("select count(*) from statistics where date=? and indicator in ('close_price','ma50','ma200','1mnth','3mnth','6mnth','12mnth')", [$di_asof]) === 0
           && (int) scalar("select count(*) from statistics where date=? and indicator='high_52w'", [$di_asof]) > 0, substr($out, -400));
     exec('rm -rf ' . escapeshellarg($di_app));
+
+    /* Brief of 22 Nov 2026 (option 2): piotroski_score and book_to_market
+       come from the Mac mini with their whole history, which starts before
+       the prices it sends. statistic_from moves one statistic's start earlier
+       for a symbol. */
+    echo "\n--- data_import: the accounts statistics (piotroski_score, book_to_market) ---\n";
+    check('piotroski_score and book_to_market are the Mac mini\'s, so data_import is their only writer',
+          data_published_statistic('piotroski_score') && data_published_statistic('book_to_market'));
+    $pf_old = '2003-06-30';
+    $pf_older = '2002-01-02';
+    $pf_mid = '2010-03-01';
+    db()->prepare("delete from statistics where symbol=? and exchange='XLON' and indicator in ('piotroski_score','book_to_market')")->execute([$di_s1]);
+    $pf_ins = db()->prepare("insert into statistics (symbol, date, indicator, value, exchange) values (?,?,?,?,'XLON')");
+    $pf_ins->execute([$di_s1, $pf_older, 'piotroski_score', 2]);      /* before statistic_from: kept */
+    $pf_ins->execute([$di_s1, $pf_mid, 'piotroski_score', 7]);        /* FMP's old figure: replaced */
+    $pf_ins->execute([$di_s1, $di_from, 'piotroski_score', 7]);
+    $pf_ins->execute([$di_s1, $pf_mid, 'ma200', 55]);                 /* a price statistic before replace_from: kept */
+    $pf_stats = [[$di_s1, $pf_old, 'piotroski_score', 5.0], [$di_s1, $di_from, 'piotroski_score', 8.0],
+                 [$di_s1, $di_from, 'book_to_market', 1.25]];
+    $pf_pid = 'test-accounts-0004';
+    [$pb] = $di_api(['action' => 'batch', 'publish_id' => $pf_pid, 'seq' => 0, 'prices' => [], 'statistics' => $pf_stats]);
+    $pf_close = ['action' => 'close', 'publish_id' => $pf_pid, 'data_version' => 43, 'full' => false,
+                 'replace_from' => [$di_s1 => $di_from], 'batches' => 1, 'price_rows' => 0,
+                 'statistic_rows' => count($pf_stats), 'missing' => []];
+    [$pc1, $po1] = $di_api($pf_close);
+    check('accounts rows from before replace_from with no statistic_from are refused, and nothing changes',
+          $pb === 200 && $pc1 === 409 && stripos($po1['why'], 'outside') !== false
+          && (float) scalar("select value from statistics where symbol=? and date=? and indicator='piotroski_score'", [$di_s1, $pf_mid]) === 7.0,
+          json_encode($po1));
+    [$pc2, $po2] = $di_api(array_merge($pf_close, ['statistic_from' => ['ma50' => [$di_s1 => $pf_old], 'value_score' => [$di_s1 => $pf_old]]]));
+    check('statistic_from naming an N100 statistic is refused', $pc2 === 409 && stripos($po2['why'], 'value_score') !== false, json_encode($po2));
+    [$pc3, $po3] = $di_api(array_merge($pf_close, ['statistic_from' => ['piotroski_score' => [$di_s2 => $pf_old]]]));
+    check('statistic_from naming a symbol not in replace_from is refused', $pc3 === 409, json_encode($po3));
+    [$pc4, $po4] = $di_api(array_merge($pf_close, ['statistic_from' => ['piotroski_score' => [$di_s1 => $pf_old]]]));
+    check('brief test 6 (N100): a close with statistic_from replaces piotroski_score from that date: whole history in',
+          $pc4 === 200 && $po4['ok']
+          && array_map(function ($r) { return [$r['date'], (float) $r['value']]; },
+                       rows("select date, value from statistics where symbol=? and exchange='XLON' and indicator='piotroski_score' order by date", [$di_s1]))
+             === [[$pf_older, 2.0], [$pf_old, 5.0], [$di_from, 8.0]],
+          json_encode([$po4, rows("select date, value from statistics where symbol=? and indicator='piotroski_score' order by date", [$di_s1])]));
+    check('and every other statistic is replaced only from replace_from',
+          (float) scalar("select value from statistics where symbol=? and date=? and indicator='ma200'", [$di_s1, $pf_mid]) === 55.0
+          && (float) scalar("select value from statistics where symbol=? and date=? and indicator='book_to_market'", [$di_s1, $di_from]) === 1.25);
+    check('the close compares the old and new piotroski_score',
+          $po4['differences']['piotroski_score']['compared'] === 1 && $po4['differences']['piotroski_score']['differing'] === 1,
+          json_encode($po4['differences']['piotroski_score'] ?? null));
+
+    /* Brief test 7: the migration. FMP's piotroski_score is unmapped, nothing
+       on the N100 writes it, and book_to_market is a screen indicator. */
+    echo "\n--- sql/piotroski_publish.sql ---\n";
+    if (!(int) scalar("select count(*) from screen_indicators where name='piotroski_score'")) {
+        db()->exec("insert into screen_indicators (name, provider_field, description, enabled, order_number, rank_zero,
+                      calc_rank, rank_order, rank_negative, fx_adjust, category)
+                    values ('piotroski_score', 'Scores.piotroskiScore', 'Piotroski F-Score', 'Y', 220, 'Y', 'Y', 'value DESC',
+                            'NORMAL', 'NONE', 10)");
+    }
+    if (!(int) scalar("select count(*) from screen_indicators where name='price_book_ratio'")) {
+        db()->exec("insert into screen_indicators (name, provider_field, description, enabled, order_number, rank_zero,
+                      calc_rank, rank_order, rank_negative, fx_adjust, category)
+                    values ('price_book_ratio', 'Ratios.priceToBookRatioTTM', 'Price / book', 'Y', 3, 'N', 'Y', 'value ASC',
+                            'EXCLUDE', 'NONE', 12)");
+    }
+    apply_migration('piotroski_publish.sql');
+    apply_migration('piotroski_publish.sql');                 /* re-runnable */
+    $pf_p = rows("select provider_field, enabled from screen_indicators where name='piotroski_score'");
+    check('brief test 7: piotroski_score has no provider field after the migration, and is still enabled (quality score)',
+          count($pf_p) === 1 && $pf_p[0]['provider_field'] === null && $pf_p[0]['enabled'] === 'Y', json_encode($pf_p));
+    $pf_b = rows("select b.enabled, b.rank_order, b.calc_rank, b.rank_negative, b.category, b.provider_field,
+                         p.calc_rank pb_calc, p.category pb_cat
+                    from screen_indicators b join screen_indicators p on p.name='price_book_ratio' where b.name='book_to_market'");
+    check('book_to_market is a new indicator: enabled, value DESC, ranked like the other value measures',
+          count($pf_b) === 1 && $pf_b[0]['enabled'] === 'Y' && $pf_b[0]['rank_order'] === 'value DESC'
+          && $pf_b[0]['calc_rank'] === $pf_b[0]['pb_calc'] && $pf_b[0]['category'] === $pf_b[0]['pb_cat']
+          && $pf_b[0]['provider_field'] === null, json_encode($pf_b));
+    check('it is offered in the screen criteria form',
+          in_array('book_to_market', array_column(query("SELECT indicator_id, name, description FROM screen_indicators"), 'name'), true));
+    if ((int) scalar("select count(*) from information_schema.columns where table_schema=database()
+                        and table_name='screen_indicators' and column_name='in_score'")) {
+        check('and stays out of the value score (in_score N)',
+              scalar("select in_score from screen_indicators where name='book_to_market'") === 'N');
+    }
+
+    /* The nightly FMP path: stock_info carries FMP's piotroskiScore (and,
+       for the name fallback, attributes named after both statistics);
+       get_api_stats.py writes no row for either. */
+    $pf_asof = asof_date();
+    $pf_sym = $di_s2;
+    db()->prepare("delete from stock_info where symbol=? and asofdate=?")->execute([$pf_sym, $pf_asof]);
+    db()->prepare("delete from statistics where symbol=? and date=? and indicator in ('piotroski_score','book_to_market')")
+        ->execute([$pf_sym, $pf_asof]);
+    $pf_si = db()->prepare("insert into stock_info (symbol, asofdate, attribute, value) values (?,?,?,?)");
+    foreach ([['Scores.piotroskiScore', '7'], ['piotroski_score', '7'], ['book_to_market', '0.9'], ['Scores.altmanZScore', '3.1']] as [$a, $v]) {
+        $pf_si->execute([$pf_sym, $pf_asof, $a, $v]);
+    }
+    [$pf_out, $pf_rc] = $run_python('get_api_stats.py');
+    check('brief test 7: after the migration the FMP fundamentals path writes no piotroski_score or book_to_market row',
+          $pf_rc === 0 && (int) scalar("select count(*) from statistics where symbol=? and date=? and indicator in ('piotroski_score','book_to_market')",
+                                       [$pf_sym, $pf_asof]) === 0, substr($pf_out, -400));
+    check('get_api_stats.py skips exactly the statistics the Mac mini publishes',
+          preg_match("~MAC_MINI_STATISTICS = \\(([^)]*)\\)~s", (string) file_get_contents(dirname(__DIR__) . '/python/get_api_stats.py'), $pf_m)
+          && array_map(function ($x) { return trim($x, " '\n"); }, explode(',', $pf_m[1])) === DATA_PUBLISHED_STATISTICS,
+          json_encode($pf_m ?? null));
+    check('fetch_fmp_fundamentals.py asks the provider for no field on behalf of an indicator with none',
+          stripos((string) file_get_contents(dirname(__DIR__) . '/python/fetch_fmp_fundamentals.py'),
+                  "provider_field is not null") !== false);
+    /* and book_to_market can be screened on */
+    db()->prepare("insert into statistics (symbol, date, indicator, value, exchange) values (?,?,?,?,'XLON')")
+        ->execute([$pf_sym, $pf_asof, 'book_to_market', 1.4]);
+    $_SESSION['exchange'] = 'XLON';
+    $pf_sid = $tv_screen([['book_to_market', '>', '1']]);
+    $pf_got = array_map(function ($r) { return is_array($r) ? ($r['symbol'] ?? reset($r)) : $r; },
+                        build_screen($pf_sid, $pf_asof) ?: []);
+    check('brief test 7: a screen criterion on book_to_market selects by it',
+          in_array($pf_sym, $pf_got, true), json_encode($pf_got));
+    db()->exec("delete from screen_build where screen_id=$pf_sid");
+    db()->exec("delete from screen where id=$pf_sid");
+    db()->exec("delete from screen_criteria where description like 'topn-scratch%'");
 
     if ($pid > 0) { exec("kill $pid 2>/dev/null"); }
     if (!empty($stub_pid)) { exec("kill $stub_pid 2>/dev/null"); }

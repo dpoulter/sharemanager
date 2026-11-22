@@ -13,6 +13,15 @@ from functions import query
 from pipeline import pipeline_asofdate, fx_correct
 from share_functions import insert_statistic
 
+# The statistics the Mac mini publishes (includes/data_ownership.php,
+# DATA_PUBLISHED_STATISTICS): data_import is their only writer, so this job
+# never writes one, whatever screen_indicators maps. An indicator with no
+# provider_field falls back to matching stock_info on its own name, so
+# unmapping piotroski_score alone would not be enough if an attribute of that
+# name ever turned up. The suite checks this list against the PHP one.
+MAC_MINI_STATISTICS = ('close_price', 'ma50', 'ma200', '1mnth', '3mnth', '6mnth', '12mnth',
+                       'piotroski_score', 'book_to_market')
+
 # Set exchange
 exchange = 'XLON'
 
@@ -93,7 +102,7 @@ for row in rows:
                         "   and s.date='"+date+"'")
         cleared += removed if isinstance(removed, int) else 0
 
-    indicator_stats = query("select sti.symbol, sci.name, sti.value, ifnull(nullif(sci.fx_adjust,''),'NONE') from screen_indicators sci, stock_info sti where sci.enabled='Y' and sti.attribute = coalesce(nullif(sci.provider_field,''), sci.name) and sti.symbol='"+symbol+"' and sti.asofdate = '"+date+"' order by order_number")
+    indicator_stats = query("select sti.symbol, sci.name, sti.value, ifnull(nullif(sci.fx_adjust,''),'NONE') from screen_indicators sci, stock_info sti where sci.enabled='Y' and sti.attribute = coalesce(nullif(sci.provider_field,''), sci.name) and sti.symbol='"+symbol+"' and sti.asofdate = '"+date+"' and sci.name not in ("+", ".join("'"+n+"'" for n in MAC_MINI_STATISTICS)+") order by order_number")
 
     if indicator_stats:
         symbols_with_data += 1

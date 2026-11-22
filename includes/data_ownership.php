@@ -12,6 +12,15 @@
 	 *   ma50, ma200         the average of the share's own last 50 / 200 closes
 	 *   1mnth 3mnth 6mnth 12mnth
 	 *                       the calendar-month return, in per cent
+	 *   piotroski_score     the Piotroski F-score, 0 to 9, the paper's (annual
+	 *                       accounts, 4-month publication lag), every company
+	 *                       (brief of 22 Nov 2026), with its whole history
+	 *   book_to_market      book equity over market cap, negative book left out
+	 *
+	 * The two accounts statistics replace FMP's figure (piotroski_score) and
+	 * are new (book_to_market); sql/piotroski_publish.sql unmaps FMP's field,
+	 * and get_api_stats.py skips every name here (MAC_MINI_STATISTICS there,
+	 * kept equal to this list by the suite).
 	 *
 	 * Statistics for trading days only: the weekend rows the Mac mini keeps for
 	 * its backtests are never sent, so the live 200-day exit counts trading days.
@@ -19,7 +28,7 @@
 	 *
 	 * THE N100 owns everything else in statistics, and keeps calculating it
 	 * nightly: the FMP ratios and fundamentals (fetch_fmp_fundamentals.py,
-	 * get_api_stats.py), value_score, Piotroski and Altman, the yields,
+	 * get_api_stats.py), value_score, Altman, the yields,
 	 * high_52w / low_52w and the valuation, news and announcement sentiment,
 	 * and every rank and percentile (get_statistics.php ranks the published
 	 * values too). Also the quote page fundamentals, live quotes, RNS and news.
@@ -33,7 +42,8 @@
 	 */
 
 	if (!defined('DATA_PUBLISHED_STATISTICS')) {
-		define('DATA_PUBLISHED_STATISTICS', ['close_price', 'ma50', 'ma200', '1mnth', '3mnth', '6mnth', '12mnth']);
+		define('DATA_PUBLISHED_STATISTICS', ['close_price', 'ma50', 'ma200', '1mnth', '3mnth', '6mnth', '12mnth',
+		                                     'piotroski_score', 'book_to_market']);
 	}
 
 	/** Whether the Mac mini owns this statistic (so nothing on the N100 may write it but data_import). */
