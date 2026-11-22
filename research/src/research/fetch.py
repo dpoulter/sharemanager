@@ -12,8 +12,8 @@ Layout under the data folder:
     statements.parquet               one row per symbol, period, statement fields
     fx.parquet                       date, currency, gbp_per_unit
 
-    raw/topup_state.json             what the nightly top-up knows: the last trading day read in
-                                     bulk, and per symbol when its price history was last read
+    raw/topup_state.json             what the nightly top-up knows: the last trading day
+                                     read, and per symbol when its price history was last read
                                      whole and when its statements and dividends are next due
 
 A full pull writes every per-symbol file it does not already have, so an
@@ -21,29 +21,33 @@ interrupted run started again carries on where it stopped.
 
 `fetch` without --full tops up (the nightly run, contract data_refresh: under
 an hour). Calls run a small pool at a time, up to the configured calls a
-minute (fmp.py). What it asks FMP for:
+minute (fmp.py). What it asks FMP for, all of it on Dale's plan (checked on
+the Mac mini with the real key, 22 Nov 2026):
 
-- Prices: one bulk end-of-day call per trading day since the last one read,
-  for the whole market (`eod-bulk`), not a call per symbol. A symbol's price
-  history is read again, whole, only when it is new, has fallen behind, has
-  gone ex-dividend since its history was last read (FMP then re-bases the
-  whole adjusted series), or when the bulk close for a day already held
-  disagrees with it (a split or a correction). Between ex-dates a new day's
-  adjusted close keeps the ratio to the raw close of the day before.
-- Market cap: the batch call for the one new day, and a per-symbol call only
-  where that does not bring the series up to the symbol's last price.
-- Dividends: the dividend calendar each night, and each symbol's own list
-  once every fmp.dividends_refresh_days.
-- Statements: when FMP's list of the latest filings names the symbol, and
-  otherwise once every fmp.statements_refresh_days (spread over the days).
+- Prices: `batch-quote`, fmp.batch_symbols symbols a call, after the close,
+  when there is one new trading day since the last one held. It gives only
+  the latest price, so which day that is, and that the quote is that day's
+  close, is read from a few symbols' own history first. A symbol's own
+  `historical-price-eod` is asked for only when a night was missed (every
+  missed day is filled, never left as a gap), when it is new or behind, when
+  it has gone ex-dividend since its history was last read (FMP then re-bases
+  the whole adjusted series), or when the quote's previous close is not the
+  close held (a split or a correction). Between ex-dates a new day's adjusted
+  close keeps the ratio to the raw close of the day before.
+- Market cap: `market-capitalization-batch` for the one new day, and a
+  symbol's own history where that does not bring it up to its last price.
+- Dividends: `dividends-calendar` each night, and each symbol's own list once
+  every fmp.dividends_refresh_days.
+- Statements: once every fmp.statements_refresh_days, spread over the nights.
 - A delisted symbol whose files are all there is never asked for again.
 
-Every one of the bulk, batch, calendar and latest-filing calls is checked or
-has a per-symbol call behind it: if FMP refuses one, or the bulk prices
-disagree with a few symbols' own history or with what is held, that night's
-top-up asks per symbol instead, as before but concurrently. The state file is
-written when the downloads finish, so a top-up that stops part way is simply
-run again.
+It never asks for `eod-bulk`, `batch-exchange-quote` or
+`latest-financial-statements`: they are not on the plan. If FMP refuses any
+call as not on the plan (HTTP 402) nothing is fallen back to: the top-up
+stops, names the endpoint, records no data version, and the night does not
+count as complete (logs/fetch_last.json), so nothing is published. The state
+file is written when the downloads finish, so a top-up that stops part way is
+simply run again.
 """
 from __future__ import annotations
 
@@ -61,7 +65,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config, mask
-from .fmp import Fmp, FmpError
+from .fmp import Fmp, FmpError, FmpRestricted
 
 log = logging.getLogger(__name__)
 
@@ -87,12 +91,14 @@ STATEMENTS = {
 
 STATEMENT_SETS = [f"{name}_{period}" for name in STATEMENTS for period in ("annual", "quarter")]
 STATE = "topup_state.json"
-# Bulk prices are dropped for the night if more than this share of the symbols compared (and more
-# than BULK_MISMATCH_MIN of them) disagree with the close already held for the same day.
-BULK_MISMATCH_SHARE = 0.05
-BULK_MISMATCH_MIN = 5
-BULK_PROBES = 3            # symbols whose own history is read each night to check the bulk rows
+PROBES = 3                 # symbols whose own history is read each night: the new trading days, and their closes
 CLOSE_TOLERANCE = 1e-6     # relative: two closes further apart than this are different
+# A quote's previous close (price - change) further than this from the close held, relative, is a
+# split or a correction: the symbol's history is read again. If more than MOVED_SHARE of the symbols
+# (and more than MOVED_MIN) say so on one night it is the quotes, not the symbols, and none is.
+PREVIOUS_CLOSE_TOLERANCE = 0.01
+MOVED_SHARE = 0.05
+MOVED_MIN = 5
 
 
 def _today() -> str:
@@ -115,8 +121,22 @@ def _num(v) -> float:
         return float("nan")
 
 
-def _differs(a: float, b: float) -> bool:
-    return not (abs(a - b) <= CLOSE_TOLERANCE * max(abs(a), abs(b)))
+def _same_close(a: float, b: float) -> bool:
+    return bool(abs(a - b) <= CLOSE_TOLERANCE * max(abs(a), abs(b)))
+
+
+def _traded(quote: dict, day: str, held: tuple | None) -> bool:
+    """Whether a batch-quote row is a trade on `day`, not the last price of an earlier day.
+
+    The quote's own time says, where FMP gives one. Without it: a price and a volume both the same
+    as the last day held is that day's quote again.
+    """
+    ts = _num(quote.get("timestamp"))
+    if np.isfinite(ts) and ts > 0:
+        return dt.datetime.fromtimestamp(ts, dt.timezone.utc).date().isoformat() == day
+    if held is None:
+        return False
+    return not (_same_close(_num(quote.get("price")), held[1]) and _num(quote.get("volume")) == held[3])
 
 
 class Fetcher:
@@ -138,6 +158,8 @@ class Fetcher:
         def one(item):
             try:
                 fn(item)
+            except FmpRestricted:
+                raise                   # not one item's failure: the night stops and names the endpoint
             except FmpError as e:
                 sym = item if isinstance(item, str) else str(item)
                 self.failures.append({"symbol": sym, "dataset": what, "error": str(e)})
@@ -290,7 +312,7 @@ class Fetcher:
                 return
             last = pd.read_parquet(path, columns=["date"])["date"].max()
             if pd.isna(last):
-                return          # FMP had nothing for it; the bulk rows say if that changes (top_up_prices)
+                return          # FMP had nothing for it; a quote says if that changes (top_up_prices)
             start = (pd.Timestamp(last) + pd.Timedelta(days=1)).date().isoformat()
             if start > end:
                 return
@@ -471,30 +493,25 @@ class Fetcher:
         due, hist = st["dividends_due"], st["history_at"]
         want = set(syms)
         before = {s: set(self._ex_dates(s)) for s in syms}
-        calendar = False
-        try:
-            a = (pd.Timestamp(end) - pd.Timedelta(days=14)).date().isoformat()
-            b = (pd.Timestamp(end) + pd.Timedelta(days=75)).date().isoformat()
-            rows = self.fmp.get("dividends-calendar", **{"from": a, "to": b})
-            calendar = isinstance(rows, list)
-            by: dict[str, list] = {}
-            for r in rows if calendar else []:
-                if isinstance(r, dict) and r.get("symbol") in want and r.get("date"):
-                    by.setdefault(r["symbol"], []).append(r)
-            for sym, rs in by.items():
-                path = self._path("dividends", sym)
-                if not path.exists():
-                    continue
-                new = self._dividend_frame(rs)
-                new = new[~new["ex_date"].map(_day).isin(before[sym]) & new["amount"].notna()]
-                if len(new):
-                    self._merge_write(path, new, ["ex_date"])
-        except FmpError as e:
-            log.warning("dividend calendar not read (%s): every symbol's own dividends are asked for", mask(e))
+        a = (pd.Timestamp(end) - pd.Timedelta(days=14)).date().isoformat()
+        b = (pd.Timestamp(end) + pd.Timedelta(days=75)).date().isoformat()
+        rows = self.fmp.get("dividends-calendar", **{"from": a, "to": b}) or []
+        by: dict[str, list] = {}
+        for r in rows:
+            if isinstance(r, dict) and r.get("symbol") in want and r.get("date"):
+                by.setdefault(r["symbol"], []).append(r)
+        for sym, rs in by.items():
+            path = self._path("dividends", sym)
+            if not path.exists():
+                continue
+            new = self._dividend_frame(rs)
+            new = new[~new["ex_date"].map(_day).isin(before[sym]) & new["amount"].notna()]
+            if len(new):
+                self._merge_write(path, new, ["ex_date"])
         for s in syms:
-            if s not in due and calendar and (self.raw / "dividends" / f"{s}.parquet").exists():
+            if s not in due and (self.raw / "dividends" / f"{s}.parquet").exists():
                 due[s] = _day(pd.Timestamp(end) + pd.Timedelta(days=1 + _spread(s, every)))
-        todo = [s for s in syms if not calendar or due.get(s, "") <= end]
+        todo = [s for s in syms if due.get(s, "") <= end]
 
         def one(sym):
             self.dividends(sym, False)
@@ -506,27 +523,37 @@ class Fetcher:
             if passed and before[s]:
                 back = _day(pd.Timestamp(min(passed)) - pd.Timedelta(days=1))
                 hist[s] = min(hist.get(s, back), back)
-        self.topup.update({"dividend_calendar": calendar, "dividends_asked": len(todo)})
+        self.topup.update({"dividends_asked": len(todo)})
 
-    def _bulk_day(self, day: str, want: set[str]) -> dict[str, tuple[float, float]]:
-        """symbol -> (close, volume) for one trading day, from the whole-market end-of-day file."""
-        out = {}
-        for r in self.fmp.get("eod-bulk", date=day) or []:
-            if not isinstance(r, dict) or r.get("symbol") not in want:
-                continue
-            if str(r.get("date") or day)[:10] != day:
-                continue
-            close = _num(r.get("close"))
-            if np.isfinite(close) and close > 0:
-                out[r["symbol"]] = (close, _num(r.get("volume")))
+    def _quotes(self, syms: list[str]) -> dict[str, dict]:
+        """symbol -> its batch-quote row (price, change, volume; the latest price only)."""
+        size = int(self._opt("batch_symbols", 50))
+        out: dict[str, dict] = {}
+
+        def lot(chunk):
+            for r in self.fmp.get("batch-quote", symbols=",".join(chunk)) or []:
+                if isinstance(r, dict) and r.get("symbol") in chunk:
+                    out[r["symbol"]] = r
+
+        failed = len(self.failures)
+        self._each(lot, [tuple(syms[k:k + size]) for k in range(0, len(syms), size)], "batch-quote")
+        if len(self.failures) > failed:         # a lot that failed is not a failed symbol: no quotes tonight
+            why = self.failures[-1]["error"]
+            del self.failures[failed:]
+            raise FmpError(why)
         return out
 
     def top_up_prices(self, syms: list[str], end: str, st: dict, ends: dict | None = None,
                       start: str | None = None) -> dict:
         """Prices for `syms` up to `end` (a symbol's own end in `ends`, for a delisted one).
 
-        Returns {bulk, data_to, anchor, new_days: {symbol: [days added from the bulk rows]},
-        before: {symbol: last day held before}, after: {symbol: last day held now}}.
+        A few symbols' own history says which trading days are new since the last day held. One
+        new day: every symbol's close for it from batch-quote (the latest price, which after the
+        close is the day's close; checked against those few symbols' own close). More than one: a
+        night was missed, and every symbol's own history fills the days, so there is never a gap.
+
+        Returns {quotes, data_to, anchor, new_data_days, new_days: {symbol: [days added from the
+        quotes]}, before: {symbol: last day held before}, after: {symbol: last day held now}}.
         """
         ends = ends or {}
         prices_to, hist = st["prices_to"], st["history_at"]
@@ -534,82 +561,106 @@ class Fetcher:
         for s in syms:
             d, row = self._last("prices", s)
             if d is not None:
-                held[s] = (d, _num(row["close"]), _num(row.get("adj_close")))
+                held[s] = (d, _num(row["close"]), _num(row.get("adj_close")), _num(row.get("volume")))
         exists = {s for s in syms if (self.raw / "prices" / f"{s}.parquet").exists()}
         empty = [s for s in syms if s in exists and s not in held]      # FMP had nothing when asked
         anchor = pd.Series([h[0] for h in held.values()]).mode().max() if held else None
-        days: list[str] = []
-        bulk, why = None, "nothing held yet"
+        quotes, why, new_data_days, probe_close = None, "nothing held yet", [], {}
         if anchor is not None:
-            days = [_day(d) for d in pd.date_range(anchor, end) if d.day_of_week < 5]
-            if len(days) > int(self._opt("bulk_max_days", 10)):
-                why = f"{len(days)} days behind"
-            else:
-                try:
-                    want = set(syms)
-                    bulk = {d: self._bulk_day(d, want) for d in days}
-                    if not any(bulk.values()):
-                        bulk, why = None, "the bulk files name none of the symbols"
-                except FmpError as e:
-                    bulk, why = None, f"FMP refused the bulk call ({mask(e)})"
-        eligible = [s for s in held if prices_to.get(s, held[s][0]) >= anchor] if bulk is not None else []
-        mismatched: list[str] = []
-        if bulk is not None:
-            compared = [s for s in eligible if held[s][0] in bulk and s in bulk[held[s][0]]]
-            mismatched = [s for s in compared if _differs(bulk[held[s][0]][s][0], held[s][1])]
-            if len(mismatched) > max(BULK_MISMATCH_MIN, BULK_MISMATCH_SHARE * len(compared)):
-                bulk, why = None, (f"the bulk close disagrees with the close held for {len(mismatched)} of "
-                                   f"{len(compared)} symbols")
-        if bulk is not None:
-            # A few symbols' own history each night, against the bulk rows: the same days, the same closes.
-            pool = sorted((s for s in eligible if s not in mismatched),
+            # Which trading days are new: the own history of a few symbols that traded on the last day held.
+            pool = sorted((s for s in held if held[s][0] == anchor),
                           key=lambda s: hashlib.sha256(f"{end}{s}".encode()).hexdigest())
-            for s in pool[:BULK_PROBES]:
+            seen: set[str] = set()
+            for s in pool[:PROBES]:
                 try:
                     r = self.fmp.get("historical-price-eod/full", symbol=s, **{"from": anchor, "to": end}) or []
-                except FmpError:
+                except FmpRestricted:
+                    raise
+                except FmpError as e:
+                    log.warning("prices: %s's own history not read (%s)", s, mask(e))
                     continue
                 r = r if isinstance(r, list) else r.get("historical", [])
-                own = {str(x["date"])[:10]: _num(x.get("close")) for x in r if str(x.get("date"))[:10] in bulk}
-                got = {d: bulk[d][s][0] for d in days if s in bulk[d]}
-                if set(own) != set(got) or any(_differs(own[d], got[d]) for d in own):
-                    bulk, why = None, f"the bulk rows for {s} are not its own history ({got} against {own})"
+                own_days = {str(x["date"])[:10]: _num(x.get("close")) for x in r
+                            if pd.Timestamp(str(x["date"])[:10]).day_of_week < 5}
+                seen |= {d for d in own_days if d > anchor}
+                probe_close[s] = own_days
+            new_data_days = sorted(seen)
+            if not probe_close:
+                why = "no symbol's own history could be read to say which trading days are new"
+            elif len(new_data_days) > 1:
+                why = f"{len(new_data_days)} trading days since {anchor} (a night was missed): filled from each symbol's history"
+            else:
+                quotes, why = {}, None
+        eligible = [s for s in held if prices_to.get(s, held[s][0]) >= anchor] if quotes is not None else []
+        day_new = new_data_days[0] if quotes is not None and new_data_days else None
+        if day_new is not None:
+            try:
+                quotes = self._quotes(eligible + empty)
+            except FmpRestricted:
+                raise
+            except FmpError as e:
+                quotes, why = None, f"batch-quote not read ({mask(e)})"
+            # After the close the quote is the day's close: it has to be, for the symbols whose own history was read.
+            for s, own_days in probe_close.items() if quotes is not None else []:
+                q = _num((quotes.get(s) or {}).get("price"))
+                if day_new in own_days and not _same_close(q, own_days[day_new]):
+                    quotes, why = None, (f"the quote for {s} ({q}) is not its close for {day_new} "
+                                         f"({own_days[day_new]}): the quotes are not the day's closes yet")
                     break
-        if bulk is None:
-            log.warning("prices: asking per symbol tonight, not in bulk: %s", why)
+        if quotes is None and anchor is not None:
+            log.warning("prices: asking per symbol tonight: %s", why)
+            eligible = []
 
         end_of = lambda s: ends.get(s, end)                                 # noqa: E731
         rebase = []         # read the whole history again
-        behind = []         # the symbol's own top-up call (new, or not covered by the bulk days)
+        behind = []         # the symbol's own top-up call (new, behind, or a missed day)
         new_days: dict[str, list[str]] = {}
         covered: list[str] = []
+        pending: dict[str, pd.DataFrame] = {}
+        moved: list[str] = []       # the quote's previous close is not the close held: a split or a correction
         for s in syms:
             if s in held:
                 last = held[s][0]
                 at = hist.get(s) or _day(pd.Timestamp(last) - pd.Timedelta(days=7))
-                if s in mismatched or any(at < x <= end_of(s) for x in self._ex_dates(s)):
+                if any(at < x <= end_of(s) for x in self._ex_dates(s)):
                     rebase.append(s)
                 elif s not in eligible:
                     behind.append(s)
                 else:
-                    rows = [(d, *bulk[d][s]) for d in days if d > last and s in bulk[d]]
-                    if rows:
-                        ratio = held[s][2] / held[s][1] if held[s][1] else float("nan")
-                        df = pd.DataFrame(rows, columns=["date", "close", "volume"])
-                        df["adj_close"] = df["close"] * ratio if np.isfinite(ratio) else pd.NA
-                        df["date"] = pd.to_datetime(df["date"])
-                        self._merge_write(self._path("prices", s), df, ["date"])
-                        new_days[s] = [r[0] for r in rows]
-                    hist[s] = new_days.get(s, [last])[-1]
-                    covered.append(s)           # the bulk days were read for it, new rows or not
+                    covered.append(s)
+                    q = quotes.get(s) if day_new is not None and day_new > last else None
+                    price, volume = _num((q or {}).get("price")), _num((q or {}).get("volume"))
+                    if q is None or not np.isfinite(price) or price <= 0 or not _traded(q, day_new, held[s]):
+                        continue            # no trade that day: no row, as its own history has none
+                    change = _num(q.get("change"))
+                    if np.isfinite(change) and abs((price - change) - held[s][1]) > PREVIOUS_CLOSE_TOLERANCE * held[s][1]:
+                        moved.append(s)
+                    ratio = held[s][2] / held[s][1] if held[s][1] else float("nan")
+                    df = pd.DataFrame({"date": pd.to_datetime([day_new]), "close": [price], "volume": [volume]})
+                    df["adj_close"] = df["close"] * ratio if np.isfinite(ratio) else pd.NA
+                    pending[s] = df
             elif s in empty:
-                # nothing from FMP so far: asked again only when the bulk file starts to name it
-                if bulk is not None and any(s in bulk[d] for d in days):
+                # nothing from FMP so far: asked again only when a quote dated that day names it
+                q = (quotes or {}).get(s)
+                if day_new is not None and q and q.get("timestamp") and _traded(q, day_new, None):
                     (self.raw / "prices" / f"{s}.parquet").unlink()
                     behind.append(s)
             else:
                 behind.append(s)
-        data_to = max((d for d in days if bulk[d]), default=anchor) if bulk is not None else None
+        if len(moved) > max(MOVED_MIN, MOVED_SHARE * max(1, len(pending))):
+            log.warning("prices: the quotes' previous close disagrees with the close held for %d of %d symbols; "
+                        "taken as the quotes' doing, not %d corrections", len(moved), len(pending), len(moved))
+            moved = []
+        for s, df in pending.items():
+            if s in moved:
+                rebase.append(s)
+                covered.remove(s)
+            else:
+                self._merge_write(self._path("prices", s), df, ["date"])
+                new_days[s] = [day_new]
+        for s in covered:
+            hist[s] = new_days.get(s, [held[s][0]])[-1]
+        data_to = (day_new or anchor) if quotes is not None else None
         after = {s: new_days.get(s, [held[s][0]])[-1] for s in held}
 
         def own(sym, whole):
@@ -627,23 +678,21 @@ class Fetcher:
         self._each(lambda s: own(s, False), behind, "prices")
         for s in covered:
             prices_to[s] = data_to
-        info = {"bulk": bulk is not None, "why_not_bulk": None if bulk is not None else why, "anchor": anchor,
-                "data_to": data_to, "bulk_days": len(days) if bulk is not None else 0,
-                "new_data_days": [d for d in days if d > anchor and bulk[d]] if bulk is not None else [],
+        info = {"quotes": quotes is not None, "anchor": anchor, "data_to": data_to,
+                "new_data_days": new_data_days if quotes is not None else [],
                 "new_days": new_days, "before": {s: h[0] for s, h in held.items()}, "after": after}
-        self.topup.update({"bulk": info["bulk"], "why_not_bulk": info["why_not_bulk"], "bulk_days": info["bulk_days"],
+        self.topup.update({"prices_from_quotes": info["quotes"], "why_per_symbol": why, "new_trading_days": new_data_days,
                            "price_histories_read_again": len(rebase), "prices_asked_per_symbol": len(behind),
-                           "symbols_with_new_prices_from_bulk": len(new_days)})
-        log.info("prices: %s; %d symbols with new days from the bulk rows, %d histories read again, %d asked per symbol",
-                 f"bulk for {len(days)} days from {anchor}" if bulk is not None else "per symbol",
-                 len(new_days), len(rebase), len(behind))
+                           "symbols_with_new_prices_from_quotes": len(new_days)})
+        log.info("prices: new trading days since %s: %s; %d symbols from batch-quote, %d histories read again, "
+                 "%d asked per symbol", anchor, ", ".join(new_data_days) or "none", len(new_days), len(rebase), len(behind))
         return info
 
     def top_up_caps(self, syms: list[str], trusts: list[str], end: str, info: dict, ends: dict | None = None) -> None:
-        """Market cap up to each symbol's last price day (a trust: the last bulk day).
+        """Market cap up to each symbol's last price day (a trust: the last trading day).
 
-        One new day since the cap held: the batch call gives it. Anything else (a gap, a new symbol,
-        no bulk tonight, a batch row for another day): the symbol's own history call.
+        One new day since the cap held: the batch call gives it. Anything else (a missed day, a new
+        symbol, a batch row dated another day): the symbol's own history call, so no day is left out.
         """
         ends = ends or {}
         target = {s: info["after"].get(s) for s in syms}
@@ -653,7 +702,7 @@ class Fetcher:
         for s in list(syms) + list(trusts):
             path = self.raw / "market_cap" / f"{s}.parquet"
             last, _ = self._last("market_cap", s)
-            if not path.exists() or not info["bulk"]:
+            if not path.exists() or not info["quotes"]:
                 own.append(s)
             elif last is None or target[s] is None or last >= target[s]:
                 continue                    # FMP has no cap for it, or it is up to date
@@ -675,7 +724,7 @@ class Fetcher:
 
         failures = len(self.failures)
         self._each(lot, [tuple(batch[k:k + size]) for k in range(0, len(batch), size)], "market cap batch")
-        if len(self.failures) > failures:       # a refused batch is not a failed symbol: its symbols are asked singly
+        if len(self.failures) > failures:       # a lot lost to the network is not a failed symbol: asked singly
             log.warning("market cap batch not read (%s)", self.failures[-1]["error"])
             del self.failures[failures:]
         own += [s for s in batch if s not in got]
@@ -683,38 +732,16 @@ class Fetcher:
         self.topup.update({"caps_from_batch": len(got), "caps_asked_per_symbol": len(own)})
 
     def top_up_statements(self, syms: list[str], end: str, st: dict) -> None:
-        """Statements only when due: FMP's list of the latest filings names the symbol, one of its
-        files is missing, or it was last read fmp.statements_refresh_days ago."""
+        """Statements once every fmp.statements_refresh_days, each symbol on its own night of them
+        (and at once for one with a file missing)."""
         every = int(self._opt("statements_refresh_days", 7))
-        due, seen = st["statements_due"], st.get("filings_seen")
-        named: set[str] = set()
-        acted = set(st.get("filings_acted_on", []))      # filings of the last day seen, already read
-        keys: set[str] = set()
-        try:
-            for page in range(int(self._opt("filings_max_pages", 40))):
-                rows = self.fmp.get("latest-financial-statements", page=page, limit=250) or []
-                stamps = []
-                for r in rows:
-                    stamp = str(next((r[k] for k in ("dateAdded", "fillingDate", "filingDate", "acceptedDate", "date")
-                                      if r.get(k)), ""))[:10]
-                    stamps.append(stamp)
-                    key = f"{r.get('symbol')}|{stamp}|{r.get('date')}|{r.get('period')}"
-                    if seen is not None and stamp >= seen and key not in acted:
-                        named.add(r.get("symbol"))
-                    if stamp >= end:
-                        keys.add(key)
-                # the first night there is nothing to compare with: the spread below decides
-                if not rows or seen is None or min(stamps) < seen:
-                    break
-            st["filings_seen"], st["filings_acted_on"] = end, sorted(keys)
-        except FmpError as e:
-            log.warning("latest filings not read (%s): statements are refreshed every %d days only", mask(e), every)
+        due = st["statements_due"]
         todo = []
         for s in syms:
             if s not in due:
                 due[s] = _day(pd.Timestamp(end) + pd.Timedelta(days=1 + _spread(s, every)))
             missing = any(not (self.raw / d / f"{s}.parquet").exists() for d in STATEMENT_SETS)
-            if s in named or missing or due[s] <= end:
+            if missing or due[s] <= end:
                 todo.append(s)
 
         def one(sym):
@@ -722,7 +749,7 @@ class Fetcher:
             due[sym] = _day(pd.Timestamp(end) + pd.Timedelta(days=every))
 
         self._each(one, todo, "statements")
-        self.topup.update({"statements_asked": len(todo), "new_filings_named": len(named & set(syms))})
+        self.topup.update({"statements_asked": len(todo)})
 
     def _symbol(self, sym: str, full: bool, end: str) -> None:
         self.prices(sym, full, end)

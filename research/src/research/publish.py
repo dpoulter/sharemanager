@@ -163,7 +163,8 @@ def check_ready(cfg, market, store, extra_market=None, extra_store=None) -> int:
         raise PublishRefused(f"no record of a finished fetch ({mk}); run `research fetch`")
     marker = json.loads(mk.read_text())
     if not marker.get("ok"):
-        raise PublishRefused(f"the last fetch did not finish (started {marker.get('started')})")
+        raise PublishRefused(f"the last fetch did not finish (started {marker.get('started')})"
+                             + (f": {marker['why']}" if marker.get("why") else ""))
     try:
         version = dv.current(cfg.data_dir)
     except dv.UnrecordedChange as e:

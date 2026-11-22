@@ -53,7 +53,7 @@ A strategy is a small YAML file in `strategies/`. The docstring in `src/research
 
 | File | What it does |
 |---|---|
-| `fetch.py` | Symbol master (listed + delisted `.L`, exclusions with reasons), prices (raw and dividend-adjusted, in 15-year chunks), dividends, market cap from 2007, statements (annual and interim), FX. The nightly top-up reads prices in bulk, one call a trading day, and asks per symbol only for what is new, re-based or due (see the top of the file); every bulk call has the per-symbol call behind it |
+| `fetch.py` | Symbol master (listed + delisted `.L`, exclusions with reasons), prices (raw and dividend-adjusted, in 15-year chunks), dividends, market cap from 2007, statements (annual and interim), FX. The nightly top-up reads the new day's prices from `batch-quote` and its market caps from `market-capitalization-batch`, and asks per symbol only for a missed day, a new symbol, a correction, an ex-date re-read, or statements when due (see the top of the file). It uses only endpoints on the plan; a call FMP refuses as not on the plan (402) stops the night, named, and nothing is published |
 | `checks.py` | The data report: gaps over 10 sessions, day moves over 50%, pounds-not-pence, empty revenue/total assets, counts per year |
 | `indicators/pit.py` | The publication lag: accounts are usable from period end + 4 months (annual) or + 3 months (interim) |
 | `universe.py` | The top 350 by market cap, main market only (AIM can be switched on), rebuilt on the first trading day of each month from 2007; "FTSE 100-like" and "FTSE 250-like" tiers |

@@ -101,7 +101,15 @@ def cmd_fetch(cfg, a):
         f.trust_caps(master, False, time.strftime("%Y-%m-%d"))
         summary = f.run(merge_only=True)
     else:
-        summary = Fetcher(cfg).run(full=a.full, merge_only=a.merge_only)
+        from .fmp import FmpRestricted
+        try:
+            summary = Fetcher(cfg).run(full=a.full, merge_only=a.merge_only)
+        except FmpRestricted as e:
+            # Not fallen back from: the night is not complete, no data version is recorded, nothing is published.
+            _fetch_marker(cfg, ok=False, started=time.strftime("%Y-%m-%d %H:%M:%S"), refused_endpoint=e.endpoint,
+                          why=str(e))
+            log.error("fetch stopped: %s. Nothing recorded for tonight; nothing will be published.", e)
+            sys.exit(f"fetch stopped: {e}")
     log.info("fetch done: %s", summary)
     if not (a.profile_country or a.trust_caps or a.merge_only):
         _fetch_extras(cfg, full=bool(a.full))
@@ -113,6 +121,34 @@ def cmd_fetch(cfg, a):
     path = write_data_report(m, cfg.data_dir)
     log.info("data report: %s", path)
     _fetch_marker(cfg, ok=True, data_version=rec["version"])
+
+
+def cmd_batch_size(cfg, a):
+    """The largest number of symbols FMP answers in one batch-quote call, found by asking."""
+    from .fetch import Fetcher
+    from .fmp import FmpError
+    f = Fetcher(cfg)
+    master = pd.read_parquet(cfg.data_dir / "symbols.parquet")
+    syms = master.loc[master["included"] & master["delisted_date"].isna(), "symbol"].tolist()
+    answered = set()                       # which symbols FMP quotes at all, asked 25 at a time
+    for k in range(0, min(len(syms), a.max), 25):
+        answered |= {r["symbol"] for r in f.fmp.get("batch-quote", symbols=",".join(syms[k:k + 25])) or []}
+    best = 25
+    for n in (50, 100, 200, 400, 800, 1600, 3200):
+        if n > min(len(syms), a.max):
+            break
+        want = answered & set(syms[:n])
+        try:
+            got = {r["symbol"] for r in f.fmp.get("batch-quote", symbols=",".join(syms[:n])) or []}
+            caps = {r["symbol"] for r in f.fmp.get("market-capitalization-batch", symbols=",".join(syms[:n])) or []}
+        except FmpError as e:
+            print(f"{n} symbols a call: refused ({e})")
+            break
+        print(f"{n} symbols a call: {len(got & want)} of {len(want)} quoted, {len(caps)} market caps")
+        if not want <= got or len(caps) < 0.9 * len(want):
+            break
+        best = n
+    print(f"largest that answered in full: {best}. Set fmp.batch_symbols: {best} in config.yaml.")
 
 
 def cmd_cap_trace(cfg, a):
@@ -487,6 +523,8 @@ def main(argv=None):
     s.add_argument("--top", type=int, default=5)
     s = sub.add_parser("worker", help="run sharemanager's queued backtests, one at a time (worker.py)")
     s.add_argument("--once", action="store_true", help="claim and run at most one, then stop")
+    s = sub.add_parser("batch-size", help="find the largest symbols-per-call FMP answers for batch-quote (fmp.batch_symbols)")
+    s.add_argument("--max", type=int, default=3200)
     s = sub.add_parser("indicators", help="bring the indicator store up to date (indicator_job.py)")
     s.add_argument("--rebuild", action="append", metavar="NAME",
                    help="rebuild this indicator whole (a name builds every price basis of it; repeatable)")
@@ -505,7 +543,7 @@ def main(argv=None):
         {"fetch": cmd_fetch, "cap-trace": cmd_cap_trace, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
          "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate,
          "worker": cmd_worker, "bench-weights": cmd_bench_weights, "indicators": cmd_indicators,
-         "data-version": cmd_data_version, "publish": cmd_publish}[a.cmd](cfg, a)
+         "data-version": cmd_data_version, "publish": cmd_publish, "batch-size": cmd_batch_size}[a.cmd](cfg, a)
     except Exception as e:     # never let a key reach the terminal in a traceback
         log.error("%s failed: %s", a.cmd, mask(e))
         if __import__("os").environ.get("RESEARCH_DEBUG"):

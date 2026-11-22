@@ -1,8 +1,10 @@
-"""The nightly run in under an hour (brief of 22 Nov 2026, nightly fetch speed): tests 1 to 5.
+"""The nightly run in under an hour (briefs of 22 Nov 2026, nightly fetch speed and its update).
 
-1. a normal night's calls are a small multiple of the trading days, not of the symbols
+1. a normal night's calls are a small multiple of the trading days, not of the symbols;
+   a missed trading day is filled from per-symbol history; no call to an endpoint off the plan;
+   a 402 from an endpoint on the plan stops the night, named, with nothing recorded
 2. the pool never goes over the configured calls a minute; a 429 still backs off
-3. statements are read again only when due; a new filing is picked up
+3. statements are read again only when due, once in the refresh days
 4. (the close whose answer is lost: test_publish.py)
 5. a row fetched again unchanged records no change; one changed company rebuilds only itself
 """
@@ -20,7 +22,7 @@ from research import data_version as dv
 from research import fetch as fetch_mod
 from research import indicator_job
 from research.fetch import Fetcher, FmpError
-from research.fmp import Fmp
+from research.fmp import Fmp, FmpRestricted
 from research.indicator_store import IndicatorStore
 from research.store import load_market
 from research.universe import build_universe
@@ -28,6 +30,7 @@ from research.universe import build_universe
 DAYS = pd.bdate_range("2025-06-02", "2026-12-31")
 T0 = "2026-11-18"          # the full pull
 STATEMENT_PATHS = ("income-statement", "balance-sheet-statement", "cash-flow-statement")
+OFF_PLAN = {"eod-bulk", "batch-exchange-quote", "latest-financial-statements"}    # 402 on Dale's plan
 
 
 def day(n: int) -> str:
@@ -44,10 +47,10 @@ class World:
         self.px = {s: np.round(300 * np.cumprod(1 + rng.normal(0.0004, 0.01, len(DAYS))), 4) for s in self.syms}
         self.dividends = {s: [(str(DAYS[60].date()), 4.0)] for s in self.syms}
         self.assets = {s: {2023: 2.0e9, 2024: 2.1e9, 2025: 2.2e9} for s in self.syms}
-        self.filings: list[dict] = []
         self.today = T0
         self.refuse: set[str] = set()
-        self.bulk_scale = 1.0
+        self.quote_scale = 1.0
+        self.timestamps = False                 # whether batch-quote rows carry the time of the quote
         self.halted: dict[str, str] = {}        # symbol -> its last day traded
 
     def held(self, s):
@@ -71,6 +74,7 @@ class StubFmp:
         self.w = world
         self.by_path: Counter = Counter()
         self.asked: list[tuple] = []
+        self.batched: list[str] = []
         self._lock = threading.Lock()
 
     @property
@@ -81,9 +85,10 @@ class StubFmp:
         with self._lock:
             self.by_path[path] += 1
             self.asked.append((path, p.get("symbol")))
+            self.batched.append(p.get("symbols"))
         w = self.w
-        if path in w.refuse:
-            raise FmpError(f"HTTP 402 on {path}: not in your plan")
+        if path in w.refuse or path in OFF_PLAN:
+            raise FmpRestricted(path, "Restricted Endpoint: not available under your current subscription")
         sym = p.get("symbol")
         if path == "stock-list":
             return [{"symbol": s, "companyName": f"{s} plc"} for s in w.syms] + \
@@ -101,18 +106,21 @@ class StubFmp:
             if sym == "DED.L":
                 sel &= DAYS <= pd.Timestamp("2026-03-31")
             vals = w.adj(s) if path.endswith("dividend-adjusted") else w.px[s]
-            return [{"symbol": sym, "date": str(d.date()), "close": float(v), "adjClose": float(v), "volume": 1000}
-                    for d, v in zip(DAYS[sel], vals[sel])][::-1]
-        if path == "eod-bulk":          # the whole market for one day, as the CSV parses: every value a string
-            d = pd.Timestamp(p["date"])
-            if d not in DAYS or p["date"] > w.today:
-                return []
-            i = DAYS.get_loc(d)
-            return [{"symbol": s, "date": p["date"], "close": str(w.px[s][i] * w.bulk_scale),
-                     "adjClose": str(w.px[s][i]), "volume": "1000"} for s in w.syms
-                    if p["date"] <= w.halted.get(s, p["date"])] + \
-                   [{"symbol": "TRU.L", "date": p["date"], "close": "500", "volume": "10"},
-                    {"symbol": "AAPL", "date": p["date"], "close": "200", "volume": "10"}]
+            return [{"symbol": sym, "date": str(d.date()), "close": float(v), "adjClose": float(v), "volume": 1000 + int(i)}
+                    for i, d, v in zip(np.flatnonzero(sel), DAYS[sel], vals[sel])][::-1]
+        if path == "batch-quote":       # the latest price only: no date, the last trade whenever it was
+            out = []
+            for s in p["symbols"].split(","):
+                if s not in w.px:
+                    continue
+                i = int(np.flatnonzero(w.held(s))[-1])
+                row = {"symbol": s, "price": float(w.px[s][i]) * w.quote_scale,
+                       "change": float(w.px[s][i] - w.px[s][i - 1]), "volume": 1000 + i,
+                       "marketCap": self._cap(s, i)}
+                if w.timestamps:
+                    row["timestamp"] = int(DAYS[i].timestamp()) + 16 * 3600
+                out.append(row)
+            return out
         if path == "historical-market-capitalization":
             sel = (DAYS >= pd.Timestamp(p["from"])) & (DAYS <= pd.Timestamp(p["to"])) & (DAYS <= pd.Timestamp(w.today))
             return [{"symbol": sym, "date": str(d.date()), "marketCap": self._cap(sym, i)}
@@ -133,8 +141,6 @@ class StubFmp:
                      "grossProfit": 4e8, "netIncome": 1e8, "totalAssets": a, "operatingCashFlow": 1.2e8,
                      "weightedAverageShsOut": 1e7, "totalStockholdersEquity": 1e9}
                     for y, a in sorted(w.assets[sym].items(), reverse=True)][:p["limit"]]
-        if path == "latest-financial-statements":
-            return w.filings if p["page"] == 0 else []
         return []
 
     def _cap(self, sym, i):
@@ -162,74 +168,147 @@ def quiet(cfg):
     return cfg
 
 
+def due_now(cfg, syms):
+    path = cfg.data_dir / "raw" / fetch_mod.STATE
+    st = fetch_mod.json.loads(path.read_text())
+    st["statements_due"].update({s: T0 for s in syms})
+    path.write_text(fetch_mod.json.dumps(st))
+
+
 def raw(cfg, dataset, sym):
     return pd.read_parquet(cfg.data_dir / "raw" / dataset / f"{sym}.parquet")
 
 
 # ------------------------------------------------------------------ 1: calls
-@pytest.mark.parametrize("n", [8, 24])
-def test_1_a_normal_night_costs_a_few_calls_a_trading_day_whatever_the_number_of_symbols(quiet, monkeypatch, n):
+@pytest.mark.parametrize("n", [8, 120])
+def test_1_a_normal_night_costs_a_few_calls_whatever_the_number_of_symbols(quiet, monkeypatch, n):
     cfg, w = quiet, World(n)
     night(cfg, w, T0, monkeypatch, full=True)
     night(cfg, w, day(1), monkeypatch)                      # the first top-up sets the state
     stub, summary, rec = night(cfg, w, day(2), monkeypatch)
-    trading_days = 1
-    assert stub.calls <= 14 + 3 * trading_days, stub.by_path
-    assert stub.calls < n or n == 8                         # 24 symbols, fewer calls than symbols
-    assert stub.by_path["eod-bulk"] == 2                    # the day held (to compare) and the new one
+    lots = -(-n // 50)                                      # batch_symbols: 50
+    assert stub.calls <= 12 + 2 * lots + 1, stub.by_path
+    assert stub.by_path["batch-quote"] == lots and stub.by_path["market-capitalization-batch"] <= lots + 1
+    assert stub.by_path["historical-price-eod/full"] == fetch_mod.PROBES     # which day is new, and its closes
     for path in ("historical-price-eod/dividend-adjusted", "historical-market-capitalization", "dividends",
                  *STATEMENT_PATHS):
         assert stub.by_path[path] == 0, path
-    assert summary["bulk"] and summary["symbols_with_new_prices_from_bulk"] == n
-    # what the bulk rows and the batch gave is what the per-symbol calls would have given
+    assert summary["prices_from_quotes"] and summary["symbols_with_new_prices_from_quotes"] == n
+    assert summary["new_trading_days"] == [day(2)]
+    # what the quotes and the batch gave is what the per-symbol calls would have given
     i = DAYS.get_loc(pd.Timestamp(day(2)))
-    for s in w.syms:
+    for s in w.syms[:8]:
         p = raw(cfg, "prices", s).set_index("date")
         assert p.index.max() == DAYS[i] and p.index.is_unique
         assert p["close"].iloc[-1] == pytest.approx(w.px[s][i])
         assert p["adj_close"].iloc[-1] == pytest.approx(w.adj(s)[i])
-        assert p["volume"].iloc[-1] == 1000
+        assert p["volume"].iloc[-1] == 1000 + i
         c = raw(cfg, "market_cap", s).set_index("date")["market_cap"]
         assert c.index.max() == DAYS[i] and c.iloc[-1] == pytest.approx(w.px[s][i] * 1e5)
     assert raw(cfg, "market_cap", "TRU.L")["date"].max() == DAYS[i]        # the trust's cap, from the batch
-    assert stub.by_path["historical-price-eod/full"] == fetch_mod.BULK_PROBES
 
 
-def test_1_a_weekend_and_a_missed_night_cost_a_call_a_day(quiet, monkeypatch):
+def test_1_a_night_with_no_new_trading_day_asks_for_no_quotes(quiet, monkeypatch):
     cfg, w = quiet, World()
     night(cfg, w, T0, monkeypatch, full=True)
     night(cfg, w, day(1), monkeypatch)
-    stub, summary, _ = night(cfg, w, day(5), monkeypatch)       # four trading days and a weekend later
-    assert stub.by_path["eod-bulk"] == 5
-    p = raw(cfg, "prices", w.syms[0])
-    assert list(p["date"].iloc[-5:]) == [pd.Timestamp(day(k)) for k in range(1, 6)]
-    # more than one new day: the batch gives only the last, so each cap history is asked for, once
-    assert stub.by_path["historical-market-capitalization"] == len(w.syms) + 1
-    c = raw(cfg, "market_cap", w.syms[0])
-    assert list(c["date"].iloc[-5:]) == [pd.Timestamp(day(k)) for k in range(1, 6)]
+    stub, summary, rec = night(cfg, w, day(1), monkeypatch)      # a Sunday, a holiday, a second run
+    assert stub.by_path["batch-quote"] == 0 and summary["new_trading_days"] == []
+    assert rec["changed"] == 0
+    assert raw(cfg, "prices", w.syms[0])["date"].max() == pd.Timestamp(day(1))
 
 
-def test_1_a_refused_bulk_call_falls_back_to_per_symbol_calls_with_the_same_result(quiet, monkeypatch):
+def test_1_a_missed_trading_day_is_filled_from_per_symbol_history_on_the_next_run(quiet, monkeypatch):
     cfg, w = quiet, World()
     night(cfg, w, T0, monkeypatch, full=True)
-    w.refuse = {"eod-bulk", "market-capitalization-batch", "dividends-calendar", "latest-financial-statements"}
-    stub, summary, _ = night(cfg, w, day(1), monkeypatch)
-    assert summary["bulk"] is False and "refused" in summary["why_not_bulk"]
-    i = DAYS.get_loc(pd.Timestamp(day(1)))
+    night(cfg, w, day(1), monkeypatch)
+    stub, summary, _ = night(cfg, w, day(3), monkeypatch)       # the night of day 2 never ran
+    assert summary["new_trading_days"] == [day(2), day(3)] and summary["prices_from_quotes"] is False
+    assert "missed" in summary["why_per_symbol"]
+    assert stub.by_path["batch-quote"] == 0                     # the quote is the latest price only: no use here
     for s in w.syms:
-        p = raw(cfg, "prices", s)
-        assert p["date"].max() == DAYS[i] and p["close"].iloc[-1] == pytest.approx(w.px[s][i])
-        assert raw(cfg, "market_cap", s)["date"].max() == DAYS[i]
-    assert stub.by_path["historical-price-eod/full"] == len(w.syms)
-    assert stub.by_path["dividends"] == len(w.syms)
+        p = raw(cfg, "prices", s).set_index("date")
+        assert list(p.index[-3:]) == [pd.Timestamp(day(k)) for k in (1, 2, 3)]      # no gap
+        i = DAYS.get_loc(pd.Timestamp(day(2)))
+        assert p["close"].iloc[-2] == pytest.approx(w.px[s][i]) and p["adj_close"].iloc[-2] == pytest.approx(w.adj(s)[i])
+        c = raw(cfg, "market_cap", s)
+        assert list(c["date"].iloc[-3:]) == [pd.Timestamp(day(k)) for k in (1, 2, 3)]
+    assert list(raw(cfg, "market_cap", "TRU.L")["date"].iloc[-2:]) == [pd.Timestamp(day(2)), pd.Timestamp(day(3))]
+    stub, summary, _ = night(cfg, w, day(4), monkeypatch)       # and the night after is a normal one again
+    assert summary["prices_from_quotes"] and stub.by_path["historical-price-eod/dividend-adjusted"] == 0
 
 
-def test_1_bulk_rows_that_disagree_with_the_closes_held_are_not_used(quiet, monkeypatch):
+def test_1_no_call_is_ever_made_to_an_endpoint_that_is_not_on_the_plan(quiet, monkeypatch):
+    cfg, w = quiet, World()
+    asked: set[str] = set()
+    stub, _, _ = night(cfg, w, T0, monkeypatch, full=True)
+    asked |= set(stub.by_path)
+    w.dividends[w.syms[0]].append((day(2), 5.0))
+    w.halted[w.syms[1]] = day(1)
+    for d in (1, 2, 4, 5, 9):                                # normal nights, an ex-date, missed days, a weekend
+        stub, _, _ = night(cfg, w, day(d), monkeypatch)
+        asked |= set(stub.by_path)
+    assert not asked & OFF_PLAN, asked & OFF_PLAN
+    assert {"batch-quote", "market-capitalization-batch", "dividends-calendar"} <= asked
+    import inspect
+    from research import extra, fmp
+    for mod in (fetch_mod, extra, fmp):
+        src = inspect.getsource(mod)
+        for path in OFF_PLAN:
+            assert f'"{path}"' not in src, (mod.__name__, path)
+
+
+@pytest.mark.parametrize("endpoint", ["batch-quote", "market-capitalization-batch", "dividends-calendar"])
+def test_1_a_402_from_an_endpoint_on_the_plan_stops_the_night_named_with_nothing_recorded(quiet, monkeypatch, endpoint):
+    import json
+    import sys
+    from research import cli
+    from research import publish as pub
     cfg, w = quiet, World()
     night(cfg, w, T0, monkeypatch, full=True)
-    w.bulk_scale = 0.01                                     # the bulk file in pounds, say, the history in pence
+    night(cfg, w, day(1), monkeypatch)
+    version = dv.state(cfg.data_dir)
+    changes = pd.read_parquet(cfg.data_dir / dv.CHANGES)
+    merged = (cfg.data_dir / "prices.parquet").read_bytes()
+    w.today, w.refuse = day(2), {endpoint}
+    monkeypatch.setattr(fetch_mod, "_today", lambda: day(2))
+    stub = StubFmp(w)
+    monkeypatch.setattr(fetch_mod, "Fmp", lambda cfg: stub)
+    monkeypatch.setattr(cli, "_fetch_extras", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", ["research", "fetch"])
+    monkeypatch.setenv("RESEARCH_CONFIG", str(cfg.path))
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: cfg)
+    with pytest.raises(SystemExit) as stop:
+        cli.main()
+    assert f"`{endpoint}`" in str(stop.value) and "not on the plan" in str(stop.value)     # named
+    # nothing fallen back to: no per-symbol calls in its place
+    assert stub.by_path["historical-price-eod/dividend-adjusted"] == 0 and stub.by_path["dividends"] == 0
+    assert stub.by_path["historical-market-capitalization"] == 0
+    # no data version and no change recorded, and the merged data is as it was
+    assert dv.state(cfg.data_dir) == version
+    pd.testing.assert_frame_equal(pd.read_parquet(cfg.data_dir / dv.CHANGES), changes)
+    assert (cfg.data_dir / "prices.parquet").read_bytes() == merged
+    # the night does not count as complete, so data_publish sends nothing
+    marker = json.loads(pub.fetch_marker(cfg).read_text())
+    assert marker["ok"] is False and marker["refused_endpoint"] == endpoint
+    with pytest.raises(pub.PublishRefused, match=f"fetch did not finish.*{endpoint}"):
+        pub.check_ready(cfg, None, None)
+    # the plan put right, the same night run again is whole
+    w.refuse = set()
+    monkeypatch.undo()
+    stub, summary, rec = night(cfg, w, day(2), monkeypatch)
+    assert rec["version"] == version["version"] + 1
+    for s in w.syms:
+        assert raw(cfg, "prices", s)["date"].max() == pd.Timestamp(day(2)) and raw(cfg, "prices", s)["date"].is_unique
+        assert raw(cfg, "market_cap", s)["date"].max() == pd.Timestamp(day(2))
+
+
+def test_1_quotes_that_are_not_the_days_closes_are_not_used(quiet, monkeypatch):
+    cfg, w = quiet, World()
+    night(cfg, w, T0, monkeypatch, full=True)
+    w.quote_scale = 1.003                                   # asked before the close: a price, not the close
     stub, summary, _ = night(cfg, w, day(1), monkeypatch)
-    assert summary["bulk"] is False and "disagrees" in summary["why_not_bulk"]
+    assert summary["prices_from_quotes"] is False and "not its close" in summary["why_per_symbol"]
     i = DAYS.get_loc(pd.Timestamp(day(1)))
     assert raw(cfg, "prices", w.syms[0])["close"].iloc[-1] == pytest.approx(w.px[w.syms[0]][i])
 
@@ -252,17 +331,30 @@ def test_1_an_ex_dividend_date_has_the_adjusted_history_read_again_for_that_symb
     assert summary["price_histories_read_again"] == 0
 
 
-def test_1_a_company_that_stops_trading_costs_no_calls_of_its_own(quiet, monkeypatch):
+def test_1_a_quote_whose_previous_close_is_not_the_close_held_has_the_history_read_again(quiet, monkeypatch):
     cfg, w = quiet, World()
+    night(cfg, w, T0, monkeypatch, full=True)
+    night(cfg, w, day(1), monkeypatch)
+    x = w.syms[5]
+    w.px[x] = w.px[x] / 2                                   # a two-for-one split: FMP's whole history halves
+    stub, summary, _ = night(cfg, w, day(2), monkeypatch)
+    assert summary["price_histories_read_again"] == 1
+    i = DAYS.get_loc(pd.Timestamp(day(2)))
+    p = raw(cfg, "prices", x)
+    np.testing.assert_allclose(p["close"].to_numpy(), w.px[x][:i + 1][-len(p):])
+
+
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_1_a_company_that_stops_trading_gets_no_rows_and_costs_no_calls_of_its_own(quiet, monkeypatch, timestamps):
+    cfg, w = quiet, World()
+    w.timestamps = timestamps
     night(cfg, w, T0, monkeypatch, full=True)
     x = w.syms[1]
     w.halted[x] = day(1)
     for d in (1, 2, 3, 4):
         stub, summary, _ = night(cfg, w, day(d), monkeypatch)
     assert summary["prices_asked_per_symbol"] == 0 and summary["price_histories_read_again"] == 0
-    assert x not in {s for path, s in stub.asked if path.startswith("historical-price-eod")} or \
-        stub.by_path["historical-price-eod/full"] == fetch_mod.BULK_PROBES
-    assert raw(cfg, "prices", x)["date"].max() == pd.Timestamp(day(1))
+    assert raw(cfg, "prices", x)["date"].max() == pd.Timestamp(day(1))     # its last price is not copied forward
     assert raw(cfg, "prices", w.syms[0])["date"].max() == pd.Timestamp(day(4))
 
 
@@ -272,6 +364,7 @@ def test_1_a_delisted_company_is_never_asked_for_again(quiet, monkeypatch):
     for d in (1, 2):
         stub, _, _ = night(cfg, w, day(d), monkeypatch)
         assert "DED.L" not in {s for _, s in stub.asked}
+        assert not any("DED.L" in (p or "") for p in stub.batched)
 
 
 def test_a_top_up_that_stops_part_way_is_run_again_safely(quiet, monkeypatch):
@@ -384,26 +477,7 @@ def statement_calls(stub):
     return sorted({s for path, s in stub.asked if path in STATEMENT_PATHS})
 
 
-def test_3_statements_are_read_again_only_when_due_and_a_new_filing_is_picked_up(quiet, monkeypatch):
-    cfg, w = quiet, World()
-    night(cfg, w, T0, monkeypatch, full=True)
-    stub, _, _ = night(cfg, w, day(1), monkeypatch)
-    assert statement_calls(stub) == []
-    x = w.syms[2]
-    w.assets[x][2026] = 2.5e9                                # a new annual report
-    w.filings = [{"symbol": x, "calendarYear": 2026, "period": "FY", "date": "2026-12-31", "dateAdded": day(2)},
-                 {"symbol": "AAPL", "calendarYear": 2026, "period": "Q4", "date": "2026-09-30", "dateAdded": day(2)}]
-    stub, summary, rec = night(cfg, w, day(2), monkeypatch)
-    assert statement_calls(stub) == [x] and summary["statements_asked"] == 1
-    st = pd.read_parquet(cfg.data_dir / "statements.parquet")
-    assert st[(st["symbol"] == x) & (st["period_end"] == "2026-12-31")]["totalAssets"].tolist() == [2.5e9]
-    ch = rec["rows"]
-    assert set(ch[ch["panel"] == "statements"]["symbol"]) == {x}
-    stub, _, _ = night(cfg, w, day(3), monkeypatch)          # the same list the night after names nothing new
-    assert statement_calls(stub) == []
-
-
-def test_3_without_a_filing_every_symbol_comes_round_once_in_the_refresh_days(cfg, monkeypatch):
+def test_3_statements_are_read_once_in_the_refresh_days_spread_over_the_nights_and_a_new_filing_is_picked_up(cfg, monkeypatch):
     cfg.raw["fmp"].update({"statements_refresh_days": 7, "dividends_refresh_days": 20000})
     w = World(20)
     night(cfg, w, T0, monkeypatch, full=True, record=False)
@@ -415,6 +489,13 @@ def test_3_without_a_filing_every_symbol_comes_round_once_in_the_refresh_days(cf
     assert set().union(*seen[:8]) == set(w.syms)             # each of them within the week
     assert max(len(s) for s in seen) <= len(w.syms) // 2     # spread out, not all on one night
     assert all(sum(s in night_ for night_ in seen) == 2 for s in w.syms)      # once a week, each
+    # a new annual report is in the data within the week, on the company's own night
+    x = w.syms[2]
+    w.assets[x][2026] = 2.5e9
+    for d in pd.date_range("2026-12-04", "2026-12-10"):
+        stub, _, _ = night(cfg, w, str(d.date()), monkeypatch, record=False)
+    st = pd.read_parquet(cfg.data_dir / "statements.parquet")
+    assert st[(st["symbol"] == x) & (st["period_end"] == "2026-12-31")]["totalAssets"].tolist() == [2.5e9]
 
 
 # ------------------------------------------------------------------ 5: only what changed
@@ -452,7 +533,7 @@ def test_5_one_changed_company_rebuilds_only_that_company_from_its_change(quiet,
 
     x = w.syms[4]
     w.assets[x][2024] = 4.2e9                                # 2024 restated: half the profitability
-    w.filings = [{"symbol": x, "period": "FY", "date": "2024-12-31", "dateAdded": day(2)}]
+    due_now(cfg, [x])                                        # its night for statements
     _, _, rec = night(cfg, w, day(2), monkeypatch)
     ch = rec["rows"]
     assert set(ch[ch["panel"] == "statements"]["symbol"]) == {x}

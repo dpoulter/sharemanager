@@ -29,9 +29,10 @@ fmp:
   # dividend calendar is read every night).
   statements_refresh_days: 7
   dividends_refresh_days: 7
-  # More trading days behind than this and the top-up asks per symbol, not in bulk.
-  bulk_max_days: 10
-  # Symbols in one market-capitalization-batch call.
+  # Symbols in one batch-quote or market-capitalization-batch call. Jarvis: run
+  # `uv run research batch-size` on the Mac mini (it tries larger and larger
+  # calls with the real key) and put the largest that works here. 50 is a size
+  # known to be safe, not the largest.
   batch_symbols: 50
 
 point_in_time:

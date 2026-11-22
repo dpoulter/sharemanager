@@ -117,7 +117,7 @@ def fetch(cfg, client=None, full: bool = False) -> dict:
             f.dividends(sym, full)
         f._each(one, syms, "extra")
     else:
-        # as the research top-up: bulk prices, a symbol's own history only when new or re-based
+        # as the research top-up: batch-quote for the new day, a symbol's own history only when new, behind or re-based
         st = f._load_state()
         f.top_up_dividends(syms, end, st)
         f.top_up_prices(syms, end, st, start=FIRST_FROM)

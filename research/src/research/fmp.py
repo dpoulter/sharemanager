@@ -27,6 +27,15 @@ class FmpError(Exception):
     pass
 
 
+class FmpRestricted(FmpError):
+    """FMP refused the endpoint as not on the plan (HTTP 402, "Restricted Endpoint"). Not a failure of
+    one symbol and never fallen back from: the top-up stops and names the endpoint (fetch.py)."""
+
+    def __init__(self, endpoint: str, detail: str):
+        super().__init__(f"FMP refused `{endpoint}` as not on the plan (HTTP 402): {detail}")
+        self.endpoint = endpoint
+
+
 def _urlopen(url: str):
     with urllib.request.urlopen(url, timeout=90) as r:
         return r.headers, r.read().decode("utf-8", "replace")
@@ -120,7 +129,10 @@ class Fmp:
                         self._sleep(wait)
                     delay = min(delay * 2, 120)
                     continue
-                body = e.read().decode("utf-8", "replace")[:300]
+                body = e.read().decode("utf-8", "replace")[:300] if e.fp is not None else ""
+                # A 402 for the endpoint itself; a 402 about one symbol's value stays that symbol's failure.
+                if e.code == 402 and ("restricted endpoint" in body.lower() or "symbol" not in params):
+                    raise FmpRestricted(path, mask(body)) from None
                 raise FmpError(mask(f"HTTP {e.code} on {path}: {body}")) from None
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                 if attempt < self.max_retries:
