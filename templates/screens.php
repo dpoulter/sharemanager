@@ -12,10 +12,15 @@
  */
 ?>
 
-<h1>Screens</h1>
-<p class="sm-sub">
-	What each one finds in tonight's statistics.
-</p>
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+	<div>
+		<h1>Screens</h1>
+		<p class="sm-sub">
+			What each one finds in tonight's statistics.
+		</p>
+	</div>
+	<a class="btn btn-primary" href="screen_create.php">New screen</a>
+</div>
 
 <div class="card">
 	<div class="table-responsive">
@@ -32,7 +37,7 @@
 			<tbody>
 			<?php if (!count($screens)): ?>
 				<tr><td colspan="5" class="text-muted">
-					No screens yet. <a href="criteria_list.php">Build one</a>.
+					No screens yet. <a href="screen_create.php">Build one</a>.
 				</td></tr>
 			<?php endif ?>
 			<?php foreach ($screens as $screen): ?>

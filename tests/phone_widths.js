@@ -37,6 +37,7 @@ const PAGES = [
 	['a quote page',         'quote.php?symbol=AAA'],
 	['the screens',          'screen_list.php'],
 	['a screen run',         'screen_list.php?screen=2&run=1'],
+	['a new screen',         'screen_create.php'],
 	['in the news',          'in_the_news.php'],
 	['the strategies',       'strategies.php'],
 	['a ranking',            'rankings.php?score=momentum'],

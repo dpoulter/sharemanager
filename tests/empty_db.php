@@ -132,7 +132,7 @@
 
         $pages = ['index.php', 'performance.php', 'dividends.php', 'cash_history.php',
                   'edit.php', 'topup.php', 'screen_list.php', 'quote.php',
-                  'criteria.php', 'criteria_list.php', 'screen_criteria.php',
+                  'criteria.php', 'criteria_list.php', 'screen_criteria.php', 'screen_create.php',
                   'sector_companies.php', 'strategies.php', 'sell.php', 'buy.php',
                   'statistics.php', 'statistics_form.php', 'download_prices.php',
                   'in_the_news.php', 'rankings.php', 'portfolio_data.php',

@@ -15608,7 +15608,7 @@
            archive/public/, which the "dead pages" test checks. */
         $pages = ['index.php','performance.php','dividends.php','cash_history.php',
                   'edit.php','topup.php','screen_list.php','quote.php','criteria.php',
-                  'criteria_list.php','screen_criteria.php','sector_companies.php',
+                  'criteria_list.php','screen_criteria.php','screen_create.php','sector_companies.php',
                   'strategies.php','sell.php','buy.php','rankings.php',
                   'statistics.php','statistics_form.php','download_prices.php',
                   'register.php','reset_passwd.php','in_the_news.php','broker.php'];
@@ -20298,6 +20298,225 @@ STUB
         check('the asset fetcher pulls Bootstrap 5',
               preg_match('#/bootstrap/5\.#',
                          (string)file_get_contents(dirname(__DIR__) . '/tools/fetch_assets.sh')) === 1);
+
+        /* ---------------- screen_create: a new, empty screen ---------------- */
+
+        /* Nothing in the application could create a screen: screens 1 to 4
+           came from SQL scripts. screen_create is the one function that
+           inserts into `screen`; the page behind the New screen button reads
+           the form and lands on the new screen's Edit page. Through the real
+           page, because the function refuses the command line. */
+        echo "\n--- screen_create: a new, empty screen ---\n";
+        require_once(dirname(__DIR__) . '/includes/screen_create.php');
+
+        $nc_names = ['Nc first screen', 'Nc twice', 'Nc race', 'Nc hidden twin', "Nc o'brien\"); drop table screen; -- <b>",
+                     'Nc made by a get', 'Nc logged out', 'Nc cli', 'Nc long description', str_repeat('é', 100)];
+        $nc_clean = function () use ($nc_names) {
+            foreach ($nc_names as $n) {
+                db()->prepare("delete from screen_build where screen_id in (select id from screen where name=?)")->execute([$n]);
+                db()->prepare("delete from screen where name=?")->execute([$n]);
+            }
+            db()->exec("delete from screen where name like 'Nc %'");
+        };
+        $nc_clean();
+        $nc_count = function () { return (int) scalar("select count(*) from screen"); };
+        $nc_post = function ($fields, $follow = true) use ($base, $curl) {
+            return (string) $curl("$base/screen_create.php", http_build_query($fields), $follow);
+        };
+        $nc_others = function () {
+            return json_encode([rows("select id, name, description, displayed from screen where name not like 'Nc %' order by id"),
+                                rows("select screen_id, criteria_id from screen_build order by 1, 2"),
+                                (int) scalar("select count(*) from screen_criteria"),
+                                rows("select strategy, screen_id from strategy_rules order by 1"),
+                                (int) scalar("select count(*) from strategy_accounts")]);
+        };
+        $nc_world = $nc_others();
+        $nc_before = $nc_count();
+
+        $nc_form = (string) $curl("$base/screen_create.php");
+        check('the form: a name, a description, and it posts to screen_create.php',
+              strpos($nc_form, 'action="screen_create.php"') !== false && strpos($nc_form, 'name="name"') !== false
+              && strpos($nc_form, 'name="description"') !== false && stripos($nc_form, 'method="post"') !== false
+              && !preg_match('/(Fatal error|Parse error|Warning:|Notice:)/i', $nc_form));
+
+        /* Nothing but a logged in POST makes one. */
+        $curl("$base/screen_create.php?name=Nc+made+by+a+get&description=x");
+        shell_exec('curl -s -L -m 30 -d ' . escapeshellarg(http_build_query(['name' => 'Nc logged out'])) . ' '
+                   . escapeshellarg("$base/screen_create.php") . ' 2>/dev/null');
+        check('a GET and a logged-out POST create nothing', $nc_count() === $nc_before);
+        $nc_cli = screen_create(['user_id' => 1, 'name' => 'Nc cli', 'description' => '']);
+        check('the function refuses the command line, whatever it is given',
+              $nc_cli['ok'] === false && stripos($nc_cli['why'], 'command line') !== false && $nc_count() === $nc_before);
+
+        /* 1. A blank name is refused and nothing is written. */
+        $nc_log_before = (int) scalar("select count(*) from message_log where module='screen_create'");
+        foreach ([['blank', ''], ['only spaces', "   \t "]] as [$nc_what, $nc_blank]) {
+            $nc_page = $nc_post(['name' => $nc_blank, 'description' => 'What I typed & kept']);
+            check("a name that is $nc_what is refused: nothing is written, the form says why and keeps what was typed",
+                  $nc_count() === $nc_before && strpos($nc_page, 'Not created') !== false
+                  && stripos($nc_page, 'needs a name') !== false
+                  && strpos($nc_page, 'value="What I typed &amp; kept"') !== false
+                  && $nc_others() === $nc_world
+                  && (int) scalar("select count(*) from message_log where module='screen_create'") === $nc_log_before);
+        }
+        $nc_page = $nc_post(['name' => str_repeat('n', 101)]);
+        check('a name of 101 characters is refused', $nc_count() === $nc_before && stripos($nc_page, 'at most 100') !== false);
+        $nc_page = $nc_post(['name' => 'Nc long description', 'description' => str_repeat('d', 256)]);
+        check('a description of 256 characters is refused, and the name typed is still in the form',
+              $nc_count() === $nc_before && stripos($nc_page, 'at most 255') !== false
+              && strpos($nc_page, 'value="Nc long description"') !== false);
+        $nc_page = $nc_post(['name' => ['an', 'array'], 'description' => ['x']]);
+        check('fields that are not text are a blank name, not an error',
+              $nc_count() === $nc_before && stripos($nc_page, 'needs a name') !== false
+              && !preg_match('/(Fatal error|Warning:|Notice:)/i', $nc_page));
+
+        /* The one that works: displayed, no criteria, never run, and the
+           person is on its Edit page. */
+        $nc_headers = (string) shell_exec('curl -s -m 30 -D - -o /dev/null -b ' . escapeshellarg($jar) . ' -c ' . escapeshellarg($jar)
+                                          . ' -d ' . escapeshellarg(http_build_query(['name' => '  Nc first screen ', 'description' => ' Cheap and rising '])) . ' '
+                                          . escapeshellarg("$base/screen_create.php") . ' 2>/dev/null');
+        $nc_row = rows("select * from screen where name='Nc first screen'");
+        $nc_id = count($nc_row) ? (int) $nc_row[0]['id'] : 0;
+        check('a name and a description make one screen: displayed, trimmed, never run, with no criteria',
+              count($nc_row) === 1 && $nc_count() === $nc_before + 1 && $nc_row[0]['displayed'] === 'Y'
+              && $nc_row[0]['description'] === 'Cheap and rising' && $nc_row[0]['last_run'] === null
+              && (int) scalar("select count(*) from screen_build where screen_id=?", [$nc_id]) === 0,
+              json_encode($nc_row));
+        check('and the person lands on its Edit page',
+              preg_match('~^Location: .*screen_list\.php\?screen=' . $nc_id . '&edit=1\s*$~mi', $nc_headers) === 1, $nc_headers);
+        $nc_edit = (string) $curl("$base/screen_list.php?screen=$nc_id&edit=1");
+        check('where the existing picker adds criteria',
+              strpos($nc_edit, 'Nc first screen') !== false && strpos($nc_edit, 'btnAdd') !== false
+              && !preg_match('/(Fatal error|Warning:|Notice:)/i', $nc_edit));
+
+        /* 4. No Run, no Create strategy, and no strategy. */
+        $nc_list = (string) $curl("$base/screen_list.php");
+        check('the list shows it as "no valid criteria", with an Edit and no Run and no Create strategy',
+              strpos($nc_list, 'Nc first screen') !== false && strpos($nc_list, 'no valid criteria') !== false
+              && strpos($nc_list, "screen_list.php?screen=$nc_id&amp;edit=1") !== false
+              && strpos($nc_list, "screen_list.php?screen=$nc_id&amp;run=1") === false
+              && strpos($nc_list, "strategy_create.php?screen=$nc_id\"") === false);
+        check('the list has the New screen button',
+              strpos($nc_list, 'href="screen_create.php"') !== false && strpos($nc_list, 'New screen') !== false);
+        $nc_run = (string) $curl("$base/screen_list.php?screen=$nc_id&run=1");
+        check('running it by hand is refused and does not stamp it',
+              stripos($nc_run, 'No criteria have been added') !== false
+              && scalar("select last_run from screen where id=?", [$nc_id]) === null);
+        $nc_strategy = (string) $curl("$base/strategy_create.php", http_build_query(
+            ['screen' => $nc_id, 'name' => 'Nc strategy', 'holdings' => '15', 'rank_by' => '6mnth', 'rebalance' => 'monthly']));
+        check('no strategy was created, no other screen or criterion changed, and none can be made from it yet',
+              $nc_others() === $nc_world && stripos($nc_strategy, 'no criteria') !== false
+              && (int) scalar("select count(*) from strategy_rules where screen_id=?", [$nc_id]) === 0);
+
+        /* 2. A name used by another displayed screen. */
+        $nc_existing = (string) scalar("select name from screen where displayed='Y' and name not like 'Nc %' order by id limit 1");
+        foreach ([$nc_existing, strtoupper('Nc first screen'), 'Nc first screen  '] as $nc_dup) {
+            $nc_at = $nc_count();
+            $nc_page = $nc_post(['name' => $nc_dup, 'description' => 'again']);
+            check('a name used by another displayed screen is refused: "' . trim($nc_dup) . '"',
+                  $nc_count() === $nc_at && stripos($nc_page, 'already a screen called') !== false, (string) $nc_count());
+        }
+        db()->exec("insert into screen (name, description, displayed) values ('Nc hidden twin', 'not displayed', 'N')");
+        $nc_post(['name' => 'Nc hidden twin']);
+        check('a name only a screen that is not displayed has can be used',
+              (int) scalar("select count(*) from screen where name='Nc hidden twin' and displayed='Y'") === 1);
+
+        /* 3. Two identical submits make one screen. */
+        preg_match('~name="ticket" value="([a-f0-9]{32})"~', (string) $curl("$base/screen_create.php"), $nc_m);
+        $nc_twice = ['name' => 'Nc twice', 'description' => 'double click', 'ticket' => $nc_m[1] ?? ''];
+        $nc_first = $nc_post($nc_twice);
+        $nc_second = $nc_post($nc_twice);
+        $nc_twice_id = (int) scalar("select id from screen where name='Nc twice'");
+        check('two identical submits of one form make one screen, and both land on its Edit page',
+              isset($nc_m[1]) && (int) scalar("select count(*) from screen where name='Nc twice'") === 1
+              && strpos($nc_second, 'Not created') === false
+              && strpos($nc_second, 'name="screen_id"') !== false && strpos($nc_second, 'Nc twice') !== false
+              && $nc_first === $nc_second && $nc_twice_id > 0);
+        $nc_third = $nc_post(['name' => 'Nc twice', 'description' => 'double click']);
+        check('and the same name sent again from a fresh form is refused, not made twice',
+              (int) scalar("select count(*) from screen where name='Nc twice'") === 1
+              && stripos($nc_third, 'already a screen called') !== false);
+        /* The check and the insert do not race. The suite's own web server
+           answers one request at a time, which would prove nothing, so this
+           runs against a second copy of it with four workers, from two
+           sessions (one session's requests queue on its own lock): the same
+           name, the same instant. */
+        $nc_port = $port + 30;
+        $nc_base = "http://127.0.0.1:$nc_port";
+        $nc_pid = (int) trim((string) shell_exec('PHP_CLI_SERVER_WORKERS=4 '
+            . str_replace("php -S 127.0.0.1:$port ", "php -S 127.0.0.1:$nc_port ", $server)));
+        $nc_up = false;
+        for ($nc_i = 0; $nc_i < 40 && !$nc_up; $nc_i++) {
+            usleep(250000);
+            $nc_up = @file_get_contents("$nc_base/login.php", false, stream_context_create(['http' => ['timeout' => 2]])) !== false;
+        }
+        $nc_jars = [tempnam(sys_get_temp_dir(), 'smnc'), tempnam(sys_get_temp_dir(), 'smnc')];
+        foreach ($nc_jars as $nc_j) {
+            shell_exec('curl -s -m 30 -c ' . escapeshellarg($nc_j) . ' ' . escapeshellarg("$nc_base/login.php") . ' > /dev/null 2>&1');
+            shell_exec('curl -s -m 30 -L -b ' . escapeshellarg($nc_j) . ' -c ' . escapeshellarg($nc_j)
+                       . ' -d ' . escapeshellarg('username=tester&password=testpass') . ' ' . escapeshellarg("$nc_base/login.php") . ' > /dev/null 2>&1');
+        }
+        $nc_made = [];
+        for ($nc_i = 0; $nc_i < 8; $nc_i++) {
+            $nc_body = escapeshellarg(http_build_query(['name' => 'Nc race', 'description' => "round $nc_i"]));
+            $nc_one = function ($j) use ($nc_body, $nc_base) {
+                return 'curl -s -m 30 -o /dev/null -b ' . escapeshellarg($j) . ' -d ' . $nc_body . ' ' . escapeshellarg("$nc_base/screen_create.php");
+            };
+            shell_exec('(' . $nc_one($nc_jars[0]) . ' & ' . $nc_one($nc_jars[1]) . ' & ' . $nc_one($nc_jars[0]) . ' & '
+                       . $nc_one($nc_jars[1]) . ' & wait) 2>/dev/null');
+            $nc_made[] = (int) scalar("select count(*) from screen where name='Nc race'");
+            db()->exec("delete from screen where name='Nc race'");
+        }
+        if ($nc_pid > 0) { shell_exec('pkill -P ' . $nc_pid . ' 2>/dev/null; kill ' . $nc_pid . ' 2>/dev/null'); }
+        array_map('unlink', $nc_jars);
+        check('four submits of one name at the same instant, from two sessions and four workers, make one screen every time',
+              $nc_up && $nc_made === array_fill(0, 8, 1), json_encode([$nc_up, $nc_made]));
+
+        /* The name and the description are data: in the query as parameters,
+           on the page escaped. */
+        $nc_nasty = "Nc o'brien\"); drop table screen; -- <b>";
+        $nc_post(['name' => $nc_nasty, 'description' => "<script>alert(1)</script> ' or 1=1"]);
+        $nc_list = (string) $curl("$base/screen_list.php");
+        check('a name full of quotes and markup is stored as typed and shown escaped',
+              (string) scalar("select description from screen where name=?", [$nc_nasty]) === "<script>alert(1)</script> ' or 1=1"
+              && strpos($nc_list, '<script>alert(1)</script>') === false
+              && strpos($nc_list, e($nc_nasty)) !== false && $nc_others() === $nc_world);
+        $nc_post(['name' => str_repeat('é', 100), 'description' => str_repeat('ü', 255)]);
+        check('100 and 255 characters are allowed, counted as characters',
+              (int) scalar("select count(*) from screen where name=?", [str_repeat('é', 100)]) === 1);
+
+        /* 5. On the code: one writer, parameters only, and the page is in
+           what the crawl and the request-data check read. */
+        $nc_src = [];
+        foreach (array_merge(glob(dirname(__DIR__) . '/includes/*.php'), glob(dirname(__DIR__) . '/public/*.php'),
+                             glob(dirname(__DIR__) . '/templates/*.php')) as $nc_f) {
+            $nc_src[substr($nc_f, strlen(dirname(__DIR__)) + 1)] = php_strip_whitespace($nc_f);
+        }
+        $nc_inserters = array_keys(array_filter($nc_src, function ($t) { return preg_match('~insert\s+into\s+screen\b(?!_)~i', $t) === 1; }));
+        check('nothing but includes/screen_create.php inserts into screen', $nc_inserters === ['includes/screen_create.php'],
+              json_encode($nc_inserters));
+        $nc_writers = array_keys(array_filter($nc_src, function ($t) { return preg_match('~(update\s+screen\s+set|delete\s+from\s+screen\b(?!_))~i', $t) === 1; }));
+        check('and the only other writer of screen is screen_view.php, which stamps last_run',
+              $nc_writers === ['includes/screen_view.php']
+              && preg_match_all('~update\s+screen\s+set\s+(\w+)~i', $nc_src['includes/screen_view.php'], $nc_sets) === 1
+              && $nc_sets[1] === ['last_run'], json_encode($nc_writers));
+        check('screen_create touches no strategy table and no other screen table',
+              preg_match('~strategy_|screen_build|screen_criteria|update\s|delete\s~i', $nc_src['includes/screen_create.php']) === 0
+              && preg_match('~strategy_|insert\s|update\s|delete\s~i', $nc_src['public/screen_create.php']) === 0);
+        check('every query in it takes the name and the description as parameters',
+              preg_match('~query\s*\(\s*"[^"]*"\s*\.|query\s*\(\s*"[^"]*\$~', $nc_src['includes/screen_create.php']) === 0
+              && preg_match('~\$_(GET|POST|REQUEST|COOKIE)~', $nc_src['includes/screen_create.php']) === 0
+              && preg_match('~query\s*\(~', $nc_src['public/screen_create.php']) === 0);
+        check('the page crawl and the request-data check both cover the new page',
+              in_array('screen_create.php', $pages, true)
+              && in_array(dirname(__DIR__) . '/public/screen_create.php', glob(dirname(__DIR__) . '/public/*.php'), true)
+              && strpos((string) file_get_contents(__DIR__ . '/empty_db.php'), "'screen_create.php'") !== false);
+        check('the empty list sends "Build one" to the new page, not to the list of criteria',
+              preg_match('~No screens yet\. <a href="screen_create\.php">Build one</a>~', $nc_src['templates/screens.php']) === 1);
+
+        $nc_clean();
+        db()->exec("delete from message_log where module='screen_create'");
+        check('and the screens that were there are as they were', $nc_others() === $nc_world && $nc_count() === $nc_before);
 
         check('no served page interpolates request data into SQL',
               count($interpolating) === 0, implode(', ', $interpolating));
