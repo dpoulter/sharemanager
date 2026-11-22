@@ -286,10 +286,11 @@
 		   would make the replay a different strategy from the one the
 		   snapshot describes. */
 		$criteria_now=$rules['screen_id']===null ? [] : rules_screen_criteria($rules['screen_id']);
-		if ($criteria_now!==$snapshot['criteria']){
+		if ($criteria_now!==$snapshot['criteria']
+		    ||(rules_industry_part($criteria_now)['industry_map'] ?? null)!==($snapshot['industry_map'] ?? null)){
 			query("update strategy_backtest_runs set status='FAILED', finished_at=?, note=? where run_id=?",
 			      date('Y-m-d H:i:s'),
-			      'the screen was edited after this run was queued, so it would not test the rules it was asked for; queue it again',
+			      'the screen (or the industry map it reads) was edited after this run was queued, so it would not test the rules it was asked for; queue it again',
 			      (int)$queued['run_id']);
 			echo "FAILED: the screen was edited after this run was queued\r\n";
 			exit(3);

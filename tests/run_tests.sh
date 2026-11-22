@@ -127,6 +127,14 @@ db "$SM_TEST_DB" < "$REPO_DIR/sql/statistics_indicator_index.sql" > /dev/null ||
 echo "applying sql/screen_last_run.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/screen_last_run.sql" > /dev/null || exit 1
 
+# The industry map (ICB's 11 industries from the providers' sector names) and
+# the table an industry criterion keeps its industries in. The map first.
+echo "applying sql/industry_map.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/industry_map.sql" > /dev/null || exit 1
+
+echo "applying sql/screen_industry_criteria.sql"
+db "$SM_TEST_DB" < "$REPO_DIR/sql/screen_industry_criteria.sql" > /dev/null || exit 1
+
 # After sql/rns.sql, which adds the column stock_symbols.isin sits after.
 echo "applying sql/broker.sql"
 db "$SM_TEST_DB" < "$REPO_DIR/sql/broker.sql" > /dev/null || exit 1
@@ -239,6 +247,7 @@ db "$SM_TEST_DB" < "$TESTS_DIR/schema.sql" > /dev/null \
                       shareholder_yield fmp_scores news trending_value rns \
                       strategy_rules strategy_rules_updated_at \
                       user_theme market_breadth statistics_indicator_index screen_last_run \
+                      industry_map screen_industry_criteria \
                       strategy_hold_rank strategy_display_name \
                       strategy_backtest strategy_backtest_overrides strategy_backtest_costs \
                       strategy_prices strategy_workflow backtest_queue backtest_mac_mini backtest_dsr backtest_dividends \

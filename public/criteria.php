@@ -8,7 +8,31 @@
     if ($_SERVER["REQUEST_METHOD"] == "POST")
     {
 	//find which button pressed
-	if (isset($_POST["create"])){
+	/* An industry criterion: "is / is not" and industries ticked from the
+	   names the industry map knows. share_screen.php checks the operator and
+	   every name; anything else is refused and nothing is stored. */
+	if (isset($_POST["create_industry"])){
+		$screen_id=(isset($_POST["screen_id"])&&is_numeric($_POST["screen_id"])) ? (int)$_POST["screen_id"] : 0;
+		$criteria_id=(isset($_POST["id"])&&is_numeric($_POST["id"])) ? (int)$_POST["id"] : 0;
+		$operator=(isset($_POST["industry_operator"])&&is_string($_POST["industry_operator"])) ? $_POST["industry_operator"] : '';
+		$industries=(isset($_POST["industries"])&&is_array($_POST["industries"])) ? array_values($_POST["industries"]) : [];
+		$screen=$screen_id>0 ? query("select id,name, description from screen where id=?",$screen_id) : [];
+		if (!count($screen))
+			apologize("There is no such screen.");
+		$result=$criteria_id>0 ? update_industry_criterion($criteria_id,$operator,$industries)
+		                       : insert_industry_criterion($screen_id,$operator,$industries);
+		if (!$result["ok"]){
+			$again=["screen_id"=>$screen_id,"industry_message"=>$result["why"],
+			        "industry_posted"=>["operator"=>$operator,"industries"=>array_filter($industries,'is_string')]];
+			if ($criteria_id>0)
+				$again["id"]=$criteria_id;
+			render("criteria_form.php",$again);
+			exit;
+		}
+		$criteria=query("SELECT sb.screen_id,sc.id,sc.description FROM  screen_build sb, screen_criteria sc WHERE sb.criteria_id=sc.id and sb.screen_id=?",$screen_id);
+		render("screen_criteria.php",["screen_id"=>$screen[0]["id"], "screen" => $screen[0]["name"],"description"=>$screen[0]["description"], "criterias"=>$criteria]);
+	}
+	elseif (isset($_POST["create"])){
         // validate submission
 		write_log("criteria.php","validate submission");
         if (empty($_POST["first_operand"])&&empty($_POST["second_operand"]))

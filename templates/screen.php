@@ -41,6 +41,17 @@
 			<?php if ($rank_words !== null): ?>
 				<span class="text-muted"><?= e($rank_words) ?>.</span>
 			<?php endif ?>
+			<?php /* An industry criterion: how many of the shares it decided on
+			         have a sector the industry map does not know. */
+			      $unmapped = screen_build_unmapped(); ?>
+			<?php if ($unmapped !== null): ?>
+				<span class="text-muted" id="screen-unmapped"
+				      <?php if ($unmapped['count']): ?>data-bs-toggle="tooltip" title="<?= e(implode(', ', array_slice($unmapped['symbols'], 0, 40))) ?>"<?php endif ?>>
+					<?= (int) $unmapped['count'] ?> of the <?= (int) $unmapped['of'] ?> shares it chose among
+					<?= $unmapped['count'] === 1 ? 'has' : 'have' ?> a sector the industry map does not know
+					(never kept by "is", kept by "is not").
+				</span>
+			<?php endif ?>
 		</span>
 		<?php /* The same rows as the table, as a file. A screen's output is
 		         something somebody wants to keep. */ ?>

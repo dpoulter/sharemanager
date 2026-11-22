@@ -348,6 +348,9 @@
 			'rules_snapshot' => $snapshot,
 			'indicators'     => $indicators,
 			'rank_orders'    => $rank_orders,
+			/* The FMP half of the industry map and its version: the Mac mini
+			   applies it to its own shares, which the N100 does not hold. */
+			'industry_map'   => industry_map_fmp(),
 			'holdout_start'  => BACKTEST_HOLDOUT_START,
 		];
 	}
@@ -373,6 +376,16 @@
 			$id = (int) $rows[0]['run_id'];
 
 			$why = backtest_dates_refusal((string) $rows[0]['from_date'], (string) $rows[0]['to_date']);
+			/* A run queued under one industry map is not handed out under
+			   another: the claim would carry a map its fingerprint does not name. */
+			if ($why === null) {
+				$queued = json_decode((string) (backtest_run_get($id)['rules_snapshot'] ?? ''), true);
+				if (is_array($queued) && isset($queued['industry_map'])
+				    && $queued['industry_map'] !== industry_map_version()) {
+					$why = "the industry map changed after the run was queued (version " . $queued['industry_map']
+					     . " then, " . industry_map_version() . " now). Queue it again.";
+				}
+			}
 			if ($why !== null) {
 				query("update strategy_backtest_runs set status='REFUSED', finished_at=now(), note=?
 				        where run_id=? and status='QUEUED'", substr("not handed out: " . $why, 0, 1000), $id);

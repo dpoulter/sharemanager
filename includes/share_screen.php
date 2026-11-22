@@ -1,6 +1,174 @@
 <?php
 	require_once("constants.php");
    include_once("share_functions.php");
+	require_once(__DIR__ . "/industry_map.php");
+
+	/* ---- Industry criteria: "industry is / is not one of [list]" ----
+
+	   Stored as a screen_criteria row like any other criterion: operator
+	   'ind_in' (is) or 'ind_not_in' (is not), indicator_id 0 and no operands,
+	   with its industries in screen_criteria_industries, one row each
+	   (sql/screen_industry_criteria.sql). The names are the 11 that
+	   industry_map knows and nothing else is ever stored. Which industry a
+	   share is in is industry_map's to say: nothing here reads sector text. */
+
+	function screen_industry_operators(){
+		return ['ind_in'=>'is','ind_not_in'=>'is not'];
+	}
+
+	/* Whether sql/screen_industry_criteria.sql has been applied. Until it
+	   has, no screen can have an industry criterion and the builder does
+	   exactly what it did before. */
+	function screen_industry_ready(){
+		static $ready=null;
+		if ($ready===true)
+			return true;
+		$rows=query("select count(*) n from information_schema.tables
+		              where table_schema=database() and table_name='screen_criteria_industries'");
+		$ready=is_array($rows)&&count($rows)&&(int)$rows[0]['n']===1&&industry_map_ready();
+		return $ready;
+	}
+
+	/* The industry criteria of a screen, in criteria order:
+	   [['id'=>, 'operator'=>, 'industries'=>[names, sorted]], ...]. */
+	function screen_industry_criteria($screen_id){
+		if (!screen_industry_ready())
+			return array();
+		$out=array();
+		$rows=query("select sc.id, sc.operator, sci.industry
+		               from screen_build sb
+		               join screen_criteria sc on sb.criteria_id=sc.id
+		               left join screen_criteria_industries sci on sci.criteria_id=sc.id
+		              where sb.screen_id=? and sc.operator in ('ind_in','ind_not_in')
+		              order by sc.id, sci.industry",(int)$screen_id);
+		foreach($rows as $row){
+			$id=(int)$row["id"];
+			if (!isset($out[$id]))
+				$out[$id]=["id"=>$id,"operator"=>(string)$row["operator"],"industries"=>array()];
+			if ($row["industry"]!==null)
+				$out[$id]["industries"][]=(string)$row["industry"];
+		}
+		return array_values($out);
+	}
+
+	/* The industries of one criterion, or null if it is not an industry criterion. */
+	function industry_criterion($criteria_id){
+		if (!screen_industry_ready())
+			return null;
+		$rows=query("select id, operator from screen_criteria where id=? and operator in ('ind_in','ind_not_in')",(int)$criteria_id);
+		if (!count($rows))
+			return null;
+		$names=array();
+		foreach(query("select industry from screen_criteria_industries where criteria_id=? order by industry",(int)$criteria_id) as $row)
+			$names[]=(string)$row["industry"];
+		return ["id"=>(int)$rows[0]["id"],"operator"=>(string)$rows[0]["operator"],"industries"=>$names];
+	}
+
+	/* What an industry criterion says, for its description. */
+	function industry_criterion_words($operator,$industries){
+		$words=screen_industry_operators();
+		$list=array_values($industries);
+		$last=array_pop($list);
+		return "Industry ".$words[$operator]." ".(count($list) ? implode(", ",$list)." or " : "").$last;
+	}
+
+	/* Check an operator and a list of industries as the picker sends them.
+	   Returns [operator, industries in the map's order] or a sentence saying
+	   what is wrong. A name outside the 11 refuses the whole criterion. */
+	function industry_criterion_checked($operator,$industries){
+		if (!screen_industry_ready())
+			return "industry criteria are not there yet: apply sql/industry_map.sql and sql/screen_industry_criteria.sql.";
+		if (!is_string($operator)||!isset(screen_industry_operators()[$operator]))
+			return "an industry criterion is \"is\" or \"is not\".";
+		if (!is_array($industries)||!count($industries))
+			return "choose at least one industry.";
+		$known=industry_names();
+		foreach($industries as $name){
+			if (!is_string($name)||!in_array($name,$known,true))
+				return "\"".(is_string($name) ? $name : "that")."\" is not one of the ".count($known)." industries.";
+		}
+		$chosen=array_values(array_filter($known,function($name) use ($industries){ return in_array($name,$industries,true); }));
+		if (count($chosen)===count($known))
+			return "every industry is chosen, which is no criterion at all.";
+		return [$operator,$chosen];
+	}
+
+	/* Add an industry criterion to a screen. Returns ['ok'=>true,'id'=>] or
+	   ['ok'=>false,'why'=>]; on a refusal nothing is stored. */
+	function insert_industry_criterion($screen_id,$operator,$industries){
+		$checked=industry_criterion_checked($operator,$industries);
+		if (!is_array($checked))
+			return ["ok"=>false,"why"=>$checked];
+		if (!count(query("select id from screen where id=?",(int)$screen_id)))
+			return ["ok"=>false,"why"=>"there is no such screen."];
+		query("insert into screen_criteria (indicator_id,description,operator) values (0,?,?)",
+		      industry_criterion_words($checked[0],$checked[1]),$checked[0]);
+		$id=(int)query("select LAST_INSERT_ID() id")[0]["id"];
+		foreach($checked[1] as $name)
+			query("insert into screen_criteria_industries (criteria_id,industry) values (?,?)",$id,$name);
+		query("insert into screen_build (screen_id,criteria_id) values (?,?)",(int)$screen_id,$id);
+		return ["ok"=>true,"id"=>$id];
+	}
+
+	/* Change an industry criterion's "is / is not" and its industries. */
+	function update_industry_criterion($criteria_id,$operator,$industries){
+		$checked=industry_criterion_checked($operator,$industries);
+		if (!is_array($checked))
+			return ["ok"=>false,"why"=>$checked];
+		if (industry_criterion($criteria_id)===null)
+			return ["ok"=>false,"why"=>"that is not an industry criterion."];
+		query("update screen_criteria set operator=?, description=? where id=? and operator in ('ind_in','ind_not_in')",
+		      $checked[0],industry_criterion_words($checked[0],$checked[1]),(int)$criteria_id);
+		query("delete from screen_criteria_industries where criteria_id=?",(int)$criteria_id);
+		foreach($checked[1] as $name)
+			query("insert into screen_criteria_industries (criteria_id,industry) values (?,?)",(int)$criteria_id,$name);
+		return ["ok"=>true,"id"=>(int)$criteria_id];
+	}
+
+	/* What the last build_screen() found unmapped: how many of the shares it
+	   was deciding on have a sector the industry map does not know, and which.
+	   Null if the screen has no industry criterion. */
+	function screen_build_unmapped($set=false,$value=null){
+		static $last=null;
+		if ($set)
+			$last=$value;
+		return $last;
+	}
+
+	/* Keep or drop shares by industry. "is" keeps a share whose industry is
+	   in the list, so never an unmapped one; "is not" drops a share whose
+	   industry is in the list, so an unmapped one stays. */
+	function screen_industry_filter($symbols,$industry_criteria){
+		$names=array();
+		foreach($symbols as $symbol)
+			if (isset($symbol["symbol"]))
+				$names[]=$symbol["symbol"];
+		$industry=industry_of_symbols($names);
+		$unmapped=array();
+		foreach($industry as $symbol=>$name)
+			if ($name===INDUSTRY_UNMAPPED)
+				$unmapped[]=(string)$symbol;
+		sort($unmapped);
+		screen_build_unmapped(true,["count"=>count($unmapped),"symbols"=>$unmapped,"of"=>count($industry)]);
+		write_log("build_screen","industry: ".count($unmapped)." of ".count($industry)." shares have a sector the industry map does not know");
+		$kept=array();
+		foreach($symbols as $symbol){
+			if (!isset($symbol["symbol"]))
+				continue;
+			$name=$industry[(string)$symbol["symbol"]];
+			$keep=true;
+			foreach($industry_criteria as $criterion){
+				$listed=$name!==INDUSTRY_UNMAPPED&&in_array($name,$criterion["industries"],true);
+				if ($criterion["operator"]==='ind_in' ? !$listed : $listed){
+					$keep=false;
+					break;
+				}
+			}
+			if ($keep)
+				$kept[]=$symbol;
+		}
+		return $kept;
+	}
    
 	//Get screen name and description
 	function screen($screen_id){
@@ -48,6 +216,8 @@
 			if (isset($criteria[$i])){
 				//write_log("delete_criteria","query=delete from screen_criteria where id =". $criteria[$i]);
 				query("delete from screen_criteria where id = ?", $criteria[$i]);
+				if (screen_industry_ready())
+					query("delete from screen_criteria_industries where criteria_id = ?", $criteria[$i]);
 			}
 		}
 	}
@@ -261,6 +431,21 @@
 		write_log("build_screen","No of lists=".count($screen_list));
 		//print_r($screen_list);
 		$surviving=combine_criteria_lists($screen_list);
+		$started=count($screen_list)>0;
+
+		/* Industry criteria are filters like the comparisons: applied to
+		   what the comparisons left, before any top_n. A screen with none -
+		   every screen before 22 Nov 2026 - does not come through here, so
+		   what it returns is what it always returned. */
+		screen_build_unmapped(true,null);
+		$industry_criteria=screen_industry_criteria($screen_id);
+		if (count($industry_criteria)){
+			if (!$started){
+				$surviving=query($build_select);
+				$started=true;
+			}
+			$surviving=screen_industry_filter($surviving,$industry_criteria);
+		}
 
 		if (!count($top_n_criteria))
 			return $surviving;
@@ -268,7 +453,7 @@
 		/* A screen made only of top_n criteria has nothing to intersect, so
 		   it starts from every share with a statistic on the date - the same
 		   set the comparison criteria select from. */
-		if (!count($screen_list))
+		if (!$started)
 			$surviving=query($build_select);
 
 		foreach($top_n_criteria as $criteria){

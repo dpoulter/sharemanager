@@ -17,7 +17,7 @@
 	   anything else in it is a criterion that silently selects nothing, and
 	   a screen made of those runs to an empty page with no explanation. */
 	function screen_operators() {
-		return ['>', '>=', '<', '<=', '=', '!=', 'top_n', 'top_percent'];
+		return ['>', '>=', '<', '<=', '=', '!=', 'top_n', 'top_percent', 'ind_in', 'ind_not_in'];
 	}
 
 	/**
@@ -47,6 +47,20 @@
 
 			$label = trim((string) $criterion['description']) !== ''
 			       ? $criterion['description'] : ('criterion ' . $criterion['id']);
+
+			/* An industry criterion has no indicator: it has industries,
+			   each one of the names the industry map knows. */
+			if (isset(screen_industry_operators()[(string) $criterion['operator']])) {
+				$found = industry_criterion((int) $criterion['id']);
+				if ($found === null || !count($found['industries'])) {
+					$problems[] = $label . ': no industry is chosen.';
+				}
+				else if (count(array_diff($found['industries'], industry_names()))) {
+					$problems[] = $label . ': "' . implode(', ', array_diff($found['industries'], industry_names()))
+					            . '" is not an industry the industry map knows.';
+				}
+				continue;
+			}
 
 			if ($criterion['indicator'] === null) {
 				$problems[] = $label . ': its indicator no longer exists.';

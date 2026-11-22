@@ -13945,6 +13945,334 @@
     if ($sv_saved_exchange === null) { unset($_SESSION["exchange"]); }
     else { $_SESSION["exchange"] = $sv_saved_exchange; }
 
+    /* ---------------- industry screens ---------------- */
+
+    /* Screens could filter on numbers only. "Industry is not Financials" needs
+       an industry, and sector names are a mess (78 among the N100's enabled
+       shares), so industry comes from one owned map to ICB's 11 industries
+       (includes/industry_map.php) and never from raw sector text. */
+    echo "\n--- industry_map: one industry for every sector name ---\n";
+    require_once(dirname(__DIR__) . '/includes/industry_map.php');
+    require_once(dirname(__DIR__) . '/includes/share_screen.php');
+    require_once(dirname(__DIR__) . '/includes/screen_view.php');
+    require_once(dirname(__DIR__) . '/includes/rules_fingerprint.php');
+    require_once(dirname(__DIR__) . '/includes/backtest_runs.php');
+
+    $im_ind = function ($name) { return industry_for_sector($name)['industry']; };
+    check('there are 11 industries, and the seed maps 78 N100 names and 22 FMP names',
+          count(industry_names()) === 11
+          && (int) scalar("select count(*) from industry_map where source='n100'") === 78
+          && (int) scalar("select count(*) from industry_map where source='fmp'") === 22, json_encode(industry_names()));
+    check('test 1: Banks, Banking and Finance and Credit Services are all Financials',
+          $im_ind('Banks') === 'Financials' && $im_ind('Banking') === 'Financials'
+          && $im_ind('Finance and Credit Services') === 'Financials');
+    check('test 1: Travel and Leisure and Travel & Leisure are the same industry',
+          $im_ind('Travel and Leisure') === 'Consumer Discretionary' && $im_ind('Travel & Leisure') === 'Consumer Discretionary');
+    check('names with commas in them are one name each',
+          $im_ind('Personal Care, Drug and Grocery Stores') === 'Consumer Staples'
+          && $im_ind('Gas, Water and Multi-utilities') === 'Utilities'
+          && $im_ind('Pharmaceuticals, Biotechnology and Marijuana Producers') === 'Health Care');
+    check('every mapped name gives one of the 11',
+          (int) scalar("select count(*) from industry_map where industry not in (select name from industries)") === 0);
+    check('nothing is guessed from the text of a name: a near miss is unmapped',
+          $im_ind('Bank') === 'unmapped' && $im_ind('banks') === 'unmapped' && $im_ind('Banks plc') === 'unmapped'
+          && $im_ind('') === 'unmapped' && $im_ind(null) === 'unmapped' && $im_ind(' Banks ') === 'Financials');
+    $im_two = false;
+    try { $im_two = db()->exec("insert into industry_map (source, sector, fmp_industry, industry) values ('n100','Banks','','Energy')") !== false; }
+    catch (Exception $e) { $im_two = false; }
+    check('one name cannot be given two industries', !$im_two
+          && (int) scalar("select count(*) from industry_map where source='n100' and sector='Banks'") === 1);
+    check('FMP names map by sector, except the industries listed as exceptions',
+          industry_for_fmp('Financial Services', 'Banks - Diversified')['industry'] === 'Financials'
+          && industry_for_fmp('Communication Services', 'Telecommunications Services')['industry'] === 'Telecommunications'
+          && industry_for_fmp('Communication Services', 'Advertising Agencies')['industry'] === 'Consumer Discretionary'
+          && industry_for_fmp('Industrials', 'Airlines, Airports & Air Services')['industry'] === 'Consumer Discretionary'
+          && industry_for_fmp('Technology', 'Communication Equipment')['industry'] === 'Telecommunications'
+          && industry_for_fmp('Energy', 'Uranium')['industry'] === 'Energy'
+          && industry_for_fmp('Conglomerates', 'Anything')['industry'] === 'unmapped'
+          && industry_for_fmp('', '')['industry'] === 'unmapped');
+
+    /* Shares to tell apart: a bank, an investment trust, a housebuilder, one
+       with a sector nobody has heard of, and one with none. */
+    $IM_DAY = '2019-03-04';
+    $im_shares = ['ZZBANK' => 'Banks', 'ZZTRUST' => 'Investment Trusts', 'ZZHOUSE' => 'Home Construction',
+                  'ZZODD' => 'Left-handed Widgets', 'ZZNONE' => null];
+    $im_clean = function () use ($IM_DAY) {
+        db()->exec("delete from stock_symbols where symbol like 'ZZ%'");
+        db()->exec("delete from statistics where symbol like 'ZZ%'");
+        foreach (rows("select id from screen where name like 'Im %'") as $r) {
+            db()->exec("delete from screen_criteria_industries where criteria_id in (select criteria_id from screen_build where screen_id=" . (int) $r['id'] . ")");
+            db()->exec("delete from screen_criteria where id in (select criteria_id from screen_build where screen_id=" . (int) $r['id'] . ")");
+            db()->exec("delete from screen_build where screen_id=" . (int) $r['id']);
+        }
+        db()->exec("delete from screen where name like 'Im %'");
+        db()->exec("delete from strategy_rules where strategy like 'im\\_%'");
+        db()->exec("delete from strategy_backtest_runs where strategy like 'im\\_%'");
+        db()->exec("delete from industry_map where sector like 'Im test%'");
+    };
+    $im_clean();
+    $im_indicator = rows("select indicator_id, name from screen_indicators where name='close_price'")[0]
+                 ?? rows("select indicator_id, name from screen_indicators order by indicator_id limit 1")[0];
+    $im_k = 0;
+    foreach ($im_shares as $im_sym => $im_sector) {
+        db()->prepare("insert into stock_symbols (symbol,name,description,exchange,enabled,sector) values (?,?,?,'XLON','Y',?)")
+          ->execute([$im_sym, "$im_sym plc", "$im_sym plc", $im_sector]);
+        db()->prepare("insert into statistics (symbol,date,indicator,value,exchange) values (?,?,?,?,'XLON')")
+          ->execute([$im_sym, $IM_DAY, $im_indicator['name'], 100 + (++$im_k)]);
+    }
+    $im_unmapped = industry_unmapped_sectors();
+    $im_unmapped_names = array_column($im_unmapped, 'shares', 'name');
+    check('test 2: an unknown name is unmapped and is in the list of unmapped names, with its shares',
+          $im_ind('Left-handed Widgets') === 'unmapped' && ($im_unmapped_names['Left-handed Widgets'] ?? 0) === 1
+          && ($im_unmapped_names[''] ?? 0) >= 1 && !isset($im_unmapped_names['Banks']), json_encode($im_unmapped));
+    check('the industry of a share: the map on its sector, and unmapped for none or for a share nobody holds',
+          industry_of_symbols(['ZZBANK', 'ZZTRUST', 'ZZHOUSE', 'ZZODD', 'ZZNONE', 'ZZNOBODY'])
+          === ['ZZBANK' => 'Financials', 'ZZTRUST' => 'Financials', 'ZZHOUSE' => 'Consumer Discretionary',
+               'ZZODD' => 'unmapped', 'ZZNONE' => 'unmapped', 'ZZNOBODY' => 'unmapped']);
+
+    $im_v0 = industry_map_version();
+    check('the version is the same until the map changes', $im_v0 === industry_map_version() && strlen($im_v0) === 12
+          && industry_for_sector('Banks')['version'] === $im_v0);
+    $im_set = industry_map_set('n100', 'Im test sector', '', 'Energy');
+    $im_v1 = industry_map_version();
+    check('test 3: adding one mapping changes the version', $im_set['ok'] && $im_v1 !== $im_v0 && $im_set['version'] === $im_v1
+          && $im_ind('Im test sector') === 'Energy');
+    $im_set = industry_map_set('n100', 'Im test sector', '', 'Utilities');
+    $im_v2 = industry_map_version();
+    check('test 3: changing one mapping changes the version, and the name still has one industry',
+          $im_set['ok'] && !in_array($im_v2, [$im_v0, $im_v1], true) && $im_ind('Im test sector') === 'Utilities'
+          && (int) scalar("select count(*) from industry_map where sector='Im test sector'") === 1);
+    $im_bad = industry_map_set('n100', 'Im test sector', '', 'Banks');
+    check('a name cannot be mapped to something that is not one of the 11', !$im_bad['ok'] && $im_ind('Im test sector') === 'Utilities'
+          && industry_map_version() === $im_v2);
+    industry_map_remove('n100', 'Im test sector');
+    check('and taking the mapping out again gives the version it had', industry_map_version() === $im_v0);
+
+    $im_src = [];
+    foreach (array_merge(glob(dirname(__DIR__) . '/includes/*.php'), glob(dirname(__DIR__) . '/public/*.php'),
+                         glob(dirname(__DIR__) . '/templates/*.php')) as $im_f) {
+        $im_src[substr($im_f, strlen(dirname(__DIR__)) + 1)] = php_strip_whitespace($im_f);
+    }
+    $im_writers = array_keys(array_filter($im_src, function ($t) {
+        return preg_match('~(insert\s+(ignore\s+)?into|update|delete\s+from|replace\s+into)\s+(industry_map|industries)\b~i', $t) === 1; }));
+    $im_readers = array_keys(array_filter($im_src, function ($t) {
+        return preg_match('~(from|join)\s+(industry_map|industries)\b~i', $t) === 1; }));
+    check('industry_map.php is the only writer of the map, and the only reader',
+          $im_writers === ['includes/industry_map.php'] && $im_readers === ['includes/industry_map.php'],
+          json_encode([$im_writers, $im_readers]));
+    $im_reads_sector = '~select[^"]*\bsector\b|\[["\']sector["\']\]|\.sector\b|\bsector\s*(=|!=|<>|like\b|in\s*\()~i';
+    check('the screen builder, the editor, the fingerprint and the claim read no sector text',
+          count(array_filter(['includes/share_screen.php', 'includes/screen_view.php', 'includes/rules_fingerprint.php',
+                              'includes/backtest_runs.php', 'public/criteria.php', 'public/screen_criteria.php',
+                              'templates/criteria_form.php', 'templates/screen.php', 'templates/screen_criteria.php'],
+                             function ($f) use ($im_src, $im_reads_sector) { return preg_match($im_reads_sector, $im_src[$f]) === 1; })) === 0
+          && preg_match($im_reads_sector, $im_src['includes/industry_map.php']) === 1);
+
+    echo "\n--- screen_build and screen_edit: industry is / is not ---\n";
+
+    /* A screen of the five shares: a comparison every one of them passes. */
+    $im_screen = function ($name) use ($im_indicator) {
+        db()->prepare("insert into screen (name, description, displayed) values (?, 'industry test', 'Y')")->execute([$name]);
+        $id = (int) scalar("select id from screen where name=?", [$name]);
+        db()->prepare("insert into screen_criteria (indicator_id, description, operator, first_operand) values (?, 'Im above 100', '>', '100')")
+          ->execute([$im_indicator['indicator_id']]);
+        db()->prepare("insert into screen_build (screen_id, criteria_id) values (?, ?)")->execute([$id, (int) db()->lastInsertId()]);
+        return $id;
+    };
+    $im_run = function ($id) use ($IM_DAY) {
+        $out = array_values(array_filter(array_column(build_screen($id, $IM_DAY), 'symbol'),
+                                         function ($s) { return strpos($s, 'ZZ') === 0; }));
+        sort($out);
+        return $out;
+    };
+    $im_all = $im_screen('Im all');
+    check('before any industry criterion the screen holds all five, and reports nothing about industries',
+          $im_run($im_all) === ['ZZBANK', 'ZZHOUSE', 'ZZNONE', 'ZZODD', 'ZZTRUST'] && screen_build_unmapped() === null);
+
+    $im_not = $im_screen('Im not financials');
+    $im_added = insert_industry_criterion($im_not, 'ind_not_in', ['Financials']);
+    $im_kept = $im_run($im_not);
+    $im_report = screen_build_unmapped();
+    check('test 4: "industry is not Financials" drops the bank and the investment trust and keeps the housebuilder',
+          $im_added['ok'] && !in_array('ZZBANK', $im_kept, true) && !in_array('ZZTRUST', $im_kept, true)
+          && in_array('ZZHOUSE', $im_kept, true), json_encode($im_kept));
+    check('test 4: "is not" keeps the unmapped shares in, and the run says how many were unmapped',
+          $im_kept === ['ZZHOUSE', 'ZZNONE', 'ZZODD'] && $im_report !== null && $im_report['count'] === 2
+          && $im_report['symbols'] == ['ZZNONE', 'ZZODD'] && $im_report['of'] === 5, json_encode($im_report));
+    $im_is = $im_screen('Im financials');
+    insert_industry_criterion($im_is, 'ind_in', ['Financials']);
+    check('test 4: "industry is Financials" keeps the bank and the trust and keeps the unmapped shares out',
+          $im_run($im_is) === ['ZZBANK', 'ZZTRUST'] && screen_build_unmapped()['count'] === 2);
+    $im_multi = $im_screen('Im two industries');
+    insert_industry_criterion($im_multi, 'ind_in', ['Consumer Discretionary', 'Financials']);
+    insert_industry_criterion($im_multi, 'ind_not_in', ['Real Estate', 'Energy']);
+    check('a list is "one of", and two industry criteria both apply',
+          $im_run($im_multi) === ['ZZBANK', 'ZZHOUSE', 'ZZTRUST']);
+    check('the criterion is described in words',
+          (string) scalar("select description from screen_criteria where id=?", [$im_added['id']]) === 'Industry is not Financials'
+          && industry_criterion_words('ind_in', ['Energy', 'Utilities', 'Technology']) === 'Industry is Energy, Utilities or Technology');
+
+    /* Industry first, then the best N of what is left: top_n still comes last. */
+    $im_top = $im_screen('Im top two not financials');
+    insert_industry_criterion($im_top, 'ind_not_in', ['Financials']);
+    db()->prepare("insert into screen_criteria (indicator_id, description, operator, first_operand) values (?, 'Im best 2', 'top_n', '2')")
+      ->execute([$im_indicator['indicator_id']]);
+    db()->prepare("insert into screen_build (screen_id, criteria_id) values (?, ?)")->execute([$im_top, (int) db()->lastInsertId()]);
+    $im_rank = rows("select rank_order from screen_indicators where indicator_id=?", [$im_indicator['indicator_id']])[0]['rank_order'];
+    $im_best = stripos((string) $im_rank, 'asc') !== false ? ['ZZHOUSE', 'ZZODD'] : ['ZZNONE', 'ZZODD'];
+    check('a top_n applies to what the industry criterion left, as it does to what a comparison left',
+          $im_run($im_top) === $im_best, json_encode($im_run($im_top)));
+    $im_only = (int) (function () { db()->exec("insert into screen (name, description, displayed) values ('Im only industry', 'x', 'Y')");
+                                    return scalar("select id from screen where name='Im only industry'"); })();
+    insert_industry_criterion($im_only, 'ind_in', ['Financials']);
+    check('a screen of an industry criterion alone starts from every share with a statistic that day',
+          $im_run($im_only) === ['ZZBANK', 'ZZTRUST'] && screen_problems($im_only) === []);
+
+    /* 7. What can be stored. */
+    $im_rows = function () { return (int) scalar("select count(*) from screen_criteria") . '/' . (int) scalar("select count(*) from screen_criteria_industries")
+                                    . '/' . (int) scalar("select count(*) from screen_build"); };
+    $im_at = $im_rows();
+    $im_refused = [
+        'a name outside the 11'  => insert_industry_criterion($im_all, 'ind_not_in', ['Financials', 'Banks']),
+        'a raw sector name'      => insert_industry_criterion($im_all, 'ind_in', ['Investment Trusts']),
+        'the wrong case'         => insert_industry_criterion($im_all, 'ind_in', ['financials']),
+        'no industry'            => insert_industry_criterion($im_all, 'ind_in', []),
+        'every industry'         => insert_industry_criterion($im_all, 'ind_in', industry_names()),
+        'another operator'       => insert_industry_criterion($im_all, '>', ['Financials']),
+        'a name that is not text' => insert_industry_criterion($im_all, 'ind_in', [['Financials']]),
+        'no such screen'         => insert_industry_criterion(987654, 'ind_in', ['Financials']),
+        'an update with a bad name' => update_industry_criterion($im_added['id'], 'ind_not_in', ['Financials', "x'; drop table screen; --"]),
+    ];
+    check('test 7: an industry name outside the 11 is never stored, by an add or by a change',
+          count(array_filter($im_refused, function ($r) { return $r['ok']; })) === 0 && $im_rows() === $im_at
+          && (int) scalar("select count(*) from screen_criteria_industries where industry not in (select name from industries)") === 0
+          && industry_criterion($im_added['id'])['industries'] === ['Financials'],
+          json_encode(array_keys(array_filter($im_refused, function ($r) { return $r['ok']; }))));
+    $im_changed = update_industry_criterion($im_added['id'], 'ind_not_in', ['Real Estate', 'Financials']);
+    check('a change replaces the industries, kept in the map\'s order',
+          $im_changed['ok'] && industry_criterion($im_added['id'])['industries'] === ['Financials', 'Real Estate']
+          && (string) scalar("select description from screen_criteria where id=?", [$im_added['id']]) === 'Industry is not Financials or Real Estate');
+    update_industry_criterion($im_added['id'], 'ind_not_in', ['Financials']);
+    check('a screen with a sound industry criterion can be run; one with no industry chosen cannot',
+          screen_problems($im_not) === [] && (function () use ($im_all) {
+              db()->exec("insert into screen_criteria (indicator_id, description, operator) values (0, 'Im empty industry', 'ind_in')");
+              $c = (int) db()->lastInsertId();
+              db()->exec("insert into screen_build (screen_id, criteria_id) values ($im_all, $c)");
+              $p = screen_problems($im_all);
+              db()->exec("delete from screen_build where criteria_id=$c");
+              db()->exec("delete from screen_criteria where id=$c");
+              return count($p) === 1 && stripos($p[0], 'no industry is chosen') !== false; })());
+
+    /* 5. Every screen that was there returns what it returned. The same
+       shares, in the same order, as the builder gave before this change:
+       tests/fixtures/build_screen_before_industry.php is that builder, kept
+       word for word (share_screen.php at 836e593) under another name. */
+    require_once(__DIR__ . '/fixtures/build_screen_before_industry.php');
+    $im_same = []; $im_seen = 0;
+    foreach (rows("select id, name from screen where name not like 'Im %' and name not like 'Nc %' order by id") as $im_s) {
+        if (count(screen_problems((int) $im_s['id']))) { continue; }
+        $im_seen++;
+        foreach ([null, asof_date()] as $im_d) {
+            $im_now = build_screen((int) $im_s['id'], $im_d);
+            if ($im_now !== build_screen_before_industry((int) $im_s['id'], $im_d) || screen_build_unmapped() !== null) {
+                $im_same[] = $im_s['id'] . ' ' . $im_s['name'];
+            }
+        }
+    }
+    check("test 5: every existing screen that can be run ($im_seen of them) returns the same shares in the same order as before",
+          $im_seen >= 3 && count($im_same) === 0, implode('; ', $im_same));
+    check('and the screen with no industry criterion among the test ones does too',
+          build_screen($im_all, $IM_DAY) === build_screen_before_industry($im_all, $IM_DAY));
+
+    echo "\n--- rules_fingerprint and the claim: the map's version ---\n";
+
+    /* 6. The fingerprint as it was worked out before this change, written
+       out here in full so it cannot follow the code it checks. */
+    $im_old_fingerprint = function ($strategy) {
+        $rules = strategy_rules($strategy);
+        $exits = $rules['exit_list']; sort($exits);
+        $screen_id = ($rules['selection'] === 'screen' && $rules['screen_id'] !== null) ? (int) $rules['screen_id'] : null;
+        $criteria = [];
+        foreach ($screen_id === null ? [] : rows("select sc.indicator_id, sc.operator, sc.first_operand, sc.second_operand
+                         from screen_build sb, screen_criteria sc where sb.screen_id=? and sb.criteria_id=sc.id order by sc.id", [$screen_id]) as $row) {
+            $criteria[] = [(string) $row['indicator_id'], (string) $row['operator'], (string) $row['first_operand'], (string) $row['second_operand']];
+        }
+        return sha1(json_encode(['rules' => ['selection' => (string) $rules['selection'], 'screen_id' => $screen_id,
+            'score_indicator' => $rules['score_indicator'], 'rank_by' => $rules['rank_by'], 'holdings' => (int) $rules['holdings'],
+            'hold_rank' => $rules['hold_rank'] === null ? null : (int) $rules['hold_rank'], 'rebalance' => (string) $rules['rebalance'],
+            'exit_rules' => implode(',', $exits), 'exclude_funds' => (string) $rules['exclude_funds']], 'criteria' => $criteria],
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    };
+    $im_moved = []; $im_strategies = array_column(rows("select strategy from strategy_rules where strategy not like 'im\\_%' order by 1"), 'strategy');
+    foreach ($im_strategies as $im_st) {
+        if (rules_fingerprint($im_st) !== $im_old_fingerprint($im_st) || isset(rules_snapshot($im_st)['industry_map'])) { $im_moved[] = $im_st; }
+    }
+    check('test 6: the fingerprint of every existing strategy (' . count($im_strategies) . ') is what it was',
+          count($im_strategies) >= 2 && count($im_moved) === 0, implode(', ', $im_moved));
+
+    $im_strategy = function ($key, $screen) {
+        db()->prepare("insert into strategy_rules (strategy, selection, screen_id, rank_by, holdings, rebalance, exit_rules, exclude_funds)
+                       values (?, 'screen', ?, '6mnth', 15, 'monthly', '', 'Y')")->execute([$key, $screen]);
+    };
+    $im_strategy('im_plain', $im_all);
+    $im_strategy('im_industry', $im_not);
+    $im_fp = [rules_fingerprint('im_plain'), rules_fingerprint('im_industry')];
+    $im_snap = rules_snapshot('im_industry');
+    check('a screen with an industry criterion puts the criterion, its industries and the map\'s version in the snapshot',
+          ($im_snap['industry_map'] ?? null) === industry_map_version()
+          && in_array(['', 'ind_not_in', 'Financials', ''], $im_snap['criteria'], true)
+          && !isset(rules_snapshot('im_plain')['industry_map']), json_encode($im_snap));
+    industry_map_set('fmp', 'Im test FMP sector', '', 'Energy');
+    check('test 6: when the map\'s version changes, the strategy on that screen gets a new fingerprint and the other does not',
+          rules_fingerprint('im_industry') !== $im_fp[1] && rules_fingerprint('im_plain') === $im_fp[0]);
+    industry_map_remove('fmp', 'Im test FMP sector');
+    check('and the old map gives the old fingerprint back', rules_fingerprint('im_industry') === $im_fp[1]);
+    update_industry_criterion($im_added['id'], 'ind_not_in', ['Financials', 'Real Estate']);
+    check('changing the industries of the criterion changes the fingerprint too', rules_fingerprint('im_industry') !== $im_fp[1]);
+    update_industry_criterion($im_added['id'], 'ind_not_in', ['Financials']);
+
+    /* The claim: the FMP half of the map, and its version. */
+    $im_queue = function ($strategy) {
+        $snapshot = rules_snapshot($strategy);
+        db()->prepare("insert into strategy_backtest_runs (strategy, account, from_date, to_date, started_at, status, rules_snapshot,
+                         fingerprint, starting_cash, cost_model, requested_at, engine)
+                       values (?, '', '2016-01-04', '2020-12-31', now(), 'QUEUED', ?, ?, 100000, 't212', now(), 'mac_mini')")
+          ->execute([$strategy, json_encode($snapshot), rules_fingerprint_of($snapshot)]);
+        return (int) db()->lastInsertId();
+    };
+    $im_others_queued = (int) scalar("select count(*) from strategy_backtest_runs where status='QUEUED' and engine='mac_mini'");
+    $im_run_id = $im_queue('im_industry');
+    $im_claim = $im_others_queued === 0 ? backtest_claim_next() : backtest_claim_payload(backtest_run_get($im_run_id));
+    $im_fmp = json_decode(json_encode($im_claim['industry_map'] ?? null), true);
+    $im_exceptions = [];
+    foreach (($im_fmp['fmp']['exceptions'] ?? []) as $im_e) { $im_exceptions[$im_e[0] . ' / ' . $im_e[1]] = $im_e[2]; }
+    check('a claim carries the FMP part of the map and its version: 11 sectors, 11 exceptions, the 11 industries',
+          is_array($im_fmp) && $im_fmp['version'] === industry_map_version() && $im_fmp['industries'] === industry_names()
+          && count($im_fmp['fmp']['sectors']) === 11 && $im_fmp['fmp']['sectors']['Financial Services'] === 'Financials'
+          && $im_fmp['fmp']['sectors']['Healthcare'] === 'Health Care' && count($im_exceptions) === 11
+          && $im_exceptions['Communication Services / Telecommunications Services'] === 'Telecommunications'
+          && $im_exceptions['Basic Materials / Construction Materials'] === 'Industrials', json_encode($im_fmp));
+    check('and the snapshot in it names the same version, with the criterion and its industries',
+          ($im_claim['rules_snapshot']['industry_map'] ?? null) === $im_fmp['version']
+          && in_array(['', 'ind_not_in', 'Financials', ''], $im_claim['rules_snapshot']['criteria'], true)
+          && $im_claim['fingerprint'] === $im_fp[1]);
+    check('none of the N100\'s sector names is in the claim: only the FMP half',
+          strpos(json_encode($im_claim), 'Investment Trusts') === false && strpos(json_encode($im_claim), 'Left-handed') === false);
+    db()->exec("delete from strategy_backtest_runs where strategy like 'im\\_%'");
+    if ($im_others_queued === 0) {
+        $im_stale = $im_queue('im_industry');
+        industry_map_set('fmp', 'Im test FMP sector', '', 'Energy');
+        $im_none = backtest_claim_next();
+        $im_stale_row = backtest_run_get($im_stale);
+        check('a run queued under one map is not handed out under another: it is refused, saying so',
+              $im_none === null && $im_stale_row['status'] === 'REFUSED' && stripos((string) $im_stale_row['note'], 'industry map changed') !== false,
+              json_encode([$im_none === null, $im_stale_row['status'], $im_stale_row['note']]));
+        industry_map_remove('fmp', 'Im test FMP sector');
+    }
+
+    $im_clean();
+    check('the map is as it was seeded when these checks are done', industry_map_version() === $im_v0);
+
     echo "\n--- in the news: routine filings and the days they land on ---\n";
 
     require_once($INCLUDES . '/news_view.php');
@@ -20517,6 +20845,81 @@ STUB
         $nc_clean();
         db()->exec("delete from message_log where module='screen_create'");
         check('and the screens that were there are as they were', $nc_others() === $nc_world && $nc_count() === $nc_before);
+
+        /* ---------------- screen_edit: the industry picker, through the pages ---------------- */
+        echo "\n--- screen_edit: the industry picker ---\n";
+        db()->exec("delete from screen where name='Im web'");
+        db()->exec("insert into screen (name, description, displayed) values ('Im web', 'industry picker', 'Y')");
+        $iw_id = (int) scalar("select id from screen where name='Im web'");
+        db()->exec("insert into strategy_rules (strategy, selection, screen_id, rank_by, holdings, rebalance, exit_rules, exclude_funds)
+                    values ('im_web', 'screen', $iw_id, '6mnth', 15, 'monthly', '', 'Y')");
+        $iw_stored = function () use ($iw_id) {
+            return rows("select sc.operator, sc.description, sci.industry from screen_build sb join screen_criteria sc on sc.id=sb.criteria_id
+                           left join screen_criteria_industries sci on sci.criteria_id=sc.id where sb.screen_id=? order by sc.id, sci.industry", [$iw_id]);
+        };
+        $iw_post = function ($fields) use ($base, $curl) { return (string) $curl("$base/criteria.php", http_build_query($fields)); };
+
+        $iw_form = (string) $curl("$base/screen_criteria.php", http_build_query(['screen_id' => $iw_id, 'btnAdd' => '1']));
+        preg_match('~<form[^>]*id="industry-criterion".*?</form>~s', $iw_form, $iw_m);
+        $iw_part = $iw_m[0] ?? '';
+        check('the Add picker offers "industry is / is not", with the 11 industries to tick and nowhere to type one',
+              $iw_part !== '' && substr_count($iw_part, 'name="industries[]"') === 11
+              && strpos($iw_part, 'value="ind_in"') !== false && strpos($iw_part, 'value="ind_not_in"') !== false
+              && strpos($iw_part, 'value="Financials"') !== false && strpos($iw_part, 'value="Consumer Discretionary"') !== false
+              && preg_match('~type="text"|<textarea~', $iw_part) === 0
+              && !preg_match('/(Fatal error|Warning:|Notice:)/i', $iw_form));
+        check('and still offers the indicator criteria it always did',
+              strpos($iw_form, 'name="first_operand"') !== false && strpos($iw_form, 'name="indicator"') !== false);
+        check('the picker lists the sector names the map does not know',
+              strpos($iw_part, 'id="industry-unmapped"') !== false && strpos($iw_part, 'Sector 0') !== false);
+
+        foreach ([['a raw sector name', ['industry_operator' => 'ind_not_in', 'industries' => ['Banks']]],
+                  ['one good name and one bad', ['industry_operator' => 'ind_not_in', 'industries' => ['Financials', 'Fintech']]],
+                  ['markup for a name', ['industry_operator' => 'ind_in', 'industries' => ['<script>alert(1)</script>']]],
+                  ['no industry', ['industry_operator' => 'ind_in']],
+                  ['an operator that is not is / is not', ['industry_operator' => 'top_n', 'industries' => ['Financials']]]] as [$iw_what, $iw_fields]) {
+            $iw_page = $iw_post(['screen_id' => $iw_id, 'create_industry' => '1'] + $iw_fields);
+            check("test 7: the picker cannot store $iw_what: nothing is written and the form says why",
+                  $iw_stored() === [] && strpos($iw_page, 'Not saved') !== false && strpos($iw_page, '<script>alert(1)</script>') === false
+                  && strpos($iw_page, 'id="industry-criterion"') !== false);
+        }
+        $iw_page = $iw_post(['screen_id' => $iw_id, 'create_industry' => '1', 'industry_operator' => 'ind_not_in',
+                             'industries' => ['Real Estate', 'Financials']]);
+        $iw_rows = $iw_stored();
+        check('ticking Financials and Real Estate under "is not" stores exactly that, and the Edit page shows it in words',
+              array_column($iw_rows, 'industry') === ['Financials', 'Real Estate'] && $iw_rows[0]['operator'] === 'ind_not_in'
+              && strpos($iw_page, 'Industry is not Financials or Real Estate') !== false, json_encode($iw_rows));
+        check('the Edit page still names the strategies a change affects',
+              strpos($iw_page, 'id="screen-feeds"') !== false && stripos($iw_page, 'Draft') !== false);
+        $iw_cid = (int) scalar("select criteria_id from screen_build where screen_id=?", [$iw_id]);
+        $iw_edit = (string) $curl("$base/criteria_list.php?screen_id=$iw_id&id=$iw_cid");
+        check('opening the criterion shows its industries ticked and "is not" chosen, and no indicator form',
+              preg_match('~value="Financials" checked~', $iw_edit) === 1 && preg_match('~value="Real Estate" checked~', $iw_edit) === 1
+              && preg_match('~value="Energy" checked~', $iw_edit) === 0 && preg_match('~value="ind_not_in" selected~', $iw_edit) === 1
+              && strpos($iw_edit, 'name="first_operand"') === false);
+        $iw_fp = rules_fingerprint('im_web');
+        $iw_post(['screen_id' => $iw_id, 'id' => $iw_cid, 'create_industry' => '1', 'industry_operator' => 'ind_in', 'industries' => ['Energy']]);
+        check('saving it changed that criterion, added none, and changed the strategy\'s fingerprint',
+              $iw_stored() === [['operator' => 'ind_in', 'description' => 'Industry is Energy', 'industry' => 'Energy']]
+              && rules_fingerprint('im_web') !== $iw_fp);
+        $iw_bad = $iw_post(['screen_id' => $iw_id, 'id' => $iw_cid, 'create_industry' => '1', 'industry_operator' => 'ind_in', 'industries' => ['Oil']]);
+        check('test 7: and a change to a name outside the 11 is refused, leaving it as it was',
+              $iw_stored() === [['operator' => 'ind_in', 'description' => 'Industry is Energy', 'industry' => 'Energy']]
+              && strpos($iw_bad, 'Not saved') !== false);
+        $iw_post(['screen_id' => $iw_id, 'id' => $iw_cid, 'create_industry' => '1', 'industry_operator' => 'ind_not_in', 'industries' => ['Financials']]);
+        $iw_run = (string) $curl("$base/screen_list.php?screen=$iw_id&run=1");
+        check('a run of the screen says how many shares the industry map did not know',
+              strpos($iw_run, 'id="screen-unmapped"') !== false && stripos($iw_run, 'a sector the industry map does not know') !== false
+              && !preg_match('/(Fatal error|Warning:|Notice:)/i', $iw_run), substr(strip_tags($iw_run), 0, 200));
+        $iw_plain = (string) $curl("$base/screen_list.php?screen=2&run=1");
+        check('and a run of a screen with no industry criterion says nothing about industries',
+              strpos($iw_plain, 'id="screen-unmapped"') === false);
+        $curl("$base/screen_criteria.php", http_build_query(['screen_id' => $iw_id, 'btnDelete' => '1', 'delete' => [$iw_cid]]));
+        check('Delete Checked takes an industry criterion off the screen like any other', $iw_stored() === []);
+        db()->exec("delete from screen_criteria_industries where criteria_id=$iw_cid");
+        db()->exec("delete from screen_criteria where id=$iw_cid");
+        db()->exec("delete from strategy_rules where strategy='im_web'");
+        db()->exec("delete from screen where id=$iw_id");
 
         check('no served page interpolates request data into SQL',
               count($interpolating) === 0, implode(', ', $interpolating));

@@ -16,7 +16,9 @@
 	 * rules, whether funds are excluded - and, for a strategy built on a
 	 * screen, the criteria of that screen, in the order the builder applies
 	 * them. Editing a criterion therefore returns every strategy built on
-	 * the screen to Draft, which is the point.
+	 * the screen to Draft, which is the point. For a screen with an industry
+	 * criterion the industry map's version counts too (industry_map.php): a
+	 * changed map changes which shares the criterion keeps.
 	 *
 	 * What does not: the name, whether the strategy is enabled, its account,
 	 * its mode, its capital, its note, and the date it may start. None of
@@ -31,6 +33,7 @@
 
 	require_once("constants.php");
 	require_once(__DIR__ . "/strategy_functions.php");
+	require_once(__DIR__ . "/share_screen.php");
 
 	/**
 	 * The criteria of a screen, in the order the builder applies them, as
@@ -39,17 +42,43 @@
 	 */
 	function rules_screen_criteria($screen_id) {
 
-		$rows = query("select sc.indicator_id, sc.operator, sc.first_operand, sc.second_operand
+		$rows = query("select sc.id, sc.indicator_id, sc.operator, sc.first_operand, sc.second_operand
 		                 from screen_build sb, screen_criteria sc
 		                where sb.screen_id=? and sb.criteria_id=sc.id
 		                order by sc.id", (int) $screen_id);
 
 		$out = [];
 		foreach ($rows as $row) {
+			/* An industry criterion's content is its industries (share_screen.php
+			   keeps them beside the row): ['', operator, 'A;B', '']. */
+			if (rules_industry_operator($row['operator'])) {
+				$found = industry_criterion((int) $row['id']);
+				$out[] = ['', (string) $row['operator'], implode(';', $found === null ? [] : $found['industries']), ''];
+				continue;
+			}
 			$out[] = [(string) $row['indicator_id'], (string) $row['operator'],
 			          (string) $row['first_operand'], (string) $row['second_operand']];
 		}
 		return $out;
+	}
+
+	function rules_industry_operator($operator) {
+		return isset(screen_industry_operators()[(string) $operator]);
+	}
+
+	/**
+	 * What a snapshot with these criteria carries about the industry map:
+	 * ['industry_map' => version] when one of them is an industry criterion,
+	 * because a changed map changes which shares it keeps - and nothing at
+	 * all otherwise, so a strategy whose screen has no industry criterion
+	 * has the snapshot, and the fingerprint, it always had.
+	 */
+	function rules_industry_part(array $criteria) {
+
+		foreach ($criteria as $c) {
+			if (rules_industry_operator($c[1] ?? '')) { return ['industry_map' => industry_map_version()]; }
+		}
+		return [];
 	}
 
 	/**
@@ -66,6 +95,8 @@
 		$screen_id = ($rules['selection'] === 'screen' && $rules['screen_id'] !== null)
 		           ? (int) $rules['screen_id'] : null;
 
+		$criteria = $screen_id === null ? [] : rules_screen_criteria($screen_id);
+
 		return [
 			'rules' => [
 				'selection'       => (string) $rules['selection'],
@@ -78,8 +109,8 @@
 				'exit_rules'      => implode(',', $exits),
 				'exclude_funds'   => (string) $rules['exclude_funds'],
 			],
-			'criteria' => $screen_id === null ? [] : rules_screen_criteria($screen_id),
-		];
+			'criteria' => $criteria,
+		] + rules_industry_part($criteria);
 	}
 
 	/**
