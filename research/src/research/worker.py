@@ -247,7 +247,13 @@ class Worker:
             log.info("run %s waits for the indicator job", claim.get("run_id"))
             time.sleep(self.job_wait_seconds)
         ws = self.workspace()
-        spec = spec_from_dict(translate(claim, ws.store))
+        # The universe over the run, for an industry criterion: every rebuild inside it and the one in force at its start.
+        u = ws.universe
+        days = pd.to_datetime(u["date"])
+        first = days[days <= pd.Timestamp(claim["from"])].max()
+        inside = (days <= pd.Timestamp(claim["to"])) & (days >= (first if pd.notna(first) else days.min()))
+        spec = spec_from_dict(translate(claim, ws.store, master=ws.m.master,
+                                        universe=sorted(set(u.loc[inside, "symbol"].astype(str)))))
         return ws.run(spec, period=f"{claim['from']}:{claim['to']}", kind="research",
                                     start=claim["from"], end=claim["to"])
 

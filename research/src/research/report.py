@@ -118,6 +118,10 @@ def write_report(cfg: Config, result: dict, trials: int, period_label: str | Non
     if rec.get("dividends_skipped_noncash"):
         caveats.insert(0, f"{rec['dividends_skipped_noncash']} scrip or stock dividend(s) on shares held were skipped: "
                           "only cash dividends are credited. FMP flags few of these, so others may be counted as cash.")
+    if rec.get("industry_map_version"):
+        caveats.insert(0, "Industries are today's, applied to every date: the screen keeps or drops a share by the "
+                          f"industry FMP gives it now (industry map version {rec['industry_map_version']}), "
+                          "whatever it was at the time.")
     if rec.get("cap_weight_unchecked_caps"):
         caveats.insert(0, "The cap-weighted benchmark before 2016 rests on unchecked market caps, some known to be wrong "
                           "(Lloyds and Hammerson shown as the largest companies in 2007); read it with that in mind.")

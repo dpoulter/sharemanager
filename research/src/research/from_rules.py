@@ -11,12 +11,22 @@ What the snapshot looks like (sharemanager includes/rules_fingerprint.php):
     {"rules": {"selection": "screen" | "score", "screen_id", "score_indicator",
                "rank_by", "holdings", "hold_rank", "rebalance", "exit_rules",
                "exclude_funds"},
-     "criteria": [[indicator_id, operator, first_operand, second_operand], ...]}
+     "criteria": [[indicator_id, operator, first_operand, second_operand], ...],
+     "industry_map": version}        # only when a criterion is an industry one
 
 The claim adds `indicators` (indicator_id -> {name, rank_order}) and
 `rank_orders` (name -> rank_order) so the ids can be read; sharemanager's
 rank_order is 'value DESC' or 'value ASC', and anything else is read as DESC,
 which is what sharemanager's screen_rank_order() does.
+
+Industry criteria ("industry is / is not one of [list]", operator ind_in /
+ind_not_in, the industries joined by ';' in first_operand): the claim carries
+the FMP half of sharemanager's industry map (`industry_map`: version, the 11
+industries, FMP sector -> industry, and the exceptions by FMP industry) and
+this module applies it to each universe share's FMP sector and industry from
+symbols.parquet. It keeps no map of its own and guesses nothing: a universe
+share the map does not cover refuses the run, naming the shares. Industries
+are today's, applied to every date, and the report says so.
 
 Indicators: a ranking or screen indicator is translated only if the
 indicator store holds it on the run's price basis (raw: `<name>@raw`, or
@@ -69,6 +79,7 @@ N100_MECHANICS = {"price_basis": "raw", "require_traded_today": False, "max_orde
 REBALANCE = {"monthly": "monthly", "weekly": "weekly", "quarterly": "quarterly"}
 EXITS = {"below_ma200_2d": "below_ma200_2d"}
 COMPARE = {">", ">=", "<", "<=", "=", "!="}
+INDUSTRY = {"ind_in", "ind_not_in"}
 MONTHS = {"1mnth": 1, "3mnth": 3, "6mnth": 6, "12mnth": 12}
 
 # Screens that are an engine signal already, keyed by (criteria, rank_by, direction).
@@ -108,6 +119,11 @@ def _criterion(c, indicators: dict, k: int, store) -> tuple:
     if not isinstance(c, (list, tuple)) or len(c) != 4:
         raise Untranslatable(rule, "a criterion is [indicator_id, operator, first_operand, second_operand]")
     ind_id, oper, first, second = c
+    if str(oper or "").strip() in INDUSTRY:
+        names = tuple(x.strip() for x in str(first or "").split(";") if x.strip())
+        if not names:
+            raise Untranslatable(rule, "an industry criterion with no industry")
+        return ("industry", str(oper).strip(), names, None)
     info = indicators.get(str(ind_id))
     if not info:
         raise Untranslatable(rule, f"indicator id {ind_id} has no name in the claim")
@@ -134,6 +150,62 @@ def _criterion(c, indicators: dict, k: int, store) -> tuple:
     return (name, oper, None, _known(second, f"{rule} ({second})", ranking=False, store=store))
 
 
+def _clean(v) -> str:
+    return "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v).strip()
+
+
+def _industries(claim: dict, snap: dict, criteria: tuple, master, universe) -> tuple[dict, str]:
+    """Each universe share's industry by the map in the claim: ({symbol: industry}, the map's version).
+
+    The map is the claim's, used as it is: FMP sector -> industry, except where the share's FMP
+    industry is listed as an exception for that sector. A share it does not cover refuses the run.
+    """
+    rule = "industry_map"
+    m = claim.get("industry_map")
+    if not isinstance(m, dict) or not isinstance(m.get("fmp"), dict):
+        raise Untranslatable(rule, "the screen has an industry criterion but the claim carries no industry map")
+    version = str(m.get("version") or "")
+    if not version or version != str(snap.get("industry_map") or ""):
+        raise Untranslatable(rule, f"the claim's industry map is version {version or 'none'}, the rules were "
+                                   f"fingerprinted with {snap.get('industry_map') or 'none'}")
+    known = [str(x) for x in m.get("industries") or []]
+    sectors = {str(k).strip(): str(v) for k, v in (m["fmp"].get("sectors") or {}).items()}
+    exceptions = {}
+    for e in m["fmp"].get("exceptions") or []:
+        if not isinstance(e, (list, tuple)) or len(e) != 3:
+            raise Untranslatable(rule, "an exception is [FMP sector, FMP industry, industry]")
+        exceptions[(str(e[0]).strip(), str(e[1]).strip())] = str(e[2])
+    if not known:
+        raise Untranslatable(rule, "the map does not list its industries")
+    bad = sorted((set(sectors.values()) | set(exceptions.values())) - set(known))
+    if bad:
+        raise Untranslatable(rule, f"the map names {', '.join(bad)}, not among its own industries")
+    for k, c in enumerate(criteria):
+        if c[1] in INDUSTRY:
+            unknown = [n for n in c[2] if n not in known]
+            if unknown:
+                raise Untranslatable(f"criteria[{k}]", f"{', '.join(unknown)} is not an industry the map knows")
+    if master is None or universe is None:
+        raise Untranslatable(rule, "an industry criterion needs the symbol master and the universe, and neither was given")
+    if "sector" not in master or "industry" not in master:
+        raise Untranslatable(rule, "symbols.parquet has no FMP sector and industry")
+    out, uncovered = {}, {}
+    for sym in sorted(set(map(str, universe))):
+        sector = _clean(master.at[sym, "sector"]) if sym in master.index else ""
+        industry = _clean(master.at[sym, "industry"]) if sym in master.index else ""
+        found = exceptions.get((sector, industry)) or sectors.get(sector)
+        if found is None or sector == "":
+            uncovered.setdefault(f"{sector or 'no sector'} / {industry or 'no industry'}", []).append(sym)
+        else:
+            out[sym] = found
+    if uncovered:
+        n = sum(len(v) for v in uncovered.values())
+        named = "; ".join(f"{', '.join(v)} ({k})" for k, v in sorted(uncovered.items()))
+        raise Untranslatable(rule, f"version {version} does not cover the FMP sector and industry of {n} universe "
+                                   f"share{'s' if n != 1 else ''}: {named}")
+    return out, version
+
+
 def _costs(model: str, settings) -> dict:
     if not isinstance(settings, dict):
         raise Untranslatable("cost_model", f"{model!r} came with no cost settings")
@@ -147,11 +219,12 @@ def _costs(model: str, settings) -> dict:
             "decimals": 0 if settings["whole_shares"] else 2, "ptm_levy": 0.0}
 
 
-def translate(claim: dict, store) -> dict:
+def translate(claim: dict, store, master=None, universe=None) -> dict:
     """A claim from backtest_api -> the engine's strategy (a dict for strategy.spec_from_dict).
 
-    `store` is the indicator store (indicator_store.IndicatorStore; only has() is used). Raises
-    Untranslatable naming the rule it cannot translate.
+    `store` is the indicator store (indicator_store.IndicatorStore; only has() is used). `master`
+    (symbols.parquet, indexed by symbol) and `universe` (the symbols in the universe over the run)
+    are read only for an industry criterion. Raises Untranslatable naming the rule it cannot translate.
     """
     snap = claim.get("rules_snapshot")
     if not isinstance(snap, dict) or not isinstance(snap.get("rules"), dict):
@@ -162,7 +235,7 @@ def translate(claim: dict, store) -> dict:
     extra = sorted(set(r) - known)
     if extra:
         raise Untranslatable(extra[0], "this rule is not one the translator knows")
-    extra = sorted(set(snap) - {"rules", "criteria"})
+    extra = sorted(set(snap) - {"rules", "criteria", "industry_map"})
     if extra:
         raise Untranslatable(extra[0], "this part of the snapshot is not one the translator knows")
 
@@ -229,6 +302,12 @@ def translate(claim: dict, store) -> dict:
                   ranking=True, store=store)
     direction = "desc" if research else _direction(rank_orders.get(rank))
 
+    by_industry = any(c[1] in INDUSTRY for c in criteria)
+    if by_industry:
+        industries, map_version = _industries(claim, snap, criteria, master, universe)
+    elif snap.get("industry_map") is not None:
+        raise Untranslatable("industry_map", "the snapshot names an industry map but has no industry criterion")
+
     sig = CANONICAL.get((tuple(c for c in criteria), rank, direction))
     require = None
     if selection == "score":
@@ -236,8 +315,12 @@ def translate(claim: dict, store) -> dict:
     if sig is not None and _stored(store, sig):
         chosen = {"signals": {sig: 1}}
     else:
-        chosen = {"signals": {}, "screen": {"criteria": [list(c) for c in criteria], "rank_by": rank,
-                                            "direction": direction, "require": require}}
+        chosen = {"signals": {}, "screen": {"criteria": [[list(x) if isinstance(x, tuple) else x for x in c]
+                                                         for c in criteria],
+                                            "rank_by": rank, "direction": direction, "require": require}}
+        if by_industry:
+            # The universe's industries, as the claim's map gives them today, for the engine to keep or drop by.
+            chosen["screen"].update({"industries": industries, "industry_map_version": map_version})
 
     # cash and costs
     try:

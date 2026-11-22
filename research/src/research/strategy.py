@@ -118,9 +118,14 @@ def blend_ranks(values: dict, weights: dict, universe: list[str]) -> pd.Series:
     return total / weights_sum.replace(0, np.nan)
 
 
+INDUSTRY = {"ind_in", "ind_not_in"}       # sharemanager's industry criteria (from_rules.py)
+
+
 def screen_names(screen: dict) -> list[str]:
     names = [screen["rank_by"]] + ([screen["require"]] if screen.get("require") else [])
     for c in screen.get("criteria") or []:
+        if c[1] in INDUSTRY:              # not an indicator: decided by screen["industries"]
+            continue
         names.append(c[0])
         if c[1] != "top_n" and c[3] is not None:
             names.append(c[3])
@@ -132,6 +137,13 @@ def screen_scores(screen: dict, values: dict, members) -> pd.Series:
     the best N of what is left, scored by rank_by (negated for an ascending order). Only members."""
     keep = pd.Index(members)
     for name, oper, const, other in [c for c in screen.get("criteria") or [] if c[1] != "top_n"]:
+        if oper in INDUSTRY:
+            # "is one of": the share's industry is listed. "is not": it is not. The industries are
+            # the translator's (from_rules.py), today's for every date; nothing is looked up here.
+            of = screen.get("industries") or {}
+            listed = np.array([of.get(str(s)) in set(const) for s in keep], dtype=bool)
+            keep = keep[listed if oper == "ind_in" else ~listed]
+            continue
         left = values[name].reindex(keep)
         right = const if other is None else values[other].reindex(keep)
         ok = COMPARE[oper](left, right) & left.notna()
@@ -342,6 +354,8 @@ class Workspace:
         out["rebalance_refusals"] = res.refusals
         out["orders_skipped"] = res.skipped
 
+        if screen and screen.get("industry_map_version"):
+            out["industry_map_version"] = str(screen["industry_map_version"])
         out["cap_weight_unchecked_caps"] = bool(start < pd.Timestamp(UNCHECKED_CAPS_BEFORE))
         prior = self.log.read()
         family_sharpes, n_trials = [], 1
