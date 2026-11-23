@@ -51,6 +51,8 @@ RUN9 = {
     "exit": "below_ma200_2d",
     "drift_band": 0.02,
     "max_turnover": 0.5,
+    # Run 9 was run on the N100's old rule: a rebalance over the turnover cap was refused whole.
+    "turnover_rule": "refuse",
     "start_cash": 100000,
     # The N100 prices everything on raw closes (historical_prices.price): no
     # dividends in returns, averages or valuations.

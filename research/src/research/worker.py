@@ -63,7 +63,7 @@ DEFAULT_SETTINGS = Path("~/.config/sharemanager-research/worker.env")
 RESULT_FIELDS = ["trading_days", "fills", "start_value", "final_value", "total_return", "annual_return",
                  "bench_equal_weight_return", "bench_cap_weight_return", "max_drawdown", "costs_paid",
                  "sharpe", "deflated_sharpe", "trials", "dividends_received", "dsr", "deflation_meaningful",
-                 "cap_weight_unchecked_caps"]
+                 "cap_weight_unchecked_caps", "turnover_refusals", "turnover_held_back"]
 
 
 class WorkerError(RuntimeError):

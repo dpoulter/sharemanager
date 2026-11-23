@@ -68,7 +68,11 @@ def test_trend_following_snapshot_becomes_the_run9_strategy():
     # The engine's rules and costs are the ones run 9 passed with: same signal, holdings, rebalance,
     # hold rank, exit, drift band, turnover cap, N100 mechanics and Trading 212 costs.
     assert s["signals"] == RUN9["signals"]
-    assert spec_from_dict(s).rules() == spec_from_dict(RUN9).rules()
+    # ... except the turnover rule: a sharemanager strategy now trades in part over its limit (brief of
+    # 23 Nov 2026); run 9 is replayed on the old rule that refused the whole rebalance.
+    from dataclasses import replace as _replace
+    assert spec_from_dict(s).rules() == _replace(spec_from_dict(RUN9).rules(), turnover_rule="partial")
+    assert spec_from_dict(RUN9).rules().turnover_rule == "refuse"
     assert from_dict(s["costs"]) == from_dict(RUN9["costs"])
     assert s["price_basis"] == RUN9["price_basis"]
     assert s["universe"] == "ftse350"

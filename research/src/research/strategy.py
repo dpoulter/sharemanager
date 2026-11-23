@@ -24,7 +24,9 @@
     costs: {}                    # overrides of costs.py, e.g. {spread_large_bp: 10}
     start_cash: 100000
     drift_band: 0.02
-    max_turnover: null
+    max_turnover: null           # min(buys, sells) / value a rebalance may trade, or null
+    turnover_rule: partial       # over it: partial (trade up to it, hold the rest back, as the N100 since
+                                 # 23 Nov 2026) or refuse (refuse the whole rebalance: the old N100, run 9)
     require_traded_today: true   # false: a price on or before the date is enough (the N100)
     max_orders: null             # the N100 refuses a rebalance of more than 50
 
@@ -87,6 +89,7 @@ class Spec:
         return engine.Rules(holdings=r.get("holdings", 15), rebalance=r.get("rebalance", "monthly"),
                             hold_rank=r.get("hold_rank"), exit_ma200=r.get("exit") == "below_ma200_2d",
                             drift_band=float(r.get("drift_band", 0.02)), max_turnover=r.get("max_turnover"),
+                            turnover_rule=str(r.get("turnover_rule", "partial")),
                             start_cash=float(r.get("start_cash", 100_000)),
                             require_traded_today=bool(r.get("require_traded_today", True)),
                             max_orders=r.get("max_orders"),
@@ -364,8 +367,15 @@ class Workspace:
         div_setting = self.dividends_setting(spec)
         # Raw basis: the engine credits them as cash. Adjusted basis: already in the price.
         divs = mk.dividends if (div_setting == "on" and basis == "raw") else None
-        res = engine.simulate(mk, member, large, scores, rules, costs, start, end, exit_flags, divs)
-        free = engine.simulate(mk, member, large, scores, rules, costs.free(), start, end, exit_flags, divs)
+        # How each share ranks tonight, for the turnover rule's "weakest leaver first": a screen's rank_by
+        # value (signed by its direction) for every share, not only those the screen kept; else the score.
+        rank_values = None
+        if screen and screen.get("rank_by"):
+            sign = 1.0 if screen.get("direction", "desc") == "desc" else -1.0
+            rank_values = {d: values[screen["rank_by"]][d] * sign for d in decision_days}
+        res = engine.simulate(mk, member, large, scores, rules, costs, start, end, exit_flags, divs, rank_values)
+        free = engine.simulate(mk, member, large, scores, rules, costs.free(), start, end, exit_flags, divs,
+                               rank_values)
         # Benchmarks are total return (dividend-adjusted) whatever the strategy's basis. Run 19's
         # cap-weighted 5.1% over 2007-2025 was price only: the raw basis took the dividends out.
         bench = engine.benchmarks(self.m, member, start, end)
@@ -383,6 +393,9 @@ class Workspace:
         out["dividends_after_end_cash"] = float(res.dividends_after_end_cash)
         out["dividends_skipped_noncash"] = int(res.dividends_skipped_noncash)
         out["rebalance_refusals"] = res.refusals
+        out["turnover_refusals"] = sum(1 for e in res.events if e.get("event") == "rebalance refused: turnover")
+        out["turnover_held_back"] = int(res.held_back)
+        out["turnover_rule"] = rules.turnover_rule
         out["orders_skipped"] = res.skipped
 
         if screen and screen.get("industry_map_version"):

@@ -10,8 +10,11 @@ The same rules as the N100 engine (includes/strategy_functions.php):
 - an optional buffer: a holding is kept while it ranks inside `hold_rank`;
 - a 2% drift band: a holding near its target weight is left alone;
 - orders under the minimum are skipped;
-- an optional turnover cap that refuses a whole rebalance rather than
-  trimming it (min(buys, sells) / value, the first build exempt);
+- an optional turnover limit (min(buys, sells) / value, the first build
+  exempt). turnover_rule "partial" (the N100 since 23 Nov 2026) trades the
+  rebalance up to the limit and holds the rest back to the next rebalance
+  (turnover_cut, the same rule as strategy_turnover_cut on the N100);
+  "refuse" refuses the whole rebalance, as the N100 did before (run 9);
 - an optional exit between rebalances: closed below the 200-day average on
   two consecutive closes, sold at the next close, cash held to the next
   rebalance;
@@ -69,6 +72,7 @@ class Rules:
     exit_ma200: bool = False
     drift_band: float = 0.02
     max_turnover: float | None = None
+    turnover_rule: str = "partial"    # partial | refuse (the old N100 rule, for the run 9 check)
     start_cash: float = 100_000.0
     # The N100 accepts a share with a price on or before the date, traded that day or not
     # (strategy_price_asof), and refuses a rebalance of more than 50 orders
@@ -101,6 +105,7 @@ class Result:
     pnl: pd.Series                       # profit per symbol, pounds
     refusals: int = 0
     skipped: int = 0
+    held_back: int = 0                   # orders held back for the turnover limit (partial rule)
     notes: list[str] = field(default_factory=list)
     # What the engine decided and why, per rebalance: skipped for the drift band, under the minimum
     # order, rounded to nothing, trimmed to fit cash, refused. validate prints these for a month.
@@ -195,7 +200,7 @@ def ma200_below_twice_calendar(adj: pd.DataFrame, ma: pd.DataFrame, calendar) ->
 
 def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
              rules: Rules, costs: Costs, start, end, exit_flags: pd.DataFrame | None = None,
-             dividends: pd.DataFrame | None = None) -> Result:
+             dividends: pd.DataFrame | None = None, rank_values: dict | None = None) -> Result:
     """Run one portfolio.
 
     `dividends` (Market.dividends: symbol, ex_date, pay_date, amount in pounds a share, kind) is
@@ -247,7 +252,7 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
     fills = []
     values = []
     events: list[dict] = []
-    refusals = skipped = 0
+    refusals = skipped = held_back = 0
     built = False
 
     def value_at(i):
@@ -352,7 +357,10 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
             plan, refused, n_skip = _plan(i, d, scores.get(d), member, syms, col, units, adj, close,
                                           traded_today, lg, aim, total, rules, costs, round_down,
                                           shares_held, first_build=not built and not (units > 0).any(),
-                                          events=events)
+                                          events=events, strength=(rank_values or {}).get(d))
+            if isinstance(refused, tuple):
+                refused, n_back = refused
+                held_back += n_back
             refusals += refused
             skipped += n_skip
             pending = plan
@@ -371,14 +379,16 @@ def simulate(m: Market, member: pd.DataFrame, large: pd.DataFrame, scores: dict,
     pnl = pd.Series(flows + final_value, index=syms)
     pnl = pnl[(flows != 0) | (final_value != 0)]
     divs = pd.DataFrame(div_rows, columns=["symbol", "ex_date", "pay_date", "shares", "amount", "cash", "status"])
-    return Result(values=vals, fills=f, pnl=pnl, refusals=refusals, skipped=skipped, events=events,
+    return Result(values=vals, fills=f, pnl=pnl, refusals=refusals, skipped=skipped, held_back=held_back, events=events,
                   dividends=divs, dividends_received=div_received, dividends_after_end=div_after,
                   dividends_after_end_cash=div_after_cash, dividends_skipped_noncash=div_noncash)
 
 
 def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, total, rules, costs,
-          round_down, shares_held, first_build, events=None):
-    """Orders for one rebalance. Returns (orders, refused, skipped)."""
+          round_down, shares_held, first_build, events=None, strength=None):
+    """Orders for one rebalance. Returns (orders, refused, skipped); refused is (0, held back) when the
+    partial turnover rule held orders back. `strength`: symbol -> how well it ranks tonight, higher better
+    (the ranking indicator, signed); the score where not given."""
     events = events if events is not None else []
     orders, skipped = [], 0
     if score is None:
@@ -417,6 +427,7 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
     mult = 1 + costs.stamp_duty + max(costs.spread(True), costs.spread(False))
     investable = (total - costs.commission * len(chosen)) / mult
     buys = sells = 0.0
+    info: list[dict] = []          # per order: what turnover_cut needs
     want = set(chosen)
     events.append({"date": d, "symbol": "(all)", "event": "sizing", "investable": investable, "weight": weight,
                    "account_value": total, "multiplier": mult, "holdings_wanted": n,
@@ -448,6 +459,8 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
         else:
             orders.append((j, "SELL", -delta, "rebalance"))
             sells += value
+        info.append({"symbol": x, "side": orders[-1][1], "value": value, "held": held,
+                     "leaver": False})
         events.append({"date": d, "symbol": x, "event": "ordered " + ("top-up" if held > 0 and delta > 0
                                                                       else "trim" if delta < 0 else "new holding"),
                        "detail": f"held {held:g}, target {target:g}, delta {delta:+g}, "
@@ -457,16 +470,83 @@ def _plan(i, d, score, member, syms, col, units, adj, close, traded, lg, aim, to
             q = shares_held(j, i)
             orders.append((j, "SELL", q, "no_longer_selected"))
             sells += q * close[i, j] if close[i, j] > 0 else 0
+            info.append({"symbol": syms[j], "side": "SELL", "value": q * close[i, j] if close[i, j] > 0 else 0.0,
+                         "held": q, "leaver": True})
     if rules.max_orders is not None and len(orders) > rules.max_orders:
         events.append({"date": d, "symbol": "(all)", "event": "rebalance refused: too many orders",
                        "detail": f"{len(orders)} orders, limit {rules.max_orders}"})
         return [], 1, skipped
     if (rules.max_turnover is not None and not first_build and total > 0
-            and min(buys, sells) / total > rules.max_turnover):
-        events.append({"date": d, "symbol": "(all)", "event": "rebalance refused: turnover",
-                       "detail": f"{min(buys, sells) / total:.3f} over {rules.max_turnover}"})
-        return [], 1, skipped
+            and min(buys, sells) / total > rules.max_turnover + 1e-12):
+        if rules.turnover_rule == "refuse":
+            events.append({"date": d, "symbol": "(all)", "event": "rebalance refused: turnover",
+                           "detail": f"{min(buys, sells) / total:.3f} over {rules.max_turnover}"})
+            return [], 1, skipped
+        if rules.turnover_rule != "partial":
+            raise ValueError(f"turnover_rule is partial or refuse, not {rules.turnover_rule!r}")
+        st = strength if strength is not None else score
+        st = {} if st is None else {k: float(v) for k, v in st.items() if pd.notna(v)}
+        keep, back, traded = turnover_cut(info, st, rules.max_turnover * total)
+        for k in back:
+            events.append({"date": d, "symbol": info[k]["symbol"], "event": "held back: turnover",
+                           "detail": f"{info[k]['side']} {info[k]['value']:,.2f} over the turnover limit "
+                                     f"{rules.max_turnover}: waits for the next rebalance"})
+        events.append({"date": d, "symbol": "(all)", "event": "turnover limit: traded in part",
+                       "detail": f"{min(buys, sells) / total:.3f} over {rules.max_turnover}: traded "
+                                 f"{traded / total:.3f}, {len(back)} order(s) held back"})
+        return [orders[k] for k in sorted(keep)], (0, len(back)), skipped
     return orders, 0, skipped
+
+
+def turnover_cut(orders: list[dict], strength: dict, limit_value: float) -> tuple[list[int], list[int], float]:
+    """Trade part of a rebalance over its turnover limit: the N100's strategy_turnover_cut, the same rule.
+
+    `orders`: per order, symbol, side, value (money), held (shares held now) and leaver (a holding that has
+    left the targets). Sales of leavers, weakest first, are paired with buys of new targets (held 0), best
+    first; the pairing stops at the first pair that would take min(buys, sells) past `limit_value`, and
+    when one side runs out the other carries on alone while it fits. Then top-ups and trims of holdings
+    that stay, best first, each placed if it fits in what is left and held back if not. A holding still
+    a target is never sold to make room. `strength`: symbol -> higher is better; absent is the weakest;
+    ties by the N100 symbol. Returns (indexes kept, indexes held back, turnover traded).
+    """
+    def key(o, best):
+        v = strength.get(o["symbol"])
+        none = v is None
+        if best:
+            return (none, 0.0 if none else -v, n100_symbol_key(o["symbol"]))
+        return (not none, 0.0 if none else v, n100_symbol_key(o["symbol"]))
+
+    idx = list(range(len(orders)))
+    leavers = sorted([k for k in idx if orders[k]["side"] == "SELL" and orders[k]["leaver"]],
+                     key=lambda k: key(orders[k], best=False))
+    news = sorted([k for k in idx if orders[k]["side"] == "BUY" and orders[k]["held"] <= 0],
+                  key=lambda k: key(orders[k], best=True))
+    adjust = sorted([k for k in idx if k not in set(leavers) | set(news)], key=lambda k: key(orders[k], best=True))
+    fits = lambda b, s: min(b, s) <= limit_value + 1e-6       # noqa: E731
+    buys = sells = 0.0
+    keep, back = [], []
+    i = j = 0
+    while i < len(leavers) or j < len(news):
+        s = leavers[i] if i < len(leavers) else None
+        b = news[j] if j < len(news) else None
+        ns = sells + (orders[s]["value"] if s is not None else 0.0)
+        nb = buys + (orders[b]["value"] if b is not None else 0.0)
+        if not fits(nb, ns):
+            break
+        if s is not None:
+            keep.append(s); sells = ns; i += 1
+        if b is not None:
+            keep.append(b); buys = nb; j += 1
+    back += leavers[i:] + news[j:]
+    for k in adjust:
+        o = orders[k]
+        nb = buys + (o["value"] if o["side"] == "BUY" else 0.0)
+        ns = sells + (o["value"] if o["side"] == "SELL" else 0.0)
+        if fits(nb, ns):
+            keep.append(k); buys, sells = nb, ns
+        else:
+            back.append(k)
+    return keep, back, min(buys, sells)
 
 
 def benchmarks(m: Market, member: pd.DataFrame, start, end) -> pd.DataFrame:

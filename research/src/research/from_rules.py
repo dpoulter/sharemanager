@@ -74,7 +74,10 @@ class Untranslatable(ValueError):
 
 # The N100's dealing mechanics, as the engine check reproduced them.
 N100_MECHANICS = {"price_basis": "raw", "require_traded_today": False, "max_orders": 50,
-                  "drift_band": 0.02, "max_turnover": 0.5}
+                  "drift_band": 0.02, "max_turnover": 0.5, "turnover_rule": "partial"}
+# The strategy's own turnover limit (strategy_rules.max_turnover): in the snapshot only when it is not the
+# default, which is the N100's STRATEGY_MAX_TURNOVER.
+TURNOVER_RANGE = (0.10, 1.00)
 
 REBALANCE = {"monthly": "monthly", "weekly": "weekly", "quarterly": "quarterly"}
 EXITS = {"below_ma200_2d": "below_ma200_2d"}
@@ -250,7 +253,7 @@ def translate(claim: dict, store, master=None, universe=None) -> dict:
         raise Untranslatable("rules_snapshot", "there is no rules snapshot")
     r = snap["rules"]
     known = {"selection", "screen_id", "score_indicator", "rank_by", "holdings", "hold_rank", "rebalance",
-             "exit_rules", "exclude_funds"}
+             "exit_rules", "exclude_funds", "max_turnover"}
     extra = sorted(set(r) - known)
     if extra:
         raise Untranslatable(extra[0], "this rule is not one the translator knows")
@@ -350,6 +353,15 @@ def translate(claim: dict, store, master=None, universe=None) -> dict:
         raise Untranslatable("starting_cash", "the starting cash has to be more than nothing")
     costs = _costs(str(claim.get("cost_model")), claim.get("cost_settings"))
 
+    max_turnover = N100_MECHANICS["max_turnover"]
+    if "max_turnover" in r:
+        try:
+            max_turnover = float(r["max_turnover"])
+        except (TypeError, ValueError):
+            raise Untranslatable("max_turnover", f"{r['max_turnover']!r} is not a turnover limit") from None
+        if not TURNOVER_RANGE[0] - 1e-9 <= max_turnover <= TURNOVER_RANGE[1] + 1e-9:
+            raise Untranslatable("max_turnover", f"{max_turnover} is outside {TURNOVER_RANGE[0]} to {TURNOVER_RANGE[1]}")
+
     strategy = str(claim.get("strategy") or "")
     fingerprint = str(claim.get("fingerprint") or "")
     return {
@@ -364,4 +376,5 @@ def translate(claim: dict, store, master=None, universe=None) -> dict:
         "start_cash": cash,
         "costs": costs,
         **N100_MECHANICS,
+        "max_turnover": max_turnover,
     }

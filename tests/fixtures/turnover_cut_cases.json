@@ -1,0 +1,317 @@
+{
+ "about": "Shared cases for the partial turnover rule: includes/strategy_functions.php strategy_turnover_cut() and research engine.turnover_cut() must give exactly these (brief of 23 Nov 2026, test 6). Account value 100,000; values in pounds; strength higher is better, absent is weakest.",
+ "cases": [
+  {
+   "name": "80% wanted, 50% limit: weakest leavers sold, best new targets bought, the rest held back",
+   "limit": 50000,
+   "strength": {
+    "L1": 1.0,
+    "L2": 5.0,
+    "L3": 3.0,
+    "L4": 9.0,
+    "L5": 2.0,
+    "L6": 7.0,
+    "L7": 4.0,
+    "L8": 8.0,
+    "N1": 90.0,
+    "N2": 80.0,
+    "N3": 70.0,
+    "N4": 60.0,
+    "N5": 50.0,
+    "N6": 40.0,
+    "N7": 30.0,
+    "N8": 20.0
+   },
+   "orders": [
+    [
+     "L1",
+     "SELL",
+     10000,
+     100,
+     true
+    ],
+    [
+     "L2",
+     "SELL",
+     10000,
+     100,
+     true
+    ],
+    [
+     "L3",
+     "SELL",
+     10000,
+     100,
+     true
+    ],
+    [
+     "L4",
+     "SELL",
+     10000,
+     100,
+     true
+    ],
+    [
+     "L5",
+     "SELL",
+     10000,
+     100,
+     true
+    ],
+    [
+     "L6",
+     "SELL",
+     10000,
+     100,
+     true
+    ],
+    [
+     "L7",
+     "SELL",
+     10000,
+     100,
+     true
+    ],
+    [
+     "L8",
+     "SELL",
+     10000,
+     100,
+     true
+    ],
+    [
+     "N1",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "N2",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "N3",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "N4",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "N5",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "N6",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "N7",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "N8",
+     "BUY",
+     10000,
+     0,
+     false
+    ]
+   ],
+   "kept": [
+    "L1",
+    "L5",
+    "L3",
+    "L7",
+    "L2",
+    "N1",
+    "N2",
+    "N3",
+    "N4",
+    "N5"
+   ],
+   "turnover": 50000
+  },
+  {
+   "name": "a leaver with no ranking value is the weakest; ties go by symbol",
+   "limit": 20000,
+   "strength": {
+    "LB": 1.0,
+    "LC": 1.0,
+    "NA": 5.0,
+    "NB": 5.0
+   },
+   "orders": [
+    [
+     "LA",
+     "SELL",
+     10000,
+     10,
+     true
+    ],
+    [
+     "LB",
+     "SELL",
+     10000,
+     10,
+     true
+    ],
+    [
+     "LC",
+     "SELL",
+     10000,
+     10,
+     true
+    ],
+    [
+     "NA",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "NB",
+     "BUY",
+     10000,
+     0,
+     false
+    ],
+    [
+     "NC",
+     "BUY",
+     10000,
+     0,
+     false
+    ]
+   ],
+   "kept": [
+    "LA",
+    "LB",
+    "NA",
+    "NB"
+   ],
+   "turnover": 20000
+  },
+  {
+   "name": "top-ups and trims of holdings that stay come from the turnover left after the swaps; one that does not fit is held back",
+   "limit": 21000,
+   "strength": {
+    "L1": 1.0,
+    "N1": 9.0,
+    "S1": 8.0,
+    "S2": 7.0,
+    "S3": 6.0
+   },
+   "orders": [
+    [
+     "L1",
+     "SELL",
+     20000,
+     100,
+     true
+    ],
+    [
+     "N1",
+     "BUY",
+     20000,
+     0,
+     false
+    ],
+    [
+     "S1",
+     "BUY",
+     8000,
+     50,
+     false
+    ],
+    [
+     "S2",
+     "SELL",
+     3000,
+     50,
+     false
+    ],
+    [
+     "S3",
+     "BUY",
+     4000,
+     50,
+     false
+    ]
+   ],
+   "kept": [
+    "L1",
+    "N1",
+    "S1",
+    "S3"
+   ],
+   "turnover": 20000
+  },
+  {
+   "name": "more leavers than new targets: the leavers left over are sold alone while they fit",
+   "limit": 30000,
+   "strength": {
+    "L1": 1.0,
+    "L2": 2.0,
+    "L3": 3.0,
+    "N1": 9.0
+   },
+   "orders": [
+    [
+     "L1",
+     "SELL",
+     10000,
+     10,
+     true
+    ],
+    [
+     "L2",
+     "SELL",
+     10000,
+     10,
+     true
+    ],
+    [
+     "L3",
+     "SELL",
+     10000,
+     10,
+     true
+    ],
+    [
+     "N1",
+     "BUY",
+     40000,
+     0,
+     false
+    ]
+   ],
+   "kept": [
+    "L1",
+    "L2",
+    "L3",
+    "N1"
+   ],
+   "turnover": 30000
+  }
+ ]
+}
