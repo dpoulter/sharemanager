@@ -21,7 +21,9 @@
 
 	define("STRATEGY_MAX_POSITION_WEIGHT", 0.20);  // no single holding over 20%
 	define("STRATEGY_MAX_ORDERS_PER_RUN",  50);
-	define("STRATEGY_MAX_TURNOVER",        0.50);  // total traded value / account value
+	define("STRATEGY_MAX_TURNOVER",        0.50);  // the DEFAULT turnover limit: strategy_rules.max_turnover
+	define("STRATEGY_MIN_TURNOVER_LIMIT",  0.10);  // the range a strategy's own limit may take
+	define("STRATEGY_MAX_TURNOVER_LIMIT",  1.00);
 	/* The kill switch: a file whose existence stops everything.
 	
 	   /var/lib/sharemanager, not /var/www/shares, which was the pre-2026
@@ -506,7 +508,7 @@
 		   problem: the live capital cap binding a plan is the system doing
 		   what it was told, and reporting it as an error would make the
 		   nightly job exit 1 on a night when nothing went wrong. */
-		$plan=['orders'=>[],'errors'=>[],'skipped'=>[],'notes'=>[],'account_value'=>null,
+		$plan=['orders'=>[],'errors'=>[],'skipped'=>[],'notes'=>[],'held_back'=>[],'account_value'=>null,
 		       'mode'=>STRATEGY_MODE_PAPER,'nothing_to_do'=>false];
 
 		$account=strategy_account($strategy);
@@ -769,13 +771,128 @@
 		   capped like every other. */
 		$first_build=strategy_first_build($strategy);
 
-		if (!$first_build&&$account_value>0&&($turnover/$account_value)>STRATEGY_MAX_TURNOVER){
-			$plan['errors'][]="turnover ".round($turnover/$account_value,3)." exceeds the limit of ".STRATEGY_MAX_TURNOVER;
-			$plan['orders']=[];
-			return $plan;
+		/* THE STRATEGY'S TURNOVER LIMIT (brief of 23 Nov 2026). Over it, the
+		   rebalance is traded in part rather than refused: the trades held
+		   back wait for the next rebalance, which is planned again from that
+		   night's targets. strategy_turnover_cut() decides which, and the
+		   Mac mini engine runs the same rule (engine.turnover_cut). */
+		$rules=strategy_rules($strategy);
+		$limit=strategy_turnover_limit($rules);
+		if (!$first_build&&$account_value>0&&($turnover/$account_value)>$limit+1e-12){
+			$cut=strategy_turnover_cut($plan['orders'],strategy_turnover_strength($rules,$targets,$plan['orders'],$as_of_date),
+			                           $limit*$account_value);
+			$plan['orders']=$cut['orders'];
+			$plan['held_back']=$cut['held_back'];
+			$plan['notes'][]="turnover ".round($turnover/$account_value,3)." is over this strategy's limit of "
+			                 .round($limit,2).": traded ".round($cut['turnover']/$account_value,3).", "
+			                 .count($cut['held_back'])." order(s) held back until the next rebalance";
 		}
 
 		return $plan;
+	}
+
+	/** The strategy's own turnover limit: strategy_rules.max_turnover, or the default. */
+	function strategy_turnover_limit($rules) {
+		$v=($rules!==null&&isset($rules['max_turnover'])&&$rules['max_turnover']!==null)
+		  ? (float)$rules['max_turnover'] : STRATEGY_MAX_TURNOVER;
+		return min(STRATEGY_MAX_TURNOVER_LIMIT,max(STRATEGY_MIN_TURNOVER_LIMIT,$v));
+	}
+
+	/**
+	 * How strong each symbol in a plan ranks tonight: the strategy's ranking
+	 * indicator (rank_by, or the score indicator) on the date, signed so that
+	 * higher is better (its screen_indicators rank_order). Null where there
+	 * is none; strategy_turnover_cut() reads null as the weakest.
+	 */
+	function strategy_turnover_strength($rules,$targets,$orders,$as_of_date) {
+		$out=[];
+		$indicator=($rules===null) ? null : ($rules['rank_by']!==null ? $rules['rank_by'] : $rules['score_indicator']);
+		if ($indicator===null){ return $out; }
+		$order=query("select rank_order from screen_indicators where name=?",$indicator);
+		$sign=(count($order)&&stripos((string)$order[0]['rank_order'],'asc')!==false) ? -1.0 : 1.0;
+		$symbols=[];
+		foreach ($orders as $o){ $symbols[$o['symbol']]=true; }
+		if (!count($symbols)){ return $out; }
+		$in=implode(',',array_fill(0,count($symbols),'?'));
+		foreach (query("select symbol, value from statistics where indicator=? and date=? and symbol in ($in)",
+		               $indicator,substr((string)$as_of_date,0,10),...array_keys($symbols)) as $row) {
+			if ($row['value']!==null){ $out[$row['symbol']]=$sign*(float)$row['value']; }
+		}
+		return $out;
+	}
+
+	/**
+	 * Trade part of a rebalance whose turnover is over the limit.
+	 *
+	 *   1. Sales of holdings that have left the targets, weakest ranked
+	 *      first, paired with buys of new targets, best ranked first: a sale
+	 *      and a buy are taken together, and the pairing stops at the first
+	 *      pair that would take min(buys, sells) past the limit. When one
+	 *      side runs out, the other carries on alone while it stays inside.
+	 *   2. Top-ups and trims of holdings that stay a target come after the
+	 *      swaps, from the turnover left: each, best ranked first, is placed
+	 *      if it fits and held back if not.
+	 *
+	 * A holding that is still a target is never sold to make room: a trim
+	 * is only the planned one. $strength: symbol => higher is better, null
+	 * or absent is the weakest; ties go by symbol. $limit_value is in money
+	 * (the limit times the account value). Returns orders (in the plan's own
+	 * order), held_back (each with why) and the turnover traded.
+	 */
+	function strategy_turnover_cut(array $orders,array $strength,$limit_value) {
+		$val=function ($o) { return ($o['reference_price']===null) ? 0.0 : (float)$o['quantity']*(float)$o['reference_price']; };
+		$st=function ($sym) use ($strength) { return isset($strength[$sym])&&$strength[$sym]!==null ? (float)$strength[$sym] : null; };
+		/* weakest first: null first, then lower, then symbol */
+		$weak_first=function ($a,$b) use ($st) {
+			$x=$st($a['symbol']); $y=$st($b['symbol']);
+			if ($x===null&&$y!==null){ return -1; } if ($y===null&&$x!==null){ return 1; }
+			if ($x!==null&&$y!==null&&$x!=$y){ return $x<$y ? -1 : 1; }
+			return strcmp($a['symbol'],$b['symbol']);
+		};
+		$best_first=function ($a,$b) use ($st) {
+			$x=$st($a['symbol']); $y=$st($b['symbol']);
+			if ($x===null&&$y!==null){ return 1; } if ($y===null&&$x!==null){ return -1; }
+			if ($x!==null&&$y!==null&&$x!=$y){ return $x>$y ? -1 : 1; }
+			return strcmp($a['symbol'],$b['symbol']);
+		};
+		$leavers=[]; $news=[]; $adjust=[];
+		foreach ($orders as $k=>$o) {
+			$o['_k']=$k;
+			if ($o['side']==='SELL'&&($o['reason_code']??'')==='no_longer_selected'){ $leavers[]=$o; }
+			/* by what is held, not the label: reason_code calls every buy back_to_target */
+			else if ($o['side']==='BUY'&&(float)($o['held']??0)<=0){ $news[]=$o; }
+			else { $adjust[]=$o; }
+		}
+		usort($leavers,$weak_first); usort($news,$best_first); usort($adjust,$best_first);
+
+		$buys=$sells=0.0; $keep=[]; $held=[];
+		$fits=function ($b,$s) use ($limit_value) { return min($b,$s)<=$limit_value+1e-6; };
+		$i=0; $j=0; $stopped=false;
+		while (!$stopped&&($i<count($leavers)||$j<count($news))) {
+			$s=$i<count($leavers) ? $leavers[$i] : null;
+			$b=$j<count($news) ? $news[$j] : null;
+			$ns=$sells+($s===null ? 0 : $val($s)); $nb=$buys+($b===null ? 0 : $val($b));
+			if (!$fits($nb,$ns)){ $stopped=true; break; }
+			if ($s!==null){ $keep[$s['_k']]=true; $sells=$ns; $i++; }
+			if ($b!==null){ $keep[$b['_k']]=true; $buys=$nb; $j++; }
+		}
+		$why='over the turnover limit: waits for the next rebalance';
+		for (; $i<count($leavers); $i++){ $held[]=$leavers[$i]; }
+		for (; $j<count($news); $j++){ $held[]=$news[$j]; }
+		foreach ($adjust as $o) {
+			$nb=$buys+($o['side']==='BUY' ? $val($o) : 0); $ns=$sells+($o['side']==='SELL' ? $val($o) : 0);
+			if ($fits($nb,$ns)){ $keep[$o['_k']]=true; $buys=$nb; $sells=$ns; }
+			else { $held[]=$o; }
+		}
+		$out=[];
+		foreach ($orders as $k=>$o) { if (isset($keep[$k])){ $out[]=$o; } }
+		$back=[];
+		foreach ($held as $o) {
+			unset($o['_k']);
+			$back[]=['symbol'=>$o['symbol'],'side'=>$o['side'],'quantity'=>$o['quantity'],'value'=>$val($o),
+			         'reason_code'=>$o['reason_code']??null,'reason'=>$why];
+		}
+		return ['orders'=>$out,'held_back'=>$back,'turnover'=>min($buys,$sells)];
 	}
 
 	/**
@@ -2136,6 +2253,12 @@
 		                  ? max((int)$rules['hold_rank'],$rules['holdings']) : null;
 		$rules['score_indicator']=trim((string)$rules['score_indicator'])===''
 		                        ? null : trim((string)$rules['score_indicator']);
+		/* The strategy's own turnover limit (sql/strategy_max_turnover.sql).
+		   Absent or null is the default, so a host without the column runs
+		   as it did. */
+		$rules['max_turnover']=(isset($rules['max_turnover'])&&$rules['max_turnover']!==null)
+		                      ? strategy_turnover_limit(['max_turnover'=>(float)$rules['max_turnover']])
+		                      : STRATEGY_MAX_TURNOVER;
 
 		return $rules;
 	}
@@ -2774,6 +2897,16 @@
 		foreach ($report['not_placed'] as $missed) {
 			$say(sprintf("skip %-8s %s",$missed['symbol'],$missed['reason']));
 		}
+		/* Held back for the turnover limit: recorded with the reason, and
+		   shown where a refusal used to be. */
+		$report['held_back']=isset($plan['held_back']) ? $plan['held_back'] : [];
+		foreach ($report['held_back'] as $back) {
+			$say(sprintf("held back %-4s %-8s %s",$back['side'],$back['symbol'],$back['reason']));
+			if (!$dry_run){
+				write_log("strategy",$strategy." ".$as_of." held back ".$back['side']." ".$back['symbol']
+				          ." (".round($back['value'],2)."): ".$back['reason']);
+			}
+		}
 
 		if (count($plan['orders'])===0){
 			$say("no orders");
@@ -2973,6 +3106,7 @@
 			   do, and a table cannot be built from sentences. */
 			$night['orders']=$report['orders'];
 			$night['account_value']=$report['account_value'];
+			$night['held_back']=isset($report['held_back']) ? $report['held_back'] : [];
 			$night['halted']=!empty($report['halted']);
 		}
 		catch (Throwable $e) {
@@ -3903,6 +4037,8 @@
 		/* The names the selection could not take, with the reason. A book
 		   of fourteen where the rules say fifteen has to say why. */
 		$report['skipped']=isset($night['not_selected']) ? $night['not_selected'] : [];
+		/* Trades held back for the turnover limit, where a refusal was shown. */
+		$report['held_back']=isset($night['held_back']) ? $night['held_back'] : [];
 
 		/* "No targets for tonight" is the normal state of a monthly
 		   strategy on the other thirty nights of the month, not something

@@ -48,7 +48,8 @@
 
 	/**
 	 * $options: user_id, screen_id, name, holdings, rank_by, hold_rank,
-	 * rebalance, exit_rules (array or comma string), exclude_funds.
+	 * rebalance, exit_rules (array or comma string), exclude_funds,
+	 * max_turnover (per cent, 10 to 100, default 50).
 	 *
 	 * Returns ['ok'=>bool, 'why'=>string, 'strategy'=>key when ok].
 	 */
@@ -136,6 +137,16 @@
 			}
 		}
 
+		/* The turnover limit per rebalance, in per cent: 10 to 100, default 50. */
+		$turn_raw = trim((string) ($options['max_turnover'] ?? ''));
+		$turn_pct = $turn_raw === '' ? (int) round(STRATEGY_MAX_TURNOVER * 100) : (ctype_digit($turn_raw) ? (int) $turn_raw : -1);
+		if ($turn_pct < (int) round(STRATEGY_MIN_TURNOVER_LIMIT * 100) || $turn_pct > (int) round(STRATEGY_MAX_TURNOVER_LIMIT * 100)) {
+			return $refuse("the turnover limit has to be a whole number of per cent from "
+			             . (int) round(STRATEGY_MIN_TURNOVER_LIMIT * 100) . " to "
+			             . (int) round(STRATEGY_MAX_TURNOVER_LIMIT * 100) . ".");
+		}
+		$max_turnover = $turn_pct / 100;
+
 		$funds = strtoupper(trim((string) ($options['exclude_funds'] ?? 'Y')));
 		if (!in_array($funds, ['Y', 'N'], true)) { return $refuse("exclude funds is Y or N."); }
 
@@ -143,14 +154,24 @@
 		                          where table_schema=database() and table_name='strategy_rules'
 		                            and column_name='hold_rank'")) > 0;
 
+		$has_turn = count(query("select 1 from information_schema.columns
+		                          where table_schema=database() and table_name='strategy_rules'
+		                            and column_name='max_turnover'")) > 0;
+		if (!$has_turn && abs($max_turnover - STRATEGY_MAX_TURNOVER) > 1e-9) {
+			return $refuse("a turnover limit other than the default needs sql/strategy_max_turnover.sql applied.");
+		}
+
 		query("insert into strategy_rules (strategy, selection, screen_id, rank_by, holdings,"
 		      . ($has_hold ? " hold_rank," : "")
+		      . ($has_turn ? " max_turnover," : "")
 		      . " rebalance, exit_rules, exclude_funds, updated_at, note)
 		       values (?, 'screen', ?, ?, ?,"
 		      . ($has_hold ? " ?," : "")
+		      . ($has_turn ? " ?," : "")
 		      . " ?, ?, ?, now(), ?)",
 		      ...array_merge([$key, $screen_id, $rank_by, $holdings],
 		                     $has_hold ? [$hold_rank] : [],
+		                     $has_turn ? [$max_turnover] : [],
 		                     [$rebalance, implode(',', $exits), $funds,
 		                      "Built from screen '" . $screens[0]['name'] . "'. No account yet."]));
 

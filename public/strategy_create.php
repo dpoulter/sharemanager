@@ -35,6 +35,7 @@
             'holdings'      => $field('holdings'),
             'rank_by'       => $field('rank_by'),
             'hold_rank'     => $field('hold_rank'),
+            'max_turnover'  => $field('max_turnover'),
             'rebalance'     => $field('rebalance'),
             'exit_rules'    => (isset($_POST['exit_rules']) && is_array($_POST['exit_rules']))
                              ? array_filter($_POST['exit_rules'], 'is_string') : [],

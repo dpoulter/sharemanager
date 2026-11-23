@@ -461,8 +461,17 @@
 		if (!is_array($result)) { return ['ok' => false, 'why' => "the result is not an object."]; }
 
 		$set = []; $args = [];
-		foreach (backtest_result_fields() as $key => [$column, $type]) {
+		/* Rebalances refused for turnover (runs on the old rule): the column
+		   sql/strategy_backtest_overrides.sql added, where it is there. Orders
+		   held back on the partial rule stay in result_json (turnover_held_back). */
+		$fields = backtest_result_fields();
+		if (count(query("select 1 from information_schema.columns where table_schema=database()
+		                   and table_name='strategy_backtest_runs' and column_name='turnover_refusals'"))) {
+			$fields['turnover_refusals'] = ['turnover_refusals', 'int'];
+		}
+		foreach ($fields as $key => [$column, $type]) {
 			$v = $result[$key] ?? null;
+			if ($key === 'turnover_refusals' && $v === null) { $v = 0; }
 			if ($v !== null && !is_numeric($v)) { return ['ok' => false, 'why' => "the result's " . $key . " is not a number."]; }
 			/* The NOT NULL columns, and what a result is for: refused with a reason, never a fatal. */
 			if ($v === null && in_array($key, ['trading_days', 'rebalances', 'fills', 'total_return', 'final_value',

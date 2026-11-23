@@ -48,6 +48,14 @@ $val = function ($name, $default = '') use ($posted) {
 				       min="1" max="200" value="<?= e($val('hold_rank')) ?>">
 			</div>
 			<div class="col-6 col-md-3">
+				<label class="form-label" for="sc-turnover">Turnover limit per rebalance</label>
+				<div class="input-group">
+					<input type="number" class="form-control" id="sc-turnover" name="max_turnover"
+					       min="10" max="100" step="1" value="<?= e($val('max_turnover', '50')) ?>">
+					<span class="input-group-text">%</span>
+				</div>
+			</div>
+			<div class="col-6 col-md-3">
 				<label class="form-label" for="sc-rank">Rank by</label>
 				<select class="form-select" id="sc-rank" name="rank_by">
 					<?php foreach ($ranks as $rank): ?>

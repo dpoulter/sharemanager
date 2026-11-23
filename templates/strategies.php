@@ -1454,8 +1454,9 @@
 										<li>At most <?= e(fmt_pct(STRATEGY_MAX_POSITION_WEIGHT * 100, 0)) ?> of the
 											account in one share.</li>
 										<li>At most <?= e(fmt_quantity(STRATEGY_MAX_ORDERS_PER_RUN)) ?> orders in one run.</li>
-										<li>A rebalance that would turn over more than
-											<?= e(fmt_pct(STRATEGY_MAX_TURNOVER * 100, 0)) ?> of the account is refused.</li>
+										<li>A rebalance turns over at most
+											<?= e(fmt_pct(strategy_turnover_limit($card['rules'] ?? null) * 100, 0)) ?> of the
+											account; the trades past that wait for the next rebalance.</li>
 										<?php if ($card['broker'] !== null): ?>
 										<li>At most <?= s_money(T212_MAX_RUN_VALUE, 0) ?> sent to the broker in one run.</li>
 										<?php endif ?>

@@ -108,7 +108,7 @@
 				'rebalance'       => (string) $rules['rebalance'],
 				'exit_rules'      => implode(',', $exits),
 				'exclude_funds'   => (string) $rules['exclude_funds'],
-			],
+			] + rules_turnover_part($rules),
 			'criteria' => $criteria,
 		] + rules_industry_part($criteria);
 	}
@@ -118,6 +118,16 @@
 	 * for a screen strategy, the screen's criteria. This is what a backtest
 	 * run keeps as its snapshot. Null if the strategy has no rules.
 	 */
+	/**
+	 * The turnover limit, only when it is not the default: at the default it
+	 * is left out, so every strategy that existed before the limit was its
+	 * own keeps its fingerprint and its backtests.
+	 */
+	function rules_turnover_part(array $rules) {
+		$limit = strategy_turnover_limit($rules);
+		return abs($limit - STRATEGY_MAX_TURNOVER) > 1e-9 ? ['max_turnover' => round($limit, 2)] : [];
+	}
+
 	function rules_snapshot($strategy) {
 
 		$rules = strategy_rules((string) $strategy);
@@ -141,6 +151,7 @@
 		        'hold_rank' => $r['hold_rank'] === null ? null : (int) $r['hold_rank'],
 		        'rebalance' => (string) $r['rebalance'], 'exit_rules' => implode(',', $exits),
 		        'exit_list' => $exits, 'exclude_funds' => (string) $r['exclude_funds'],
+		        'max_turnover' => isset($r['max_turnover']) ? (float) $r['max_turnover'] : STRATEGY_MAX_TURNOVER,
 		        'start_date' => null, 'note' => null];
 	}
 

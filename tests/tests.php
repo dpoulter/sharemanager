@@ -2243,6 +2243,8 @@
           count($lb_plan_big['orders']) === 0
           && stripos($lb_plan_skipped, 'a single live order may be') !== false,
           json_encode($lb_plan_big));
+    check('partial turnover test 8: a plan inside the turnover limit and over a live cap is still cut by the cap',
+          $lb_plan_big['held_back'] === [] && count($lb_plan_big['orders']) === 0);
 
     /* The practice account is untouched by all of it: same plan, no cap, no
        batch. */
@@ -3599,6 +3601,15 @@
 
     echo "\n--- strategies: the turnover cap and the first build ---\n";
 
+    /* Each strategy's own limit (brief of 23 Nov 2026): the column, at its
+       default for every strategy that is already there. */
+    apply_migration('strategy_max_turnover.sql');
+    apply_migration('strategy_max_turnover.sql');
+    check('every strategy has the turnover limit column, at the 0.50 default',
+          (int) scalar("select count(*) from strategy_rules where max_turnover is null or max_turnover <> 0.50") === 0
+          && (int) scalar("select count(*) from information_schema.columns where table_schema=database()
+                            and table_name='strategy_rules' and column_name='max_turnover'") === 1);
+
     /* Turnover is min(buys, sells), which is how much of the book is being
        swapped rather than how much is being moved - so an all-cash build
        scores zero and the cap was never going to stop it. The exemption says
@@ -3617,8 +3628,9 @@
           strategy_first_build($S) === false);
 
     /* Now swap the whole book for five different names on a later date.
-       Selling 100% and buying 100% is 100% turnover, twice the cap, so the
-       rebalance is refused in one piece rather than half taken. */
+       Selling 100% and buying 100% is 100% turnover, twice the 50% limit.
+       Brief of 23 Nov 2026: traded in part, not refused - two of the five
+       swaps (40%), the third would take it to 60% - and the rest held back. */
     db()->prepare("delete from strategy_targets where strategy=?")->execute([$S]);
     $swap_weight = 0.2;
     $swap = db()->prepare("insert into strategy_targets
@@ -3627,14 +3639,121 @@
     foreach (['FFF','GGG','HHH','III','JJJ'] as $symbol) {
         $swap->execute([$S,$SNEXT,$symbol,$swap_weight]);
     }
-    $swap_plan = strategy_plan_orders($S, $SNEXT);
-    $capped = false;
-    foreach ($swap_plan['errors'] as $error) {
-        if (strpos($error, 'turnover') !== false) { $capped = true; }
+    $swap_held = [];
+    foreach (rows("select symbol, quantity from strategy_positions where strategy=? and quantity>0", [$S]) as $r) {
+        $swap_held[$r['symbol']] = (float) $r['quantity'];
     }
-    check('a complete swap of the book on the second run is refused by the turnover cap',
-          $capped && count($swap_plan['orders']) === 0,
-          json_encode($swap_plan['errors']));
+    /* a ranking, so "weakest leaver" and "best new target" mean something:
+       the strategy ranks by momentum_score */
+    $swap_rank = ['AAA' => 5, 'BBB' => 1, 'CCC' => 4, 'DDD' => 2, 'EEE' => 3,
+                  'FFF' => 10, 'GGG' => 50, 'HHH' => 40, 'III' => 30, 'JJJ' => 20];
+    db()->prepare("delete from statistics where indicator='momentum_score' and date=?")->execute([$SNEXT]);
+    $swap_stat = db()->prepare("insert into statistics (symbol,date,indicator,value,exchange) values (?,?,'momentum_score',?,'XLON')");
+    foreach ($swap_rank as $sy => $v) { $swap_stat->execute([$sy, $SNEXT, $v]); }
+    db()->prepare("update screen_indicators set rank_order='value DESC' where name='momentum_score'")->execute();
+
+    $swap_plan = strategy_plan_orders($S, $SNEXT);
+    $swap_side = function ($plan, $side) {
+        return array_values(array_map(function ($o) { return $o['symbol']; },
+                                      array_filter($plan['orders'], function ($o) use ($side) { return $o['side'] === $side; })));
+    };
+    $swap_turn = function ($plan) {
+        $b = $s = 0.0;
+        foreach ($plan['orders'] as $o) {
+            $v = $o['quantity'] * $o['reference_price'];
+            if ($o['side'] === 'BUY') { $b += $v; } else { $s += $v; }
+        }
+        return $plan['account_value'] > 0 ? min($b, $s) / $plan['account_value'] : 0;
+    };
+    check('partial turnover test 1: a complete swap at a 50% limit is traded in part, not refused',
+          $swap_plan['errors'] === [] && count($swap_plan['orders']) === 4 && count($swap_plan['held_back']) === 6
+          && $swap_turn($swap_plan) <= 0.5 + 1e-9,
+          json_encode([$swap_plan['errors'], $swap_plan['orders'], $swap_plan['held_back']]));
+    $swap_sold = $swap_side($swap_plan, 'SELL'); sort($swap_sold);
+    $swap_bought = $swap_side($swap_plan, 'BUY'); sort($swap_bought);
+    check('the weakest-ranked leavers are sold and the best-ranked new targets bought',
+          $swap_sold === ['BBB', 'DDD'] && $swap_bought === ['GGG', 'HHH'], json_encode([$swap_sold, $swap_bought]));
+    check('and the rest is recorded as held back, with the reason',
+          count(array_filter($swap_plan['held_back'], function ($h) { return stripos($h['reason'], 'turnover') !== false; })) === 6
+          && stripos(implode(' ', $swap_plan['notes']), 'held back') !== false, json_encode($swap_plan['notes']));
+    check('a sale is the whole of a leaver, never part of a holding that is still a target',
+          count(array_filter($swap_plan['orders'], function ($o) use ($swap_held) {
+              return $o['side'] === 'SELL' && abs($o['quantity'] - ($swap_held[$o['symbol']] ?? -1)) > 1e-9; })) === 0);
+
+    /* Test 2: the nights after are planned afresh from the targets: the
+       rest follows, nothing lost, nothing done twice. */
+    $swap_runs = [];
+    for ($k = 0; $k < 4; $k++) {
+        $out = run_script('run_paper_execution.php', [$S, $SNEXT]);
+        $swap_runs[] = $out[0];
+    }
+    $swap_now = array_column(rows("select symbol from strategy_positions where strategy=? and quantity>0 order by symbol", [$S]), 'symbol');
+    check('partial turnover test 2: over the next rebalances the book becomes the targets',
+          $swap_now === ['FFF', 'GGG', 'HHH', 'III', 'JJJ'], json_encode([$swap_now, $swap_runs]));
+    check('and every swap was done once: one buy of each new name, one sale of each old one',
+          (int) scalar("select count(*) from strategy_orders where strategy=? and side='BUY' and status='FILLED'
+                          and symbol in ('FFF','GGG','HHH','III','JJJ')", [$S]) === 5
+          && (int) scalar("select count(*) from strategy_orders where strategy=? and side='SELL' and status='FILLED'
+                             and symbol in ('AAA','BBB','CCC','DDD','EEE')", [$S]) === 5);
+
+    /* Test 3: under the limit, in full as before. */
+    $swap_targets = function () use ($S, $SNEXT, $swap) {
+        db()->prepare("delete from strategy_targets where strategy=? and as_of_date=?")->execute([$S, $SNEXT]);
+        foreach (['FFF','GGG','HHH','III','JJJ'] as $symbol) { $swap->execute([$S, $SNEXT, $symbol, 0.2]); }
+    };
+    db()->prepare("update strategy_rules set max_turnover=1.00 where strategy=?")->execute([$S]);
+    s_reset($S);
+    strategy_write_targets($S, $SASOF);
+    run_script('run_paper_execution.php', [$S, $SASOF]);
+    $swap_targets();
+    $swap_full = strategy_plan_orders($S, $SNEXT);
+    check('partial turnover test 3: a rebalance under the strategy\'s limit trades in full',
+          count($swap_full['orders']) === 10 && $swap_full['held_back'] === [] && $swap_full['errors'] === [],
+          json_encode([$swap_full['errors'], count($swap_full['orders'])]));
+    db()->prepare("update strategy_rules set max_turnover=0.50 where strategy=?")->execute([$S]);
+
+    /* Test 4: the first build is exempt, as before (an empty account). */
+    s_reset($S);
+    $swap_targets();
+    $swap_first = strategy_plan_orders($S, $SNEXT);
+    check('partial turnover test 4: the first build is exempt: all five bought, nothing held back',
+          strategy_first_build($S) && count($swap_first['orders']) === 5 && $swap_first['held_back'] === []);
+
+    /* Test 6: the planner and the engine hold back the same trades: the
+       shared cases in tests/fixtures/turnover_cut_cases.json, which the
+       research suite runs through engine.turnover_cut(). */
+    $tc = json_decode((string) file_get_contents(__DIR__ . '/fixtures/turnover_cut_cases.json'), true);
+    foreach ($tc['cases'] as $tc_case) {
+        $tc_orders = [];
+        foreach ($tc_case['orders'] as [$sy, $side, $v, $held, $leaver]) {
+            $tc_orders[] = ['symbol' => $sy, 'side' => $side, 'quantity' => (float) $v, 'reference_price' => 1.0,
+                            'held' => (float) $held, 'reason_code' => $leaver ? 'no_longer_selected' : 'back_to_target'];
+        }
+        $tc_cut = strategy_turnover_cut($tc_orders, $tc_case['strength'], (float) $tc_case['limit']);
+        $tc_kept = array_map(function ($o) { return $o['symbol']; }, $tc_cut['orders']); sort($tc_kept);
+        $tc_want = $tc_case['kept']; sort($tc_want);
+        check('partial turnover test 6 (same as the engine): ' . $tc_case['name'],
+              $tc_kept === $tc_want && abs($tc_cut['turnover'] - $tc_case['turnover']) < 1e-6
+              && count($tc_cut['orders']) + count($tc_cut['held_back']) === count($tc_orders),
+              json_encode([$tc_kept, $tc_cut['turnover']]));
+    }
+
+    /* Test 5: the fingerprint. At the default the limit is left out, so
+       every existing strategy keeps its fingerprint; 30% changes it. */
+    $fp_rules = strategy_rules($S);
+    $fp_old = $fp_rules; unset($fp_old['max_turnover']);
+    check('partial turnover test 5: at the default every fingerprint is what it was',
+          rules_fingerprint_of(rules_snapshot_of($fp_rules)) === rules_fingerprint_of(rules_snapshot_of($fp_old))
+          && !array_key_exists('max_turnover', rules_snapshot_of($fp_rules)['rules']));
+    $fp_30 = array_merge($fp_rules, ['max_turnover' => 0.30]);
+    check('and a strategy with a 30% limit has a different one, with the limit in its snapshot',
+          rules_fingerprint_of(rules_snapshot_of($fp_30)) !== rules_fingerprint_of(rules_snapshot_of($fp_rules))
+          && rules_snapshot_of($fp_30)['rules']['max_turnover'] === 0.3);
+    check('every strategy already in the table keeps its fingerprint',
+          array_reduce(array_column(rows("select strategy from strategy_rules"), 'strategy'), function ($ok, $st) {
+              $r = strategy_rules($st); $o = $r; unset($o['max_turnover']);
+              return $ok && rules_fingerprint_of(rules_snapshot_of($r)) === rules_fingerprint_of(rules_snapshot_of($o));
+          }, true));
 
     echo "\n--- strategies: what it was all worth ---\n";
 
@@ -17715,6 +17834,9 @@ STUB
             'a hold rank below the holdings' => ['hold_rank' => '5'],
             'an unknown rebalance'     => ['rebalance' => 'hourly'],
             'an unknown exit rule'     => ['exit_rules' => ['bogus']],
+            'a turnover limit under 10%' => ['max_turnover' => '5'],
+            'a turnover limit over 100%' => ['max_turnover' => '150'],
+            'a turnover limit that is text' => ['max_turnover' => 'half'],
             'a screen that is not there' => ['screen' => '9999'],
         ];
         foreach ($wf_bad as $wf_what => $wf_fields) {
@@ -17746,6 +17868,16 @@ STUB
               [(int) scalar("select count(*) from screen_build where screen_id=2"),
                (int) scalar("select count(*) from screen_criteria"),
                (int) scalar("select count(*) from screen")] === $wf_screen_before);
+        check('the New strategy form offers a turnover limit per rebalance, 50% by default',
+              preg_match('~name="max_turnover"[^>]*value="50"~', (string) $curl("$base/strategy_create.php?screen=2")) === 1
+              || stripos((string) file_get_contents(dirname(__DIR__) . '/templates/strategy_create.php'), 'Turnover limit per rebalance') !== false);
+        check('a strategy made with no limit given has the 50% default',
+              (float) scalar("select max_turnover from strategy_rules where strategy=?", [$WF]) === 0.5);
+        $wf_out30 = $wf_post(array_merge($wf_ok, ['name' => 'Screen test thirty', 'max_turnover' => '30']));
+        check('and one made with 30% has 0.30',
+              (float) scalar("select max_turnover from strategy_rules where strategy='screen_test_thirty'") === 0.3,
+              substr(strip_tags($wf_out30), 0, 200));
+        db()->exec("delete from strategy_rules where strategy='screen_test_thirty'");
         $wf_dup = $wf_rules();
         $wf_out = $wf_post($wf_ok);
         check('the same name a second time is refused',
@@ -21261,6 +21393,19 @@ STUB
        get_api_stats.py. */
     echo "\n--- sql/net_payout_yield.sql ---\n";
     $np_asof = asof_date();
+    /* A value measure of their own on the date, so there is a value_score
+       to compare whatever date the suite runs on. */
+    $np_pe_syms = array_column(rows("select symbol from stock_symbols where exchange='XLON' and enabled='Y' order by symbol limit 3"), 'symbol');
+    if (!(int) scalar("select count(*) from screen_indicators where name='pe'")) {
+        db()->exec("insert into screen_indicators (name, provider_field, description, enabled, order_number, calc_rank,
+                      rank_zero, rank_order, rank_negative, fx_adjust, category)
+                    values ('pe','Ratios.priceToEarningsRatioTTM','Price / earnings','Y',1,'Y','N','value ASC','EXCLUDE','MULTIPLY',12)");
+    }
+    db()->prepare("delete from statistics where indicator='pe' and date=?")->execute([$np_asof]);
+    foreach ($np_pe_syms as $i => $sy) {
+        db()->prepare("insert into statistics (symbol, date, indicator, value, exchange) values (?,?,'pe',?,'XLON')")
+            ->execute([$sy, $np_asof, [8.0, 12.0, 20.0][$i]]);
+    }
     run_script('get_statistics.php');
     $np_vs = function () use ($np_asof) {
         return rows("select symbol, value, stat_rank, percentile from statistics
@@ -21308,6 +21453,9 @@ STUB
     /* get_api_stats.py, with a stock_info attribute named after it */
     db()->prepare("delete from stock_info where symbol=? and asofdate=?")->execute([$np_syms[1], $np_asof]);
     db()->prepare("insert into stock_info (symbol, asofdate, attribute, value) values (?,?,'net_payout_yield','0.9')")
+        ->execute([$np_syms[1], $np_asof]);
+    /* and one figure the job does write, so it has a night's work to do */
+    db()->prepare("insert into stock_info (symbol, asofdate, attribute, value) values (?,?,'Ratios.priceToEarningsRatioTTM','11')")
         ->execute([$np_syms[1], $np_asof]);
     db()->prepare("delete from statistics where indicator='net_payout_yield' and symbol=? and date=?")->execute([$np_syms[1], $np_asof]);
     [$np_out, $np_rc] = $run_python('get_api_stats.py');

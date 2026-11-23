@@ -96,8 +96,17 @@
 						(float) $run['costs_paid'] / $bt_start * 100, 1)) ?> of the start</small>
 					<?php endif ?>
 				</td>
+				<?php /* Refused whole (the old rule), and, on the partial rule,
+				         the orders held back to the next rebalance. */
+				$bt_record = isset($run['result_json']) && $run['result_json'] !== null
+				           ? json_decode((string) $run['result_json'], true) : null;
+				$bt_held = is_array($bt_record) && isset($bt_record['turnover_held_back'])
+				         ? (int) $bt_record['turnover_held_back'] : null; ?>
 				<td class="sm-num" data-value="<?= e((string) ($run['turnover_refusals'] ?? 0)) ?>"><?=
-					e(fmt_quantity($run['turnover_refusals'] ?? 0)) ?></td>
+					e(fmt_quantity($run['turnover_refusals'] ?? 0)) ?>
+					<?php if ($bt_held !== null): ?>
+					<br><small class="text-body-secondary"><?= e(fmt_quantity($bt_held)) ?> held back</small>
+					<?php endif ?></td>
 				<?php if ($any_unfinished): ?>
 				<td><?= htmlspecialchars((string) $run['status']) ?></td>
 				<?php endif ?>

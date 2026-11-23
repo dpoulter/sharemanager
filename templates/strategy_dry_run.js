@@ -273,6 +273,13 @@
 				+ String(missed.reason || "")));
 		});
 
+		/* Trades the turnover limit holds back to the next rebalance. */
+		(report.held_back || []).forEach(function (back) {
+			body.appendChild(alertBox("warning",
+				String(back.side || "") + " " + String(back.symbol || "") + " held back: "
+				+ String(back.reason || "")));
+		});
+
 		/* Before the plan, because it is about real money and the plan is
 		   not: a reader who opens this on a live account is asking about
 		   the orders that could actually go out. */
