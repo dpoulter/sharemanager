@@ -16,6 +16,9 @@
 	 *                       accounts, 4-month publication lag), every company
 	 *                       (brief of 22 Nov 2026), with its whole history
 	 *   book_to_market      book equity over market cap, negative book left out
+	 *   net_payout_yield    (dividends + buybacks - shares issued) over market
+	 *                       cap, latest annual accounts with the lag (brief of
+	 *                       23 Nov 2026), with its whole history
 	 *
 	 * The two accounts statistics replace FMP's figure (piotroski_score) and
 	 * are new (book_to_market); sql/piotroski_publish.sql unmaps FMP's field,
@@ -43,7 +46,7 @@
 
 	if (!defined('DATA_PUBLISHED_STATISTICS')) {
 		define('DATA_PUBLISHED_STATISTICS', ['close_price', 'ma50', 'ma200', '1mnth', '3mnth', '6mnth', '12mnth',
-		                                     'piotroski_score', 'book_to_market']);
+		                                     'piotroski_score', 'book_to_market', 'net_payout_yield']);
 	}
 
 	/** Whether the Mac mini owns this statistic (so nothing on the N100 may write it but data_import). */

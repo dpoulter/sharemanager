@@ -21255,6 +21255,66 @@ STUB
     db()->exec("delete from screen where id=$pf_sid");
     db()->exec("delete from screen_criteria where description like 'topn-scratch%'");
 
+    /* Brief of 23 Nov 2026: net_payout_yield, from the Mac mini through
+       data_import only. Test 7: a screen indicator after the migration, with
+       shareholder_yield and every value_score unchanged, and no row from
+       get_api_stats.py. */
+    echo "\n--- sql/net_payout_yield.sql ---\n";
+    $np_asof = asof_date();
+    run_script('get_statistics.php');
+    $np_vs = function () use ($np_asof) {
+        return rows("select symbol, value, stat_rank, percentile from statistics
+                      where indicator='value_score' and date=? order by symbol", [$np_asof]);
+    };
+    $np_sy_row = function () {
+        return rows("select * from screen_indicators where name='shareholder_yield'");
+    };
+    $np_sy_stats = function () use ($np_asof) {
+        return rows("select symbol, value, percentile from statistics where indicator='shareholder_yield' and date=? order by symbol", [$np_asof]);
+    };
+    [$np_vs0, $np_sy0, $np_sys0] = [$np_vs(), $np_sy_row(), $np_sy_stats()];
+    apply_migration('net_payout_yield.sql');
+    apply_migration('net_payout_yield.sql');
+    $np_r = rows("select n.enabled, n.description, n.rank_order, n.rank_negative, n.calc_rank, n.rank_funds, n.category,
+                         n.in_score, n.provider_field, p.calc_rank pb_calc, p.rank_funds pb_funds, p.category pb_cat
+                    from screen_indicators n join screen_indicators p on p.name='price_book_ratio' where n.name='net_payout_yield'");
+    check('net_payout_yield is a new indicator: enabled, value DESC, NORMAL negatives, ranked like the value measures, out of the score',
+          count($np_r) === 1 && $np_r[0]['enabled'] === 'Y' && $np_r[0]['description'] === 'Net payout yield'
+          && $np_r[0]['rank_order'] === 'value DESC' && $np_r[0]['rank_negative'] === 'NORMAL'
+          && $np_r[0]['calc_rank'] === $np_r[0]['pb_calc'] && $np_r[0]['rank_funds'] === $np_r[0]['pb_funds']
+          && $np_r[0]['category'] === $np_r[0]['pb_cat'] && $np_r[0]['in_score'] === 'N' && $np_r[0]['provider_field'] === null,
+          json_encode($np_r));
+    check('net_payout_yield is the Mac mini\'s: data_import is its only writer', data_published_statistic('net_payout_yield'));
+    /* published values, as data_import writes them, one negative */
+    $np_syms = array_column(rows("select symbol from stock_symbols where exchange='XLON' and enabled='Y' order by symbol limit 3"), 'symbol');
+    $np_ins = db()->prepare("insert into statistics (symbol, date, indicator, value, exchange) values (?,?,'net_payout_yield',?,'XLON')");
+    db()->prepare("delete from statistics where indicator='net_payout_yield' and date=?")->execute([$np_asof]);
+    foreach ($np_syms as $i => $sy) { $np_ins->execute([$sy, $np_asof, [0.06, 0.02, -0.03][$i]]); }
+    run_script('get_statistics.php');
+    check('brief test 7: every share\'s value_score is unchanged', $np_vs() === $np_vs0 && count($np_vs0) > 0,
+          json_encode([count($np_vs0), count($np_vs())]));
+    check('and shareholder_yield, its row and its values, is unchanged',
+          $np_sy_row() === $np_sy0 && $np_sy_stats() === $np_sys0);
+    check('a negative net payout yield ranks lowest',
+          (float) scalar("select percentile from statistics where indicator='net_payout_yield' and date=? and symbol=?", [$np_asof, $np_syms[2]])
+          < (float) scalar("select percentile from statistics where indicator='net_payout_yield' and date=? and symbol=?", [$np_asof, $np_syms[0]]));
+    $np_sid = $tv_screen([['net_payout_yield', '>', '0.05']]);
+    $np_got = array_map(function ($r) { return is_array($r) ? ($r['symbol'] ?? reset($r)) : $r; },
+                        build_screen($np_sid, $np_asof) ?: []);
+    check('brief test 7: a screen criterion on net_payout_yield selects by it', $np_got === [$np_syms[0]], json_encode($np_got));
+    db()->exec("delete from screen_build where screen_id=$np_sid");
+    db()->exec("delete from screen where id=$np_sid");
+    db()->exec("delete from screen_criteria where description like 'topn-scratch%'");
+    /* get_api_stats.py, with a stock_info attribute named after it */
+    db()->prepare("delete from stock_info where symbol=? and asofdate=?")->execute([$np_syms[1], $np_asof]);
+    db()->prepare("insert into stock_info (symbol, asofdate, attribute, value) values (?,?,'net_payout_yield','0.9')")
+        ->execute([$np_syms[1], $np_asof]);
+    db()->prepare("delete from statistics where indicator='net_payout_yield' and symbol=? and date=?")->execute([$np_syms[1], $np_asof]);
+    [$np_out, $np_rc] = $run_python('get_api_stats.py');
+    check('brief test 7: get_api_stats.py writes no net_payout_yield row',
+          $np_rc === 0 && (int) scalar("select count(*) from statistics where indicator='net_payout_yield' and symbol=? and date=?",
+                                       [$np_syms[1], $np_asof]) === 0, substr($np_out, -300));
+
     if ($pid > 0) { exec("kill $pid 2>/dev/null"); }
     if (!empty($stub_pid)) { exec("kill $stub_pid 2>/dev/null"); }
     if (!empty($ai_stub_pid)) { exec("kill $ai_stub_pid 2>/dev/null"); }

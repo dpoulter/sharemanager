@@ -20,7 +20,7 @@ from share_functions import insert_statistic
 # unmapping piotroski_score alone would not be enough if an attribute of that
 # name ever turned up. The suite checks this list against the PHP one.
 MAC_MINI_STATISTICS = ('close_price', 'ma50', 'ma200', '1mnth', '3mnth', '6mnth', '12mnth',
-                       'piotroski_score', 'book_to_market')
+                       'piotroski_score', 'book_to_market', 'net_payout_yield')
 
 # Set exchange
 exchange = 'XLON'
