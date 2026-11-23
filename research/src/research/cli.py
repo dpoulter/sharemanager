@@ -3,7 +3,8 @@
   fetch [--full]                  download from FMP (full first pull, else top-up), then the data report
   universe [--live CSV]           rebuild the monthly universe; compare with the N100's list
   run STRATEGY.yaml... [--period dev|val|FROM:TO] [--final]
-  signals [--period dev|val]      each first signal alone, top quintile monthly; one comparison table
+  signals [--period dev|val] [--files F.yaml ...]
+                                  each first signal alone, top quintile monthly; one comparison table
   compare FAMILY                  every logged run of a family, with the trial count
   report RUN_ID                   print a logged run (the HTML is written when the run is)
   validate --universe CSV [--orders CSV] [--values CSV]
@@ -29,7 +30,7 @@ from .config import RESEARCH_DIR, load_config, mask
 log = logging.getLogger("research")
 
 # Strategy files run beside the signals in the comparison table (brief of 22 Nov 2026: the piotroski family).
-TABLE_FILES = ["piotroski_value.yaml", "piotroski_f_q5.yaml"]
+TABLE_FILES = ["piotroski_value.yaml", "piotroski_f_q5.yaml", "net_payout_q5.yaml", "dividend_yield_q5.yaml"]
 
 FIRST_SIGNALS = ["momentum_12_1", "reversal_1m", "high_52w", "low_volatility", "gross_profitability",
                  "asset_growth", "accruals", "net_share_issuance", "book_to_market", "earnings_yield"]
@@ -326,6 +327,9 @@ def cmd_signals(cfg, a):
     names = FIRST_SIGNALS + ["trend_following", "trending_value"]
     periods = [a.period] if a.period else ["dev", "val"]
     rows = []
+    files = a.files or TABLE_FILES
+    if a.files:
+        names = []           # only the files named: no other family gets another trial
     for name in names:
         for p in periods:
             spec = spec_from_dict({"name": f"{name}_q5_monthly", "family": name, "signals": {name: 1},
@@ -336,7 +340,7 @@ def cmd_signals(cfg, a):
                          "turnover": r["turnover_a_year"], "costs_a_year": r["costs_pct_a_year"],
                          "deflated_sharpe": r["deflated_sharpe"], "run_id": r["run_id"]})
     from .strategy import load_spec
-    for f in TABLE_FILES:
+    for f in files:
         spec = load_spec(RESEARCH_DIR / "strategies" / f)
         for p in periods:
             res = ws.run(spec, p)
@@ -539,6 +543,8 @@ def main(argv=None):
     s = sub.add_parser("run"); s.add_argument("strategy", nargs="+")
     s.add_argument("--period", default="dev"); s.add_argument("--final", action="store_true")
     s = sub.add_parser("signals"); s.add_argument("--period", choices=["dev", "val"])
+    s.add_argument("--files", nargs="+", metavar="FILE.yaml",
+                   help="run only these strategy files (in strategies/), not the signals or the other files")
     s = sub.add_parser("lse-rows", help="print the LSE issuer-list rows whose company name contains TEXT")
     s.add_argument("text"); s.add_argument("--year", type=int, default=None)
     s = sub.add_parser("compare"); s.add_argument("family")

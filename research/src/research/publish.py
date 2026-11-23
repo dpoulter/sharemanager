@@ -19,7 +19,7 @@ Sent, for every N100 symbol, in the N100's own units:
                         from the store's `<name>@raw`, turned from pounds back to the quote unit
     1mnth 3mnth 6mnth 12mnth
                         per cent, as stored
-    piotroski_score, book_to_market
+    piotroski_score, book_to_market, net_payout_yield
                         the accounts indicators (brief of 22 Nov 2026), stored once
                         (no price basis), as stored, with their whole history
 
@@ -90,7 +90,7 @@ log = logging.getLogger("research.publish")
 
 PUBLISHED = ["close_price", "ma50", "ma200", "1mnth", "3mnth", "6mnth", "12mnth"]
 # Read no prices, so stored once as `<name>`; sent with their whole history (the docstring).
-ACCOUNTS = ["piotroski_score", "book_to_market"]
+ACCOUNTS = ["piotroski_score", "book_to_market", "net_payout_yield"]
 IN_POUNDS = {"close_price", "ma50", "ma200"}       # stored in pounds; the N100 holds the quote unit
 BASIS = "raw"                                      # the N100 prices on the raw close
 FULL_FROM = pd.Timestamp("2021-01-01")

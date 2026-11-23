@@ -1,0 +1,9 @@
+# Boudoukh, Michaely, Richardson and Roberts (2007), Journal of Finance 62(2):
+# top fifth of the FTSE 350-like universe by dividend_yield (indicators/payout.py),
+# equal weight, monthly, Trading 212 costs. Family payout: two trials.
+name: dividend_yield_q5
+family: payout
+signals: {dividend_yield: 1}
+holdings: quintile
+rebalance: monthly
+universe: ftse350

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .base import BASES, REGISTRY, Context, Definition, indicator, key, market_on_basis  # noqa: F401
 from .pit import Fundamentals  # noqa: F401
-from . import osap, live, piotroski  # noqa: F401  (registers the definitions)
+from . import osap, live, piotroski, payout  # noqa: F401  (registers the definitions)
 
 
 def definitions_by_key() -> dict[str, Definition]:

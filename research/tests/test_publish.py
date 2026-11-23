@@ -13,7 +13,7 @@ from research.universe import build_universe
 
 N = 330
 NAMES = ["close_price", "ma50", "ma200", "1mnth", "3mnth", "6mnth", "12mnth"]
-ACCOUNTS = ["piotroski_score", "book_to_market"]
+ACCOUNTS = pub.ACCOUNTS
 
 
 def _accounts(symbols):
@@ -25,7 +25,9 @@ def _accounts(symbols):
                          "totalAssets": 3e8 + 1e7 * k, "totalStockholdersEquity": 1e8 * (i + 1),
                          "netIncome": 1e7 * (k + 1), "operatingCashFlow": 1.5e7 * (k + 1), "longTermDebt": 5e7,
                          "totalCurrentAssets": 1e8 + 1e6 * k, "totalCurrentLiabilities": 8e7,
-                         "weightedAverageShsOut": 1e6, "revenue": 2e8 + 1e7 * k, "grossProfit": 6e7 + 4e6 * k})
+                         "weightedAverageShsOut": 1e6, "revenue": 2e8 + 1e7 * k, "grossProfit": 6e7 + 4e6 * k,
+                         "commonDividendsPaid": -4e6, "commonStockRepurchased": -1e6 * k,
+                         "commonStockIssuance": 5e5})
     return pd.DataFrame(rows)
 
 
