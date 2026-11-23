@@ -127,6 +127,11 @@ def load_market(data: Path, symbols: list[str] | None = None) -> Market:
             t["date"] = pd.to_datetime(t["date"])
             key = pd.MultiIndex.from_frame(prices[["symbol", "date"]])
             prices = prices[~key.isin(pd.MultiIndex.from_frame(t))]
+    fixes_path = data / "price_fixes.parquet"
+    if fixes_path.exists():
+        # price_clean owns "is this price usable": its fixes, and its unusable rows dropped (no price).
+        from .price_clean import apply_fixes
+        prices = apply_fixes(prices, pd.read_parquet(fixes_path))
     close = prices.pivot(index="date", columns="symbol", values="close").sort_index()
     adj = prices.pivot(index="date", columns="symbol", values="adj_close").sort_index()
     adj = adj.where(adj.notna(), close)

@@ -1,0 +1,10 @@
+# price_clean (src/research/price_clean.py): Dale's decisions on single prices. They win over the rules.
+# One entry per symbol and date (or from/to, inclusive), each with a reason. Prices in the line's quote
+# unit (pence for most), as prices.parquet holds them.
+#
+#   - {symbol: LOOK.L, date: 2008-01-02, action: keep, reason: "checked against the LSE close"}
+#   - {symbol: XYZ.L, from: 2001-03-05, to: 2001-03-09, action: exclude, reason: "no trade; suspended"}
+#   - {symbol: ABC.L, date: 2005-10-19, action: set, close: 412.5, adj_close: 380.1, reason: "LSE close"}
+#
+# action: keep (FMP's value stands), exclude (unusable: no price), set (close and/or adj_close).
+[]

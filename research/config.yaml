@@ -72,6 +72,22 @@ caveats:
   - "Accounts are lagged from period end (4 months annual, 3 months half-year) because FMP's UK filing dates are period ends."
   - "Development period (2007-2022) is survivorship-biased: the data holds few companies that died before 2023."
 
+price_clean:
+  # src/research/price_clean.py. A big move: a daily rise over `rise` or a fall over `fall`.
+  rise: 1.0
+  fall: 0.67
+  # A pence and pounds step: a one-day ratio between factor_lo and factor_hi (or its inverse).
+  # The brief started at 80 to 120; Lookers' January 2008 step came with a real fall the same day
+  # (115p to ~87p, read as 8,700p: a ratio of 75.7), so 50 to 200.
+  factor_lo: 50
+  factor_hi: 200
+  spike_back: 0.25        # rule 2: the next day back within 25% of the day before the spike
+  adj_tolerance: 0.5      # rule 3: adj more than 1.5 times off the value rebuilt from raw and dividends
+  revert_sessions: 20     # rule 4: a move that comes back within 20 sessions ...
+  revert_within: 0.5      # ... to within 50% of the price before it is unusable for those dates
+  # Dale's decisions; relative to research/. Omit for price_overrides.yaml.
+  # overrides: price_overrides.yaml
+
 indicators:
   # Piotroski F-score (indicators/piotroski.py). Test 7, no new equity: the
   # weighted average shares may grow this much (scrip, options) and still pass.

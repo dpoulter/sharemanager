@@ -39,7 +39,7 @@ CHANGES = "data_changes.parquet"
 SNAPSHOT = "data_snapshot.parquet"
 FILES = ["symbols.parquet", "prices.parquet", "market_cap.parquet", "statements.parquet", "fx.parquet",
          "dividends.parquet",
-         "bad_ticks.parquet", "cap_lse_corrections.parquet", "universe.parquet",
+         "bad_ticks.parquet", "price_fixes.parquet", "cap_lse_corrections.parquet", "universe.parquet",
          # the N100's extra symbols (extra.py): their own panel, read by nothing in research
          "n100_extra/symbols.parquet", "n100_extra/prices.parquet", "n100_extra/dividends.parquet",
          "n100_extra/bad_ticks.parquet"]

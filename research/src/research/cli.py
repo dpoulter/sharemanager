@@ -12,6 +12,7 @@
   worker [--once]                 run sharemanager's queued backtests through backtest_api (worker.py)
   indicators [--rebuild NAME] [--coverage] [--universe-share NAME]
                                   bring the indicator store up to date (indicator_job.py); after the nightly fetch
+  price-clean                     price_clean.py by hand (fetch runs it too): fixes, unusable dates, report
   data-version                    record what changed in the data since the last version, and print it
 """
 from __future__ import annotations
@@ -122,9 +123,33 @@ def cmd_fetch(cfg, a):
     rec = record(cfg, "fetch --full" if a.full else "fetch --merge-only" if a.merge_only else "fetch",
                  market=m, full=bool(a.full))
     log.info("data version %d (%d changes)", rec["version"], rec["changed"])
+    # price_clean, after the fetch and before indicator_job: its own data version, naming what it changed.
+    from . import price_clean
+    from .fmp import FmpRestricted
+    try:
+        pc = price_clean.run(cfg)
+    except FmpRestricted as e:
+        _fetch_marker(cfg, ok=False, started=time.strftime("%Y-%m-%d %H:%M:%S"), refused_endpoint=e.endpoint,
+                      why=str(e))
+        log.error("fetch stopped: %s. Price cleaning ran rules 1 to 3; rule 4 only reported. "
+                  "Nothing will be published.", e)
+        sys.exit(f"fetch stopped: {e}")
+    log.info("price_clean: %s", pc)
+    rec = {"version": pc["version"]} if pc.get("version") is not None else rec
+    m = load_market(cfg.data_dir)
     path = write_data_report(m, cfg.data_dir)
     log.info("data report: %s", path)
     _fetch_marker(cfg, ok=True, data_version=rec["version"])
+
+
+def cmd_price_clean(cfg, a):
+    """price_clean by hand (it also runs at the end of every fetch)."""
+    from . import price_clean
+    from .fmp import FmpRestricted
+    try:
+        print(price_clean.run(cfg))
+    except FmpRestricted as e:
+        sys.exit(f"price_clean: {e}. Rules 1 to 3 ran; rule 4 only reported.")
 
 
 def cmd_batch_size(cfg, a):
@@ -562,6 +587,7 @@ def main(argv=None):
     s.add_argument("--once", action="store_true", help="claim and run at most one, then stop")
     s = sub.add_parser("batch-size", help="find the largest symbols-per-call FMP answers for batch-quote (fmp.batch_symbols)")
     s.add_argument("--max", type=int, default=3200)
+    sub.add_parser("price-clean", help="clean the prices (price_clean.py); fetch runs it too")
     s = sub.add_parser("indicators", help="bring the indicator store up to date (indicator_job.py)")
     s.add_argument("--rebuild", action="append", metavar="NAME",
                    help="rebuild this indicator whole (a name builds every price basis of it; repeatable)")
@@ -582,6 +608,7 @@ def main(argv=None):
         {"fetch": cmd_fetch, "cap-trace": cmd_cap_trace, "universe": cmd_universe, "run": cmd_run, "signals": cmd_signals,
          "lse-rows": cmd_lse_rows, "compare": cmd_compare, "report": cmd_report, "validate": cmd_validate,
          "worker": cmd_worker, "bench-weights": cmd_bench_weights, "indicators": cmd_indicators,
+         "price-clean": cmd_price_clean,
          "data-version": cmd_data_version, "publish": cmd_publish, "batch-size": cmd_batch_size}[a.cmd](cfg, a)
     except Exception as e:     # never let a key reach the terminal in a traceback
         log.error("%s failed: %s", a.cmd, mask(e))
