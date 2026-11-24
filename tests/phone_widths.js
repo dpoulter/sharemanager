@@ -456,16 +456,17 @@ function skip(why) {
 		const headings = await laptopPage.evaluate(() =>
 			Array.from(document.querySelectorAll('table.sm-stack thead th'))
 			     .map(th => th.textContent.trim()));
-		check('Status is the second column of the summary, next to the name',
-		      headings[0] === 'Strategy' && headings[1] === 'Status',
+		check('Type is the second column of the summary, next to the name',
+		      headings[0] === 'Strategy' && headings[1] === 'Type',
 		      headings.join(' | '));
 		const statusOnScreen = await laptopPage.evaluate(() => {
-			const cell = document.querySelector('table.sm-stack tbody td[data-label="Status"]');
-			if (!cell) { return null; }
-			return cell.getBoundingClientRect().right
-			       <= document.documentElement.clientWidth;
+			const dot = document.querySelector('table.sm-stack tbody td[data-label="Strategy"] .sm-dot');
+			const cell = document.querySelector('table.sm-stack tbody td[data-label="Type"]');
+			if (!dot || !cell) { return null; }
+			return dot.getBoundingClientRect().right <= document.documentElement.clientWidth
+			       && cell.getBoundingClientRect().right <= document.documentElement.clientWidth;
 		});
-		check('and it is on the screen without scrolling', statusOnScreen === true,
+		check('the status dot and Type badge are on the screen without scrolling', statusOnScreen === true,
 		      String(statusOnScreen));
 
 		/* Every page the laptop context visited, which is the login page,

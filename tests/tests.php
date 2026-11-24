@@ -17093,8 +17093,8 @@ STUB
                                   - (int) strpos($sp_in_table, '<thead>')));
         preg_match_all('#<th\b[^>]*>(.*?)</th>#s', $sp_thead, $sp_heads);
         $sp_columns = array_map('trim', $sp_heads[1]);
-        check('Status is the second column of the summary table',
-              ($sp_columns[0] ?? '') === 'Strategy' && ($sp_columns[1] ?? '') === 'Status',
+        check('Type is the second column of the summary table',
+              ($sp_columns[0] ?? '') === 'Strategy' && ($sp_columns[1] ?? '') === 'Type',
               implode(' | ', $sp_columns));
 
         /* D. The weights were a share of the holdings while the target
@@ -17168,9 +17168,9 @@ STUB
         $sp_css = preg_replace('#/\*.*?\*/#s', '',
                                (string) file_get_contents(dirname(__DIR__) . '/templates/app.css'));
         preg_match('/\.sm-side-menu\s*\{([^}]*)\}/', $sp_css, $sp_menu_css);
-        check('the menu is 240px wide and cannot scroll on its own',
+        check('the menu is 250px wide and cannot scroll on its own',
               isset($sp_menu_css[1])
-              && strpos($sp_menu_css[1], 'width: 240px') !== false
+              && strpos($sp_menu_css[1], 'width: 250px') !== false
               && strpos($sp_menu_css[1], 'overflow: visible') !== false
               && stripos($sp_menu_css[1], 'overflow-y') === false
               && stripos($sp_menu_css[1], 'overflow-x') === false
@@ -17872,11 +17872,39 @@ STUB
 
         /* ---- the page ---- */
         $wf_page = (string) $curl("$base/strategies.php");
-        check('the overview lists a strategy with no account, by stage, with the others',
-              strpos($wf_page, 'id="sm-stage-list"') !== false && stripos($wf_page, 'Screen test one') !== false
-              && stripos($wf_page, 'Not trading yet') !== false);
-        check('and the summary table has a Stage column',
-              preg_match('~<th[^>]*>Stage</th>~', $wf_page) === 1);
+        /* The tidy of 24 November 2026: a strategy with no account is under
+           Research in the menu, folded, and nowhere else; the summary has one
+           Type column and no Stage, Mode or Status. */
+        $wf_nav = preg_match('~<nav class="sm-side-menu.*?</nav>~s', $wf_page, $wf_m) ? $wf_m[0] : '';
+        $wf_research = preg_match('~<details class="sm-menu-research"[^>]*>.*?</details>~s', $wf_nav, $wf_m) ? $wf_m[0] : '';
+        $wf_running = substr($wf_nav, 0, (int) strpos($wf_nav, 'sm-menu-research'));
+        $wf_table = preg_match('~<table class="[^"]*sm-table-wide.*?</table>~s', $wf_page, $wf_m) ? $wf_m[0] : '';
+        check('a strategy with no account is under Research, and the Not trading yet table is gone',
+              stripos($wf_research, 'Screen test one') !== false
+              && strpos($wf_page, 'id="sm-stage-list"') === false && stripos($wf_page, 'Not trading yet') === false);
+        check('and it is not in the summary or under Running',
+              stripos($wf_table, 'Screen test one') === false && stripos($wf_running, 'Screen test one') === false);
+        check('Research is closed on load, a <details> the keyboard opens, with its count',
+              preg_match('~<details class="sm-menu-research" id="sm-menu-research">~', $wf_page) === 1
+              && preg_match('~<summary[^>]*>Research \((\d+)\)</summary>~', $wf_research, $wf_m) === 1
+              && (int) $wf_m[1] === substr_count($wf_research, 'data-strategy='));
+        check('and opens itself on one of its own strategies',
+              preg_match('~<details class="sm-menu-research" id="sm-menu-research" open>~',
+                         (string) $curl("$base/strategies.php?s=" . urlencode($WF))) === 1);
+        check('the same strategy is in the menu once',
+              substr_count($wf_nav, 'data-strategy="' . htmlspecialchars($WF, ENT_QUOTES) . '"') === 1);
+        check('the summary has Type second and no Stage, Mode or Status column',
+              preg_match('~<th[^>]*>Strategy</th>\s*<th[^>]*>Type</th>~', $wf_table) === 1
+              && preg_match('~<th[^>]*>(Stage|Mode|Status)</th>~', $wf_table) === 0);
+        preg_match_all('~<td data-label="Type"[^>]*>(.*?)</td>~s', $wf_table, $wf_m);
+        $wf_badges = array_map(function ($c) { return substr_count($c, 'sm-badge'); }, $wf_m[1]);
+        array_pop($wf_badges);   // the benchmark row, which says Benchmark
+        check('every strategy in the summary shows exactly one Type badge',
+              count($wf_badges) > 0 && array_unique($wf_badges) === [1], json_encode($wf_badges));
+        preg_match_all('~data-strategy="([^"]*)"~', $wf_table, $wf_t);
+        preg_match_all('~data-strategy="([^"]*)"~', $wf_running, $wf_n);
+        check('the menu and the table list the running strategies in the same order',
+              count($wf_t[1]) > 0 && $wf_t[1] === $wf_n[1], json_encode([$wf_t[1], $wf_n[1]]));
         $wf_card = (string) $curl("$base/strategies.php?s=trend_following");
         check('a strategy with an account shows the stepper on its card',
               strpos($wf_card, 'class="sm-stepper') !== false
