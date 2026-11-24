@@ -295,7 +295,13 @@
                 $points[] = ['time' => $point['date'], 'total' => (float) $point['total']];
             }
             if (count($points) > 1) {
+                /* The live account's legend entry says it is a small test
+                   account while it is one, so its line is not read as the
+                   size of the bet. Display only. */
+                $note = (strategy_mode_is_live($row['mode']) && $row['total'] !== null
+                         && (float) $row['total'] < 1000) ? ' (live, small test account)' : '';
                 $chart[] = ['name' => strategy_display_name($row['strategy']),
+                            'legend' => strategy_display_name($row['strategy']) . $note,
                             'kind' => 'strategy', 'points' => $points];
             }
         }

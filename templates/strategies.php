@@ -70,18 +70,19 @@
 		return 'strategies.php' . (count($params) ? '?' . http_build_query($params) : '');
 	}
 
-	/* The mode, as a reader should see it. "PAPER" and "T212_DEMO" are
-	   column values; the badge says Paper and Practice. */
-	function s_mode_badge($card) {
-		return status_badge_html(s_mode_tone($card), strategy_mode_name($card['mode']));
+	/* The type, as a reader should see it: one badge, from the mode that is
+	   already stored. "PAPER" and "T212_DEMO" are column values; the badge
+	   says Live (violet, used for nothing else), Practice (blue) or Paper
+	   (blue outline). Stage and Mode as two more columns made one strategy
+	   read as Draft and Paper at once. */
+	function s_type_name($card) {
+		if (strategy_mode_is_live($card['mode'])) { return 'Live'; }
+		return ($card['broker'] === null) ? 'Paper' : 'Practice';
 	}
-	/* Which badge colour a mode gets. Live has one of its own, used for
-	   nothing else on any page: paper and practice are both pretend, and a
-	   reader must never have to read the word to tell which of the three
-	   this is. */
-	function s_mode_tone($card) {
-		if (strategy_mode_is_live($card['mode'])) { return 'live'; }
-		return ($card['broker'] === null) ? 'paper' : 'due';
+	function s_mode_badge($card) {
+		$type = s_type_name($card);
+		if ($type === 'Live') { return status_badge_html('live', 'Live'); }
+		return '<span class="sm-badge sm-type-' . strtolower($type) . '">' . $type . '</span>';
 	}
 
 	/* The status, worst-first, with the reason in a tooltip. */
@@ -111,11 +112,16 @@
 	         what is true now instead of a promise it can no longer keep:
 	         the condition, not the comfort. The live account's own panel
 	         below says which of the six conditions hold right now. */ ?>
+	<?php
+		/* How many are running, in words up to ten: "Three strategies are
+		   running." $summary is every strategy with an account that is shown. */
+		$sm_running = count($summary ?? []);
+		$sm_words = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
+		$sm_count = $sm_words[$sm_running] ?? (string) $sm_running;
+	?>
 	<p class="sm-sub mb-3">
-		Strategies run by the nightly job.
-		<strong>No order goes to a live account unless that account is
-		armed</strong> on its own page, by somebody logged in, with a cap and an
-		expiry - and the night's orders approved.
+		<?= e($sm_count) ?> strateg<?= $sm_running === 1 ? 'y is' : 'ies are' ?> running.
+		Nothing trades live unless that account is armed.
 		<a href="<?= e(s_link(['s' => '_how'], $show_disabled)) ?>">How this works</a>
 	</p>
 
@@ -196,22 +202,12 @@
 	<?php endif ?>
 
 	<?php
-		/* The menu's entries, in the order they are shown. A halted
-		   strategy goes to the top of its group: it is the one somebody
-		   needs to look at. */
-		/* $summary is already in the one order the page uses - see
-		   strategy_order() - so the menu groups it without re-sorting:
-		   two sorts are two orders, and the reader finds the same
-		   strategy in two places. */
-		$groups = ['Paper' => [], 'Practice' => [], 'Live' => []];
-		foreach ($summary as $row) {
-			$group = strategy_group_name($row['mode']);
-			if (!isset($groups[$group])) { $groups[$group] = []; }
-			$groups[$group][] = $row;
-		}
-		/* Headings only once there are enough entries for them to help.
-		   Two strategies under two headings is more furniture than list. */
-		$headings = count($summary) > 4;
+		/* Two groups. Running: every strategy with an account, in the one
+		   order the page uses (strategy_order()), so the menu and the summary
+		   table list them alike. Research: the ones with rules and no
+		   account, folded into one entry, closed unless one of them is the
+		   view being shown. */
+		$research_open = ($view === '_draft');
 	?>
 
 	<div class="row g-4">
@@ -231,19 +227,16 @@
 				<div class="input-group">
 					<select class="form-select" name="s" id="sm-menu-select">
 						<option value="_overview"<?= $view === '_overview' ? ' selected' : '' ?>>Overview</option>
-						<?php foreach ($groups as $group_name => $rows): ?>
-							<?php if (!count($rows)) continue ?>
-							<optgroup label="<?= e($group_name) ?>">
-							<?php foreach ($rows as $row): ?>
-								<option value="<?= e($row['strategy']) ?>"<?= $chosen === $row['strategy'] ? ' selected' : '' ?>>
-									<?= e(strategy_display_name($row['strategy'])) ?><?php
-										if ($row['halted'] === 'Y') { echo ' (stopped)'; } ?>
-								</option>
-							<?php endforeach ?>
-							</optgroup>
+						<optgroup label="Running">
+						<?php foreach ($summary as $row): ?>
+							<option value="<?= e($row['strategy']) ?>"<?= $chosen === $row['strategy'] ? ' selected' : '' ?>>
+								<?= e(strategy_display_name($row['strategy'])) ?> (<?= e(s_type_name($row)) ?>)<?php
+									if ($row['halted'] === 'Y') { echo ' (stopped)'; } ?>
+							</option>
 						<?php endforeach ?>
+						</optgroup>
 						<?php if (count($drafts)): ?>
-							<optgroup label="No account">
+							<optgroup label="Research (<?= e(fmt_quantity(count($drafts))) ?>)">
 							<?php foreach ($drafts as $d): ?>
 								<option value="<?= e($d['strategy']) ?>"<?= ($draft['strategy'] ?? null) === $d['strategy'] ? ' selected' : '' ?>><?= e($d['name']) ?></option>
 							<?php endforeach ?>
@@ -265,41 +258,47 @@
 						   href="<?= e(s_link([], $show_disabled)) ?>">Overview</a>
 					</li>
 
-					<?php foreach ($groups as $group_name => $rows): ?>
-						<?php if (!count($rows)) continue ?>
-						<?php if ($headings): ?>
-						<li class="sm-menu-heading"><?= e($group_name) ?></li>
-						<?php endif ?>
-						<?php foreach ($rows as $row): ?>
-						<li class="nav-item">
-							<a class="nav-link sm-menu-strategy<?= $chosen === $row['strategy'] ? ' active' : '' ?><?= $row['halted'] === 'Y' ? ' sm-menu-halted' : '' ?>"
-							   <?= $chosen === $row['strategy'] ? 'aria-current="page"' : '' ?>
-							   title="<?= e($row['strategy']) ?>"
-							   href="<?= e(s_link(['s' => $row['strategy']], $show_disabled)) ?>">
-								<span class="sm-menu-line">
-									<?= s_status_dot($row['status']) ?>
-									<span class="sm-menu-name"><?= e(strategy_display_name($row['strategy'])) ?></span>
-								</span>
-								<span class="sm-menu-line sm-menu-meta">
-									<?= s_mode_badge($row) ?>
-									<span class="sm-menu-return<?= s_colour($row['return']) ?>"><?= s_percent($row['return']) ?></span>
-								</span>
-							</a>
-						</li>
-						<?php endforeach ?>
+					<li class="sm-menu-heading" id="sm-menu-running">Running</li>
+					<?php foreach ($summary as $row): ?>
+					<li class="nav-item">
+						<a class="nav-link sm-menu-strategy<?= $chosen === $row['strategy'] ? ' active' : '' ?><?= $row['halted'] === 'Y' ? ' sm-menu-halted' : '' ?>"
+						   <?= $chosen === $row['strategy'] ? 'aria-current="page"' : '' ?>
+						   data-strategy="<?= e($row['strategy']) ?>"
+						   href="<?= e(s_link(['s' => $row['strategy']], $show_disabled)) ?>">
+							<span class="sm-menu-line">
+								<?= s_status_dot($row['status']) ?>
+								<span class="sm-menu-name"><?= e(strategy_display_name($row['strategy'])) ?></span>
+							</span>
+							<span class="sm-menu-line sm-menu-meta">
+								<?= s_mode_badge($row) ?>
+								<span class="sm-menu-return<?= s_colour($row['return']) ?>"><?= s_percent($row['return']) ?></span>
+							</span>
+						</a>
+					</li>
 					<?php endforeach ?>
 
+					<?php /* Research: rules and no account. One folded entry, a
+					         <details> so it opens with a click, Enter or Space and
+					         needs no script. Each still links to its own page. */ ?>
 					<?php if (count($drafts)): ?>
-						<li class="sm-menu-heading">No account</li>
-						<?php foreach ($drafts as $d): ?>
-						<li class="nav-item">
-							<a class="nav-link sm-menu-strategy<?= ($draft['strategy'] ?? null) === $d['strategy'] ? ' active' : '' ?>"
-							   href="<?= e(s_link(['s' => $d['strategy']], $show_disabled)) ?>">
-								<span class="sm-menu-line"><span class="sm-menu-name"><?= e($d['name']) ?></span></span>
-								<span class="sm-menu-line sm-menu-meta"><?= e($d['stage']) ?></span>
-							</a>
-						</li>
-						<?php endforeach ?>
+					<li class="nav-item">
+						<details class="sm-menu-research" id="sm-menu-research"<?= $research_open ? ' open' : '' ?>>
+							<summary class="nav-link">Research (<?= e(fmt_quantity(count($drafts))) ?>)</summary>
+							<ul class="nav flex-column">
+							<?php foreach ($drafts as $d): ?>
+							<li class="nav-item">
+								<a class="nav-link sm-menu-strategy<?= ($draft['strategy'] ?? null) === $d['strategy'] ? ' active' : '' ?>"
+								   <?= ($draft['strategy'] ?? null) === $d['strategy'] ? 'aria-current="page"' : '' ?>
+								   data-strategy="<?= e($d['strategy']) ?>"
+								   href="<?= e(s_link(['s' => $d['strategy']], $show_disabled)) ?>">
+									<span class="sm-menu-line"><span class="sm-menu-name"><?= e($d['name']) ?></span></span>
+									<span class="sm-menu-line sm-menu-meta text-body-secondary"><?= e($d['stage']) ?><?= !empty($d['archived']) ? ' (archived)' : '' ?></span>
+								</a>
+							</li>
+							<?php endforeach ?>
+							</ul>
+						</details>
+					</li>
 					<?php endif ?>
 
 					<li class="nav-item">
@@ -354,12 +353,7 @@
 					<thead>
 						<tr>
 							<th data-sort="text">Strategy</th>
-							<?php /* Second, not eleventh. It is the thing to look at
-							         first, and on a laptop the eleventh column is off
-							         the right-hand edge. */ ?>
-							<th data-sort="text">Status</th>
-							<th data-sort="text">Stage</th>
-							<th data-sort="text">Mode</th>
+							<th data-sort="text">Type</th>
 							<th class="sm-num" data-sort="number">Value</th>
 							<th class="sm-num" data-sort="number">Return</th>
 							<th class="sm-num" data-sort="number">Benchmark</th>
@@ -379,13 +373,17 @@
 						   $difference = ($row['return'] === null || $row['benchmark_return'] === null)
 						               ? null : $row['return'] - $row['benchmark_return']; ?>
 						<tr<?= $row['halted'] === 'Y' ? ' class="table-danger"' : '' ?>>
-							<td data-label="Strategy"><a href="<?= e(s_link(['s' => $row['strategy']], $show_disabled)) ?>"
-							       title="<?= e($row['strategy']) ?>" data-bs-toggle="tooltip"><?=
-								e(strategy_display_name($row['strategy'])) ?></a></td>
-							<td data-label="Status"><?= s_status_badge($row['status']) ?></td>
-							<td data-label="Stage"><?= isset($stages[$row['strategy']])
-							    ? e($stages[$row['strategy']]['stage']) : VIEW_DASH ?></td>
-							<td data-label="Mode"><?= s_mode_badge($row) ?></td>
+							<?php /* The health (halted, orders waiting, not agreed with
+							         the broker, kill switch) as a dot before the name, the
+							         reason in its tooltip: the Status column it replaces. */ ?>
+							<td data-label="Strategy" data-value="<?= e(strategy_display_name($row['strategy'])) ?>"><span class="sm-menu-line">
+								<?= str_replace(' aria-hidden="true"', ' role="img" aria-label="' . e($row['status']['words']) . '"', s_status_dot($row['status'])) ?>
+								<a href="<?= e(s_link(['s' => $row['strategy']], $show_disabled)) ?>"
+								   data-strategy="<?= e($row['strategy']) ?>"><?=
+								e(strategy_display_name($row['strategy'])) ?></a><?php
+								/* A halt is said in words too, not only by the dot's colour. */
+								if ($row['status']['tone'] === 'halted'): ?> <span class="sm-health-word"><?= e($row['status']['words']) ?></span><?php endif ?></span></td>
+							<td data-label="Type" data-value="<?= e(s_type_name($row)) ?>"><?= s_mode_badge($row) ?></td>
 							<td class="sm-num" data-label="Value" data-value="<?= e((string) $row['total']) ?>"><?= s_money($row['total'], 0) ?></td>
 							<td class="sm-num<?= s_colour($row['return']) ?>" data-label="Return" data-value="<?= e((string) $row['return']) ?>"><?= s_percent($row['return']) ?></td>
 							<td class="sm-num<?= s_colour($row['benchmark_return']) ?>" data-label="Benchmark" data-value="<?= e((string) $row['benchmark_return']) ?>"><?= s_percent($row['benchmark_return']) ?></td>
@@ -439,8 +437,7 @@
 					?>
 					<tr class="sm-total-row text-body-secondary">
 						<td data-label="Strategy">FTSE 350 (equal weighted)</td>
-						<td data-label="Status">benchmark</td>
-						<td><?= e(VIEW_DASH) ?></td>
+						<td data-label="Type">Benchmark</td>
 						<td class="sm-num" data-label="Value"><?= e($bench_value) ?></td>
 						<?php if ($bench_return === null): ?>
 						<td colspan="7" class="text-body-secondary" data-label="Return"><small>
@@ -454,29 +451,34 @@
 						</small></td>
 						<?php else: ?>
 						<td class="sm-num<?= s_colour($bench_return) ?>" data-label="Return"><?= s_percent($bench_return) ?></td>
-						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
-						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
-						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
-						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
-						<td class="sm-num"><?= e(VIEW_DASH) ?></td>
-						<td><?= e(VIEW_DASH) ?></td>
+						<td colspan="6" class="sm-bench-note"><small>Each row compared from its own start date</small></td>
 						<?php endif ?>
 					</tr>
 					</tbody>
 				</table>
 			</div>
 
-			<?php include __DIR__ . '/strategy_stage_list.php'; ?>
-
 			<!-- The chart -->
 			<div class="card mb-4">
 				<div class="card-body">
 					<div class="d-flex flex-wrap align-items-center justify-content-between mb-2">
 						<h2 class="h6 card-title mb-0">Value over time</h2>
+						<?php
+							/* The common start: the latest first night across the lines
+							   shown by default, the first night every one of them has a
+							   value. The chart script works it out again for what is
+							   shown; this is the label it starts with. */
+							$sm_common = null;
+							foreach ($chart as $sm_line) {
+								if ($sm_line['kind'] === 'backtest' || !count($sm_line['points'])) { continue; }
+								$sm_first = $sm_line['points'][0]['time'];
+								if ($sm_common === null || $sm_first > $sm_common) { $sm_common = $sm_first; }
+							}
+						?>
 						<div class="form-check form-switch ms-auto me-3">
-							<input class="form-check-input" type="checkbox" id="chart-common-base">
+							<input class="form-check-input" type="checkbox" id="chart-common-base" checked>
 							<label class="form-check-label" for="chart-common-base">
-								<small>Rebase all to one date</small>
+								<small>Common start<span id="chart-common-date"><?= $sm_common === null ? '' : ' (' . e(date('j M', strtotime($sm_common))) . ')' ?></span></small>
 							</label>
 						</div>
 						<div class="form-check form-switch">
@@ -492,7 +494,7 @@
 							<?= count($summary) ? 'one night' : 'nothing' ?> so far.
 						</small></p>
 					<?php else: ?>
-						<div id="strategy-chart"></div>
+						<div id="strategy-chart" class="sm-strategy-chart"></div>
 						<small id="strategy-chart-status" class="text-body-secondary d-block mt-1"></small>
 						<noscript><p class="text-body-secondary">The chart needs JavaScript; the figures above do not.</p></noscript>
 						<?php /* The data as JSON rather than as generated JavaScript: the
@@ -1417,7 +1419,7 @@
 									<h3 class="h6">What it holds</h3>
 									<ul class="mb-3">
 										<?php if ($card['screen'] !== null): ?>
-											<li>Holds the <strong><?= e($card['screen']) ?></strong> screen.</li>
+											<li>Built from screen: <strong><?= e($card['screen']) ?></strong></li>
 										<?php elseif ($card['rules'] !== null && $card['rules']['score_indicator'] !== null): ?>
 											<li>Holds the best by <strong><?= e($card['rules']['score_indicator']) ?></strong>.</li>
 										<?php endif ?>

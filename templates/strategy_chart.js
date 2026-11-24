@@ -72,18 +72,61 @@
 	   reader got was the heading, the two toggles and an empty box: no
 	   line, and no word about why. The figures above the chart do not need
 	   it, so a failure here is a sentence, not a blank. */
+	var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+	/* A chart time as day, month and optionally year: "18 Nov". The
+	   library hands back a "YYYY-MM-DD" string, a business day object or
+	   a timestamp depending on where it came from, so all three are read. */
+	function dayMonth(time, withYear) {
+		var y, m, d;
+		if (typeof time === "string") {
+			var parts = time.split("-");
+			y = +parts[0]; m = +parts[1]; d = +parts[2];
+		}
+		else if (time && typeof time === "object") {
+			y = time.year; m = time.month; d = time.day;
+		}
+		else {
+			var date = new Date(Number(time) * 1000);
+			y = date.getUTCFullYear(); m = date.getUTCMonth() + 1; d = date.getUTCDate();
+		}
+		return d + " " + MONTHS[m - 1] + (withYear ? " " + y : "");
+	}
+
+	/* The end labels sit in a column to the right of the plot, so the
+	   y-axis numbers go on the left where nothing sits on them. */
+	var LABEL_WIDTH = (root.clientWidth && root.clientWidth < 576) ? 110 : 170;
+	var LABEL_GAP = 16;
+
 	function build() {
 
-		var chart = LightweightCharts.createChart(root, {
-			height: 360,
+		root.style.position = "relative";
+		var plot = document.createElement("div");
+		plot.className = "sm-chart-plot";
+		plot.style.marginRight = LABEL_WIDTH + "px";
+		var labels = document.createElement("div");
+		labels.className = "sm-chart-labels";
+		labels.style.width = LABEL_WIDTH + "px";
+		root.appendChild(plot);
+		root.appendChild(labels);
+
+		var HEIGHT = 360;
+
+		var chart = LightweightCharts.createChart(plot, {
+			height: HEIGHT,
 			/* Transparent, so the chart is the card's colour in either
 			   scheme. It used to be #ffffff with a #f0f0f0 grid written in,
 			   which is a white box in the middle of a dark page. */
 			layout: { background: { color: "transparent" }, textColor: token("--sm-chart-text", "#333") },
 			grid: { vertLines: { color: token("--sm-chart-grid", "#eee") },
 			        horzLines: { color: token("--sm-chart-grid", "#eee") } },
-			rightPriceScale: { borderColor: token("--sm-chart-border", "#ccc") },
-			timeScale: { borderColor: token("--sm-chart-border", "#ccc") },
+			leftPriceScale: { visible: true, borderColor: token("--sm-chart-border", "#ccc"),
+			                  scaleMargins: { top: 0.08, bottom: 0.08 } },
+			rightPriceScale: { visible: false },
+			timeScale: { borderColor: token("--sm-chart-border", "#ccc"),
+			             tickMarkFormatter: function (time) { return dayMonth(time, false); } },
+			localization: { timeFormatter: function (time) { return dayMonth(time, true); } },
 			crosshair: { mode: 1 }
 		});
 
@@ -97,7 +140,7 @@
 		var benchmarkColour = token("--sm-muted", "#6c757d");
 
 		var legend = document.createElement("div");
-		legend.className = "mt-2";
+		legend.className = "mt-2 sm-chart-legend";
 		root.parentNode.insertBefore(legend, root.nextSibling);
 
 		var drawn = [];
@@ -113,22 +156,38 @@
 			var options = {
 				color: colour,
 				lineWidth: kind === "strategy" ? 2 : 1,
-				title: String(line.name || "")
+				priceScaleId: "left",
+				/* The end labels are drawn beside the chart, stacked so
+				   they never overlap; the library's own would. */
+				lastValueVisible: false,
+				priceLineVisible: false
 			};
 			if (kind === "backtest") {
 				options.lineStyle = 2;             //dashed: a replay, not a record
 				options.lineWidth = 1;
 			}
 
+			//textContent throughout, so a strategy named after a tag is a
+			//strategy named after a tag rather than a tag.
 			var tag = document.createElement("span");
-			tag.className = "me-3";
-			tag.style.color = colour;
-			//textContent, so a strategy named after a tag is a strategy named
-			//after a tag rather than a tag.
-			tag.textContent = (kind === "backtest" ? "┄ " : "■ ") + String(line.name || "");
+			tag.className = "sm-legend-item me-3";
+			var swatch = document.createElement("span");
+			swatch.className = "sm-legend-swatch" + (kind === "backtest" ? " sm-legend-dashed" : "");
+			swatch.style.borderColor = colour;
+			if (kind !== "backtest") { swatch.style.background = colour; }
+			var words = document.createElement("span");
+			words.textContent = String(line.legend || line.name || "");
+			tag.appendChild(swatch);
+			tag.appendChild(words);
 			legend.appendChild(tag);
 
-			drawn.push({ line: line, kind: kind, series: chart.addLineSeries(options), tag: tag });
+			var label = document.createElement("div");
+			label.className = "sm-chart-label";
+			label.style.color = colour;
+			labels.appendChild(label);
+
+			drawn.push({ line: line, kind: kind, series: chart.addLineSeries(options),
+			             tag: tag, label: label, last: null });
 		});
 
 		/* The latest first date across the lines being shown: the earliest date
@@ -161,6 +220,32 @@
 			return out;
 		}
 
+		/* The end labels: name and value at the height of each line's last
+		   point, pushed apart so no two are closer than LABEL_GAP, and kept
+		   inside the plot. */
+		function placeLabels() {
+			var items = [];
+			drawn.forEach(function (entry) {
+				if (entry.last === null) { entry.label.style.display = "none"; return; }
+				var y = entry.series.priceToCoordinate(entry.last);
+				if (y === null) { entry.label.style.display = "none"; return; }
+				entry.label.style.display = "";
+				items.push({ entry: entry, y: y });
+			});
+			items.sort(function (a, b) { return a.y - b.y; });
+			var bottom = HEIGHT - 30;              //above the time axis
+			for (var i = 0; i < items.length; i++) {
+				if (i > 0 && items[i].y < items[i - 1].y + LABEL_GAP) { items[i].y = items[i - 1].y + LABEL_GAP; }
+			}
+			for (var j = items.length - 1; j >= 0; j--) {
+				var limit = (j === items.length - 1) ? bottom : items[j + 1].y - LABEL_GAP;
+				if (items[j].y > limit) { items[j].y = limit; }
+			}
+			items.forEach(function (item) {
+				item.entry.label.style.top = Math.max(0, Math.round(item.y - LABEL_GAP / 2)) + "px";
+			});
+		}
+
 		function redraw() {
 
 			var showBacktests = !!(backtestBox && backtestBox.checked);
@@ -176,14 +261,35 @@
 				var visible = shown.indexOf(entry) !== -1;
 				entry.series.applyOptions({ visible: visible });
 				entry.tag.style.display = visible ? "" : "none";
-				if (visible) { entry.series.setData(rebase(entry.line.points || [], from)); }
+				entry.last = null;
+				if (visible) {
+					var data = rebase(entry.line.points || [], from);
+					entry.series.setData(data);
+					if (data.length) { entry.last = data[data.length - 1].value; }
+					//The name may be cut short; the value never is.
+					entry.label.textContent = "";
+					var nameSpan = document.createElement("span");
+					nameSpan.className = "sm-chart-label-name";
+					nameSpan.textContent = String(entry.line.name || "");
+					var valueSpan = document.createElement("span");
+					valueSpan.textContent = entry.last === null ? "" : entry.last.toFixed(1);
+					entry.label.title = nameSpan.textContent + " " + valueSpan.textContent;
+					entry.label.appendChild(nameSpan);
+					entry.label.appendChild(valueSpan);
+				}
 			});
 
 			chart.timeScale().fitContent();
 
-			say(common
-				? "Every line starts at 100 on " + (from === null ? "its own first night" : from) + "."
+			var dateLabel = document.getElementById("chart-common-date");
+			if (dateLabel) { dateLabel.textContent = from === null ? "" : " (" + dayMonth(from, false) + ")"; }
+
+			say(common && from !== null
+				? "All lines start at 100 on " + dayMonth(from, true)
+				  + ", the first night every strategy has a value."
 				: "Each line starts at 100 on its own first night.");
+
+			window.requestAnimationFrame(placeLabels);
 		}
 
 		if (commonBox) { commonBox.addEventListener("change", redraw); }
@@ -191,10 +297,15 @@
 
 		redraw();
 
+		chart.timeScale().subscribeVisibleLogicalRangeChange(function () {
+			window.requestAnimationFrame(placeLabels);
+		});
+
 		/* Follow the container's width, which is the only thing that changes
 		   when the window does: the height is fixed above. */
 		window.addEventListener("resize", function () {
-			chart.applyOptions({ width: root.clientWidth });
+			chart.applyOptions({ width: plot.clientWidth });
+			window.requestAnimationFrame(placeLabels);
 		});
 	}
 
