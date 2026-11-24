@@ -5411,6 +5411,52 @@
                          where status='ambiguous' and currency='USD'") === 2,
           json_encode(rows("select broker_ticker, status, currency, note from broker_instruments")));
 
+    /* Demo and live keep their own mapping side by side, so every matched
+       share is in both. That is two rows per share and correct: the check
+       for a share matched twice counts within the account being synced.
+       On 24 Nov the demo refresh reported all 349 shares as doubled. */
+    $bk_sync_env = (string) scalar("select environment from broker_instruments
+                                     where status='matched' limit 1");
+    $bk_other_env = $bk_sync_env === 'demo' ? 'live' : 'demo';
+    db()->prepare("insert into broker_instruments
+                     (broker, environment, broker_ticker, symbol, short_name, isin,
+                      currency, venue, name, status, matched_on, note, last_seen)
+                   select broker, ?, broker_ticker, symbol, short_name, isin,
+                          currency, venue, name, status, matched_on, note, last_seen
+                     from broker_instruments where environment=?")
+        ->execute([$bk_other_env, $bk_sync_env]);
+    run_script('sync_broker.php', ['--instruments'], $bk_env);
+    $bk_both_run = $bk_last_run();
+    check('the same shares matched in both demo and live are not reported as doubled',
+          $bk_both_run['status'] === 'OK'
+          && stripos((string) $bk_both_run['problems'], 'more than one') === false
+          && (int) scalar("select count(*) from broker_instruments
+                            where environment=? and status='matched'", [$bk_other_env]) > 0,
+          json_encode([$bk_sync_env, $bk_both_run['status'], $bk_both_run['problems']]));
+    check('and the per-account check finds nothing in either',
+          count(broker_doubled_instruments(BROKER_T212, $bk_sync_env)) === 0
+          && count(broker_doubled_instruments(BROKER_T212, $bk_other_env)) === 0);
+
+    /* Two matched rows for one share in the SAME account is still caught.
+       The unique key forbids it, so the test drops the key to write one. */
+    db()->exec("alter table broker_instruments drop index broker_env_symbol");
+    $bk_dbl_symbol = (string) scalar("select symbol from broker_instruments
+                                       where environment=? and status='matched' limit 1",
+                                     [$bk_sync_env]);
+    db()->prepare("insert into broker_instruments
+                     (broker, environment, broker_ticker, symbol, status, last_seen)
+                   values (?,?,'DOUBLEl_EQ',?,'matched',?)")
+        ->execute([BROKER_T212, $bk_sync_env, $bk_dbl_symbol, asof_date()]);
+    $bk_dbl = broker_doubled_instruments(BROKER_T212, $bk_sync_env);
+    check('a share matched twice within one account is reported',
+          count($bk_dbl) === 1 && $bk_dbl[0]['symbol'] === $bk_dbl_symbol
+          && count(broker_doubled_instruments(BROKER_T212, $bk_other_env)) === 0,
+          json_encode($bk_dbl));
+    db()->prepare("delete from broker_instruments where broker_ticker='DOUBLEl_EQ'")->execute();
+    db()->exec("delete from broker_instruments where environment='$bk_other_env'");
+    db()->exec("alter table broker_instruments
+                  add unique key broker_env_symbol (broker, environment, symbol)");
+
     /* A holding the mapping could not name is the same kind of thing: the
        position is read, stored and shown by the broker's ticker. */
     $bk_write('positions.json', json_encode([

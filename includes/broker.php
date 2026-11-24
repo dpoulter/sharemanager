@@ -701,6 +701,19 @@
 		return count($rows);
 	}
 
+	/**
+	 * Shares matched to more than one instrument within one account's
+	 * mapping. Counted per environment: demo and live each keep their own
+	 * rows (broker + environment + symbol is the unique key), so the same
+	 * share matched once in each is two rows and correct, not a collision.
+	 */
+	function broker_doubled_instruments($broker, $environment = 'demo') {
+		return query("select symbol, count(*) n from broker_instruments
+		               where broker=? and environment=? and status='matched'
+		                 and symbol is not null
+		               group by symbol having n > 1", $broker, $environment);
+	}
+
 	/** ticker => symbol, for the instruments that matched one of ours. */
 	function broker_symbol_map($broker = BROKER_T212, $environment = 'demo') {
 
@@ -1142,9 +1155,7 @@
 				   up with two instruments again, the page says so rather
 				   than valuing a holding against whichever row a join
 				   happened to pick. */
-				$doubled = query("select symbol, count(*) n from broker_instruments
-				                   where broker=? and status='matched' and symbol is not null
-				                   group by symbol having n > 1", $broker);
+				$doubled = broker_doubled_instruments($broker, $env_label);
 				if (count($doubled)) {
 					$problems[] = count($doubled) . " share(s) are matched to more than one"
 					            . " instrument, which should be impossible: "
