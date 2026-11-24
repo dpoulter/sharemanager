@@ -18654,8 +18654,17 @@ STUB
               strategy_archived($WF) && stripos($pc_arch, 'Archived') !== false);
         check('and nothing is deleted by any step down: the same rules, accounts, orders, positions and runs',
               $pc_counts() === $pc_keep);
-        check('an archived strategy is listed as archived, and the night run skips it',
-              stripos((string) $curl("$base/strategies.php"), '(archived)') !== false
+        /* An archived strategy with a switched-off account is out of the
+           default view (tidy of 24 November 2026): not under Running or
+           Research, and reachable through Disabled (N). */
+        $pc_default = (string) $curl("$base/strategies.php");
+        $pc_nav = preg_match('~<nav class="sm-side-menu.*?</nav>~s', $pc_default, $pc_m) ? $pc_m[0] : '';
+        $pc_disabled = (string) $curl("$base/strategies.php?disabled=1");
+        $pc_tag = 'data-strategy="' . htmlspecialchars($WF, ENT_QUOTES) . '"';
+        check('an archived strategy is out of Running and Research, under Disabled, and the night run skips it',
+              strpos($pc_nav, $pc_tag) === false
+              && preg_match('~sm-menu-disabled[^>]*>\s*Disabled \(\d+\)~', $pc_nav) === 1
+              && strpos($pc_disabled, $pc_tag) !== false
               && !in_array($WF, night_skips(strategy_strategies())['run'], true));
         check('and every move on it is closed',
               count(array_filter(strategy_stage($WF)['moves'], function ($m) { return $m['open']; })) === 0);
