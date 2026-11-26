@@ -34,7 +34,14 @@ class Fundamentals:
 
     def __init__(self, statements: pd.DataFrame, annual_lag_months: int = 4, interim_lag_months: int = 3):
         if statements is None or statements.empty:
-            self.st = pd.DataFrame(columns=["symbol", "period_end", "freq", "usable_from"])
+            # The same columns as a real set of accounts, so an indicator asked about companies
+            # with no accounts finds nothing rather than a missing column.
+            self.st = pd.DataFrame(columns=["symbol", "period_end", "freq", "usable_from",
+                                            *FLOWS, *STOCKS, "reportedCurrency"])
+            self.st["usable_from"] = pd.to_datetime(self.st["usable_from"])
+            self.st["period_end"] = pd.to_datetime(self.st["period_end"])
+            for c in FLOWS + STOCKS:
+                self.st[c] = pd.to_numeric(self.st[c], errors="coerce")
         else:
             self.st = add_usable_from(statements, annual_lag_months, interim_lag_months)
             # Dividends paid and buybacks are reported negative; count them as cash out.

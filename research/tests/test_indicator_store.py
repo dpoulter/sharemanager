@@ -301,3 +301,46 @@ def test_stored_n100_indicators_match_the_definitions_on_a_sunday(cfg):
                                    rm.close.loc[friday].dropna(), check_names=False)
     pd.testing.assert_series_equal(store.read("6mnth@raw", [sunday]).frame.iloc[0].dropna().sort_index(),
                                    (ctx.n100_return(friday, 6) * 100).dropna().sort_index(), check_names=False)
+
+
+# ---------------------------------------------------------------- companies with no accounts (brief of 26 Nov 2026)
+ACCOUNTS = ["accruals", "asset_growth", "gross_profitability", "net_share_issuance"]
+
+
+def _accounts_market():
+    """HOME.L and MKA.L with three years of accounts; TEK4.L and SEI.L priced but with none."""
+    rows = []
+    for i, s in enumerate(["HOME.L", "MKA.L"]):
+        for j, y in enumerate((2022, 2023, 2024)):
+            rows.append({"symbol": s, "period_end": f"{y}-12-31", "freq": "annual", "reportedCurrency": "GBP",
+                         "totalAssets": 3e8 * (1 + 0.1 * j), "grossProfit": 5e7, "revenue": 2e8,
+                         "netIncome": 1e7 * (i + 1), "operatingCashFlow": 1.5e7,
+                         "weightedAverageShsOut": 1e6 * (1 + 0.05 * j)})
+    syms = ["HOME.L", "MKA.L", "TEK4.L", "SEI.L"]
+    rng = np.random.default_rng(7)
+    prices = {s: list(100 * np.cumprod(1 + rng.normal(0.0005, 0.01, N))) for s in syms}
+    return make_market(prices, start="2024-01-01", statements=pd.DataFrame(rows))
+
+
+@pytest.mark.parametrize("symbols", [["TEK4.L", "SEI.L"], ["NOK", "CNY"]])
+@pytest.mark.parametrize("name", ACCOUNTS)
+def test_accounts_indicators_for_companies_without_accounts_are_empty(cfg, name, symbols):
+    m = _accounts_market()
+    out = indicator_job.compute(cfg, indicator_job.definition(name), name, m, None, m.dates[-5:], symbols=symbols)
+    assert len(out) == 0
+
+
+@pytest.mark.parametrize("name", ACCOUNTS)
+def test_accounts_indicators_for_companies_with_accounts_still_have_values(cfg, name):
+    m = _accounts_market()
+    out = indicator_job.compute(cfg, indicator_job.definition(name), name, m, None, m.dates[-5:],
+                                symbols=["HOME.L", "MKA.L"])
+    assert len(out) and set(out["symbol"]) == {"HOME.L", "MKA.L"}
+
+
+def test_empty_statements_still_have_every_column():
+    from research.indicators import Fundamentals
+    from research.indicators.pit import FLOWS, STOCKS
+    f = Fundamentals(pd.DataFrame())
+    assert f.st.empty
+    assert set(FLOWS + STOCKS + ["reportedCurrency"]) <= set(f.st.columns)
